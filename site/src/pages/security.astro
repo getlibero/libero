@@ -1,0 +1,135 @@
+---
+import Marketing from '../layouts/Marketing.astro';
+import { SITE } from '../consts';
+
+const attempts = [
+  {
+    attack: 'A channel member talks the agent into printing its GitHub token.',
+    result: 'Nothing to print.',
+    body: 'The agent process never receives a credential value. Team sheets, logs, errors and tool definitions carry names. The proxy injects the secret into the outbound call and scrubs known secret values out of the result before it comes back.',
+    tone: 'allowed',
+  },
+  {
+    attack: 'A poisoned tool result instructs the agent to call an internal admin API.',
+    result: 'Refused in the proxy.',
+    body: 'The server is not in the channel’s team sheet, so it is not in the tool definitions the agent fetched, and a direct call is rejected anyway. The refusal is a structured result the agent relays; the attempt is in the audit log.',
+    tone: 'blocked',
+  },
+  {
+    attack: 'Someone asks the agent to deploy to production, urgently, at 2am.',
+    result: 'Held for a human.',
+    body: 'trigger_workflow is marked approval = "required", so the call stops in the proxy and an Approve card renders in the thread. Whoever clicks is recorded. Destructive verbs default to required whether or not anyone remembered to mark them.',
+    tone: 'warn',
+  },
+  {
+    attack: 'A prompt-injected loop tries to burn the month’s token budget in an hour.',
+    result: 'Stopped at the meter.',
+    body: 'Tokens and tool calls are metered per channel per day in the proxy. The agent loop has its own caps, but they are advisory — the proxy’s meter is the authoritative one, and it does not consult the model.',
+    tone: 'blocked',
+  },
+  {
+    attack: 'The agent is asked to summarise what a different channel discussed.',
+    result: 'No path to the data.',
+    body: 'Channel state is one SQLite file per channel. The isolation is the file layout, not a WHERE clause, so there is no query that can join across channels by accident or by instruction.',
+    tone: 'blocked',
+  },
+  {
+    attack: 'Generated code tries to POST your data to an external host.',
+    result: 'No network.',
+    body: 'Code execution runs in an ephemeral container with a read-only rootfs, cpu/memory/time limits, and no network unless the team sheet grants an egress allowlist. The proxy invokes the runner, so the execution is audited and budgeted like any other tool call.',
+    tone: 'blocked',
+  },
+];
+---
+
+<Marketing
+  title="Security"
+  description="Assume the model can be prompt-injected. Every mitigation in Libero is designed to hold when that is true, which means none of them can depend on the model's cooperation."
+>
+  <div class="wrap wrap--narrow page-head">
+    <span class="lb-label lb-label--dim">Security</span>
+    <h1 class="page-head__title">Assume the model has already been turned.</h1>
+    <p class="page-head__sub">
+      Any channel member can write into the agent&rsquo;s context, and so can the output of any tool
+      it calls. Every mitigation here is designed to hold when the model is not on your side.
+    </p>
+  </div>
+
+  <section class="section">
+    <div class="wrap">
+      <div class="section__head">
+        <span class="lb-label lb-label--dim">The test</span>
+        <h2 class="lb-h2">What an attacker gets</h2>
+        <p class="feature__body" style="font-size:15px;">
+          These are the cases the phase-1 e2e suite is written to attack. Until it passes, the
+          governed core is not done.
+        </p>
+      </div>
+
+      <div class="grid grid--2">
+        {
+          attempts.map((item) => (
+            <article class="lb-card feature">
+              <span class="lb-label lb-label--tight">Attempt</span>
+              <h3 class="lb-h3">{item.attack}</h3>
+              <span class:list={['lb-pill', `lb-pill--${item.tone}`]} style="align-self:flex-start;">
+                <span class="lb-dot" />
+                {item.result}
+              </span>
+              <p class="feature__body">{item.body}</p>
+            </article>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap wrap--narrow">
+      <div class="prose">
+        <h2 style="margin-top:0;">Why the split is the whole design</h2>
+        <p>
+          Libero runs as two processes. The <strong>gateway and agent</strong> talks to Slack and
+          runs the model loop. The <strong>tool proxy</strong> holds every credential and enforces
+          what each channel may do. They speak over mutual TLS on a private network, and the only
+          thing that crosses is a tool call and its result.
+        </p>
+        <p>
+          Compromise the agent completely — prompt injection, a malicious skill, a model that
+          simply misbehaves — and the blast radius is bounded by a file in your git repository
+          rather than by the model&rsquo;s judgement.
+        </p>
+        <p>
+          The rule is enforced in the source as well as the deployment:
+          <code>packages/agent</code> may never import <code>packages/proxy</code>, checked by an
+          ESLint rule and independently by a grep-level CI job.
+        </p>
+
+        <h2>What we do not claim</h2>
+        <p>
+          The trust assumptions are stated rather than implied. The operator&rsquo;s Slack
+          workspace is trusted; individual channel members are not. A malicious operator, a
+          compromised host, and Slack itself are out of scope for v1.
+        </p>
+        <p>
+          Libero is at phase 0. The proxy described here is the specification, not shipped code.
+          The <a href="/docs/roadmap">roadmap</a> is gated so that nothing depending on the proxy
+          ships before the proxy can be attacked and hold.
+        </p>
+
+        <h2>Reporting a vulnerability</h2>
+        <p>
+          Please do not open a public issue. Use GitHub private vulnerability reporting —
+          <a href={`${SITE.repo}/security/advisories/new`} rel="noopener">
+            Security &rarr; Report a vulnerability
+          </a>. We aim to acknowledge within 72 hours.
+        </p>
+      </div>
+
+      <div class="lb-cluster lb-gap-10 u-mt-40">
+        <a class="lb-btn lb-btn--primary" href="/docs/security">The full threat model</a>
+        <a class="lb-btn lb-btn--secondary" href="/docs/team-sheet">How enforcement is configured</a>
+      </div>
+    </div>
+  </section>
+</Marketing>

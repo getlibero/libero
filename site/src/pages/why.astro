@@ -1,0 +1,123 @@
+---
+import Marketing from '../layouts/Marketing.astro';
+import { SITE } from '../consts';
+---
+
+<Marketing
+  title="Why Libero"
+  description="Governance first, features second. Why a shared channel agent needs a credential boundary, an allowlist in a file, and no admin UI."
+>
+  <div class="wrap wrap--narrow page-head">
+    <span class="lb-label lb-label--dim">Why Libero</span>
+    <h1 class="page-head__title">Governance first, features second.</h1>
+    <p class="page-head__sub">
+      An agent that can act on your systems is a security surface before it is a productivity tool.
+      Libero is built in that order.
+    </p>
+  </div>
+
+  <section class="wrap wrap--narrow section">
+    <div class="prose">
+      <p>
+        The useful version of an AI teammate is one with credentials. It reads the pull requests,
+        checks the dashboard, files the ticket, triggers the deploy. The moment it can do those
+        things, the interesting question stops being &ldquo;how good is the model&rdquo; and
+        becomes &ldquo;what happens when someone talks it into something.&rdquo;
+      </p>
+      <p>
+        Prompt injection is not an edge case. Any channel member can type into the agent&rsquo;s
+        context, and so can the output of any tool it calls. Assume the model can be turned. Then
+        ask what the agent is still unable to do.
+      </p>
+      <p>
+        If the answer depends on the system prompt, the answer is &ldquo;nothing.&rdquo;
+      </p>
+
+      <h2>The boundary is a process, not a paragraph</h2>
+      <p>
+        Libero splits into two services. The <strong>gateway and agent</strong> talks to Slack and
+        runs the model loop. The <strong>tool proxy</strong> holds every credential and decides
+        what each channel may do. They speak over mutual TLS on a private network, and the only
+        thing that crosses is a tool call and its result.
+      </p>
+      <p>
+        Compromise the agent process completely and you get no credentials, only the tool surface
+        that channel&rsquo;s team sheet already allowed, and a log entry for every attempt. That is
+        the whole design. Everything else is a consequence of it.
+      </p>
+      <p>
+        The rule is enforced in the code too: <code>packages/agent</code> may never import
+        <code>packages/proxy</code>. An ESLint rule and a separate grep-level CI job both check it,
+        because a boundary that only exists in a comment is not a boundary.
+      </p>
+
+      <h2>Enforcement belongs in a file you can review</h2>
+      <p>
+        Each channel has a <strong>team sheet</strong>: a TOML file in your git repo declaring
+        which servers it may reach, which tools exist as far as it is concerned, which of those
+        need a human click, what the daily budget is, and where traffic may go.
+      </p>
+      <p>
+        A tool that is not on the sheet is not in the definitions the agent receives, and a call to
+        it is refused in the proxy regardless. Not discouraged. Refused, by a process that does not
+        run the model.
+      </p>
+      <p>
+        There is no web admin UI, and there will not be one in v1. Permissions that matter deserve
+        a diff, a reviewer, and a revert — which is to say they deserve to be files in a repo you
+        already have.
+      </p>
+
+      <h2>One session per channel, not one per user</h2>
+      <p>
+        A per-user assistant learns things about a person. A per-channel teammate learns things
+        about the work: what the team decided, what the runbook is, who owns the flaky test.
+      </p>
+      <p>
+        Channel membership is therefore the permission boundary, and it is a physical one — one
+        SQLite file per channel, with no query path that can join across them. The agent addresses
+        people by name because messages are stored with attribution, and the audit log records
+        which human asked for each call. It never acts <em>as</em> any of them.
+      </p>
+
+      <h2>Self-hosted and model-agnostic, for the boring reasons</h2>
+      <p>
+        Your channel history, your curated memory, and your credentials stay on infrastructure you
+        control, because that is what makes the credential boundary meaningful in the first place.
+      </p>
+      <p>
+        Models are swappable per channel — Anthropic, OpenAI, Google, Groq, Ollama, or anything
+        behind an OpenAI-compatible endpoint. That is not neutrality for its own sake. A governed
+        core that only works with one vendor&rsquo;s model has an availability dependency in the
+        middle of a security boundary.
+      </p>
+
+      <h2>MIT, proxy included</h2>
+      <p>
+        The entire core is MIT — the proxy is not held back as the paid tier. A security boundary
+        nobody can read is a security boundary nobody can check. The
+        <a href={`${SITE.repo}/blob/main/GOVERNANCE.md`} rel="noopener">governance document</a>
+        explains the CLA and the licence policy, including why AGPL and commercially-licensed
+        dependencies are excluded from core.
+      </p>
+
+      <h2>What this costs</h2>
+      <p>
+        Honesty about the trade: Libero is slower to get features than a hosted product, it asks
+        you to run two containers and write a TOML file per channel, and its roadmap deliberately
+        parks anything that outpaces the proxy.
+      </p>
+      <p>
+        Phase 1 is not done until a prompt-injected agent in a test channel cannot exfiltrate a
+        secret, call an unlisted tool, exceed budget, or act destructively without a human click —
+        demonstrated by tests that try. Nothing that depends on the proxy ships before the proxy
+        can hold.
+      </p>
+    </div>
+
+    <div class="lb-cluster lb-gap-10 u-mt-40">
+      <a class="lb-btn lb-btn--primary" href="/docs/architecture">Read the architecture</a>
+      <a class="lb-btn lb-btn--secondary" href="/security">The security argument</a>
+    </div>
+  </section>
+</Marketing>

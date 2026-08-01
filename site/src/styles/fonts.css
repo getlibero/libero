@@ -1,0 +1,11 @@
+/* IBM Plex, self-hosted. The site makes no third-party requests, so the
+   design system's font stack is bundled rather than pulled from a CDN.
+   Static weights rather than the variable files: only three sans weights are
+   used, and the same .woff files feed the social-card renderer, which cannot
+   read woff2. */
+
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';

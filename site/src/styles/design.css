@@ -1,0 +1,7 @@
+/* The full design system — tokens plus the component layer — for the
+   marketing pages. Docs pages load tokens.css only: Starlight brings its own
+   component layer, and src/styles/starlight.css re-skins it with these
+   tokens instead. */
+
+@import './tokens.css';
+@import '../../../design/libero.css';

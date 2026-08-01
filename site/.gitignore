@@ -1,0 +1,23 @@
+# build output
+dist/
+# generated types
+.astro/
+
+# dependencies
+node_modules/
+
+# Derived from design/ by scripts/build-assets.mjs on predev/prebuild.
+# Committing them would be a second copy of the design system, waiting to drift.
+public/favicon.svg
+public/og.png
+
+# logs
+npm-debug.log*
+pnpm-debug.log*
+
+# environment variables
+.env
+.env.production
+
+# macOS-specific files
+.DS_Store

@@ -1,0 +1,81 @@
+---
+import Mark from './Mark.astro';
+
+const year = new Date().getFullYear();
+
+const columns = [
+  {
+    label: 'Docs',
+    links: [
+      { href: '/docs', label: 'What Libero is' },
+      { href: '/docs/architecture', label: 'Architecture' },
+      { href: '/docs/team-sheet', label: 'Team sheets' },
+      { href: '/docs/roadmap', label: 'Roadmap' },
+    ],
+  },
+  {
+    label: 'Project',
+    links: [
+      { href: '/why', label: 'Why Libero' },
+      { href: '/security', label: 'Security' },
+      { href: '/blog', label: 'Blog' },
+      { href: '/docs/contributing', label: 'Contributing' },
+    ],
+  },
+  {
+    label: 'Source',
+    links: [
+      { href: 'https://github.com/getlibero/libero', label: 'GitHub' },
+      {
+        href: 'https://github.com/getlibero/libero/blob/main/LICENSE',
+        label: 'MIT licence',
+      },
+      {
+        href: 'https://github.com/getlibero/libero/blob/main/GOVERNANCE.md',
+        label: 'Governance',
+      },
+      {
+        href: 'https://github.com/getlibero/libero/security/advisories/new',
+        label: 'Report a vulnerability',
+      },
+    ],
+  },
+];
+---
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="site-footer__inner">
+      <div class="lb-stack lb-gap-12">
+        <div class="lb-lockup" style="gap:10px;">
+          <Mark size={24} />
+          <span class="lb-wordmark lb-wordmark--sm">libero</span>
+        </div>
+        <p class="lb-small" style="max-width:34ch;">
+          The open-source AI teammate for Slack. Self-hosted, credential-isolated, every tool call
+          audited.
+        </p>
+      </div>
+
+      <div class="site-footer__cols">
+        {
+          columns.map((column) => (
+            <div class="site-footer__col">
+              <span class="lb-label lb-label--dim">{column.label}</span>
+              {column.links.map((link) => (
+                <a href={link.href} rel={link.href.startsWith('http') ? 'noopener' : undefined}>
+                  {link.label}
+                </a>
+              ))}
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="site-footer__legal">
+      <span class="lb-meta">MIT licensed · Phase 0, pre-release · © {year}</span>
+      <span class="lb-meta">getlibero.com</span>
+    </div>
+  </div>
+</footer>

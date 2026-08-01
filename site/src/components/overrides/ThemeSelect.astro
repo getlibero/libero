@@ -1,0 +1,14 @@
+---
+/**
+ * Starlight's three-way theme picker (dark / light / auto), replaced by the
+ * same two-state toggle the marketing pages use.
+ *
+ * "Auto" is dropped deliberately. Starlight stores an empty string for it,
+ * which makes "never chose" and "chose auto" indistinguishable, and the design
+ * system states one default rather than deferring to the operating system.
+ * See src/lib/theme-script.ts.
+ */
+import ThemeToggle from '../ThemeToggle.astro';
+---
+
+<ThemeToggle />

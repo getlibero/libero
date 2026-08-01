@@ -1,0 +1,71 @@
+name: Site
+
+on:
+  # Filtered on push so an unrelated commit does not redeploy the site, but
+  # deliberately unfiltered on pull_request: site-build is a required status
+  # check, and a required check that does not report on some pull requests
+  # blocks them forever. It has to run everywhere to be able to gate anywhere.
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'design/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
+  workflow_dispatch:
+
+# site/ is outside the root pnpm workspace, so the CI job in ci.yml does not
+# see it. This workflow is its build, and on main its deployment.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Named site-build, not build: ci.yml already has a job called build, and a
+  # required status check matches on the job name alone. Two check runs sharing
+  # a name means the branch ruleset cannot tell which one it is gating on.
+  site-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Astro 7 requires >=22.12, so this is deliberately ahead of the
+          # Node 20 the core packages build against in ci.yml. It is a
+          # build-time toolchain only; nothing shipped runs on it.
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm check
+      - name: Build
+        # `prebuild` regenerates the favicon and social card from design/,
+        # which is why a change under design/ triggers this workflow.
+        run: pnpm build
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  site-deploy:
+    needs: site-build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

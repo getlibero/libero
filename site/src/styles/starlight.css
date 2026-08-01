@@ -1,0 +1,140 @@
+/* Starlight, re-skinned with the Libero design tokens.
+ *
+ * Starlight ships its own component layer, so the docs do not load
+ * design/libero.css — that layer is for the marketing pages. Instead every
+ * --sl-* variable Starlight reads is pointed at a --lb-* token. Because the
+ * tokens themselves swap on [data-theme="light"], one block covers both modes.
+ *
+ * Starlight declares its own values inside @layer starlight.base. Custom CSS
+ * is unlayered, and unlayered beats every layer, so these win without
+ * needing specificity games. */
+
+:root,
+::backdrop {
+  --sl-font: var(--lb-font-sans);
+  --sl-font-mono: var(--lb-font-mono);
+
+  /* Starlight's neutral ramp. "white" is the strongest text and "black" the
+     page behind it — in light mode the tokens invert, so these follow. */
+  --sl-color-white: var(--lb-text);
+  --sl-color-black: var(--lb-bg-canvas);
+  --sl-color-gray-1: var(--lb-text);
+  --sl-color-gray-2: var(--lb-text);
+  --sl-color-gray-3: var(--lb-text-muted);
+  --sl-color-gray-4: var(--lb-text-muted);
+  --sl-color-gray-5: var(--lb-border-strong);
+  --sl-color-gray-6: var(--lb-border);
+  --sl-color-gray-7: var(--lb-bg-raised);
+
+  --sl-color-accent-low: var(--lb-accent-wash);
+  --sl-color-accent: var(--lb-accent);
+  --sl-color-accent-high: var(--lb-accent-text);
+
+  --sl-color-text: var(--lb-text);
+  --sl-color-text-accent: var(--lb-accent-text);
+  --sl-color-text-invert: var(--lb-accent-ink);
+  --sl-color-bg: var(--lb-bg-canvas);
+  --sl-color-bg-nav: var(--lb-bg-surface);
+  --sl-color-bg-sidebar: var(--lb-bg-canvas);
+  --sl-color-bg-inline-code: var(--lb-bg-raised);
+  --sl-color-bg-accent: var(--lb-accent);
+  --sl-color-hairline-light: var(--lb-border-strong);
+  --sl-color-hairline: var(--lb-border);
+  --sl-color-hairline-shade: var(--lb-border);
+  --sl-color-backdrop-overlay: color-mix(in srgb, var(--lb-bg-canvas) 72%, transparent);
+
+  /* Asides. Colour is status: amber = a human still has to act, red = blocked
+     or destructive. "note" and "tip" are not statuses, so they stay neutral
+     rather than borrowing the accent. */
+  --sl-color-blue: var(--lb-text-muted);
+  --sl-color-blue-low: var(--lb-bg-raised);
+  --sl-color-blue-high: var(--lb-text);
+  --sl-color-purple: var(--lb-text-muted);
+  --sl-color-purple-low: var(--lb-bg-raised);
+  --sl-color-purple-high: var(--lb-text);
+  --sl-color-green: var(--lb-accent);
+  --sl-color-green-low: var(--lb-accent-wash);
+  --sl-color-green-high: var(--lb-accent-text);
+  --sl-color-orange: var(--lb-warn);
+  --sl-color-orange-low: var(--lb-warn-wash);
+  --sl-color-orange-high: var(--lb-warn);
+  --sl-color-red: var(--lb-danger);
+  --sl-color-red-low: var(--lb-danger-wash);
+  --sl-color-red-high: var(--lb-danger);
+
+  /* Elevation is surface colour and hairlines only. No shadows, no gradients,
+     in either mode. */
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
+
+  --sl-content-width: 46rem;
+  --sl-line-height: 1.65;
+}
+
+/* ------------------------------------------------------------------ *
+ * The handful of places the token swap is not enough
+ * ------------------------------------------------------------------ */
+
+/* Radii: 7 / 10 / 14 only. Starlight hard-codes a few. */
+.sl-markdown-content :is(pre, .expressive-code) {
+  border-radius: var(--lb-radius);
+}
+
+/* Machine-produced text is mono: tool names, paths, hashes, money. */
+.sl-markdown-content code:not(:where(pre code)) {
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-sm);
+  padding: 0.1em 0.36em;
+  font-size: 0.875em;
+  color: var(--lb-text);
+}
+
+/* Section headings pick up the display tracking from the type scale. */
+.sl-markdown-content :is(h1, h2, h3, h4) {
+  letter-spacing: -0.025em;
+}
+
+/* The one branch on mode in the whole system: dark lifts a surface by getting
+   lighter, light lifts by gaining a hairline. */
+.card,
+.sl-markdown-content .starlight-aside {
+  border-radius: var(--lb-radius);
+}
+
+/* Social icons are wayfinding, not status, so they are not green. The mark is
+   the one place the accent is identity rather than meaning. */
+.social-icons a {
+  color: var(--lb-text-muted);
+}
+.social-icons a:hover {
+  color: var(--lb-text);
+}
+
+/* Sidebar: the active entry is the only coloured thing in it. */
+.sidebar-content a[aria-current='page'] {
+  color: var(--lb-accent-text);
+  background-color: var(--lb-accent-wash);
+}
+
+/* Links in prose are green-as-type; the accent alias exists for exactly this
+   and is contrast-checked in both modes. */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--lb-accent-text);
+  text-decoration: none;
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  text-decoration: underline;
+}
+
+/* Tables read as data, so they get the mono/row rhythm the rest of the system
+   uses for machine output. */
+.sl-markdown-content :is(th, td) {
+  border-color: var(--lb-border);
+}
+.sl-markdown-content th {
+  font: 500 11px/1 var(--lb-font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--lb-text-muted);
+}

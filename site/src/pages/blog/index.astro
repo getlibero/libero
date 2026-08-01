@@ -1,0 +1,85 @@
+---
+import { getCollection } from 'astro:content';
+import Marketing from '../../layouts/Marketing.astro';
+
+const posts = (await getCollection('blog')).sort(
+  (a, b) => b.data.date.valueOf() - a.data.date.valueOf()
+);
+
+const stamp = (date: Date) =>
+  date.toISOString().slice(0, 10);
+---
+
+<Marketing
+  title="Blog"
+  description="Release notes and design decisions from the Libero project."
+>
+  <div class="wrap wrap--narrow page-head">
+    <span class="lb-label lb-label--dim">Blog</span>
+    <h1 class="page-head__title">Notes and releases.</h1>
+    <p class="page-head__sub">
+      What shipped, what it does, and the reasoning behind decisions that are hard to reverse.
+      Also available as <a href="/rss.xml">RSS</a>.
+    </p>
+  </div>
+
+  <section class="wrap wrap--narrow section">
+    {
+      posts.length === 0 ? (
+        <p class="lb-small">No posts yet.</p>
+      ) : (
+        <div class="post-list">
+          {posts.map((post) => (
+            <article class="post-list__item">
+              <div class="lb-cluster lb-gap-12">
+                <time class="lb-meta" datetime={stamp(post.data.date)}>
+                  {stamp(post.data.date)}
+                </time>
+                {post.data.kind === 'release' && (
+                  <span class="lb-label lb-label--tight">Release</span>
+                )}
+              </div>
+              <h2 class="lb-h2 post-list__title">
+                <a href={`/blog/${post.id}`}>{post.data.title}</a>
+              </h2>
+              <p class="feature__body">{post.data.description}</p>
+            </article>
+          ))}
+        </div>
+      )
+    }
+  </section>
+</Marketing>
+
+<style>
+  .post-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .post-list__item {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 28px 0;
+    border-bottom: 1px solid var(--lb-border);
+  }
+
+  .post-list__item:first-child {
+    padding-top: 0;
+  }
+
+  .post-list__item:last-child {
+    border-bottom: 0;
+  }
+
+  .post-list__title a {
+    color: var(--lb-text);
+    text-decoration: none;
+  }
+
+  .post-list__title a:hover {
+    color: var(--lb-accent-text);
+    text-decoration: none;
+  }
+</style>

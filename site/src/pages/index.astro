@@ -1,0 +1,389 @@
+---
+import Marketing from '../layouts/Marketing.astro';
+import { SITE } from '../consts';
+
+const enforced = [
+  {
+    label: 'Credential vault',
+    title: 'The agent process holds no secrets',
+    body: 'Credentials are encrypted at rest in the proxy and referenced by name in team sheets, logs, and errors. The proxy injects them into the outbound call and scrubs known secret values out of the result before it crosses back. Compromise the agent — prompt injection, a bad skill, a misbehaving model — and you get zero credentials.',
+  },
+  {
+    label: 'Allowlist',
+    title: 'Tools not on the sheet do not exist',
+    body: 'Every call resolves against the channel’s team sheet in the proxy: is this server allowed here, is this tool listed, is the destination on the egress allowlist. A refusal is a structured result the agent relays. The model’s cooperation is never part of the enforcement path.',
+  },
+  {
+    label: 'Approvals',
+    title: 'A human clicks before anything destructive',
+    body: 'Tools marked approval = "required" are held in the proxy while an Approve / Request changes card renders in the thread. Approvals are per-call, recorded with the approver’s Slack user id, and expire in 15 minutes. Destructive verbs — delete, drop, transfer, deploy — default to required.',
+  },
+  {
+    label: 'Budgets',
+    title: 'Spend is metered where it cannot be argued with',
+    body: 'Tokens and tool calls, per channel per day. The agent loop caps itself too, but the proxy’s meter is the authoritative one. A soft limit warns in-thread; a hard limit stops the loop until an admin resets it or the day rolls over.',
+  },
+  {
+    label: 'Audit',
+    title: 'Every call, appended and never rewritten',
+    body: 'Timestamp, channel, requesting user, task id, tool, server, argument hash, result status, tokens, and the approver if there was one. Append-only SQLite with no UPDATE or DELETE grant for the service role. Query and export it with libero audit.',
+  },
+  {
+    label: 'Isolation',
+    title: 'One database file per channel',
+    body: 'Channel state — history, curated memory, skills — is a SQLite file scoped to that channel. The file-per-channel layout is the isolation boundary, so there is no schema or query that can join across channels by accident.',
+  },
+];
+
+const phases = [
+  { n: '0', name: 'Skeleton', state: 'current', body: 'Monorepo, schema package, CI with the license gate and boundary checks, design system, mock Slack harness.' },
+  { n: '1', name: 'The governed core', state: 'next', body: 'Vault, team-sheet enforcement, approval cards, budget meter, audit log — and the e2e suite that attacks all of them.' },
+  { n: '2', name: 'Memory', state: 'later', body: 'Curation inner loop, MEMORY.md tooling, semantic recall, Slack-deletion mirroring.' },
+  { n: '3', name: 'Skills', state: 'later', body: 'Author turn, retrieval-based loading, lifecycle job, curator-as-diff.' },
+  { n: '4', name: 'Ambient', state: 'later', body: 'Heartbeat evaluation and scheduled tasks, disabled by default, behind the budget meter.' },
+  { n: '5', name: 'Breadth', state: 'later', body: 'Discord adapter, durable orchestration, proxy hardening, audit hash-chaining.' },
+];
+---
+
+<Marketing title={`${SITE.name} — ${SITE.tagline}`} bareTitle>
+  <!-- Hero ------------------------------------------------------------ -->
+  <section class="wrap hero">
+    <span class="hero__status pill-neutral">
+      <span class="lb-dot"></span>
+      {SITE.status}
+    </span>
+
+    <h1 class="hero__title">An AI teammate in Slack, under rules your admins write.</h1>
+
+    <p class="hero__sub">
+      Libero runs <strong>one shared session per channel</strong> — not one per user. It holds no
+      credentials, calls only the tools that channel&rsquo;s team sheet allows, and stops for a human
+      click before anything destructive. Self-hosted, MIT, model-agnostic.
+    </p>
+
+    <div class="hero__actions">
+      <a class="lb-btn lb-btn--primary" href="/docs">Read the docs</a>
+      <a class="lb-btn lb-btn--secondary" href={SITE.repo} rel="noopener">View source</a>
+    </div>
+
+    <p class="hero__note">
+      Not deployable yet. Phase 0 is the skeleton — see <a href="/docs/roadmap">the roadmap</a> for
+      what lands when.
+    </p>
+  </section>
+
+  <!-- The claim ------------------------------------------------------- -->
+  <section class="section">
+    <div class="wrap grid grid--split">
+      <div>
+        <span class="lb-label lb-label--dim">The security property</span>
+        <h2 class="lb-h2 u-mt-20">Secrets live in the proxy. The agent reaches tools only through it.</h2>
+        <p class="feature__body u-mt-20" style="font-size:15px;">
+          Two processes. The <strong>gateway and agent</strong> talk to Slack and run the model loop.
+          The <strong>tool proxy</strong> holds every credential and decides what each channel may
+          do. They speak over mutual TLS on a private network, and the only thing that crosses is a
+          tool call and its result.
+        </p>
+        <p class="feature__body u-mt-20" style="font-size:15px;">
+          That split is the whole design. Enforcement is a deterministic lookup against a file in
+          your git repo — not a paragraph in a system prompt asking the model to behave.
+        </p>
+        <p class="u-mt-32">
+          <a class="lb-btn lb-btn--secondary lb-btn--sm" href="/docs/architecture">
+            How the two services fit together
+          </a>
+        </p>
+      </div>
+
+      <div class="lb-stack lb-gap-16">
+        <div class="lb-panel">
+          <div class="lb-panel__head">
+            <span class="lb-label lb-label--tight">gateway + agent</span>
+            <span class="lb-meta">service 1</span>
+          </div>
+          <div class="lb-row"><span class="lb-row__name">slack adapter · socket mode</span></div>
+          <div class="lb-row"><span class="lb-row__name">channel router · (team, channel) → session</span></div>
+          <div class="lb-row"><span class="lb-row__name">agent loop · bring your own model</span></div>
+          <div class="lb-row">
+            <span class="lb-row__name">credentials</span>
+            <span class="pill-neutral">none</span>
+          </div>
+        </div>
+
+        <div class="link-down">
+          <span class="lb-meta">tool call over mTLS · localhost or private network</span>
+        </div>
+
+        <div class="lb-panel">
+          <div class="lb-panel__head">
+            <span class="lb-label lb-label--tight">tool proxy</span>
+            <span class="lb-meta">service 2</span>
+          </div>
+          <div class="lb-row"><span class="lb-row__name">credential vault · encrypted at rest</span></div>
+          <div class="lb-row"><span class="lb-row__name">team sheet · allowlist + egress</span></div>
+          <div class="lb-row"><span class="lb-row__name">approval broker · budget meter</span></div>
+          <div class="lb-row"><span class="lb-row__name">audit writer · append-only</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- What the proxy enforces ------------------------------------------ -->
+  <section class="section">
+    <div class="wrap">
+      <div class="section__head">
+        <span class="lb-label lb-label--dim">What the proxy enforces</span>
+        <h2 class="lb-h2">Six things, none of which the model can talk its way past.</h2>
+      </div>
+
+      <div class="grid grid--3">
+        {
+          enforced.map((item) => (
+            <article class="lb-card feature">
+              <span class="lb-label lb-label--tight">{item.label}</span>
+              <h3 class="lb-h3">{item.title}</h3>
+              <p class="feature__body">{item.body}</p>
+            </article>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Team sheet ------------------------------------------------------- -->
+  <section class="section">
+    <div class="wrap grid grid--split">
+      <div>
+        <span class="lb-label lb-label--dim">The admin surface</span>
+        <h2 class="lb-h2 u-mt-20">A TOML file per channel, in your own git repo.</h2>
+        <p class="feature__body u-mt-20" style="font-size:15px;">
+          We call it the channel&rsquo;s <strong>team sheet</strong> — the sheet a manager submits
+          before a match declaring who is allowed on the pitch, what position they play, and what
+          needs the gaffer&rsquo;s sign-off.
+        </p>
+        <p class="feature__body u-mt-20" style="font-size:15px;">
+          Nothing in it is a secret: credentials are names, resolved only inside the proxy&rsquo;s
+          vault. Changes are picked up on file change and validated against the schema; an invalid
+          sheet is rejected loudly and the previous valid one stays active.
+        </p>
+        <p class="feature__body u-mt-20" style="font-size:15px;">
+          There is no web admin UI, and that is deliberate. The files in git <em>are</em> the admin
+          UI — reviewable, diffable, revertable.
+        </p>
+        <p class="u-mt-32">
+          <a class="lb-btn lb-btn--secondary lb-btn--sm" href="/docs/team-sheet">Team sheet reference</a>
+        </p>
+      </div>
+
+      <div>
+        <div class="sample-title">
+          <span class="lb-label lb-label--tight">channels/engineering/channel.toml</span>
+          <span class="lb-pill lb-pill--allowed"><span class="lb-dot"></span>valid</span>
+        </div>
+        <pre class="sample sample--titled"><code><i># Nothing here is a secret. Credentials are names,</i>
+<i># resolved only inside the proxy's vault.</i>
+
+<b>[budget]</b>
+daily_tokens     = 2_000_000
+daily_tool_calls = 400
+
+<b>[[mcp_server]]</b>
+name       = <span>"github"</span>
+credential = <span>"github_service_account"</span>
+
+  <i># Tools not listed here do not exist</i>
+  <i># as far as this channel is concerned.</i>
+  <b>[[mcp_server.tool]]</b>
+  name = <span>"list_prs"</span>
+
+  <b>[[mcp_server.tool]]</b>
+  name     = <span>"trigger_workflow"</span>
+  approval = <span>"required"</span>
+
+<b>[egress]</b>
+allow = [<span>"api.github.com"</span>]
+
+<b>[ambient]</b>
+enabled = false  <i># off by default, always</i></code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- In the channel --------------------------------------------------- -->
+  <section class="section">
+    <div class="wrap">
+      <div class="section__head">
+        <span class="lb-label lb-label--dim">In the channel</span>
+        <h2 class="lb-h2">Green ran. Amber is waiting on a person. Red never happened.</h2>
+        <p class="feature__body" style="font-size:15px;">
+          Colour means one thing here, and it is always status. Every row below is also a line in
+          the audit log.
+        </p>
+      </div>
+
+      <div class="grid grid--2">
+        <div class="lb-panel">
+          <div class="lb-panel__head">
+            <span class="lb-label lb-label--tight">#engineering · task 4f2a</span>
+            <span class="lb-meta">14:02</span>
+          </div>
+          <div class="lb-row">
+            <span class="lb-dot lb-dot--allowed"></span>
+            <span class="lb-row__name">github.list_prs</span>
+            <span class="lb-row__value">executed</span>
+          </div>
+          <div class="lb-row">
+            <span class="lb-dot lb-dot--allowed"></span>
+            <span class="lb-row__name">github.get_pull_request</span>
+            <span class="lb-row__value">executed</span>
+          </div>
+          <div class="lb-row">
+            <span class="lb-dot lb-dot--warn"></span>
+            <span class="lb-row__name">github.trigger_workflow</span>
+            <span class="lb-row__value">awaiting approval</span>
+          </div>
+          <div class="lb-row">
+            <span class="lb-dot lb-dot--blocked"></span>
+            <span class="lb-row__name">github.delete_repo</span>
+            <span class="lb-row__value">not on allowlist</span>
+          </div>
+          <div class="lb-row">
+            <span class="lb-row__name lb-text-muted">tokens · 41,220 of 2,000,000 today</span>
+          </div>
+        </div>
+
+        <div class="lb-callout lb-callout--warn">
+          <div class="lb-split">
+            <span class="lb-label lb-label--warn">Approval required</span>
+            <span class="lb-meta">expires in 15:00</span>
+          </div>
+          <div class="lb-stack lb-gap-8">
+            <span class="lb-mono" style="font-size:13px;">github.trigger_workflow</span>
+            <span class="lb-code lb-text-muted">
+              workflow: deploy-production.yml · ref: main
+            </span>
+          </div>
+          <p class="lb-small" style="color:var(--lb-text-soft);">
+            Requested by @alice in #engineering. The team sheet marks this tool
+            approval = "required", so the call is held in the proxy until someone approves it.
+            Whoever clicks is recorded in the audit log.
+          </p>
+          {/* Spans, not buttons: this is a picture of the approval card, and a
+              real button here would be a control that does nothing. */}
+          <div class="lb-cluster lb-gap-10" aria-hidden="true">
+            <span class="lb-btn lb-btn--primary lb-btn--sm">Approve</span>
+            <span class="lb-btn lb-btn--secondary lb-btn--sm">Request changes</span>
+          </div>
+          <span class="lb-meta">Illustration — not a live agent.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Status ------------------------------------------------------------ -->
+  <section class="section">
+    <div class="wrap grid grid--split">
+      <div>
+        <span class="lb-label lb-label--dim">Status</span>
+        <h2 class="lb-h2 u-mt-20">Phase 0. The governed core comes before the features.</h2>
+        <p class="feature__body u-mt-20" style="font-size:15px;">
+          The phases are gated on purpose. Nothing that depends on the proxy ships before the proxy
+          can be attacked and hold.
+        </p>
+        <div class="lb-callout u-mt-32">
+          <span class="lb-label lb-label--tight">Definition of done, phase 1</span>
+          <p class="lb-small" style="color:var(--lb-text-soft);margin:0;">
+            A prompt-injected agent in a test channel cannot exfiltrate a secret, call an unlisted
+            tool, exceed budget, or act destructively without a human click — demonstrated by e2e
+            tests that try.
+          </p>
+        </div>
+      </div>
+
+      <div class="steps">
+        {
+          phases.map((phase) => (
+            <div class="step">
+              <span class="step__n">PHASE {phase.n}</span>
+              <div class="step__body">
+                <div class="lb-cluster lb-gap-10">
+                  <span class="lb-h3">{phase.name}</span>
+                  {phase.state === 'current' && (
+                    <span class="lb-pill lb-pill--allowed">
+                      <span class="lb-dot" />
+                      here
+                    </span>
+                  )}
+                  {phase.state === 'next' && (
+                    <span class="lb-pill lb-pill--warn">
+                      <span class="lb-dot" />
+                      next
+                    </span>
+                  )}
+                </div>
+                <p>{phase.body}</p>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <!-- Close -------------------------------------------------------------- -->
+  <section class="section section--tight">
+    <div class="wrap">
+      <div class="lb-card lb-split" style="gap:32px;flex-wrap:wrap;">
+        <div class="lb-stack lb-gap-8">
+          <h2 class="lb-h2">Read the architecture before you decide.</h2>
+          <p class="feature__body" style="max-width:56ch;">
+            It is the design of record, it is ahead of the code, and it says which parts do not
+            exist yet.
+          </p>
+        </div>
+        <div class="lb-cluster lb-gap-10">
+          <a class="lb-btn lb-btn--primary" href="/docs/architecture">Architecture</a>
+          <a class="lb-btn lb-btn--secondary" href={SITE.repo} rel="noopener">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</Marketing>
+
+<style>
+  /* A status pill that is not a status. The three coloured pills mean allowed,
+     awaiting, and blocked; a release phase is none of those, so it stays
+     neutral rather than borrowing a meaning it does not have. */
+  .pill-neutral {
+    padding: 5px 12px;
+    border: 1px solid var(--lb-border-strong);
+    border-radius: 999px;
+    font: 500 11px/1 var(--lb-font-mono);
+    letter-spacing: 0.04em;
+    color: var(--lb-text-muted);
+  }
+
+  .pill-neutral .lb-dot {
+    background: var(--lb-text-dim);
+  }
+
+  /* The line between the two services. A hairline and a label, no arrowhead
+     graphics — the direction is stated in the words. */
+  .link-down {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-left: 14px;
+  }
+
+  .link-down::before {
+    content: '';
+    width: 1px;
+    height: 26px;
+    background: var(--lb-border-strong);
+  }
+
+  .sample :global(span) {
+    color: var(--lb-text-soft);
+  }
+</style>

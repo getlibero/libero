@@ -1,0 +1,5 @@
+# site/ is deliberately outside the root pnpm workspace: Astro brings ~700
+# transitive dependencies that have no business in `pnpm -r build/test` or in
+# the core license gate. This file exists so pnpm stops its upward search here
+# and treats site/ as its own root with its own lockfile.
+packages: []
