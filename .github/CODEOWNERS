@@ -3,3 +3,12 @@
 /packages/schema/  @getlibero/proxy-owners
 /SECURITY.md       @getlibero/proxy-owners
 /GOVERNANCE.md     @getlibero/maintainers
+
+# Workflows hold repository write tokens, so they are part of the same
+# boundary. cla.yml in particular runs under pull_request_target.
+#
+# NOTE: every entry in this file is currently inert. Neither team exists
+# (check with: gh api repos/getlibero/libero/codeowners/errors), and main has
+# no branch protection, so no review is required of anyone. Both need fixing
+# for this file to mean anything.
+/.github/          @getlibero/proxy-owners
