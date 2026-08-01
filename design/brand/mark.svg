@@ -1,0 +1,7 @@
+<!-- Libero mark. An L that sweeps back, curves under, and comes up to
+     intercept a dot. Stroke weight 7 on a 64 grid, round caps.
+     Below 20px use brand/app-icon-20.svg or app-icon-16.svg — the dot drops. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Libero">
+  <path d="M17 18 v11 c0 11.6 7.4 19 19 19 h11" fill="none" stroke="#1BA85A" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="47" cy="18" r="5.5" fill="#1BA85A"/>
+</svg>

@@ -1,0 +1,15 @@
+<!-- Libero horizontal lockup: mark + wordmark, 16px apart.
+     The wordmark is live text (IBM Plex Sans 600, -3.5% tracking) so it stays
+     editable — convert to outlines before shipping it anywhere the font is not
+     guaranteed. The word inherits currentColor, so it takes the page's text
+     colour when inlined and falls back to black when used as an img on a
+     light background. The mark never changes. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 64" width="200" height="64" role="img" aria-label="libero">
+  <g transform="translate(0 4) scale(0.875)">
+    <path d="M17 18 v11 c0 11.6 7.4 19 19 19 h11" fill="none" stroke="#1BA85A" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="47" cy="18" r="5.5" fill="#1BA85A"/>
+  </g>
+  <text x="72" y="46" fill="currentColor"
+        font-family="IBM Plex Sans, system-ui, sans-serif"
+        font-size="40" font-weight="600" letter-spacing="-1.4">libero</text>
+</svg>

@@ -28,12 +28,13 @@ extending `../../tsconfig.base.json`.
 
 ## Current state
 
-Phase 0 skeleton. Only `packages/schema` (zod team-sheet schema) and
-`packages/cli` (placeholder npm release) contain code. `packages/{agent,
-gateway, memory, proxy}` are README stubs, and `apps/server`,
-`apps/proxy-server`, and `e2e/` are empty directories. `docs/ARCHITECTURE.md`
-is the specification for all of it and is far ahead of the implementation —
-treat it as the design of record, not a description of what exists.
+Phase 0 skeleton. The only code is `packages/schema` (zod team-sheet schema),
+`packages/cli` (placeholder npm release), and `design/` (the design system —
+plain CSS, no TypeScript). `packages/{agent, gateway, memory, proxy}` are
+README stubs, and `apps/server`, `apps/proxy-server`, and `e2e/` are empty
+directories. `docs/ARCHITECTURE.md` is the specification for all of it and is
+far ahead of the implementation — treat it as the design of record, not a
+description of what exists.
 
 `docs/ROADMAP.md` is phase-gated on purpose: the governed core (vault,
 team-sheet enforcement, approval broker, budget meter, audit log, and the e2e
@@ -66,6 +67,31 @@ These are load-bearing, not stylistic:
   records, tool calls, approvals, and memory ops. Both services import from it;
   don't redefine those shapes locally. `channels/example/channel.toml` is the
   documented starter sheet and should stay in sync with the zod schema.
+
+## Design
+
+`design/` is plain CSS and SVG — no build step, outside the pnpm workspace, so
+the root `pnpm -r` scripts don't see it. Open `design/index.html` directly.
+
+- `tokens.css` — colour/type/radius tokens. **Generated**: a verbatim mirror of
+  `libero-tokens.css` in the Claude Design project. Don't edit it here; change
+  it upstream and re-sync, or the spec and the code drift.
+- `libero.css` — the component layer, plus a marked block of derived tokens the
+  spec uses but never names.
+- `index.html` — live reference for every token and component, both modes.
+- `brand/` — mark, lockup, app icons at 34/20/16.
+
+**The spec is locked.** Don't introduce a colour, font, radius, or component
+shape that isn't already in it. Reference tokens by name, never by hex. Dark is
+the default and needs no attribute; light is `data-theme="light"` on the root.
+Green = allowed and executed, amber = awaiting a human, red = blocked —
+nothing else on screen is coloured. `design/README.md` has the full rules, the
+upstream project link, and the two places the implementation deliberately
+departs from the source file.
+
+**Voice**, which governs docs and UI copy as much as the design: plain, terse,
+technical. Name the tool call. State what is and isn't permitted. No
+exclamation marks, no emoji, no "AI magic" language.
 
 ## Conventions
 

@@ -1,0 +1,55 @@
+/* Libero design system v1.0 — colour tokens
+   Dark is the default. Light is opt-in via [data-theme="light"].
+   --lb-accent, --lb-accent-ink and the type stack are identical in both modes.
+
+   This file is a verbatim mirror of `libero-tokens.css` in the Claude Design
+   project "Libero Design System". Do not edit it here — change it there and
+   re-sync, so the spec and the code cannot drift. Values derived from the
+   canonical spec but not present in this file live in `libero.css`. */
+
+:root {
+  --lb-bg-canvas:     #0B0F0E;
+  --lb-bg-surface:    #131A18;
+  --lb-bg-raised:     #1B2422;
+  --lb-border:        #263230;
+  --lb-border-strong: #35443F;
+  --lb-text:          #E8EFEC;
+  --lb-text-muted:    #8FA39D;
+
+  --lb-accent:        #1BA85A; /* brand — mark, filled buttons, dots. Never changes. */
+  --lb-accent-hover:  #22C46B;
+  --lb-accent-ink:    #06120B; /* label on a filled accent. Never changes. */
+  --lb-accent-text:   #4ADE80; /* green set as type. Contrast alias, never a surface. */
+  --lb-accent-wash:   #0F2B1B;
+
+  --lb-warn:          #F5B544; /* a human still has to click */
+  --lb-warn-wash:     #2C2211;
+  --lb-danger:        #FF6B5B; /* blocked by the team sheet */
+  --lb-danger-wash:   #25100E;
+
+  --lb-radius-sm: 7px;
+  --lb-radius:    10px;
+  --lb-radius-lg: 14px;
+
+  --lb-font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --lb-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+[data-theme="light"] {
+  --lb-bg-canvas:     #F7F9F8;
+  --lb-bg-surface:    #FFFFFF;
+  --lb-bg-raised:     #F1F5F3;
+  --lb-border:        #DCE4E1;
+  --lb-border-strong: #C3CFCB;
+  --lb-text:          #0B1512;
+  --lb-text-muted:    #6B7B77;
+
+  /* --lb-accent, --lb-accent-hover and --lb-accent-ink are inherited unchanged */
+  --lb-accent-text:   #0A6739;
+  --lb-accent-wash:   #E4F4EA;
+
+  --lb-warn:          #9A6708;
+  --lb-warn-wash:     #FBF1DC;
+  --lb-danger:        #B3271A;
+  --lb-danger-wash:   #FCEDEB;
+}

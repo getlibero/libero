@@ -1,0 +1,7 @@
+<!-- Libero app icon. The mark knocked out of a filled brand-green rounded
+     square, radius 17/64. It never goes light — one lockup everywhere. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Libero">
+  <rect width="64" height="64" rx="17" fill="#1BA85A"/>
+  <path d="M17 18 v11 c0 11.6 7.4 19 19 19 h11" fill="none" stroke="#06120B" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="47" cy="18" r="5.5" fill="#06120B"/>
+</svg>
