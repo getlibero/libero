@@ -3,3 +3,13 @@
 /packages/schema/  @getlibero/proxy-owners
 /SECURITY.md       @getlibero/proxy-owners
 /GOVERNANCE.md     @getlibero/maintainers
+
+# Workflows hold repository write tokens, so they are part of the same
+# boundary. cla.yml in particular runs under pull_request_target.
+#
+# NOTE: every entry in this file is currently inert, because neither team
+# exists. Check with:
+#   gh api repos/getlibero/libero/codeowners/errors
+# The "main" ruleset already sets require_code_owner_review, so these entries
+# start enforcing the moment the teams are created.
+/.github/          @getlibero/proxy-owners

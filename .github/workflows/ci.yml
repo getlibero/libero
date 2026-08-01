@@ -41,6 +41,28 @@ jobs:
             exit 1
           fi
 
+  workflow-guard:
+    # A pull_request_target workflow runs with a write token against the base
+    # repo. That is safe only while it never checks out or executes pull
+    # request code. Enforce it mechanically rather than by comment, the same
+    # way boundary-check backs up the ESLint rule above.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No checkout in privileged workflows
+        run: |
+          # Match YAML keys, not any occurrence of the words: this file
+          # mentions both in its own comments and error text.
+          failed=0
+          for f in .github/workflows/*.yml; do
+            grep -qE '^[[:space:]]*pull_request_target:' "$f" || continue
+            if grep -nE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*actions/checkout' "$f"; then
+              echo "::error file=$f::$f is a pull_request_target workflow and checks out code. It runs with a write token against the base repo, so checking out the pull request head would let a fork execute arbitrary code with that token. Remove the checkout step."
+              failed=1
+            fi
+          done
+          exit $failed
+
 # The CLA lives in its own workflow (cla.yml): it needs issue_comment and
 # pull_request_target triggers, which would otherwise fire every job here on
 # every PR comment.
