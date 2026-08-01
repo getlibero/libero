@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
-      contents: read
+      contents: write # signatures live in this repo on the cla-signatures branch
       pull-requests: write
       statuses: write
     steps:
