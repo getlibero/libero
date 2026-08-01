@@ -34,7 +34,10 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Astro 7 requires >=22.12, so this is deliberately ahead of the
+          # Node 20 the core packages build against in ci.yml. It is a
+          # build-time toolchain only; nothing shipped runs on it.
+          node-version: 22
           cache: pnpm
           cache-dependency-path: site/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile

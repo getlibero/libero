@@ -103,7 +103,8 @@ by `.github/workflows/pages.yml`. Like `design/`, it is **outside the pnpm
 workspace**: it has its own `pnpm-workspace.yaml`, its own lockfile, and its own
 CI job, so Astro's dependency tree never reaches `pnpm -r` or the core license
 gate. Run everything from inside `site/` (`pnpm install`, `pnpm dev`,
-`pnpm build`, `pnpm check`).
+`pnpm build`, `pnpm check`). It needs **Node 22.12+** — Astro 7's floor, ahead
+of the Node 20 the core packages build against.
 
 - Marketing pages are `src/pages/`; docs are `src/content/docs/docs/` and serve
   at `/docs/*` because the marketing pages own the root.

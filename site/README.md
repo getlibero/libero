@@ -12,7 +12,9 @@ pnpm build        # -> site/dist
 pnpm preview
 ```
 
-Node 20+, pnpm 9+.
+**Node 22.12+**, pnpm 9+ — Astro 7 requires it. That is deliberately ahead of the
+Node 20 the core packages build against; this is a build-time toolchain and
+nothing shipped runs on it.
 
 ## Outside the workspace, on purpose
 
