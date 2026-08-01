@@ -11,6 +11,20 @@ import { liberoDark, liberoLight, styleOverrides } from './src/lib/code-theme.mj
 export default defineConfig({
   site: 'https://getlibero.com',
 
+  // Astro compresses HTML by default, and that collapses the newline between
+  // prose and an inline element to nothing rather than to a space — so
+  //
+  //     ... nobody can check. The
+  //     <a href="...">governance document</a>
+  //     explains the CLA ...
+  //
+  // shipped as "The<a>governance document</a>explains". The failure is
+  // invisible in dev, invisible to the author, and plainly visible to the
+  // reader. This is a prose site; the whole cost of turning it off is ~9 kB
+  // gzipped across every page, which is not worth one wrapped line silently
+  // eating a word boundary.
+  compressHTML: false,
+
   integrations: [
     starlight({
       title: 'Libero',
