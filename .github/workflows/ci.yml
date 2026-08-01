@@ -41,20 +41,6 @@ jobs:
             exit 1
           fi
 
-  cla:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: write # signatures live in this repo on the cla-signatures branch
-      pull-requests: write
-      statuses: write
-    steps:
-      - uses: contributor-assistant/github-action@v2.6.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          path-to-signatures: signatures/cla.json
-          path-to-document: https://github.com/getlibero/libero/blob/main/CLA.md
-          branch: cla-signatures
-          allowlist: dependabot[bot]
+# The CLA lives in its own workflow (cla.yml): it needs issue_comment and
+# pull_request_target triggers, which would otherwise fire every job here on
+# every PR comment.
