@@ -26,3 +26,14 @@ pnpm -r test
 ```
 
 Node 20+, pnpm 9+. The e2e harness (mock Slack + mock MCP server) lives in `e2e/`.
+
+### Getting pnpm
+
+The `packageManager` field pins pnpm 9.15.0, which is the version CI resolves.
+On Node 20–24, `corepack enable` reads that field and provisions it for you.
+**Corepack was removed from Node in v25**, so on newer runtimes it isn't there
+and nothing bootstraps pnpm — install the pinned version directly instead:
+
+```bash
+npm install -g pnpm@9.15.0
+```
