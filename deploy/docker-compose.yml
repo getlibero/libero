@@ -1,0 +1,59 @@
+# Libero deployment — two services plus per-channel state.
+# The security property everything hangs on: secrets live only in the proxy,
+# and the agent reaches tools only through it.
+
+services:
+  server:
+    image: ghcr.io/getlibero/server:latest
+    build:
+      context: ..
+      dockerfile: apps/server/Dockerfile
+    environment:
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}       # Socket Mode app-level token (xapp-)
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}       # bot token (xoxb-)
+      PROXY_URL: https://proxy:8443
+      # LLM provider keys go HERE (completion only) — never tool credentials.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ../channels:/data/channels
+    depends_on:
+      - proxy
+    networks: [libero]
+    restart: unless-stopped
+
+  proxy:
+    image: ghcr.io/getlibero/proxy:latest
+    build:
+      context: ..
+      dockerfile: apps/proxy-server/Dockerfile
+    environment:
+      VAULT_KEY: ${LIBERO_VAULT_KEY}            # encrypts credentials at rest
+      CHANNELS_DIR: /data/channels
+      AUDIT_DB: /data/audit/audit.db
+    volumes:
+      - ../channels:/data/channels:ro           # team sheets are read-only to services
+      - audit-data:/data/audit
+      - vault-data:/data/vault
+      - /var/run/docker.sock:/var/run/docker.sock   # sandbox runner (see docs for gVisor)
+    networks: [libero]
+    # No published ports: the proxy listens only on the private network.
+    restart: unless-stopped
+
+  # Optional sidecar for exotic LLM providers behind an OpenAI-compatible endpoint.
+  # Enable with: docker compose --profile litellm up
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    profiles: [litellm]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml"]
+    networks: [libero]
+
+networks:
+  libero:
+    driver: bridge
+
+volumes:
+  audit-data:
+  vault-data:

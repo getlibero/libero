@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+channels/*/store.db*
+channels/*/MEMORY.md
+audit.db*
+coverage/

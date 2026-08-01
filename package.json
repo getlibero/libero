@@ -1,0 +1,31 @@
+{
+  "name": "libero-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Libero — the open-source AI teammate for Slack. Self-hosted, credential-isolated, every tool call audited.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getlibero/libero.git"
+  },
+  "homepage": "https://getlibero.com",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r typecheck",
+    "license-check": "license-checker-rseidelsohn --onlyAllow \"MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0\" --excludePrivatePackages"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "eslint": "^9.9.0",
+    "license-checker-rseidelsohn": "^4.4.2",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.8.0",
+    "vitest": "^2.1.0"
+  }
+}

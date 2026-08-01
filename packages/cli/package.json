@@ -1,0 +1,16 @@
+{
+  "name": "@getlibero/cli",
+  "version": "0.0.1",
+  "description": "Libero CLI — init, channel add, audit, doctor. The only npm-published Libero package. Placeholder release; the stack itself ships as Docker images.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "libero": "dist/index.js" },
+  "files": ["dist", "README.md"],
+  "repository": { "type": "git", "url": "https://github.com/getlibero/libero.git", "directory": "packages/cli" },
+  "homepage": "https://getlibero.com",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}

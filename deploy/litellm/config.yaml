@@ -1,0 +1,3 @@
+# Opt-in LiteLLM sidecar for providers not covered by the AI SDK natively.
+# Enable with: docker compose --profile litellm up
+model_list: []

@@ -1,0 +1,5 @@
+# The proxy is the security boundary. Changes require review by proxy owners.
+/packages/proxy/   @getlibero/proxy-owners
+/packages/schema/  @getlibero/proxy-owners
+/SECURITY.md       @getlibero/proxy-owners
+/GOVERNANCE.md     @getlibero/maintainers

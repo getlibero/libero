@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint (includes agent→proxy import ban)
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Tests
+        run: pnpm test
+      - name: License gate (fails on copyleft)
+        run: pnpm license-check
+
+  boundary-check:
+    # Belt-and-suspenders alongside the ESLint rule: grep-level check that
+    # nothing under packages/agent references the proxy package.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce agent/proxy boundary
+        run: |
+          if grep -rn --include='*.ts' -e '@getlibero/proxy' -e 'packages/proxy' packages/agent/; then
+            echo '::error::packages/agent references the proxy. The only path from agent to tools is the network call.'
+            exit 1
+          fi
+
+  cla:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-signatures: signatures/cla.json
+          path-to-document: https://github.com/getlibero/libero/blob/main/CLA.md
+          branch: cla-signatures
+          allowlist: dependabot[bot]
