@@ -92,8 +92,20 @@ Overrides live in `src/components/overrides/` and each one carries a comment say
 
 `public/favicon.svg` and `public/og.png` are produced by `scripts/build-assets.mjs` from
 `design/brand/app-icon.svg` and the design tokens. They run on `predev` and `prebuild` and are
-git-ignored. `public/CNAME` is committed — it is what points the Pages deployment at
-getlibero.com.
+git-ignored.
+
+`public/CNAME` is committed but **does not** set the custom domain. That behaviour belongs to
+branch-based publishing; with the GitHub Actions source the file deploys as an ordinary asset and
+Pages ignores it — confirmed the hard way, by deploying it and watching the API keep reporting
+`"cname": null`. The domain is configured on the repository:
+
+```bash
+gh api repos/getlibero/libero/pages --jq '{cname, https_enforced}'
+gh api -X PUT repos/getlibero/libero/pages -f cname=getlibero.com -F https_enforced=true
+```
+
+The file stays because it records the intended domain next to the code, and because it would
+become load-bearing again if the site ever moved back to a branch source. Change one, change both.
 
 The social card renders text with [satori](https://github.com/vercel/satori), which converts
 glyphs to paths using the `.woff` files in `node_modules`. That is deliberate: rasterising an SVG
