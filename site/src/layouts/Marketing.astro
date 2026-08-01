@@ -1,0 +1,62 @@
+---
+/**
+ * The frame for every page outside the docs. Starlight owns its own layout;
+ * this owns the rest, and both read the same tokens and the same theme key.
+ */
+import '../styles/fonts.css';
+import '../styles/site.css';
+
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { SITE } from '../consts';
+import { themeScript } from '../lib/theme-script';
+
+interface Props {
+  title: string;
+  description?: string;
+  /** Set on the home page, where the title is already the site name. */
+  bareTitle?: boolean;
+}
+
+const { title, description = SITE.description, bareTitle = false } = Astro.props;
+
+const pageTitle = bareTitle ? title : `${title} — ${SITE.name}`;
+const canonical = new URL(Astro.url.pathname.replace(/\/$/, '') || '/', Astro.site ?? SITE.url);
+const social = new URL('/og.png', Astro.site ?? SITE.url);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <link rel="alternate" type="application/rss+xml" title={`${SITE.name} blog`} href="/rss.xml" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={social} />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    {/* Inlined so the theme is settled before first paint. Shared verbatim
+        with the docs — see src/lib/theme-script.ts. */}
+    <script is:inline set:html={themeScript} />
+  </head>
+
+  <body>
+    <div class="site">
+      <SiteHeader />
+      <main class="site__main">
+        <slot />
+      </main>
+      <SiteFooter />
+    </div>
+  </body>
+</html>

@@ -1,0 +1,494 @@
+/* Layout for the marketing pages.
+ *
+ * design/libero.css is the component layer; this file is page scaffolding on
+ * top of it — sections, grids, the header and footer. Every value here is a
+ * token reference. Nothing introduces a colour, a font, a radius or a shape
+ * the spec does not already have. */
+
+@import './design.css';
+
+/* ------------------------------------------------------------------ *
+ * Page frame
+ * ------------------------------------------------------------------ */
+
+.site {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.site__main {
+  flex: 1;
+}
+
+.wrap {
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.wrap--narrow {
+  max-width: 780px;
+}
+
+/* Sections are separated by space and, where a boundary needs stating, one
+   hairline. Never by a background gradient. */
+.section {
+  padding: 88px 0;
+}
+
+.section--tight {
+  padding: 56px 0;
+}
+
+.section + .section {
+  border-top: 1px solid var(--lb-border);
+}
+
+.section__head {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 40px;
+  max-width: 62ch;
+}
+
+/* ------------------------------------------------------------------ *
+ * Header
+ * ------------------------------------------------------------------ */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--lb-bg-canvas);
+  border-bottom: 1px solid var(--lb-border);
+}
+
+.site-header__inner {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  height: 60px;
+}
+
+.site-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--lb-text);
+  text-decoration: none;
+}
+
+.site-header__brand:hover {
+  text-decoration: none;
+}
+
+.site-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.site-header__link {
+  padding: 7px 11px;
+  border-radius: var(--lb-radius-sm);
+  color: var(--lb-text-muted);
+  font: 400 14px/1 var(--lb-font-sans);
+  text-decoration: none;
+}
+
+.site-header__link:hover {
+  color: var(--lb-text);
+  text-decoration: none;
+}
+
+.site-header__link[aria-current='page'] {
+  color: var(--lb-text);
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 20px;
+  }
+  .site-header__inner {
+    gap: 12px;
+  }
+  .site-header__link {
+    padding: 7px 8px;
+    font-size: 13px;
+  }
+  .site-header__link--hide-sm {
+    display: none;
+  }
+}
+
+/* Below this the nav stops fitting alongside the wordmark. The mark alone is
+   still the brand and still links home; the footer carries every link. */
+@media (max-width: 460px) {
+  .site-header__brand .lb-wordmark {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Hero
+ * ------------------------------------------------------------------ */
+
+.hero {
+  padding: 96px 0 72px;
+}
+
+.hero__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.hero__title {
+  margin: 0;
+  max-width: 18ch;
+  font: 600 clamp(38px, 6.2vw, 60px) / 1.06 var(--lb-font-sans);
+  letter-spacing: -0.035em;
+}
+
+.hero__sub {
+  margin: 24px 0 0;
+  max-width: 58ch;
+  font: 400 clamp(17px, 2.2vw, 20px) / 1.55 var(--lb-font-sans);
+  color: var(--lb-text-muted);
+  text-wrap: pretty;
+}
+
+.hero__sub strong {
+  font-weight: 500;
+  color: var(--lb-text);
+}
+
+.hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 36px;
+}
+
+.hero__note {
+  margin-top: 20px;
+  font: 400 12px/1.6 var(--lb-font-mono);
+  color: var(--lb-text-dim);
+}
+
+/* ------------------------------------------------------------------ *
+ * Grids
+ * ------------------------------------------------------------------ */
+
+.grid {
+  display: grid;
+  gap: 20px;
+}
+
+.grid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid--split {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 48px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .grid--3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid--split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+}
+
+@media (max-width: 640px) {
+  .grid--2,
+  .grid--3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Feature card — a card with a label, a claim, and the mechanism
+ * ------------------------------------------------------------------ */
+
+.feature {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+}
+
+.feature__body {
+  margin: 0;
+  color: var(--lb-text-muted);
+  font: 400 14px/1.6 var(--lb-font-sans);
+  text-wrap: pretty;
+}
+
+.feature__body strong {
+  font-weight: 500;
+  color: var(--lb-text);
+}
+
+/* ------------------------------------------------------------------ *
+ * Numbered steps
+ * ------------------------------------------------------------------ */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  counter-reset: step;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  gap: 18px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--lb-border);
+}
+
+.step:last-child {
+  border-bottom: 0;
+}
+
+.step__n {
+  font: 500 11px/1.6 var(--lb-font-mono);
+  letter-spacing: 0.16em;
+  color: var(--lb-text-dim);
+  white-space: nowrap;
+}
+
+.step__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step__body p {
+  margin: 0;
+  color: var(--lb-text-muted);
+  font: 400 14px/1.6 var(--lb-font-sans);
+  max-width: 62ch;
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------------ *
+ * Code sample — matches the docs' code blocks without pulling in
+ * Expressive Code on pages that have no markdown.
+ * ------------------------------------------------------------------ */
+
+.sample {
+  margin: 0;
+  padding: 20px 22px;
+  overflow-x: auto;
+  background: var(--lb-bg-surface);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius);
+  font: 400 13px/1.75 var(--lb-font-mono);
+  color: var(--lb-text-soft);
+  tab-size: 2;
+}
+
+.sample b {
+  font-weight: 400;
+  color: var(--lb-text);
+}
+
+.sample i {
+  font-style: normal;
+  color: var(--lb-text-dim);
+}
+
+.sample--titled {
+  border-radius: 0 0 var(--lb-radius) var(--lb-radius);
+  border-top: 0;
+}
+
+.sample-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--lb-bg-raised);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius) var(--lb-radius) 0 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Prose pages (/why, /security, blog posts)
+ * ------------------------------------------------------------------ */
+
+.prose {
+  max-width: 68ch;
+  text-wrap: pretty;
+}
+
+.prose > * + * {
+  margin-top: 20px;
+}
+
+.prose h2 {
+  margin-top: 52px;
+  font: 600 24px/1.25 var(--lb-font-sans);
+  letter-spacing: -0.025em;
+}
+
+.prose h3 {
+  margin-top: 36px;
+  font: 600 17px/1.35 var(--lb-font-sans);
+  letter-spacing: -0.015em;
+}
+
+.prose p,
+.prose li {
+  color: var(--lb-text-muted);
+  font: 400 15px/1.7 var(--lb-font-sans);
+}
+
+.prose strong {
+  font-weight: 500;
+  color: var(--lb-text);
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 22px;
+}
+
+.prose li + li {
+  margin-top: 8px;
+}
+
+.prose code {
+  padding: 0.1em 0.36em;
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-sm);
+  font-size: 0.875em;
+  color: var(--lb-text);
+}
+
+.prose blockquote {
+  margin: 28px 0;
+  padding-left: 18px;
+  border-left: 3px solid var(--lb-border-strong);
+  color: var(--lb-text-muted);
+}
+
+.page-head {
+  padding: 72px 0 0;
+}
+
+/* A page head is already the section opener, so the section under it does not
+   need its own full top rhythm. */
+.page-head + .section {
+  padding-top: 48px;
+}
+
+.page-head__title {
+  margin: 12px 0 0;
+  font: 600 clamp(30px, 4.6vw, 42px) / 1.1 var(--lb-font-sans);
+  letter-spacing: -0.035em;
+}
+
+.page-head__sub {
+  margin: 18px 0 0;
+  max-width: 62ch;
+  font: 400 18px/1.55 var(--lb-font-sans);
+  color: var(--lb-text-muted);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------------ *
+ * Footer
+ * ------------------------------------------------------------------ */
+
+.site-footer {
+  border-top: 1px solid var(--lb-border);
+  padding: 40px 0 56px;
+}
+
+.site-footer__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.site-footer__cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 56px;
+}
+
+.site-footer__col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.site-footer__col a {
+  color: var(--lb-text-muted);
+  font: 400 14px/1 var(--lb-font-sans);
+  text-decoration: none;
+}
+
+.site-footer__col a:hover {
+  color: var(--lb-text);
+  text-decoration: none;
+}
+
+.site-footer__legal {
+  margin-top: 36px;
+  padding-top: 20px;
+  border-top: 1px solid var(--lb-border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Utilities
+ * ------------------------------------------------------------------ */
+
+.u-mt-20 {
+  margin-top: 20px;
+}
+.u-mt-32 {
+  margin-top: 32px;
+}
+.u-mt-40 {
+  margin-top: 40px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

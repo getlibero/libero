@@ -1,0 +1,6 @@
+/* The colour, type and radius tokens, imported from the design system itself
+   rather than copied. `design/tokens.css` is generated — a verbatim mirror of
+   the upstream Claude Design project — so vendoring it here would guarantee
+   drift. See design/README.md. */
+
+@import '../../../design/tokens.css';

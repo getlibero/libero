@@ -4,6 +4,12 @@
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
+  {
+    // site/ is outside the pnpm workspace and has its own toolchain and CI job
+    // (.github/workflows/pages.yml runs `astro check` there). Without this,
+    // `pnpm lint` walks its build output and generated types.
+    ignores: ["site/**", "**/dist/**", "**/.astro/**"]
+  },
   ...tseslint.configs.recommended,
   {
     files: ["packages/agent/**/*.ts"],

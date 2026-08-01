@@ -29,16 +29,19 @@ extending `../../tsconfig.base.json`.
 ## Current state
 
 Phase 0 skeleton. The only code is `packages/schema` (zod team-sheet schema),
-`packages/cli` (placeholder npm release), and `design/` (the design system —
-plain CSS, no TypeScript). `packages/{agent, gateway, memory, proxy}` are
-README stubs, and `apps/server`, `apps/proxy-server`, and `e2e/` are empty
-directories. `docs/ARCHITECTURE.md` is the specification for all of it and is
-far ahead of the implementation — treat it as the design of record, not a
-description of what exists.
+`packages/cli` (placeholder npm release), `design/` (the design system — plain
+CSS, no TypeScript), and `site/` (getlibero.com). `packages/{agent, gateway,
+memory, proxy}` are README stubs, and `apps/server`, `apps/proxy-server`, and
+`e2e/` are empty directories.
 
-`docs/ROADMAP.md` is phase-gated on purpose: the governed core (vault,
-team-sheet enforcement, approval broker, budget meter, audit log, and the e2e
-suite that attacks them) comes before features that depend on it.
+**The docs moved.** `site/src/content/docs/docs/architecture.md` is the
+specification and is far ahead of the implementation — treat it as the design
+of record, not a description of what exists. `docs/ARCHITECTURE.md` and
+`docs/ROADMAP.md` are now one-line pointers; edit the files under `site/`.
+
+The roadmap is phase-gated on purpose: the governed core (vault, team-sheet
+enforcement, approval broker, budget meter, audit log, and the e2e suite that
+attacks them) comes before features that depend on it.
 
 ## Architecture invariants
 
@@ -92,6 +95,31 @@ departs from the source file.
 **Voice**, which governs docs and UI copy as much as the design: plain, terse,
 technical. Name the tool call. State what is and isn't permitted. No
 exclamation marks, no emoji, no "AI magic" language.
+
+## Site
+
+`site/` is getlibero.com — Astro + Starlight, static, deployed to GitHub Pages
+by `.github/workflows/pages.yml`. Like `design/`, it is **outside the pnpm
+workspace**: it has its own `pnpm-workspace.yaml`, its own lockfile, and its own
+CI job, so Astro's dependency tree never reaches `pnpm -r` or the core license
+gate. Run everything from inside `site/` (`pnpm install`, `pnpm dev`,
+`pnpm build`, `pnpm check`).
+
+- Marketing pages are `src/pages/`; docs are `src/content/docs/docs/` and serve
+  at `/docs/*` because the marketing pages own the root.
+- The design system is **imported, not vendored** — `src/styles/tokens.css`
+  points at `../../../design/tokens.css`. Marketing loads tokens + `libero.css`;
+  docs load tokens only, and `src/styles/starlight.css` maps every `--sl-*`
+  variable onto a `--lb-*` token.
+- Where a CSS variable is impossible (the syntax theme, the social card),
+  `src/lib/design-tokens.mjs` parses the values out of the design stylesheets at
+  build time and throws if a token is renamed. Don't type a hex into `site/`.
+- Code blocks are monochrome by design: a string literal is not a status, so it
+  doesn't get a colour. See `src/lib/code-theme.mjs`.
+- Starlight component overrides live in `src/components/overrides/` and each
+  says why it exists. Dark is the default with no "auto" — `src/lib/theme-script.ts`
+  is shared by both surfaces.
+- `site/README.md` has the full account.
 
 ## Conventions
 

@@ -1,0 +1,79 @@
+---
+title: What Libero is
+description: A self-hosted, LLM-agnostic AI teammate that lives in Slack channels as a shared agent, with admin-governed tool access and an append-only audit log.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Libero is a self-hostable, LLM-agnostic AI teammate that lives in Slack channels as a shared
+agent — one session per channel, not per user — with persistent curated memory, admin-governed
+tool access, and asynchronous task execution.
+
+The design principle everything else follows from: **the agent is visibly not a user.** It acts
+only as itself, under admin-provisioned service credentials, through an allowlisted proxy, with
+every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
+model self-restraint.
+
+<Aside type="caution" title="Phase 0">
+Nothing here is deployable yet. The specification is ahead of the implementation on purpose —
+treat these pages as the design of record, not a description of running software. The
+[roadmap](/docs/roadmap) says what lands when.
+</Aside>
+
+## The shape of it
+
+Two deployable services plus per-channel state.
+
+The **gateway and agent** connects to Slack over Socket Mode, routes each `(workspace, channel)`
+pair to a shared session, and runs a provider-agnostic agent loop. The **tool proxy** holds all
+credentials, enforces each channel's team sheet, brokers human approvals, meters spend, and writes
+the audit log.
+
+The security property the whole design hangs on: secrets live only in the proxy, and the agent
+reaches tools only through it. Compromise of the agent process — prompt injection, a malicious
+skill, a misbehaving model — yields zero secrets and only the tool surface that channel's team
+sheet allows, with every call audited.
+
+## What an admin actually configures
+
+One TOML file per channel, kept in your own git repo. It declares which MCP servers the channel
+may reach, which tools on them exist as far as that channel is concerned, which of those need a
+human click, what the daily budget is, and where the agent is allowed to send traffic.
+
+Nothing in it is a secret — credentials appear as names, resolved only inside the proxy's vault.
+
+There is no web admin UI in v1, and that is a decision rather than an omission: the files in git
+*are* the admin surface.
+
+<CardGrid>
+  <LinkCard
+    title="Architecture"
+    href="/docs/architecture"
+    description="The two services, the agent loop, the proxy's five jobs, memory, skills, and the sandbox."
+  />
+  <LinkCard
+    title="Team sheets"
+    href="/docs/team-sheet"
+    description="The per-channel manifest: allowlists, approvals, budgets, egress."
+  />
+  <LinkCard
+    title="Security model"
+    href="/docs/security"
+    description="The threat model, the mitigations in priority order, and what is out of scope."
+  />
+  <LinkCard
+    title="Self-hosting"
+    href="/docs/self-hosting"
+    description="The target deployment, and an honest account of what does not work yet."
+  />
+</CardGrid>
+
+## Why "libero"
+
+In football, the libero is the free player — the one who sweeps up behind the team, covering
+whatever gets through. That is the job here: an AI teammate in your Slack channels that handles
+the work nobody is on, under rules your admins write.
+
+And like the libero in volleyball — the specialist who plays under explicit restrictions, marked
+by a different jersey — this agent is visibly *not* a user: it acts only as itself, only through
+an allowlisted tool proxy, with every action audited. Free player, firm rules.

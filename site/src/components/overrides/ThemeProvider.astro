@@ -1,0 +1,23 @@
+---
+/**
+ * Starlight's ThemeProvider, replaced so an unset preference resolves to dark
+ * rather than to the OS setting.
+ *
+ * "Dark is the default and needs no attribute; light is a peer, opted into"
+ * (design/README.md). The toggle that sets it is ThemeSelect.astro, and both
+ * surfaces share the bootstrap in src/lib/theme-script.ts and Starlight's own
+ * storage key, so the choice carries between the docs and the marketing pages.
+ *
+ * `StarlightThemeProvider` is still defined because Starlight components call
+ * `updatePickers()` unconditionally; with a two-state toggle there is no
+ * picker state to sync, so it does nothing.
+ */
+import { themeScript } from '../../lib/theme-script';
+---
+
+{/* Intentionally inlined: a deferred script would flash the wrong theme. */}
+<script is:inline set:html={themeScript} />
+
+<script is:inline>
+  window.StarlightThemeProvider = { updatePickers() {} };
+</script>

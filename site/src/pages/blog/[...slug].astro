@@ -1,0 +1,36 @@
+---
+import type { GetStaticPaths } from 'astro';
+import { getCollection, render, type CollectionEntry } from 'astro:content';
+import Marketing from '../../layouts/Marketing.astro';
+
+export const getStaticPaths: GetStaticPaths = async () => {
+  const posts = await getCollection('blog');
+  return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
+};
+
+interface Props {
+  post: CollectionEntry<'blog'>;
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+const stamp = post.data.date.toISOString().slice(0, 10);
+---
+
+<Marketing title={post.data.title} description={post.data.description}>
+  <div class="wrap wrap--narrow page-head">
+    <div class="lb-cluster lb-gap-12">
+      <a class="lb-small" href="/blog">← Blog</a>
+      <time class="lb-meta" datetime={stamp}>{stamp}</time>
+      {post.data.kind === 'release' && <span class="lb-label lb-label--tight">Release</span>}
+    </div>
+    <h1 class="page-head__title">{post.data.title}</h1>
+    <p class="page-head__sub">{post.data.description}</p>
+  </div>
+
+  <section class="wrap wrap--narrow section">
+    <div class="prose">
+      <Content />
+    </div>
+  </section>
+</Marketing>

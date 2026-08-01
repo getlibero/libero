@@ -1,0 +1,44 @@
+---
+import Mark from './Mark.astro';
+import ThemeToggle from './ThemeToggle.astro';
+
+const path = Astro.url.pathname.replace(/\/$/, '') || '/';
+
+const links = [
+  { href: '/docs', label: 'Docs' },
+  { href: '/security', label: 'Security' },
+  { href: '/why', label: 'Why', small: false },
+  { href: '/blog', label: 'Blog', small: false },
+];
+---
+
+<header class="site-header">
+  <div class="wrap site-header__inner">
+    <a href="/" class="site-header__brand" aria-label="Libero, home">
+      <Mark size={26} />
+      <span class="lb-wordmark lb-wordmark--sm">libero</span>
+    </a>
+
+    <nav class="site-header__nav" aria-label="Main">
+      {
+        links.map((link) => (
+          <a
+            href={link.href}
+            class:list={['site-header__link', link.small === false && 'site-header__link--hide-sm']}
+            aria-current={path === link.href || path.startsWith(link.href + '/') ? 'page' : undefined}
+          >
+            {link.label}
+          </a>
+        ))
+      }
+      <a
+        href="https://github.com/getlibero/libero"
+        class="site-header__link"
+        rel="noopener"
+      >
+        GitHub
+      </a>
+      <ThemeToggle />
+    </nav>
+  </div>
+</header>

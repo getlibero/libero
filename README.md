@@ -10,8 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
-  <a href="docs/ROADMAP.md">Roadmap</a> ·
+  <a href="https://getlibero.com">getlibero.com</a> ·
+  <a href="https://getlibero.com/docs/architecture">Architecture</a> ·
+  <a href="https://getlibero.com/docs/roadmap">Roadmap</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="design/README.md">Design</a>
@@ -30,7 +31,7 @@ Governance first, features second: the agent process never holds a secret, its t
 
 ## Status
 
-Pre-release (Phase 0). Nothing here is ready to deploy yet. See the [roadmap](docs/ROADMAP.md) and [architecture](docs/ARCHITECTURE.md).
+Pre-release (Phase 0). Nothing here is ready to deploy yet. See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
 ## Architecture in one paragraph
 
@@ -57,6 +58,7 @@ apps/proxy-server  composes proxy (service 2)
 deploy/            docker-compose + optional LiteLLM sidecar
 channels/example/  documented starter team sheet
 design/            design system — tokens, component CSS, brand SVGs, reference page
+site/              getlibero.com — Astro + Starlight; outside the pnpm workspace
 e2e/               mock Slack + mock MCP harness; the security suite lives here
 ```
 
@@ -65,6 +67,8 @@ e2e/               mock Slack + mock MCP harness; the security suite lives here
 ## Design
 
 The brand, colour tokens, and component styles live in [`design/`](design/README.md) — plain CSS and SVG, no build step. Open `design/index.html` for the live reference: every token and component, dark and light. Dark is the default; light is a peer, not an inversion. The spec is locked, so changes start upstream in the design project rather than in the CSS.
+
+[`site/`](site/README.md) imports those files directly rather than vendoring them, so the published site and the spec cannot drift.
 
 ## License
 

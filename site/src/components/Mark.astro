@@ -1,0 +1,44 @@
+---
+/**
+ * The Libero mark: an L that sweeps back, curves under, and comes up to
+ * intercept a dot. Stroke 7 on a 64 grid, round caps — see design/brand/mark.svg.
+ *
+ * Inlined rather than linked so it inherits currentColor. Below 20px the dot
+ * merges with the stroke; use design/brand/app-icon-16.svg there instead.
+ */
+interface Props {
+  size?: number;
+  class?: string;
+}
+
+const { size = 32, class: className } = Astro.props;
+---
+
+<svg
+  class:list={['lb-mark', className]}
+  viewBox="0 0 64 64"
+  width={size}
+  height={size}
+  aria-hidden="true"
+  focusable="false"
+>
+  <path
+    d="M17 18 v11 c0 11.6 7.4 19 19 19 h11"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="7"
+    stroke-linecap="round"></path>
+  <circle cx="47" cy="18" r="5.5" fill="currentColor"></circle>
+</svg>
+
+<style>
+  /* The mark is always brand green, in both modes — it is the one place the
+     accent is identity rather than status. Declared here as well as in
+     design/libero.css because the docs pages load the tokens without the
+     component layer. */
+  svg {
+    display: block;
+    flex: none;
+    color: var(--lb-accent);
+  }
+</style>
