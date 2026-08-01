@@ -24,7 +24,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  # Named site-build, not build: ci.yml already has a job called build, and a
+  # required status check matches on the job name alone. Two check runs sharing
+  # a name means the branch ruleset cannot tell which one it is gating on.
+  site-build:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -52,8 +55,8 @@ jobs:
         with:
           path: site/dist
 
-  deploy:
-    needs: build
+  site-deploy:
+    needs: site-build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
