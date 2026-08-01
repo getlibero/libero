@@ -1,0 +1,390 @@
+/* Libero design system v0.1 — component layer.
+   Requires tokens.css to be loaded first.
+
+   Nothing in here introduces a colour, font, radius or shape that is not in
+   the canonical spec (`Libero Design System.dc.html`). Rules encoded here:
+
+     elevation  dark lifts a surface by getting lighter (canvas -> surface ->
+                raised); light lifts by gaining a hairline. No shadows, no
+                gradients, in either mode. See .lb-raise.
+     colour     green = allowed and executed, amber = awaiting a human,
+                red = blocked. Nothing else on screen is coloured.
+     type       IBM Plex Sans for language, IBM Plex Mono for anything a
+                machine produced — tool names, timestamps, hashes, money,
+                labels.
+     shape      radii 7 / 10 / 14px only. Buttons pad 10px 18px, rows 11px 14px.
+     icons      24px grid, 1.6 stroke, round caps and joins, no fills, stroke
+                inherits --lb-text-muted.
+*/
+
+/* ------------------------------------------------------------------ *
+ * Derived tokens
+ *
+ * These values are used by the canonical spec but are not named in
+ * libero-tokens.css. They are transcribed, not invented — status borders,
+ * hover states, and the two intermediate text weights the spec sets. If
+ * libero-tokens.css ever names them, delete them from here.
+ * ------------------------------------------------------------------ */
+
+:root {
+  --lb-text-soft:        #B9C8C3; /* body inside dense UI — between text and muted */
+  --lb-text-dim:         #6E8580; /* meta, timestamps, section numerals */
+  --lb-warn-text:        #F5B544; /* amber set as type */
+  --lb-warn-border:      #4A3A1A;
+  --lb-danger-border:    #5A2C29;
+  --lb-danger-wash-hover:#33150F;
+}
+
+[data-theme="light"] {
+  --lb-text-soft:        #3F4C48;
+  --lb-text-dim:         #6B7B77;
+  --lb-warn-text:        #7E5406; /* --lb-warn is too light to set as type on the wash */
+  --lb-warn-border:      #E6D5A8;
+  --lb-danger-border:    #E0B9B3;
+  --lb-danger-wash-hover:#F9DFDB;
+
+  /* The spec's light Approve button darkens on hover rather than lightening.
+     This is the one place the canonical .dc.html and libero-tokens.css
+     disagree — the .dc.html wins, per its own "canonical spec" note. */
+  --lb-accent-hover:     #158A49;
+}
+
+/* ------------------------------------------------------------------ *
+ * Base
+ * ------------------------------------------------------------------ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--lb-bg-canvas);
+  color: var(--lb-text);
+  font: 400 15px/1.6 var(--lb-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--lb-accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre { font-family: var(--lb-font-mono); }
+
+:focus-visible { outline: 2px solid var(--lb-accent); outline-offset: 2px; }
+
+/* ------------------------------------------------------------------ *
+ * Type
+ * ------------------------------------------------------------------ */
+
+.lb-display { margin: 0; font: 600 42px/1.1 var(--lb-font-sans);  letter-spacing: -.035em; }
+.lb-h2      { margin: 0; font: 600 24px/1.25 var(--lb-font-sans); letter-spacing: -.025em; }
+.lb-h3      { margin: 0; font: 600 17px/1.35 var(--lb-font-sans); letter-spacing: -.015em; }
+.lb-body    { margin: 0; font: 400 15px/1.6 var(--lb-font-sans); }
+.lb-small   { margin: 0; font: 400 13px/1.6 var(--lb-font-sans); color: var(--lb-text-muted); }
+.lb-code    { font: 400 13px/1.55 var(--lb-font-mono); }
+
+.lb-label {
+  font: 500 11px/1 var(--lb-font-mono);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--lb-text-muted);
+}
+.lb-label--tight { font-size: 10px; }   /* stat tiles, rail headers */
+.lb-label--dim   { color: var(--lb-text-dim); }
+.lb-label--accent{ color: var(--lb-accent-text); }
+.lb-label--warn  { color: var(--lb-warn-text); }
+
+.lb-mono { font-family: var(--lb-font-mono); }
+.lb-meta { font: 400 11px/1.5 var(--lb-font-mono); color: var(--lb-text-dim); }
+
+.lb-text-muted  { color: var(--lb-text-muted); }
+.lb-text-soft   { color: var(--lb-text-soft); }
+.lb-text-strong { color: var(--lb-text); }
+
+/* Prose measure. text-wrap:pretty is progressive — no fallback needed. */
+.lb-prose { max-width: 68ch; text-wrap: pretty; }
+
+/* ------------------------------------------------------------------ *
+ * Elevation
+ *
+ * The one rule that differs by mode, so it gets one class rather than
+ * being open-coded at every call site.
+ * ------------------------------------------------------------------ */
+
+.lb-raise { background: var(--lb-bg-raised); border: 1px solid transparent; }
+[data-theme="light"] .lb-raise {
+  background: var(--lb-bg-surface);
+  border-color: var(--lb-border);
+}
+
+/* ------------------------------------------------------------------ *
+ * Surfaces
+ * ------------------------------------------------------------------ */
+
+.lb-card {
+  padding: 26px;
+  background: var(--lb-bg-surface);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-lg);
+}
+.lb-card--flush { padding: 0; overflow: hidden; }
+.lb-card--recessed { background: var(--lb-bg-canvas); }
+
+.lb-card__title { font: 600 14px/1.35 var(--lb-font-sans); color: var(--lb-text); }
+.lb-card__meta  { font: 400 12px/1.5 var(--lb-font-mono); color: var(--lb-text-dim); }
+
+.lb-panel {
+  background: var(--lb-bg-surface);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius);
+  overflow: hidden;
+}
+
+.lb-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--lb-border);
+}
+
+.lb-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--lb-border);
+  font: 400 12px/1.4 var(--lb-font-mono);
+  color: var(--lb-text-soft);
+}
+.lb-row:last-child { border-bottom: 0; }
+.lb-row__time  { color: var(--lb-text-dim); font-size: 11px; }
+.lb-row__name  { flex: 1; min-width: 0; }
+.lb-row__value { color: var(--lb-text-dim); font-size: 11px; }
+
+.lb-stat {
+  padding: 14px 16px;
+  background: var(--lb-bg-surface);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius);
+}
+.lb-stat__value {
+  font: 600 22px/1 var(--lb-font-mono);
+  color: var(--lb-text);
+}
+.lb-stat__value--danger { color: var(--lb-danger); }
+.lb-stat__unit { font: 400 12px/1 var(--lb-font-mono); color: var(--lb-text-dim); }
+
+.lb-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--lb-bg-surface);
+  border: 1px solid var(--lb-border);
+  border-left: 3px solid var(--lb-border-strong);
+  border-radius: var(--lb-radius);
+  font: 400 14px/1.55 var(--lb-font-sans);
+}
+.lb-callout--warn {
+  background: var(--lb-warn-wash);
+  border-color: var(--lb-warn-border);
+  border-left-color: var(--lb-warn);
+}
+.lb-callout--danger {
+  background: var(--lb-danger-wash);
+  border-color: var(--lb-danger-border);
+  border-left-color: var(--lb-danger);
+}
+
+/* ------------------------------------------------------------------ *
+ * Buttons
+ * ------------------------------------------------------------------ */
+
+.lb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-radius: var(--lb-radius-sm);
+  background: transparent;
+  color: var(--lb-text);
+  font: 500 14px/1 var(--lb-font-sans);
+  cursor: pointer;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+.lb-btn--sm { padding: 8px 14px; font-size: 13px; }
+
+.lb-btn--primary {
+  background: var(--lb-accent);
+  color: var(--lb-accent-ink);
+  font-weight: 600;
+}
+.lb-btn--primary:hover { background: var(--lb-accent-hover); }
+
+.lb-btn--secondary { border-color: var(--lb-border-strong); }
+.lb-btn--secondary:hover { border-color: var(--lb-accent); color: var(--lb-accent-text); }
+
+.lb-btn--ghost { color: var(--lb-text-muted); }
+.lb-btn--ghost:hover { color: var(--lb-text); }
+
+.lb-btn--danger {
+  background: var(--lb-danger-wash);
+  border-color: var(--lb-danger-border);
+  color: var(--lb-danger);
+}
+.lb-btn--danger:hover { background: var(--lb-danger-wash-hover); }
+
+.lb-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ------------------------------------------------------------------ *
+ * Status — green allowed, amber awaiting a human, red blocked
+ * ------------------------------------------------------------------ */
+
+.lb-dot { width: 6px; height: 6px; border-radius: 99px; background: currentColor; flex: none; }
+.lb-dot--allowed { background: var(--lb-accent); }
+.lb-dot--warn    { background: var(--lb-warn); }
+.lb-dot--blocked { background: var(--lb-danger); }
+
+.lb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font: 500 11px/1 var(--lb-font-mono);
+}
+.lb-pill--allowed { background: var(--lb-accent-wash); color: var(--lb-accent-text); }
+.lb-pill--allowed .lb-dot { background: var(--lb-accent); }
+.lb-pill--warn    { background: var(--lb-warn-wash);   color: var(--lb-warn-text); }
+.lb-pill--warn .lb-dot    { background: var(--lb-warn); }
+.lb-pill--blocked { background: var(--lb-danger-wash); color: var(--lb-danger); }
+.lb-pill--blocked .lb-dot { background: var(--lb-danger); }
+
+.lb-status-text--allowed { color: var(--lb-accent-text); }
+.lb-status-text--warn    { color: var(--lb-warn-text); }
+.lb-status-text--blocked { color: var(--lb-danger); }
+
+/* ------------------------------------------------------------------ *
+ * Inputs — recessed to canvas, --lb-border-strong edge
+ * ------------------------------------------------------------------ */
+
+.lb-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 14px;
+  background: var(--lb-bg-canvas);
+  border: 1px solid var(--lb-border-strong);
+  border-radius: var(--lb-radius-sm);
+  color: var(--lb-text);
+  font: 400 14px/1 var(--lb-font-sans);
+}
+.lb-input:focus-within { border-color: var(--lb-accent); }
+.lb-input__prefix { font: 400 13px/1 var(--lb-font-mono); color: var(--lb-text-dim); }
+.lb-input__control {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.lb-input__control:focus { outline: none; }
+.lb-input__control::placeholder { color: var(--lb-text-dim); }
+
+/* Read-only label/value pair. Same rhythm, hairline edge — it is not editable,
+   so it does not get the strong border. */
+.lb-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  background: var(--lb-bg-canvas);
+  border: 1px solid var(--lb-border);
+  border-radius: var(--lb-radius-sm);
+}
+.lb-field__label { font: 400 14px/1 var(--lb-font-sans); color: var(--lb-text-muted); }
+.lb-field__value { font: 500 14px/1 var(--lb-font-mono); color: var(--lb-text); }
+
+/* ------------------------------------------------------------------ *
+ * Icons — 24 grid, 1.6 stroke, no fills
+ * ------------------------------------------------------------------ */
+
+.lb-icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+  color: var(--lb-text-muted);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.lb-icon--sm { width: 20px; height: 20px; }
+.lb-icon--lg { width: 28px; height: 28px; }
+
+/* ------------------------------------------------------------------ *
+ * Brand
+ * ------------------------------------------------------------------ */
+
+.lb-mark { display: block; color: var(--lb-accent); }
+.lb-lockup { display: inline-flex; align-items: center; gap: 16px; }
+.lb-wordmark {
+  font: 600 40px/1 var(--lb-font-sans);
+  letter-spacing: -.035em;
+  color: var(--lb-text);
+}
+.lb-wordmark--sm { font-size: 14px; letter-spacing: -.02em; }
+
+/* ------------------------------------------------------------------ *
+ * Channel rail
+ * ------------------------------------------------------------------ */
+
+.lb-rail { display: flex; flex-direction: column; gap: 4px; }
+.lb-rail__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--lb-radius-sm);
+  font: 400 13px/1.4 var(--lb-font-sans);
+  color: var(--lb-text-soft);
+  cursor: pointer;
+}
+.lb-rail__hash { font: 400 12px/1 var(--lb-font-mono); color: var(--lb-text-dim); }
+.lb-rail__item:hover { color: var(--lb-text); }
+.lb-rail__item.is-active {
+  background: var(--lb-bg-raised);
+  color: var(--lb-text);
+  font-weight: 500;
+}
+.lb-rail__item.is-active .lb-rail__hash { color: var(--lb-accent-text); }
+[data-theme="light"] .lb-rail__item.is-active {
+  background: var(--lb-bg-surface);
+  border-color: var(--lb-border);
+}
+
+/* ------------------------------------------------------------------ *
+ * Utilities used by the reference page
+ * ------------------------------------------------------------------ */
+
+.lb-stack  { display: flex; flex-direction: column; }
+.lb-cluster{ display: flex; flex-wrap: wrap; align-items: center; }
+.lb-split  { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.lb-grow   { flex: 1; min-width: 0; }
+.lb-hairline { border-top: 1px solid var(--lb-border); }
+
+.lb-gap-4 { gap: 4px; }  .lb-gap-6 { gap: 6px; }   .lb-gap-8 { gap: 8px; }
+.lb-gap-10{ gap: 10px; } .lb-gap-12{ gap: 12px; }  .lb-gap-16{ gap: 16px; }
+.lb-gap-20{ gap: 20px; } .lb-gap-26{ gap: 26px; }  .lb-gap-40{ gap: 40px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lb-btn { transition: none; }
+}

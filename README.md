@@ -1,6 +1,26 @@
-# Libero
+<p align="center">
+  <img src="design/brand/mark.svg" width="72" height="72" alt="">
+</p>
 
-**The open-source AI teammate for Slack. Self-hosted, credential-isolated, every tool call audited.**
+<h1 align="center">libero</h1>
+
+<p align="center">
+  <b>The open-source AI teammate for Slack.</b><br>
+  Self-hosted, credential-isolated, every tool call audited.
+</p>
+
+<p align="center">
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/ROADMAP.md">Roadmap</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="design/README.md">Design</a>
+</p>
+
+<p align="center">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1BA85A?style=flat-square&labelColor=131A18">
+  <img alt="Status: Phase 0, pre-release" src="https://img.shields.io/badge/status-phase_0-8FA39D?style=flat-square&labelColor=131A18">
+</p>
 
 Libero is a self-hostable, LLM-agnostic AI teammate that lives in Slack channels as a shared agent — one session per channel, not per user — with persistent curated memory, admin-governed tool access, and asynchronous task execution.
 
@@ -36,10 +56,15 @@ apps/server        composes gateway + agent (service 1)
 apps/proxy-server  composes proxy (service 2)
 deploy/            docker-compose + optional LiteLLM sidecar
 channels/example/  documented starter team sheet
+design/            design system — tokens, component CSS, brand SVGs, reference page
 e2e/               mock Slack + mock MCP harness; the security suite lives here
 ```
 
 **Package boundary rule:** `agent` may never import `proxy`. The only path from agent to tools is the network call. This is enforced by lint + CI, not convention.
+
+## Design
+
+The brand, colour tokens, and component styles live in [`design/`](design/README.md) — plain CSS and SVG, no build step. Open `design/index.html` for the live reference: every token and component, dark and light. Dark is the default; light is a peer, not an inversion. The spec is locked, so changes start upstream in the design project rather than in the CSS.
 
 ## License
 

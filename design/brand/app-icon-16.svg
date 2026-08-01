@@ -1,0 +1,5 @@
+<!-- Libero app icon at 16px — favicon size. Dotless, corner 20/64, stroke 10. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="16" height="16" role="img" aria-label="Libero">
+  <rect width="64" height="64" rx="20" fill="#1BA85A"/>
+  <path d="M20 20 v10 c0 10 6 16 16 16 h8" fill="none" stroke="#06120B" stroke-width="10" stroke-linecap="round"/>
+</svg>

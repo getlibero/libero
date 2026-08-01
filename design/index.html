@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Libero — design system v0.1</title>
+<link rel="icon" href="brand/app-icon-16.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="libero.css">
+<style>
+  /* Page scaffolding for this reference document only. Everything that is
+     part of the system itself lives in libero.css. */
+  .ds-page { max-width: 1360px; margin: 0 auto; padding: 64px 48px 96px; }
+  .ds-sections { display: flex; flex-direction: column; gap: 64px; }
+  .ds-head {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 48px; padding-bottom: 28px; border-bottom: 1px solid var(--lb-border);
+  }
+  .ds-sec { display: flex; flex-direction: column; gap: 20px; }
+  .ds-sec__head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 14px; }
+  .ds-two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  .ds-three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .ds-trow {
+    display: grid; grid-template-columns: 1.4fr 1fr 1fr 1.6fr;
+    align-items: center; gap: 12px; padding: 11px 20px;
+    border-bottom: 1px solid var(--lb-border);
+    font: 400 13px/1.4 var(--lb-font-mono); color: var(--lb-text-muted);
+  }
+  .ds-trow:last-child { border-bottom: 0; }
+  .ds-trow--head {
+    background: var(--lb-bg-surface); color: var(--lb-text-dim);
+    font: 500 11px/1 var(--lb-font-mono); letter-spacing: .14em; padding: 12px 20px;
+  }
+  .ds-trow--accent { background: var(--lb-accent-wash); }
+  .ds-tok { color: var(--lb-text); }
+  .ds-val { display: flex; align-items: center; gap: 9px; }
+  .ds-sw {
+    width: 20px; height: 20px; flex: none; border-radius: 5px;
+    background: var(--sw); border: 1px solid var(--lb-border-strong);
+  }
+  .ds-badge {
+    padding: 3px 8px; border-radius: 999px; background: var(--lb-accent-wash);
+    color: var(--lb-accent-text);
+    font: 500 10px/1 var(--lb-font-mono); letter-spacing: .08em;
+  }
+  .ds-typerow { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; }
+  .ds-typerow > span:last-child { white-space: nowrap; }
+  .ds-console { border: 1px solid var(--lb-border); border-radius: var(--lb-radius-lg); overflow: hidden; }
+  .ds-console__bar {
+    display: flex; align-items: center; gap: 10px; padding: 13px 18px;
+    background: var(--lb-bg-surface); border-bottom: 1px solid var(--lb-border);
+  }
+  .ds-console__body { display: flex; min-height: 400px; background: var(--lb-bg-canvas); }
+  .ds-console__rail {
+    width: 228px; flex: none; padding: 18px 12px;
+    border-right: 1px solid var(--lb-border);
+  }
+  .ds-console__main { flex: 1; min-width: 0; padding: 22px; display: flex; flex-direction: column; gap: 16px; }
+  .ds-dashed {
+    margin-top: auto; padding: 11px; border: 1px dashed var(--lb-border);
+    border-radius: var(--lb-radius-sm);
+    font: 400 11px/1.5 var(--lb-font-mono); color: var(--lb-text-dim);
+  }
+  .ds-pre {
+    margin: 0; padding: 24px; overflow: auto;
+    background: var(--lb-bg-surface); border: 1px solid var(--lb-border);
+    border-radius: var(--lb-radius-lg);
+    font: 400 13px/1.8 var(--lb-font-mono); color: var(--lb-text-muted);
+  }
+  .ds-pre b { color: var(--lb-accent-text); font-weight: 400; }
+  @media (max-width: 900px) {
+    .ds-page { padding: 40px 20px 64px; }
+    .ds-two, .ds-three { grid-template-columns: 1fr; }
+    .ds-trow { grid-template-columns: 1fr 1fr; }
+    .ds-console__rail { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="ds-page">
+<div class="ds-sections">
+
+  <!-- masthead ---------------------------------------------------- -->
+  <header class="ds-head">
+    <div class="lb-stack lb-gap-16">
+      <div class="lb-lockup">
+        <svg class="lb-mark" viewBox="0 0 64 64" width="52" height="52" aria-label="Libero mark">
+          <path d="M17 18 v11 c0 11.6 7.4 19 19 19 h11" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+          <circle cx="47" cy="18" r="5.5" fill="currentColor"/>
+        </svg>
+        <span class="lb-wordmark">libero</span>
+      </div>
+      <p class="lb-prose lb-text-muted" style="margin:0;font-size:22px;line-height:1.45;">
+        Design system v0.1 — one geometry, one accent, two modes.
+        <span class="lb-text-strong">Dark is the default;</span> light is a full peer, not an inversion.
+      </p>
+    </div>
+    <div class="lb-stack lb-gap-10" style="align-items:flex-end;">
+      <button type="button" class="lb-btn lb-btn--secondary lb-btn--sm" id="theme-toggle" aria-pressed="false">
+        <svg class="lb-icon lb-icon--sm" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/>
+        </svg>
+        <span id="theme-toggle-label">Light mode</span>
+      </button>
+      <span class="lb-meta" style="text-align:right;">canonical: Libero Design System.dc.html<br>tokens: tokens.css</span>
+    </div>
+  </header>
+
+  <!-- 01 identity ------------------------------------------------- -->
+  <section class="ds-sec">
+    <div class="ds-sec__head">
+      <span class="lb-label lb-label--dim">01</span>
+      <h2 class="lb-h2">Identity</h2>
+      <span class="lb-small">An L that sweeps back, curves under, and comes up to intercept.</span>
+    </div>
+    <div class="ds-two">
+      <div class="lb-card lb-stack lb-gap-12">
+        <div class="lb-split">
+          <span class="lb-label lb-label--dim">Mark &amp; wordmark</span>
+          <span class="lb-meta lb-status-text--allowed">brand green #1BA85A</span>
+        </div>
+        <div class="lb-lockup" style="padding:26px 6px;">
+          <svg class="lb-mark" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true">
+            <path d="M17 18 v11 c0 11.6 7.4 19 19 19 h11" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+            <circle cx="47" cy="18" r="5.5" fill="currentColor"/>
+          </svg>
+          <span class="lb-wordmark">libero</span>
+        </div>
+        <div class="lb-cluster lb-gap-16 lb-hairline" style="padding-top:14px;">
+          <img src="brand/app-icon.svg" width="34" height="34" alt="Libero app icon, 34px">
+          <img src="brand/app-icon-20.svg" width="22" height="22" alt="Libero app icon, 22px">
+          <img src="brand/app-icon-16.svg" width="16" height="16" alt="Libero app icon, 16px">
+          <span class="lb-meta">app icon 34 / 22 / 16px · the dot drops below 20px</span>
+        </div>
+      </div>
+      <div class="lb-card lb-stack lb-gap-12">
+        <div class="lb-split">
+          <span class="lb-label lb-label--dim">Rules</span>
+          <span class="lb-meta">64 grid · stroke 7 · round caps</span>
+        </div>
+        <p class="lb-small lb-prose" style="margin:0;">
+          The app icon is the mark knocked out of a filled <code class="lb-code lb-status-text--allowed">--lb-accent</code>
+          rounded square, radius 17/64, and it <span class="lb-text-strong">never goes light</span> — one lockup
+          everywhere. Below 20px the dot is dropped, the corner opens, and the stroke thickens so the form survives.
+        </p>
+        <p class="lb-small lb-prose" style="margin:0;">
+          The wordmark is IBM Plex Sans 600 at −3.5% tracking, set in
+          <code class="lb-code">--lb-text</code> — so it flips with the mode while the mark does not.
+        </p>
+        <div class="lb-cluster lb-gap-10 lb-hairline" style="padding-top:14px;">
+          <span class="lb-pill lb-pill--allowed"><span class="lb-dot"></span>brand/mark.svg</span>
+          <span class="lb-pill lb-pill--allowed"><span class="lb-dot"></span>brand/lockup.svg</span>
+          <span class="lb-pill lb-pill--allowed"><span class="lb-dot"></span>brand/app-icon*.svg</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 colour --------------------------------------------------- -->
+  <section class="ds-sec">
+    <div class="ds-sec__head">
+      <span class="lb-label lb-label--dim">02</span>
+      <h2 class="lb-h2">Colour tokens</h2>
+      <span class="lb-small">Every token is a pair. Components reference the name, never the hex.</span>
+    </div>
+    <div class="lb-panel">
+      <div class="ds-trow ds-trow--head">
+        <span>TOKEN</span><span>DARK · DEFAULT</span><span>LIGHT</span><span>USED FOR</span>
+      </div>
+      <div class="ds-trow"><span class="ds-tok">--lb-bg-canvas</span><span class="ds-val"><i class="ds-sw" style="--sw:#0B0F0E"></i>#0B0F0E</span><span class="ds-val"><i class="ds-sw" style="--sw:#F7F9F8"></i>#F7F9F8</span><span>the page itself</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-bg-surface</span><span class="ds-val"><i class="ds-sw" style="--sw:#131A18"></i>#131A18</span><span class="ds-val"><i class="ds-sw" style="--sw:#FFFFFF"></i>#FFFFFF</span><span>cards, headers, rails</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-bg-raised</span><span class="ds-val"><i class="ds-sw" style="--sw:#1B2422"></i>#1B2422</span><span class="ds-val"><i class="ds-sw" style="--sw:#F1F5F3"></i>#F1F5F3</span><span>selected row, hover</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-border</span><span class="ds-val"><i class="ds-sw" style="--sw:#263230"></i>#263230</span><span class="ds-val"><i class="ds-sw" style="--sw:#DCE4E1"></i>#DCE4E1</span><span>hairlines, card edges</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-border-strong</span><span class="ds-val"><i class="ds-sw" style="--sw:#35443F"></i>#35443F</span><span class="ds-val"><i class="ds-sw" style="--sw:#C3CFCB"></i>#C3CFCB</span><span>inputs, secondary buttons</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-text</span><span class="ds-val"><i class="ds-sw" style="--sw:#E8EFEC"></i>#E8EFEC</span><span class="ds-val"><i class="ds-sw" style="--sw:#0B1512"></i>#0B1512</span><span>headings, body</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-text-muted</span><span class="ds-val"><i class="ds-sw" style="--sw:#8FA39D"></i>#8FA39D</span><span class="ds-val"><i class="ds-sw" style="--sw:#6B7B77"></i>#6B7B77</span><span>timestamps, labels, meta</span></div>
+      <div class="ds-trow ds-trow--accent"><span class="lb-status-text--allowed">--lb-accent</span><span class="ds-val"><i class="ds-sw" style="--sw:#1BA85A"></i><span class="lb-text-strong">#1BA85A</span></span><span class="ds-val"><i class="ds-sw" style="--sw:#1BA85A"></i><span class="ds-badge">SAME VALUE</span></span><span class="lb-text-strong">the brand — mark, filled buttons, dots</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-accent-ink</span><span class="ds-val"><i class="ds-sw" style="--sw:#06120B"></i>#06120B</span><span class="ds-val"><i class="ds-sw" style="--sw:#06120B"></i><span class="ds-badge">SAME VALUE</span></span><span>label on a filled accent</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-accent-text</span><span class="ds-val"><i class="ds-sw" style="--sw:#4ADE80"></i>#4ADE80</span><span class="ds-val"><i class="ds-sw" style="--sw:#0A6739"></i>#0A6739</span><span>green <span class="lb-text-strong">set as type</span> — contrast alias, never a surface</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-accent-wash</span><span class="ds-val"><i class="ds-sw" style="--sw:#0F2B1B"></i>#0F2B1B</span><span class="ds-val"><i class="ds-sw" style="--sw:#E4F4EA"></i>#E4F4EA</span><span>pill and callout backgrounds</span></div>
+      <div class="ds-trow"><span class="lb-status-text--warn">--lb-warn</span><span class="ds-val"><i class="ds-sw" style="--sw:#F5B544"></i>#F5B544</span><span class="ds-val"><i class="ds-sw" style="--sw:#9A6708"></i>#9A6708</span><span>a human still has to click</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-warn-wash</span><span class="ds-val"><i class="ds-sw" style="--sw:#2C2211"></i>#2C2211</span><span class="ds-val"><i class="ds-sw" style="--sw:#FBF1DC"></i>#FBF1DC</span><span>approval card fill</span></div>
+      <div class="ds-trow"><span class="lb-status-text--blocked">--lb-danger</span><span class="ds-val"><i class="ds-sw" style="--sw:#FF6B5B"></i>#FF6B5B</span><span class="ds-val"><i class="ds-sw" style="--sw:#B3271A"></i>#B3271A</span><span>blocked by the team sheet</span></div>
+      <div class="ds-trow"><span class="ds-tok">--lb-danger-wash</span><span class="ds-val"><i class="ds-sw" style="--sw:#25100E"></i>#25100E</span><span class="ds-val"><i class="ds-sw" style="--sw:#FCEDEB"></i>#FCEDEB</span><span>deny button fill</span></div>
+    </div>
+    <div class="ds-three">
+      <div class="lb-card" style="padding:18px 20px;">
+        <div class="lb-label lb-label--accent" style="padding-bottom:8px;">RULE · ELEVATION</div>
+        <p class="lb-small lb-prose" style="margin:0;">Dark lifts a surface by <span class="lb-text-strong">getting lighter</span> (canvas → surface → raised). Light lifts by <span class="lb-text-strong">gaining a border</span> — white on #F7F9F8 plus a hairline. No shadows in either mode.</p>
+      </div>
+      <div class="lb-card" style="padding:18px 20px;">
+        <div class="lb-label lb-label--accent" style="padding-bottom:8px;">RULE · THE BRAND DOESN'T MOVE</div>
+        <p class="lb-small lb-prose" style="margin:0;"><span class="lb-text-strong">#1BA85A is the green in both modes</span> — picked to clear 3:1 against #0B0F0E <em style="font-style:normal;">and</em> against white, so the mark, filled buttons, and dots never change. Only <code class="lb-code">--lb-accent-text</code> shifts, and only where green is set as type.</p>
+      </div>
+      <div class="lb-card" style="padding:18px 20px;">
+        <div class="lb-label lb-label--accent" style="padding-bottom:8px;">RULE · RESTRAINT</div>
+        <p class="lb-small lb-prose" style="margin:0;">Green means <span class="lb-text-strong">allowed and executed</span>, amber means <span class="lb-text-strong">awaiting a human</span>, red means <span class="lb-text-strong">blocked</span>. Nothing else on screen is coloured.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 type ----------------------------------------------------- -->
+  <section class="ds-sec">
+    <div class="ds-sec__head">
+      <span class="lb-label lb-label--dim">03</span>
+      <h2 class="lb-h2">Type</h2>
+      <span class="lb-small">IBM Plex Sans for language, IBM Plex Mono for anything a machine produced. Identical in both modes.</span>
+    </div>
+    <div class="lb-card lb-stack lb-gap-16" style="padding:28px 30px;">
+      <div class="ds-typerow"><span class="lb-display">Governance first</span><span class="lb-meta">.lb-display · 42 / 600 / −3.5%</span></div>
+      <div class="ds-typerow"><span class="lb-h2">One session per channel</span><span class="lb-meta">.lb-h2 · 24 / 600 / −2.5%</span></div>
+      <div class="ds-typerow"><span class="lb-h3">Admin-governed tool access</span><span class="lb-meta">.lb-h3 · 17 / 600</span></div>
+      <div class="ds-typerow"><span class="lb-body lb-text-soft lb-prose">The agent reaches tools only through the proxy. Compromise of the agent process yields zero secrets.</span><span class="lb-meta">.lb-body · 15 / 400 / 1.6</span></div>
+      <div class="ds-typerow"><span class="lb-small lb-prose">Supporting detail, help text, and empty states.</span><span class="lb-meta">.lb-small · 13 / 400</span></div>
+      <div class="ds-typerow"><span class="lb-code lb-status-text--allowed">tools.allow = ["github.pr.read", "linear.issue.*"]</span><span class="lb-meta">.lb-code · mono 13 / 400</span></div>
+      <div class="ds-typerow"><span class="lb-label">Audit label</span><span class="lb-meta">.lb-label · mono 11 / .16em / caps</span></div>
+    </div>
+  </section>
+
+  <!-- 04 components ----------------------------------------------- -->
+  <section class="ds-sec">
+    <div class="ds-sec__head">
+      <span class="lb-label lb-label--dim">04</span>
+      <h2 class="lb-h2">Components</h2>
+      <span class="lb-small">Radii 7 / 10 / 14px. Buttons pad 10×18, rows 11×14. Same shapes in both modes.</span>
+    </div>
+    <div class="ds-two">
+      <div class="lb-card lb-stack lb-gap-20">
+        <span class="lb-label lb-label--dim">Actions</span>
+        <div class="lb-cluster lb-gap-10">
+          <button type="button" class="lb-btn lb-btn--primary">Approve call</button>
+          <button type="button" class="lb-btn lb-btn--secondary">View diff</button>
+          <button type="button" class="lb-btn lb-btn--ghost">Skip</button>
+          <button type="button" class="lb-btn lb-btn--danger">Deny</button>
+        </div>
+        <div class="lb-cluster lb-gap-10">
+          <span class="lb-pill lb-pill--allowed"><span class="lb-dot"></span>ALLOWED</span>
+          <span class="lb-pill lb-pill--warn"><span class="lb-dot"></span>NEEDS HUMAN</span>
+          <span class="lb-pill lb-pill--blocked"><span class="lb-dot"></span>BLOCKED</span>
+        </div>
+        <div class="lb-cluster lb-gap-16 lb-hairline" style="padding-top:14px;">
+          <svg class="lb-icon" viewBox="0 0 24 24" aria-label="Team sheet"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16"/></svg>
+          <svg class="lb-icon" viewBox="0 0 24 24" aria-label="Enforced"><path d="M12 3l7 3v6c0 4-3 7.5-7 9-4-1.5-7-5-7-9V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>
+          <svg class="lb-icon" viewBox="0 0 24 24" aria-label="Credential"><circle cx="9" cy="12" r="4"/><path d="M13 12h8M18 12v3"/></svg>
+          <svg class="lb-icon" viewBox="0 0 24 24" aria-label="Pending"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+          <svg class="lb-icon" viewBox="0 0 24 24" aria-label="Audit log"><path d="M4 6h16M4 12h10M4 18h13"/></svg>
+          <span class="lb-meta">24px grid · 1.6 stroke · inherits --lb-text-muted</span>
+        </div>
+      </div>
+      <div class="lb-card lb-stack lb-gap-20">
+        <span class="lb-label lb-label--dim">Fields &amp; surfaces</span>
+        <div class="lb-cluster lb-gap-10" style="flex-wrap:nowrap;">
+          <label class="lb-input lb-grow">
+            <span class="lb-input__prefix">#</span>
+            <input class="lb-input__control" type="text" value="eng-platform" aria-label="Channel">
+          </label>
+          <div class="lb-field lb-grow">
+            <span class="lb-field__label">Budget per day</span>
+            <span class="lb-field__value">$25.00</span>
+          </div>
+        </div>
+        <div class="lb-card lb-card--recessed lb-stack lb-gap-6" style="padding:14px 16px;border-radius:var(--lb-radius);">
+          <span class="lb-card__title">Team sheet</span>
+          <span class="lb-card__meta">TOML in git · 7 tools allowed · 2 require approval</span>
+        </div>
+        <div class="lb-callout lb-callout--warn">
+          <div class="lb-cluster lb-gap-10">
+            <span class="lb-label lb-label--warn">APPROVAL REQUIRED</span>
+            <span class="lb-meta">expires in 12m</span>
+          </div>
+          <div>Agent wants to call <span class="lb-mono lb-status-text--warn">github.pr.merge</span> on <span class="lb-mono">acme/api#4192</span> — outside the channel's write allowlist.</div>
+          <div class="lb-cluster lb-gap-8">
+            <button type="button" class="lb-btn lb-btn--primary lb-btn--sm">Approve once</button>
+            <button type="button" class="lb-btn lb-btn--danger lb-btn--sm">Deny</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 05 console -------------------------------------------------- -->
+  <section class="ds-sec">
+    <div class="ds-sec__head">
+      <span class="lb-label lb-label--dim">05</span>
+      <h2 class="lb-h2">Console — the same markup, both modes</h2>
+      <span class="lb-small">A composition mock. Not a shipping surface: for v1 the team sheet in git <em style="font-style:normal;">is</em> the admin UI.</span>
+    </div>
+    <div class="ds-console">
+      <div class="ds-console__bar">
+        <svg class="lb-mark" viewBox="0 0 64 64" width="20" height="20" aria-hidden="true">
+          <path d="M17 18 v11 c0 11.6 7.4 19 19 19 h11" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+        </svg>
+        <span class="lb-wordmark lb-wordmark--sm">libero</span>
+        <span class="lb-meta">/ acme-workspace</span>
+        <span class="lb-cluster lb-gap-6 lb-meta lb-status-text--allowed" style="margin-left:auto;">
+          <span class="lb-dot lb-dot--allowed"></span>proxy healthy
+        </span>
+      </div>
+      <div class="ds-console__body">
+        <nav class="ds-console__rail lb-stack lb-gap-4">
+          <div class="lb-label lb-label--tight lb-label--dim" style="padding:0 8px 10px;">CHANNELS</div>
+          <div class="lb-rail">
+            <div class="lb-rail__item is-active"><span class="lb-rail__hash">#</span>eng-platform<span class="lb-dot lb-dot--warn" style="margin-left:auto;"></span></div>
+            <div class="lb-rail__item"><span class="lb-rail__hash">#</span>support-tier1</div>
+            <div class="lb-rail__item"><span class="lb-rail__hash">#</span>growth-exp</div>
+            <div class="lb-rail__item"><span class="lb-rail__hash">#</span>oncall</div>
+          </div>
+          <div class="ds-dashed">team sheet<br>synced from git · 4m ago</div>
+        </nav>
+        <div class="ds-console__main">
+          <div class="lb-split" style="align-items:flex-start;">
+            <div class="lb-stack lb-gap-6">
+              <div class="lb-h2">#eng-platform</div>
+              <div class="lb-meta">session f2c1a · 61 messages of context · memory curated 2h ago</div>
+            </div>
+            <button type="button" class="lb-btn lb-btn--secondary lb-btn--sm">Edit team sheet</button>
+          </div>
+
+          <div class="lb-callout lb-callout--warn">
+            <div class="lb-cluster lb-gap-10">
+              <span class="lb-label lb-label--warn">APPROVAL REQUIRED</span>
+              <span class="lb-meta">expires in 12m</span>
+            </div>
+            <div>Agent wants to call <span class="lb-mono lb-status-text--warn">github.pr.merge</span> on <span class="lb-mono">acme/api#4192</span> — outside the channel's write allowlist.</div>
+            <div class="lb-cluster lb-gap-8">
+              <button type="button" class="lb-btn lb-btn--primary lb-btn--sm">Approve once</button>
+              <button type="button" class="lb-btn lb-btn--danger lb-btn--sm">Deny</button>
+            </div>
+          </div>
+
+          <div class="lb-cluster lb-gap-12" style="flex-wrap:nowrap;">
+            <div class="lb-stat lb-grow">
+              <div class="lb-label lb-label--tight lb-label--dim" style="padding-bottom:8px;">TOOLS ALLOWED</div>
+              <div class="lb-stat__value">7</div>
+            </div>
+            <div class="lb-stat lb-grow">
+              <div class="lb-label lb-label--tight lb-label--dim" style="padding-bottom:8px;">SPEND TODAY</div>
+              <div class="lb-stat__value">$4.18 <span class="lb-stat__unit">/ 25.00</span></div>
+            </div>
+            <div class="lb-stat lb-grow">
+              <div class="lb-label lb-label--tight lb-label--dim" style="padding-bottom:8px;">BLOCKED · 24H</div>
+              <div class="lb-stat__value lb-stat__value--danger">1</div>
+            </div>
+          </div>
+
+          <div class="lb-panel">
+            <div class="lb-panel__head">
+              <span class="lb-label">AUDIT LOG</span>
+              <span class="lb-meta">append-only</span>
+            </div>
+            <div class="lb-row"><span class="lb-row__time">14:22:07</span><span class="lb-dot lb-dot--allowed"></span><span class="lb-row__name">linear.issue.create</span><span class="lb-row__value">$0.004</span></div>
+            <div class="lb-row"><span class="lb-row__time">14:21:44</span><span class="lb-dot lb-dot--allowed"></span><span class="lb-row__name">github.pr.read</span><span class="lb-row__value">$0.001</span></div>
+            <div class="lb-row"><span class="lb-row__time">14:19:03</span><span class="lb-dot lb-dot--blocked"></span><span class="lb-row__name">s3.object.delete <span class="lb-status-text--blocked">blocked by team sheet</span></span><span class="lb-row__value">—</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 handoff -------------------------------------------------- -->
+  <section class="ds-sec">
+    <div class="ds-sec__head">
+      <span class="lb-label lb-label--dim">06</span>
+      <h2 class="lb-h2">Handoff</h2>
+      <span class="lb-small">Dark on <code class="lb-code lb-status-text--allowed">:root</code>, light behind <code class="lb-code lb-status-text--allowed">[data-theme="light"]</code>.</span>
+    </div>
+    <pre class="ds-pre">&lt;link rel="stylesheet" href="<b>tokens.css</b>"&gt;   &lt;!-- the pairs, nothing else --&gt;
+&lt;link rel="stylesheet" href="<b>libero.css</b>"&gt;   &lt;!-- type, components, elevation --&gt;
+
+&lt;html&gt;                        <span style="opacity:.7;">dark — the default, no attribute needed</span>
+&lt;html data-theme="light"&gt;     <span style="opacity:.7;">light — a peer, not an inversion</span></pre>
+    <p class="lb-body lb-text-muted lb-prose" style="margin:0;max-width:820px;">
+      Three things don't switch: the brand green, the ink that sits on it
+      (<code class="lb-code lb-text-strong">--lb-accent-ink</code>, always #06120B — so an Approve button is
+      pixel-identical in both modes), and the type stack. Amber and red are still tuned per mode: they're status,
+      not identity, and nobody recognises a product by its warning colour.
+    </p>
+  </section>
+
+</div>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    var label = document.getElementById('theme-toggle-label');
+
+    // Dark is the default. The spec is explicit about that, so we do not read
+    // prefers-color-scheme — only an explicit choice, remembered.
+    function apply(theme) {
+      if (theme === 'light') root.setAttribute('data-theme', 'light');
+      else root.removeAttribute('data-theme');
+      label.textContent = theme === 'light' ? 'Dark mode' : 'Light mode';
+      btn.setAttribute('aria-pressed', String(theme === 'light'));
+    }
+
+    var stored = null;
+    try { stored = localStorage.getItem('lb-theme'); } catch (e) { /* private mode */ }
+    apply(stored === 'light' ? 'light' : 'dark');
+
+    btn.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      apply(next);
+      try { localStorage.setItem('lb-theme', next); } catch (e) { /* private mode */ }
+    });
+  })();
+</script>
+</body>
+</html>

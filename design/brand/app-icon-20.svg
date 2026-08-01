@@ -1,0 +1,6 @@
+<!-- Libero app icon at 20px. The dot drops below 20px; the corner opens to
+     19/64 and the stroke thickens to 8 so the form survives the size. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="20" height="20" role="img" aria-label="Libero">
+  <rect width="64" height="64" rx="19" fill="#1BA85A"/>
+  <path d="M18 19 v11 c0 11 7 18 18 18 h10" fill="none" stroke="#06120B" stroke-width="8" stroke-linecap="round"/>
+</svg>
