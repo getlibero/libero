@@ -1,6 +1,10 @@
 name: Site
 
 on:
+  # Filtered on push so an unrelated commit does not redeploy the site, but
+  # deliberately unfiltered on pull_request: site-build is a required status
+  # check, and a required check that does not report on some pull requests
+  # blocks them forever. It has to run everywhere to be able to gate anywhere.
   push:
     branches: [main]
     paths:
@@ -8,10 +12,6 @@ on:
       - 'design/**'
       - '.github/workflows/pages.yml'
   pull_request:
-    paths:
-      - 'site/**'
-      - 'design/**'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 # site/ is outside the root pnpm workspace, so the CI job in ci.yml does not

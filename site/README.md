@@ -4,6 +4,10 @@ The marketing site and documentation. Astro + Starlight, static output, deployed
 by [`.github/workflows/pages.yml`](../.github/workflows/pages.yml) on every push to `main` that
 touches `site/` or `design/`.
 
+That workflow's `site-build` job is a required status check on `main`, so it runs on **every**
+pull request, not only ones that touch this directory — a required check that stays pending on
+some pull requests would block them forever. The deploy half stays path-filtered.
+
 ```bash
 cd site
 pnpm install
