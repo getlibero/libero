@@ -11,18 +11,26 @@ import { liberoDark, liberoLight, styleOverrides } from './src/lib/code-theme.mj
 export default defineConfig({
   site: 'https://getlibero.com',
 
-  // Astro compresses HTML by default, and that collapses the newline between
-  // prose and an inline element to nothing rather than to a space — so
+  // Leaving this unset collapses the newline between prose and an inline
+  // element to nothing rather than to a space, so
   //
   //     ... nobody can check. The
   //     <a href="...">governance document</a>
   //     explains the CLA ...
   //
-  // shipped as "The<a>governance document</a>explains". The failure is
-  // invisible in dev, invisible to the author, and plainly visible to the
-  // reader. This is a prose site; the whole cost of turning it off is ~9 kB
-  // gzipped across every page, which is not worth one wrapped line silently
-  // eating a word boundary.
+  // ships as "The<a>governance document</a>explains".
+  //
+  // It must be `false`, not `true`. Measured on Astro 7.1.6, the three states
+  // are not two — omitting the key eats the newline, `true` keeps a bare "\n",
+  // and only `false` keeps the source whitespace. So `true` is not the
+  // "compression on" spelling of the default, and swapping this to `true`
+  // would look like a no-op while changing behaviour.
+  //
+  // The failure is invisible in dev — compression only runs on build — so the
+  // author and the reviewer both miss it and every reader sees it. The whole
+  // cost of `false` is ~9 kB gzipped across every page, which is not worth one
+  // wrapped line silently eating a word boundary. `pnpm check:html` fails the
+  // build if one comes back.
   compressHTML: false,
 
   integrations: [

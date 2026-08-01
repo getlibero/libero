@@ -13,6 +13,8 @@ cd site
 pnpm install
 pnpm dev          # http://localhost:4321
 pnpm build        # -> site/dist
+pnpm check        # astro check (types)
+pnpm check:html   # fused word boundaries in the built HTML
 pnpm preview
 ```
 
@@ -110,6 +112,17 @@ become load-bearing again if the site ever moved back to a branch source. Change
 The social card renders text with [satori](https://github.com/vercel/satori), which converts
 glyphs to paths using the `.woff` files in `node_modules`. That is deliberate: rasterising an SVG
 with sharp would require IBM Plex to be installed on the machine running CI.
+
+## Why HTML compression is off
+
+`compressHTML` must stay `false` in `astro.config.mjs`. Left unset, it collapses the newline
+between prose and an inline element to nothing rather than to a space, shipping
+`The<a>governance document</a>explains`. It reproduces only in a production build, so the author
+and the reviewer both see correct spacing in dev and every reader sees the defect.
+
+Setting it to `true` is **not** the same as leaving it unset — on Astro 7.1.6 the three states all
+differ, and only `false` preserves source whitespace. `pnpm check:html` runs against `dist/` in CI
+and fails the build if a word boundary is swallowed again.
 
 ## Voice
 
