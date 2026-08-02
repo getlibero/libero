@@ -22,7 +22,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # Trusted publishing needs Node 22.14+ (and npm 11.5.1+, below).
-          # The packages still build against the Node 20 floor in ci.yml.
           node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
@@ -32,7 +31,7 @@ jobs:
       # Trusted publishing (OIDC): no token. npm authenticates via the runner's
       # id-token and generates the provenance attestation itself. pnpm 9's
       # publish silently ignores --provenance (0.0.1 shipped unattested), and
-      # Node 20's bundled npm predates trusted publishing, hence npm@latest
+      # the runner's bundled npm predates trusted publishing, hence npm@latest
       # and a direct npm publish. The package has no workspace deps to rewrite,
       # so publishing from the package directory is safe.
       - run: npm install -g npm@latest
