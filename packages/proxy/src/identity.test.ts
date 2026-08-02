@@ -2,8 +2,9 @@
 // server.test.ts proves the same rule holds over a real TLS connection; this
 // file is where the edge cases live, because they are cheap to state here.
 
+import type { TLSSocket } from "node:tls";
 import { describe, expect, it } from "vitest";
-import { channelFromCommonName } from "./identity.js";
+import { channelFromCommonName, resolveChannel } from "./identity.js";
 
 describe("channelFromCommonName", () => {
   it("resolves a channel principal", () => {
@@ -71,5 +72,37 @@ describe("channelFromCommonName", () => {
     const rejected = channelFromCommonName("agent");
     expect(rejected.ok).toBe(false);
     if (!rejected.ok) expect(rejected.commonName).toBe("agent");
+  });
+});
+
+// The socket-facing branches that a real handshake cannot easily produce: the
+// TLS layer normally refuses a connection before either shape reaches
+// resolveChannel, which is exactly why they are checked rather than assumed.
+describe("resolveChannel", () => {
+  function socketWithPeer(peer: object): TLSSocket {
+    return { getPeerCertificate: () => peer } as unknown as TLSSocket;
+  }
+
+  it("resolves the channel from the peer certificate's subject CN", () => {
+    expect(resolveChannel(socketWithPeer({ subject: { CN: "channel:C024BE91L" } }))).toEqual({
+      ok: true,
+      channel: "C024BE91L"
+    });
+  });
+
+  it("refuses a connection with no peer certificate", () => {
+    // Node hands back {} rather than null when there is no certificate.
+    expect(resolveChannel(socketWithPeer({}))).toMatchObject({
+      ok: false,
+      reason: "no_client_certificate"
+    });
+  });
+
+  it("refuses a subject carrying more than one CN", () => {
+    // Refused rather than resolved: picking either CN would be choosing which
+    // channel an ambiguous certificate speaks for.
+    expect(
+      resolveChannel(socketWithPeer({ subject: { CN: ["channel:C024BE91L", "channel:C7ZZZ9999"] } }))
+    ).toMatchObject({ ok: false, reason: "ambiguous_common_name" });
   });
 });

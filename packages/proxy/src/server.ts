@@ -35,6 +35,7 @@ export interface RequestContext {
   readonly requestId: string;
 }
 
+/** May return a promise; the dispatcher resolves it before serializing. */
 type RouteHandler = (ctx: RequestContext) => unknown;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -69,9 +70,13 @@ export function createProxyServer(options: ProxyServerOptions): Server {
 
   const routes = new Map<string, Map<string, RouteHandler>>([
     [
-      // Behind mutual TLS like everything else. There is no anonymous surface
-      // on this listener, which is why docker-compose carries no healthcheck
-      // yet — it would need a client certificate of its own.
+      // Behind mutual TLS *and* the channel-identity gate like everything
+      // else: there is no anonymous surface on this listener, and a caller
+      // probing liveness needs a certificate that names a channel — any
+      // CA-signed certificate is not enough. That is why docker-compose
+      // carries no healthcheck yet; whether monitoring gets a carve-out from
+      // the identity gate or a certificate of its own is decided by the issue
+      // that adds one, not implied here.
       "/health",
       new Map<string, RouteHandler>([["GET", () => ({ status: "ok", uptimeMs: now() - startedAt })]])
     ],
@@ -155,19 +160,26 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       return;
     }
 
-    try {
-      respond(200, handler({ channel, requestId }));
-    } catch {
-      // The thrown value is deliberately not inspected or logged. In this
-      // process an exception can carry a credential in its message, and the
-      // requestId is enough to correlate the failure with the request.
-      logger.log("error", { event: "handler_failed", requestId, channel, method, path: pathname });
-      sendJson(
-        res,
-        PROXY_ERROR_STATUS.internal,
-        proxyError("internal", "the proxy failed to handle the request", requestId, channel)
-      );
-    }
+    // Promise-aware dispatch, ahead of need: the tool-call endpoint (#51)
+    // will be async, and without this the day's symptom would be a pending
+    // Promise serialized as {} with status 200 — or a rejection escaping the
+    // process as an unhandled rejection.
+    Promise.resolve()
+      .then(() => handler({ channel, requestId }))
+      .then(body => {
+        respond(200, body);
+      })
+      .catch(() => {
+        // The thrown value is deliberately not inspected or logged. In this
+        // process an exception can carry a credential in its message, and the
+        // requestId is enough to correlate the failure with the request.
+        logger.log("error", { event: "handler_failed", requestId, channel, method, path: pathname });
+        sendJson(
+          res,
+          PROXY_ERROR_STATUS.internal,
+          proxyError("internal", "the proxy failed to handle the request", requestId, channel)
+        );
+      });
   });
 
   // Fires when a client presents no certificate, or one this CA did not sign.

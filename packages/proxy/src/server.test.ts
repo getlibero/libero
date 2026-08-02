@@ -52,18 +52,18 @@ function mint(out: string, args: string[]): void {
 
 function clientCert(dir: string, label: string): ClientCert {
   return {
-    cert: readFileSync(join(dir, `client-${label}.pem`)),
-    key: readFileSync(join(dir, `client-${label}.key`))
+    cert: readFileSync(join(dir, "agent", `client-${label}.pem`)),
+    key: readFileSync(join(dir, "agent", `client-${label}.key`))
   };
 }
 
 /** One request. Resolves on a response; rejects when the connection does not survive. */
-function call(path: string, client?: ClientCert, method = "GET"): Promise<Response> {
+function call(path: string, client?: ClientCert, method = "GET", targetPort = port): Promise<Response> {
   return new Promise((resolve, reject) => {
     const req = request(
       {
         host: "127.0.0.1",
-        port,
+        port: targetPort,
         path,
         method,
         ca: readFileSync(join(certs, "ca.pem")),
@@ -102,8 +102,8 @@ beforeAll(() => {
 
   server = createProxyServer({
     tls: loadTlsOptions({
-      cert: join(certs, "server.pem"),
-      key: join(certs, "server.key"),
+      cert: join(certs, "proxy", "server.pem"),
+      key: join(certs, "proxy", "server.key"),
       ca: join(certs, "ca.pem")
     }),
     logger: createJsonLogger(line => {
@@ -236,6 +236,49 @@ describe("routing", () => {
       const res = await call(path, clientCert(certs, CHANNEL));
       expect(() => ProxyError.parse(res.body)).not.toThrow();
       expect(ProxyError.parse(res.body).error.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    }
+  });
+
+  it("answers a failed handler with 500 and keeps the thrown value out of everything", async () => {
+    // A server whose /health handler throws: the injected clock's first call
+    // is the start timestamp, every later one fails with a message shaped
+    // like the thing this process must never emit.
+    const lines: string[] = [];
+    let calls = 0;
+    const failing = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      logger: createJsonLogger(line => {
+        lines.push(line);
+      }),
+      now: () => {
+        calls += 1;
+        if (calls > 1) throw new Error("ghp_credential_shaped_value");
+        return 0;
+      }
+    });
+    const failingPort = await new Promise<number>(resolve => {
+      failing.listen(0, "127.0.0.1", () => {
+        const address = failing.address();
+        resolve(typeof address === "object" && address !== null ? address.port : 0);
+      });
+    });
+
+    try {
+      const res = await call("/health", clientCert(certs, CHANNEL), "GET", failingPort);
+      expect(res.status).toBe(500);
+      expect(ProxyError.parse(res.body).error.code).toBe("internal");
+      // The exception's message reaches neither the response nor the log.
+      expect(JSON.stringify(res.body)).not.toContain("ghp_");
+      expect(lines.join("")).not.toContain("ghp_");
+      expect(lines.map(line => JSON.parse(line) as { event: string })).toContainEqual(
+        expect.objectContaining({ event: "handler_failed", channel: CHANNEL, path: "/health" })
+      );
+    } finally {
+      failing.close();
     }
   });
 

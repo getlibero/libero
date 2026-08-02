@@ -28,6 +28,9 @@ audit writer.
 ## Certificates
 
 `scripts/dev-certs.sh` mints the CA, the server certificate, and one client
-certificate per channel. The tests run that same script rather than carrying
-fixtures, so no private key is committed here and the documented operator path
-is exercised on every CI run. It needs `openssl` on PATH.
+certificate per channel, laid out by role — `ca.pem` at the root, the proxy's
+keypair under `proxy/`, the channel client certs under `agent/` — so each
+container mounts only its slice and the CA key is mounted into neither. The
+tests run that same script rather than carrying fixtures, so no private key is
+committed here and the documented operator path is exercised on every CI run.
+It needs `openssl` on PATH.

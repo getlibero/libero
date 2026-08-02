@@ -70,8 +70,11 @@ sh scripts/dev-certs.sh                       # every channel under channels/
 sh scripts/dev-certs.sh --channels C024BE91L  # or name them
 ```
 
-Output lands in `deploy/certs`, which is gitignored and mounted read-only into both containers.
-Adding a channel means creating its directory and running the script again.
+Output lands in `deploy/certs`, gitignored and laid out by role: `ca.pem` at the root, the proxy's
+keypair under `proxy/`, the channel client certificates under `agent/`. The compose file mounts
+each container only its own slice, read-only — and the CA's private key into neither, because a
+process that can mint certificates can name itself any channel. Adding a channel means creating
+its directory and running the script again.
 
 **Certificates authenticate; team sheets authorize.** There is no revocation list. A certificate
 proves which channel is calling and nothing more — what that channel may do is resolved from its

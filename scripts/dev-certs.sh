@@ -15,6 +15,15 @@
 # but these two roles, and is not a public trust anchor. The keys it produces
 # do NOT belong in the git repo that holds your team sheets.
 #
+# Output is laid out by role so a deployment can mount each container exactly
+# what it needs and nothing else — in particular, the CA key is mounted into
+# NEITHER container, because a process that can mint certificates can name
+# itself any channel:
+#   OUT/ca.pem    trust anchor, shared with both containers
+#   OUT/ca.key    signs certificates; stays on the host
+#   OUT/proxy/    the proxy's server certificate and key
+#   OUT/agent/    one client certificate and key per channel
+#
 # This script is also what the proxy's test suite runs to get its fixtures, so
 # the documented path is exercised on every CI run rather than rotting.
 set -eu
@@ -32,8 +41,8 @@ usage: sh scripts/dev-certs.sh [--out DIR] [--channels a,b,c] [--raw-cn LABEL=CN
   --channels a,b,c   channel ids to mint client certs for. Defaults to every
                      directory under channels/ except "example".
   --raw-cn LABEL=CN  mint an extra client cert with a verbatim CN, written as
-                     client-LABEL.pem. For testing what the proxy rejects and
-                     for debugging identity resolution — not for deployment.
+                     agent/client-LABEL.pem. For testing what the proxy rejects
+                     and for debugging identity resolution — not for deployment.
 
 Re-running is safe: it overwrites what it wrote before. Adding a channel means
 creating its directory and running this again.
@@ -67,7 +76,7 @@ if [ -z "$CHANNELS" ] && [ -d channels ]; then
   done
 fi
 
-mkdir -p "$OUT"
+mkdir -p "$OUT/proxy" "$OUT/agent"
 EXT="${OUT}/.extensions.cnf"
 
 # Extension sections only. Subjects are passed with -subj instead of being
@@ -128,8 +137,8 @@ openssl x509 -req -in "${OUT}/ca.csr" -signkey "${OUT}/ca.key" \
   -extfile "$EXT" -extensions v3_ca 2>/dev/null
 rm -f "${OUT}/ca.csr"
 
-echo "dev-certs: proxy server cert -> ${OUT}/server.pem"
-sign server "libero-proxy" v3_server
+echo "dev-certs: proxy server cert -> ${OUT}/proxy/server.pem"
+sign proxy/server "libero-proxy" v3_server
 
 if [ -z "$CHANNELS" ] && [ -z "$RAW_CNS" ]; then
   echo "dev-certs: no channels found under channels/ — no client certs minted." >&2
@@ -139,8 +148,8 @@ fi
 IFS=,
 for id in $CHANNELS; do
   [ -n "$id" ] || continue
-  echo "dev-certs: client cert for channel ${id} -> ${OUT}/client-${id}.pem"
-  sign "client-${id}" "channel:${id}" v3_client
+  echo "dev-certs: client cert for channel ${id} -> ${OUT}/agent/client-${id}.pem"
+  sign "agent/client-${id}" "channel:${id}" v3_client
 done
 unset IFS
 
@@ -148,10 +157,12 @@ unset IFS
 # is the point: these exist to prove the proxy rejects what it should.
 echo "$RAW_CNS" | while IFS= read -r spec; do
   [ -n "$spec" ] || continue
-  echo "dev-certs: client cert with raw CN ${spec#*=} -> ${OUT}/client-${spec%%=*}.pem"
-  sign "client-${spec%%=*}" "${spec#*=}" v3_client
+  echo "dev-certs: client cert with raw CN ${spec#*=} -> ${OUT}/agent/client-${spec%%=*}.pem"
+  sign "agent/client-${spec%%=*}" "${spec#*=}" v3_client
 done
 
 rm -f "$EXT" "${OUT}/ca.srl"
 
-echo "dev-certs: done. Keep ${OUT} out of the git repo holding your team sheets."
+echo "dev-certs: done. Mount ${OUT}/proxy only into the proxy, ${OUT}/agent only"
+echo "dev-certs: into the agent, and ${OUT}/ca.key into neither container."
+echo "dev-certs: Keep ${OUT} out of the git repo holding your team sheets."

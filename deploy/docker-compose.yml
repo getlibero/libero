@@ -4,8 +4,10 @@
 #
 # Run `sh scripts/dev-certs.sh` before the first `docker compose up`: the two
 # services speak mutual TLS, and the certificate the agent presents is what
-# tells the proxy which channel is calling. ./certs is generated, gitignored,
-# and mounted read-only into both containers.
+# tells the proxy which channel is calling. ./certs is generated and
+# gitignored, and each container mounts only its role's slice of it — the CA's
+# private key is mounted into neither, because a process that can mint
+# certificates can name itself any channel.
 
 services:
   server:
@@ -21,13 +23,17 @@ services:
       # One client cert per channel, client-<CHANNEL_ID>.pem. Which one the
       # agent presents is what identifies the channel to the proxy, so this
       # directory is the agent's entire authority: no cert, no call.
-      PROXY_CLIENT_CERT_DIR: /etc/libero/certs
+      PROXY_CLIENT_CERT_DIR: /etc/libero/certs/agent
       # LLM provider keys go HERE (completion only) — never tool credentials.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ../channels:/data/channels
-      - ./certs:/etc/libero/certs:ro
+      # The trust anchor and the channel client certs — not ./certs whole. The
+      # server key would let a compromised agent impersonate the proxy, and the
+      # CA key would let it mint an identity for any channel.
+      - ./certs/ca.pem:/etc/libero/certs/ca.pem:ro
+      - ./certs/agent:/etc/libero/certs/agent:ro
     depends_on:
       - proxy
     networks: [libero]
@@ -46,14 +52,16 @@ services:
       # ports. Outside compose the default is 127.0.0.1.
       PROXY_HOST: 0.0.0.0
       PROXY_PORT: 8443
-      PROXY_TLS_CERT: /etc/libero/certs/server.pem
-      PROXY_TLS_KEY: /etc/libero/certs/server.key
+      PROXY_TLS_CERT: /etc/libero/certs/proxy/server.pem
+      PROXY_TLS_KEY: /etc/libero/certs/proxy/server.key
       # Client certs are verified against this CA and nothing else. A client
       # without one signed by it cannot open a connection.
       PROXY_TLS_CA: /etc/libero/certs/ca.pem
     volumes:
       - ../channels:/data/channels:ro           # team sheets are read-only to services
-      - ./certs:/etc/libero/certs:ro
+      # Its own keypair and the trust anchor; no client keys, no CA key.
+      - ./certs/ca.pem:/etc/libero/certs/ca.pem:ro
+      - ./certs/proxy:/etc/libero/certs/proxy:ro
       - audit-data:/data/audit
       - vault-data:/data/vault
       - /var/run/docker.sock:/var/run/docker.sock   # sandbox runner (see docs for gVisor)
