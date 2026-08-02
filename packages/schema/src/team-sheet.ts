@@ -20,7 +20,7 @@ export const ToolEntry = z.object({
 export const McpServer = z.object({
   name: z.string().min(1),
   transport: z.enum(["http", "stdio"]),
-  url: z.string().url().optional(),
+  url: z.url().optional(),
   /** Name of a credential in the proxy vault. Never a secret value. */
   credential: z.string().min(1).optional(),
   tool: z.array(ToolEntry).default([]),
@@ -31,30 +31,32 @@ export const TeamSheet = z.object({
     name: z.string().min(1),
     description: z.string().default(""),
   }),
+  // prefault, not default: an absent section is parsed through the inner
+  // schema so nested defaults resolve (zod 4's default() short-circuits).
   llm: z
     .object({
       model: z.string().min(1).optional(),
       max_tokens_per_task: z.number().int().positive().optional(),
     })
-    .default({}),
+    .prefault({}),
   budget: z
     .object({
       daily_tokens: z.number().int().positive().default(1_000_000),
       daily_tool_calls: z.number().int().positive().default(200),
     })
-    .default({}),
+    .prefault({}),
   mcp_server: z.array(McpServer).default([]),
   egress: z
     .object({
       allow: z.array(z.string()).default([]),
     })
-    .default({ allow: [] }),
+    .prefault({}),
   ambient: z
     .object({
       enabled: z.boolean().default(false),
       schedule: z.string().optional(),
     })
-    .default({ enabled: false }),
+    .prefault({}),
 });
 
 export type TeamSheet = z.infer<typeof TeamSheet>;
