@@ -15,6 +15,16 @@ describe("the example team sheet", () => {
     expect(sheet.budget).toEqual({ daily_tokens: 2_000_000, daily_tool_calls: 400 });
   });
 
+  it("carries all four per-task caps", () => {
+    expect(sheet.llm).toEqual({
+      model: "claude-sonnet-4-6",
+      max_tool_calls_per_task: 25,
+      max_task_seconds: 300,
+      max_tokens_per_task: 60_000,
+      max_tokens_per_turn: 8_192,
+    });
+  });
+
   it("carries the documented tool allowlist and approval mode", () => {
     const github = sheet.mcp_server[0];
     expect(github?.name).toBe("github");
@@ -25,6 +35,24 @@ describe("the example team sheet", () => {
 });
 
 describe("defaults", () => {
+  // A sheet with no [llm] section must still yield every cap: the composition
+  // root maps sheet to caps field by field and has no defaults of its own.
+  it("yields all four per-task caps when the llm section is absent", () => {
+    const sheet = TeamSheet.parse({ channel: { name: "ops" } });
+    expect(sheet.llm).toEqual({
+      max_tool_calls_per_task: 25,
+      max_task_seconds: 300,
+      max_tokens_per_task: 200_000,
+      max_tokens_per_turn: 8_192,
+    });
+  });
+
+  it("fills each cap the section omits", () => {
+    const sheet = TeamSheet.parse({ channel: { name: "ops" }, llm: { max_task_seconds: 60 } });
+    expect(sheet.llm.max_task_seconds).toBe(60);
+    expect(sheet.llm.max_tokens_per_task).toBe(200_000);
+  });
+
   it("fills every optional section from a minimal sheet", () => {
     const sheet = TeamSheet.parse({ channel: { name: "ops" } });
     expect(sheet.budget).toEqual({ daily_tokens: 1_000_000, daily_tool_calls: 200 });
@@ -52,6 +80,27 @@ describe("rejections", () => {
     const result = TeamSheet.safeParse({
       channel: { name: "ops" },
       budget: { daily_tokens: 0 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // A cap of zero or below is not a tighter cap, it is a channel that can never
+  // run a task. A fractional one is a typo.
+  it("rejects a non-positive per-task cap", () => {
+    for (const llm of [
+      { max_tool_calls_per_task: 0 },
+      { max_task_seconds: -1 },
+      { max_tokens_per_task: 0 },
+      { max_tokens_per_turn: -8192 },
+    ]) {
+      expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
+    }
+  });
+
+  it("rejects a fractional per-task cap", () => {
+    const result = TeamSheet.safeParse({
+      channel: { name: "ops" },
+      llm: { max_task_seconds: 1.5 },
     });
     expect(result.success).toBe(false);
   });
