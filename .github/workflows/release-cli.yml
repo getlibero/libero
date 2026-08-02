@@ -27,7 +27,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @getlibero/cli build
       - run: pnpm --filter @getlibero/cli test
+      # Trusted publishing (OIDC): no token. npm authenticates via the runner's
+      # id-token and generates the provenance attestation itself. pnpm 9's
+      # publish silently ignores --provenance (0.0.1 shipped unattested), and
+      # Node 20's bundled npm predates trusted publishing, hence npm@latest
+      # and a direct npm publish. The package has no workspace deps to rewrite,
+      # so publishing from the package directory is safe.
+      - run: npm install -g npm@latest
       - name: Publish with provenance
-        run: pnpm --filter @getlibero/cli publish --access public --provenance --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+        working-directory: packages/cli

@@ -1,6 +1,6 @@
 {
   "name": "@getlibero/cli",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Libero CLI — init, channel add, audit, doctor. The only npm-published Libero package. Placeholder release; the stack itself ships as Docker images.",
   "license": "MIT",
   "type": "module",
