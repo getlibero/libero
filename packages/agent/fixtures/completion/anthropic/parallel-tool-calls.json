@@ -1,0 +1,28 @@
+{
+  "id": "msg_test",
+  "type": "message",
+  "role": "assistant",
+  "model": "test-model",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_test_1",
+      "name": "list_prs",
+      "input": { "repo": "getlibero/libero" }
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_test_2",
+      "name": "trigger_workflow",
+      "input": { "workflow": "ci.yml" }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 210,
+    "output_tokens": 45,
+    "cache_read_input_tokens": null,
+    "cache_creation_input_tokens": null
+  }
+}

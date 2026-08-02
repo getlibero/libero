@@ -18,7 +18,7 @@
     "test": "pnpm -r test",
     "lint": "eslint .",
     "typecheck": "pnpm -r typecheck",
-    "license-check": "license-checker-rseidelsohn --onlyAllow \"MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0\" --excludePrivatePackages --excludePackagesStartingWith \"spdx-exceptions@\""
+    "license-check": "sh scripts/license-check.sh"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

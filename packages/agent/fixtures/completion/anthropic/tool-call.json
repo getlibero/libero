@@ -1,0 +1,23 @@
+{
+  "id": "msg_test",
+  "type": "message",
+  "role": "assistant",
+  "model": "test-model",
+  "content": [
+    { "type": "text", "text": "Checking the open pull requests." },
+    {
+      "type": "tool_use",
+      "id": "toolu_test",
+      "name": "list_prs",
+      "input": { "repo": "getlibero/libero" }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 200,
+    "output_tokens": 30,
+    "cache_read_input_tokens": null,
+    "cache_creation_input_tokens": null
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "chatcmpl_test",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Checking the open pull requests.",
+        "tool_calls": [
+          {
+            "id": "call_test",
+            "type": "function",
+            "function": { "name": "list_prs", "arguments": "{\"repo\":\"getlibero/libero\"}" }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": { "prompt_tokens": 200, "completion_tokens": 30, "total_tokens": 230 }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_test",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "The deployment runbook begins with" },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": { "prompt_tokens": 50, "completion_tokens": 16, "total_tokens": 66 }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "chatcmpl_test",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "Paris is the capital of France." },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 8,
+    "total_tokens": 128,
+    "prompt_tokens_details": { "cached_tokens": 100 }
+  }
+}

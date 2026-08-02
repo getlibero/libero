@@ -20,7 +20,7 @@ If a commercial layer ever materializes (multi-workspace control plane, SSO/SCIM
 
 - **Allowed in core:** MIT and Apache-2.0 only (NOTICE files carried in distributions). Public-domain SQLite.
 - **Excluded from core:** any AGPL/SSPL component; any dependency under commercial (non-OSI) terms, such as the Anthropic Claude Agent SDK, which is permitted only as an optional, user-installed adapter.
-- A CI license-checker gate fails the build on any copyleft introduction.
+- A CI license-checker gate fails the build on any copyleft introduction. It scans the repository root and every workspace package under `packages/` and `apps/`. `site/` is out of scope: it is outside the pnpm workspace, carries its own lockfile and CI job, and ships OFL-1.1 licensed fonts — it is presentation, not core.
 
 ## Repository ownership
 
