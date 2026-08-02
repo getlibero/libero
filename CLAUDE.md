@@ -70,6 +70,9 @@ These are load-bearing, not stylistic:
   records, tool calls, approvals, and memory ops. Both services import from it;
   don't redefine those shapes locally. `channels/example/channel.toml` is the
   documented starter sheet and should stay in sync with the zod schema.
+  Today only the team sheet is implemented — `src/team-sheet.ts`, ~60 lines. The
+  rest of that list is where those shapes go when the code needing them lands,
+  not something you can import yet.
 
 ## Design
 

@@ -10,19 +10,20 @@ code, and it is worth being precise about which is which.
 
 ## What is in the repository
 
-`packages/schema` — the zod schemas for team sheets, audit records, tool calls, approvals and
-memory operations. This is the single source of truth both services will import from, and it is
-real.
+`packages/schema` — the zod schema for the team sheet: servers and their tool allowlist, approval
+mode, budgets, egress, ambient. It is the single source of truth for that one shape, and both
+services will import it. The audit, tool-call and memory schemas named in the
+[architecture](/docs/architecture) are not written yet.
 
-`packages/cli` — a placeholder `@getlibero/cli`, published to npm with provenance attestations so
-the release path is proven before there is anything worth releasing through it.
+`packages/cli` — a placeholder `@getlibero/cli`. Nothing is on the npm registry yet. The release
+workflow is wired for provenance attestations and fires on a `cli-v*` tag, so the release path gets
+proven before there is anything worth releasing through it.
 
-`design/` — the design system: tokens, a component layer, brand marks, and a reference page that
-renders every component in both modes. This site is built on it.
+`site/` — this website: the marketing pages and the documentation.
 
-CI — lint, typecheck, tests, a licence gate that fails on copyleft, a grep-level check that
+CI — lint, typecheck, a licence gate that fails on copyleft, a grep-level check that
 `packages/agent` never imports `packages/proxy`, and a guard that fails any `pull_request_target`
-workflow containing a checkout step.
+workflow containing a checkout step. There is a test runner too, with nothing in it yet.
 
 ## What is not
 
