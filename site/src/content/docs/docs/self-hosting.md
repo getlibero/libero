@@ -4,10 +4,10 @@ description: The target deployment — two containers, one team sheet per channe
 ---
 
 :::caution[Not deployable yet]
-This page describes the target deployment. Phase 0 is the skeleton: the schema package, the CLI
-placeholder, the design system, and the CI that guards the boundaries. The proxy — the thing that
-makes any of this safe — is phase 1. Do not run this against a workspace you care about, because
-there is nothing to run yet.
+This page describes the target deployment. What exists today is early phase 1: the proxy process
+starts, speaks mutual TLS, and binds every request to a channel — but the vault, team-sheet
+enforcement, approvals, budgets, and the audit log do not exist yet, and neither does the gateway.
+Do not run this against a workspace you care about: the parts that make it safe are not built.
 :::
 
 ## The shape of a deployment
@@ -17,6 +17,7 @@ Slack over Socket Mode, which is the main reason Socket Mode was chosen.
 
 ```bash
 npx @getlibero/cli init      # scaffolds config + secrets on the host
+sh scripts/dev-certs.sh      # mints the mutual-TLS material (see below)
 docker compose up            # starts gateway+agent and proxy
 ```
 
@@ -52,6 +53,39 @@ the [team sheet reference](/docs/team-sheet).
 
 The proxy listens only on localhost or a private network, with mutual TLS between the two
 services. Put nothing else on that interface.
+
+## Mutual TLS between the services
+
+The agent reaches the proxy over mutual TLS. A client with no certificate the local CA signed
+cannot open a connection at all, and the certificate it does present is where the proxy reads the
+channel id from — there is no header and no request field it will accept one in. A call on behalf
+of `#engineering` requires that channel's private key, so a prompt-injected model cannot talk its
+way into another channel's tools.
+
+`scripts/dev-certs.sh` mints the material: a local CA, the proxy's server certificate, and one
+client certificate per directory under `channels/`, each with the subject `CN=channel:<CHANNEL_ID>`.
+
+```bash
+sh scripts/dev-certs.sh                       # every channel under channels/
+sh scripts/dev-certs.sh --channels C024BE91L  # or name them
+```
+
+Output lands in `deploy/certs`, gitignored and laid out by role: `ca.pem` at the root, the proxy's
+keypair under `proxy/`, the channel client certificates under `agent/`. The compose file mounts
+each container only its own slice, read-only — and the CA's private key into neither, because a
+process that can mint certificates can name itself any channel. Adding a channel means creating
+its directory and running the script again.
+
+**Certificates authenticate; team sheets authorize.** There is no revocation list. A certificate
+proves which channel is calling and nothing more — what that channel may do is resolved from its
+team sheet on every call, so removing a channel's sheet removes its permissions immediately, with
+a stale certificate left holding nothing. Rotate by re-running the script and restarting both
+services.
+
+The CA is yours: it never leaves the host, it signs only these two roles, and it is not a public
+trust anchor. The keys it produces are secrets. Keep `deploy/certs` out of the git repo holding
+your team sheets — that repo is meant to be readable by everyone who reviews a manifest, and these
+files are not.
 
 ## Operating it
 

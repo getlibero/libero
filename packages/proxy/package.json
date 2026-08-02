@@ -2,7 +2,7 @@
   "name": "@getlibero/proxy",
   "version": "0.0.1",
   "private": true,
-  "description": "Tool proxy for Libero: team-sheet enforcement, credential vault, approvals, budget meter, audit log. Holds every credential; the agent reaches tools only through this service. Scaffold only — no behavior yet.",
+  "description": "Tool proxy for Libero: team-sheet enforcement, credential vault, approvals, budget meter, audit log. Holds every credential; the agent reaches tools only through this service.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@getlibero/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
   }
 }

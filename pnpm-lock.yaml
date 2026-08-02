@@ -27,7 +27,15 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.1)
 
-  apps/proxy-server: {}
+  apps/proxy-server:
+    dependencies:
+      '@getlibero/proxy':
+        specifier: workspace:*
+        version: link:../../packages/proxy
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
 
   apps/server: {}
 
@@ -44,7 +52,15 @@ importers:
 
   packages/gateway: {}
 
-  packages/proxy: {}
+  packages/proxy:
+    dependencies:
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../schema
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
 
   packages/schema:
     dependencies:
