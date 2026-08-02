@@ -14,6 +14,11 @@ design/
   brand/         mark, lockup, and app icons as standalone SVG.
 ```
 
+`brand/app-icon-fullbleed.svg` is the app icon without its corner radius, for
+hosts that mask icons themselves — Slack workspace icons, avatar crops. Where
+nothing rounds it, use `app-icon.svg`. `app-icon-fullbleed-1024.png` is its
+raster render, for hosts that reject SVG uploads.
+
 ## Where it comes from
 
 The canonical spec is `Libero Design System.dc.html` in the Claude Design project
@@ -46,6 +51,20 @@ Reference tokens by name, never by hex. `--lb-accent` (#1BA85A),
 `--lb-accent-ink` (#06120B) and the type stack are identical in both modes — an
 Approve button is pixel-identical either way. Only surfaces, text, washes, and
 the `--lb-accent-text` contrast alias swap.
+
+## Slack
+
+The workspace wears the dark tokens. Icon: `brand/app-icon-fullbleed-1024.png`.
+Sidebar theme — paste into Preferences → Themes → Custom:
+
+```
+#0B0F0E,#131A18,#1BA85A,#06120B,#1B2422,#E8EFEC,#1BA85A,#F5B544
+```
+
+In Slack's slot order: bg-canvas, bg-surface, accent, accent-ink, bg-raised,
+text, accent, warn. Hex because Slack can't read a token; change a token, redo
+the string. The mention badge is warn, not danger — a mention is a human that
+still has to click, not something blocked.
 
 ## The rules the CSS encodes
 
