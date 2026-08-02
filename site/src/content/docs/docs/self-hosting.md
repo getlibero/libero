@@ -17,6 +17,7 @@ Slack over Socket Mode, which is the main reason Socket Mode was chosen.
 
 ```bash
 npx @getlibero/cli init      # scaffolds config + secrets on the host
+sh scripts/dev-certs.sh      # mints the mutual-TLS material (see below)
 docker compose up            # starts gateway+agent and proxy
 ```
 
@@ -52,6 +53,36 @@ the [team sheet reference](/docs/team-sheet).
 
 The proxy listens only on localhost or a private network, with mutual TLS between the two
 services. Put nothing else on that interface.
+
+## Mutual TLS between the services
+
+The agent reaches the proxy over mutual TLS. A client with no certificate the local CA signed
+cannot open a connection at all, and the certificate it does present is where the proxy reads the
+channel id from — there is no header and no request field it will accept one in. A call on behalf
+of `#engineering` requires that channel's private key, so a prompt-injected model cannot talk its
+way into another channel's tools.
+
+`scripts/dev-certs.sh` mints the material: a local CA, the proxy's server certificate, and one
+client certificate per directory under `channels/`, each with the subject `CN=channel:<CHANNEL_ID>`.
+
+```bash
+sh scripts/dev-certs.sh                       # every channel under channels/
+sh scripts/dev-certs.sh --channels C024BE91L  # or name them
+```
+
+Output lands in `deploy/certs`, which is gitignored and mounted read-only into both containers.
+Adding a channel means creating its directory and running the script again.
+
+**Certificates authenticate; team sheets authorize.** There is no revocation list. A certificate
+proves which channel is calling and nothing more — what that channel may do is resolved from its
+team sheet on every call, so removing a channel's sheet removes its permissions immediately, with
+a stale certificate left holding nothing. Rotate by re-running the script and restarting both
+services.
+
+The CA is yours: it never leaves the host, it signs only these two roles, and it is not a public
+trust anchor. The keys it produces are secrets. Keep `deploy/certs` out of the git repo holding
+your team sheets — that repo is meant to be readable by everyone who reviews a manifest, and these
+files are not.
 
 ## Operating it
 

@@ -28,11 +28,13 @@ extending `../../tsconfig.base.json`.
 
 ## Current state
 
-Phase 0 skeleton. The only code is `packages/schema` (zod team-sheet schema),
+Early phase 1. `packages/schema` (zod team-sheet schema, proxy error shape),
+`packages/agent` (provider-agnostic completion layer, ReAct loop with per-task
+caps), `packages/proxy` (mTLS listener and per-channel identity — no vault, no
+enforcement yet), `apps/proxy-server` (the process composing it),
 `packages/cli` (placeholder npm release), `design/` (the design system — plain
-CSS, no TypeScript), and `site/` (getlibero.com). `packages/{agent, gateway,
-memory, proxy}` are README stubs, and `apps/server`, `apps/proxy-server`, and
-`e2e/` are empty directories.
+CSS, no TypeScript), and `site/` (getlibero.com). `packages/{gateway, memory}`
+are README stubs, `apps/server` is a scaffold, and `e2e/` is empty.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
@@ -90,6 +92,13 @@ These are load-bearing, not stylistic:
   but the proxy's meter is authoritative.
 - **Credentials are referenced by name, never by value,** in team sheets, logs,
   errors, and anything returned to the agent.
+- **The channel id comes from the client certificate, and from nowhere else.**
+  Client certs are minted per channel with the subject `CN=channel:<id>`
+  (`scripts/dev-certs.sh`), and `packages/proxy/src/identity.ts` is the only
+  place that resolves one. No header, query parameter, or request body may ever
+  become a channel id: the process on the other end runs the model, so anything
+  the model can influence is not a boundary. Certificates authenticate; team
+  sheets authorize — revocation is removing a channel's sheet, not a CRL.
 - **One SQLite file per channel is the isolation boundary.** No schema or query
   should be able to join across channels.
 - **`packages/schema` is the single source of truth** for team sheets, audit

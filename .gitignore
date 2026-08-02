@@ -8,3 +8,9 @@ channels/*/store.db*
 channels/*/MEMORY.md
 audit.db*
 coverage/
+
+# mTLS material from scripts/dev-certs.sh. Private keys — never committed,
+# here or in the repo holding your team sheets.
+deploy/certs/
+*.key
+*.pem
