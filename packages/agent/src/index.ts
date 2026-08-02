@@ -21,3 +21,18 @@ export {
   OPENAI_COMPATIBLE_BASE_URLS
 } from "./completion/openai.js";
 export type { OpenAICompatibleCompletionOptions } from "./completion/openai.js";
+
+export { runAgentTask } from "./loop/loop.js";
+export { totalTokens } from "./loop/caps.js";
+export { DEFAULT_AGENT_LOOP_CAPS } from "./loop/types.js";
+export type {
+  AgentLoopCaps,
+  AgentStopReason,
+  AgentTaskOptions,
+  AgentTaskResult,
+  ToolExecutor,
+  ToolResult,
+  ToolSource
+} from "./loop/types.js";
+
+export { createStubToolSource, createUnavailableToolExecutor } from "./loop/stub-tools.js";
