@@ -10,9 +10,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "smol-toml": "^1.7.1"
   }
 }
