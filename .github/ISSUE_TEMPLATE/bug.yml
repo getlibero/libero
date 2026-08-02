@@ -5,9 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Phase 0: most of the specification is not implemented yet. Check the
+        The implementation trails the specification on purpose. Check the
         [roadmap](https://getlibero.com/docs/roadmap) before filing "X does not
-        exist" — it may be a later phase, not a bug.
+        exist" — if it belongs to a later phase it will be labeled `parked`,
+        not treated as a bug.
 
         Security reports do not belong here. Use private vulnerability
         reporting (Security → Report a vulnerability); see SECURITY.md.

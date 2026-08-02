@@ -17,6 +17,24 @@ A Contributor License Agreement (Apache-style) is required from your first PR; a
 
 The roadmap is phase-gated (see [the roadmap](https://getlibero.com/docs/roadmap), sourced from `site/src/content/docs/docs/roadmap.md`), and the priority is the governed core: vault, team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that attacks them. Fun features that outpace the proxy will be politely parked.
 
+## How work is planned
+
+Everything is planned in public GitHub issues; there is no separate tracker.
+
+- **One milestone per roadmap phase**, opened when the phase starts. Its
+  description is the phase's definition of done, and the open milestone is the
+  current phase — watch it to follow along.
+- **One tracking issue per workstream** (label `tracking`), broken into
+  sub-issues sized to roughly one PR. Ordering is expressed with GitHub's
+  blocked-by relationships, so filtering out blocked issues shows what is
+  workable right now.
+- **Out-of-phase work is parked, not rejected.** A valid bug report or feature
+  that belongs to a later phase gets the `parked` label and no milestone, and
+  is picked up when its phase opens. "X from a later phase does not exist yet"
+  is parked on sight.
+- Issues labeled `help wanted` or `good first issue` are up for grabs. Comment
+  on a sub-issue before starting it so work is not duplicated.
+
 ## Development
 
 ```bash
