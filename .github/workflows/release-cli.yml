@@ -16,6 +16,12 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # A tag alone does not release: this environment requires a reviewer's
+    # approval in the Actions UI, and only cli-v* tag refs may use it. The
+    # npm trusted publisher pins the same environment name, so the OIDC
+    # claim makes skipping the gate a registry-side rejection, not just a
+    # repo-settings one.
+    environment: npm-publish
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
