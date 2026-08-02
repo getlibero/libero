@@ -21,7 +21,9 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Trusted publishing needs Node 22.14+ (and npm 11.5.1+, below).
+          # The packages still build against the Node 20 floor in ci.yml.
+          node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
