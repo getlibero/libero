@@ -5,9 +5,9 @@ description: Phase-gated delivery. The governed core — vault, enforcement, app
 
 Phases are gated: later phases do not start until the governed core is solid.
 
-**Phase 0 — skeleton.** Monorepo, schema package, docker-compose, mock Slack harness, CI with lint/typecheck/tests/license gate + CLA bot. `@getlibero/cli` placeholder published with provenance wiring. A hello-world agent answers a mention in a real channel.
+**Phase 0 — skeleton.** Monorepo, schema package, design system, site, docker-compose skeleton, CI with lint/typecheck/tests/license gate + CLA bot. `@getlibero/cli` placeholder published with provenance.
 
-**Phase 1 — the governed core.** Proxy end-to-end: vault, team-sheet enforcement, one real MCP server (GitHub), HITL approval cards, budget meter, audit log + CLI. Channel router, attribution, live checklist. FTS message store.
+**Phase 1 — the governed core.** Slack gateway and agent loop — a hello-world agent answers a mention in a real channel — with a mock Slack harness for tests. Proxy end-to-end: vault, team-sheet enforcement, one real MCP server (GitHub), HITL approval cards, budget meter, audit log + CLI. Channel router, attribution, live checklist. FTS message store.
 
 *Definition of done: a prompt-injected agent in a test channel cannot exfiltrate a secret, call an unlisted tool, exceed budget, or act destructively without a human click — demonstrated by e2e tests that try.*
 
