@@ -5,8 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        The roadmap is phase-gated: features that outpace the governed core get
-        parked. Read the [roadmap](https://getlibero.com/docs/roadmap) and the
+        The roadmap is phase-gated: features that outpace the governed core are
+        labeled `parked` — kept open, picked up when their phase starts. Read
+        the [roadmap](https://getlibero.com/docs/roadmap) and the
         [architecture](https://getlibero.com/docs/architecture) first — at this
         stage, the design of record is the thing worth arguing about.
   - type: textarea

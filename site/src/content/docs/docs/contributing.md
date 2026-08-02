@@ -34,6 +34,15 @@ The [roadmap](/docs/roadmap) is phase-gated, and the priority is the governed co
 team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that
 attacks them. Features that outpace the proxy will be politely parked.
 
+## Following along
+
+Work is planned in [public GitHub issues](https://github.com/getlibero/libero/issues); there is
+no separate tracker. One milestone per phase carries the phase's definition of done, and the open
+milestone is the current phase. Each workstream is a `tracking` issue holding PR-sized
+sub-issues; ordering is expressed with blocked-by relationships, so filtering out blocked issues
+shows what is workable now. Valid work that belongs to a later phase is labeled `parked` rather
+than closed, and picked up when its phase opens.
+
 ## Development
 
 ```bash

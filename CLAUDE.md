@@ -43,6 +43,32 @@ The roadmap is phase-gated on purpose: the governed core (vault, team-sheet
 enforcement, approval broker, budget meter, audit log, and the e2e suite that
 attacks them) comes before features that depend on it.
 
+## Planning
+
+Work is planned in GitHub issues on `getlibero/libero`. The roadmap
+(`site/src/content/docs/docs/roadmap.md`) defines phase scope; issues are the
+execution plan, not the spec.
+
+- **One milestone per phase**, created when the phase starts. Its description
+  carries the phase's definition of done. An issue goes in the milestone only
+  if the phase gates on it.
+- **One tracking issue per workstream** (label `tracking`), holding native
+  sub-issues. Sub-issues are sized to roughly one PR and state their own
+  acceptance criteria.
+- **Sequencing uses native issue dependencies** (blocked by / blocking), not
+  prose. Sub-issues express containment; dependencies express order.
+- **Labels:** `area:*` says where in the tree (agent, proxy, schema, cli, e2e,
+  site, infra); GitHub's default type labels say what kind of change;
+  `security` marks issues load-bearing for the security property or part of
+  the attack suite; `parked` marks valid work that belongs to a later phase —
+  parked issues stay open, carry no milestone, and are picked up when their
+  phase opens.
+- No Projects board. Milestone + labels + the issue list is the whole system.
+
+The public version of this convention is the "How work is planned" section of
+`CONTRIBUTING.md` (short form on the site's contributing page); keep them in
+sync when the convention changes.
+
 ## Architecture invariants
 
 Two services. **gateway + agent** (`apps/server`) talks to Slack over Socket
