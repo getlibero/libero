@@ -1,5 +1,7 @@
 # The proxy is the security boundary. Changes require review by proxy owners.
-/packages/proxy/   @getlibero/proxy-owners
+# apps/proxy-server is the process that actually holds the credentials.
+/packages/proxy/     @getlibero/proxy-owners
+/apps/proxy-server/  @getlibero/proxy-owners
 /packages/schema/  @getlibero/proxy-owners
 /SECURITY.md       @getlibero/proxy-owners
 /GOVERNANCE.md     @getlibero/maintainers
