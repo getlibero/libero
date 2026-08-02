@@ -12,7 +12,9 @@ export default tseslint.config(
   },
   ...tseslint.configs.recommended,
   {
-    files: ["packages/agent/**/*.ts"],
+    // apps/server composes the gateway and agent into the process that runs
+    // next to the model, so it sits on the same side of the boundary.
+    files: ["packages/agent/**/*.ts", "apps/server/**/*.ts"],
     rules: {
       "no-restricted-imports": [
         "error",

@@ -1,0 +1,15 @@
+{
+  "name": "@getlibero/gateway",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Slack gateway for Libero: Socket Mode adapter, channel router, message store. Scaffold only — no behavior yet.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}
