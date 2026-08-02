@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a change to the design of record or the implementation.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The roadmap is phase-gated: features that outpace the governed core get
+        parked. Read the [roadmap](https://getlibero.com/docs/roadmap) and the
+        [architecture](https://getlibero.com/docs/architecture) first — at this
+        stage, the design of record is the thing worth arguing about.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What cannot be done, or is unsafe, today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: >-
+        If it touches enforcement, say where the deterministic check lives.
+        "Instruct the model not to" is not a mitigation.
+    validations:
+      required: true
