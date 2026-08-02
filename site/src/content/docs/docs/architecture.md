@@ -37,7 +37,7 @@ Slack (Socket Mode)
    └─ store.db       (SQLite+FTS5+sqlite-vec) (containerized code exec)
 ```
 
-The proxy is a separate OS process listening only on localhost/private network with mutual TLS between services. The agent authenticates to the proxy per-channel; the proxy resolves which credentials and tools that channel's team sheet permits. Compromise of the agent process (prompt injection, malicious skill, model misbehavior) yields zero secrets and only the tool surface the team sheet allows, with every call audited.
+The proxy is a separate OS process listening only on localhost/private network with mutual TLS between services. The agent authenticates to the proxy per-channel: one client certificate per channel, subject `CN=channel:<id>`, and that certificate is the only place the proxy reads a channel identity from — never a header, query parameter, or body field, because the process on the other end runs the model and anything the model can influence is not a boundary. Certificates authenticate; team sheets authorize. There is no revocation list: removing a channel's sheet removes its permissions on the next call, and a stale certificate is left holding nothing. The proxy resolves which credentials and tools that channel's team sheet permits. Compromise of the agent process (prompt injection, malicious skill, model misbehavior) yields zero secrets and only the tool surface the team sheet allows, with every call audited.
 
 ## Gateway and channel router
 

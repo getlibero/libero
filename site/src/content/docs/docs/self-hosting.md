@@ -4,10 +4,10 @@ description: The target deployment — two containers, one team sheet per channe
 ---
 
 :::caution[Not deployable yet]
-This page describes the target deployment. Phase 0 is the skeleton: the schema package, the CLI
-placeholder, the design system, and the CI that guards the boundaries. The proxy — the thing that
-makes any of this safe — is phase 1. Do not run this against a workspace you care about, because
-there is nothing to run yet.
+This page describes the target deployment. What exists today is early phase 1: the proxy process
+starts, speaks mutual TLS, and binds every request to a channel — but the vault, team-sheet
+enforcement, approvals, budgets, and the audit log do not exist yet, and neither does the gateway.
+Do not run this against a workspace you care about: the parts that make it safe are not built.
 :::
 
 ## The shape of a deployment
