@@ -15,3 +15,7 @@
 # The "main" ruleset already sets require_code_owner_review, so these entries
 # start enforcing the moment the teams are created.
 /.github/          @getlibero/proxy-owners
+
+# Committed Claude Code settings can define hooks, which are shell commands
+# run on contributors' machines — same trust class as workflows.
+/.claude/          @getlibero/proxy-owners

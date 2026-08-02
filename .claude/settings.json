@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"$CLAUDE_CODE_REMOTE\" = \"true\" ]; then cd \"$CLAUDE_PROJECT_DIR\" && pnpm install --frozen-lockfile && cd site && pnpm install --frozen-lockfile; fi",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}
