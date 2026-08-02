@@ -54,7 +54,7 @@ jobs:
         # Catches word boundaries swallowed across an inline tag. It has to run
         # against the built output: the defect does not exist in dev.
         run: pnpm check:html
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           path: site/dist
