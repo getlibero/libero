@@ -8,6 +8,7 @@
   "files": ["dist", "README.md"],
   "repository": { "type": "git", "url": "https://github.com/getlibero/libero.git", "directory": "packages/cli" },
   "homepage": "https://getlibero.com",
+  "engines": { "node": ">=22" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

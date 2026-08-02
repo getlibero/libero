@@ -10,7 +10,7 @@
   },
   "homepage": "https://getlibero.com",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@9.15.0",
   "scripts": {
@@ -21,7 +21,7 @@
     "license-check": "license-checker-rseidelsohn --onlyAllow \"MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0\" --excludePrivatePackages"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^22.20.1",
     "eslint": "^9.9.0",
     "license-checker-rseidelsohn": "^4.4.2",
     "typescript": "^5.6.0",

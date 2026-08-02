@@ -18,9 +18,8 @@ pnpm check:html   # fused word boundaries in the built HTML
 pnpm preview
 ```
 
-**Node 22.12+**, pnpm 9+ — Astro 7 requires it. That is deliberately ahead of the
-Node 20 the core packages build against; this is a build-time toolchain and
-nothing shipped runs on it.
+**Node 22.12+**, pnpm 9+ — Astro 7 requires it; the core packages share the
+Node 22 floor. This is a build-time toolchain and nothing shipped runs on it.
 
 ## Outside the workspace, on purpose
 
