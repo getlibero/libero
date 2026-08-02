@@ -18,12 +18,12 @@
     "test": "pnpm -r test",
     "lint": "eslint .",
     "typecheck": "pnpm -r typecheck",
-    "license-check": "license-checker-rseidelsohn --onlyAllow \"MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0\" --excludePrivatePackages"
+    "license-check": "license-checker-rseidelsohn --onlyAllow \"MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;Python-2.0;BlueOak-1.0.0\" --excludePrivatePackages --excludePackagesStartingWith \"spdx-exceptions@\""
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
     "eslint": "^9.9.0",
-    "license-checker-rseidelsohn": "^4.4.2",
+    "license-checker-rseidelsohn": "^5.0.1",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.8.0",
     "vitest": "^2.1.0"
