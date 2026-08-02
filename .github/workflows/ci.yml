@@ -19,6 +19,10 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build
+        # tsc --noEmit in the typecheck step misses emit-only failures; catch
+        # them here rather than in the release workflow.
+        run: pnpm -r build
       - name: Lint (includes agent→proxy import ban)
         run: pnpm lint
       - name: Typecheck

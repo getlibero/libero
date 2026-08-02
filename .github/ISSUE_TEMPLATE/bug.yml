@@ -1,0 +1,31 @@
+name: Bug report
+description: Something in the repository does not behave as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Phase 0: most of the specification is not implemented yet. Check the
+        [roadmap](https://getlibero.com/docs/roadmap) before filing "X does not
+        exist" — it may be a later phase, not a bug.
+
+        Security reports do not belong here. Use private vulnerability
+        reporting (Security → Report a vulnerability); see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Name the command or file. Include the exact output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, pnpm version.
