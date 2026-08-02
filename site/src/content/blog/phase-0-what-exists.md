@@ -15,9 +15,10 @@ mode, budgets, egress, ambient. It is the single source of truth for that one sh
 services will import it. The audit, tool-call and memory schemas named in the
 [architecture](/docs/architecture) are not written yet.
 
-`packages/cli` — a placeholder `@getlibero/cli`. Nothing is on the npm registry yet. The release
-workflow is wired for provenance attestations and fires on a `cli-v*` tag, so the release path gets
-proven before there is anything worth releasing through it.
+`packages/cli` — a placeholder `@getlibero/cli`, published to the npm registry with a provenance
+attestation. The release fires on a `cli-v*` tag from CI under a trusted publisher — no long-lived
+token can publish it — so the release path is proven before there is anything worth releasing
+through it.
 
 `site/` — this website: the marketing pages and the documentation.
 
