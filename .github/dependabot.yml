@@ -15,9 +15,6 @@ updates:
       core-minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
-      # zod 4 is a deliberate migration for packages/schema, not a bot merge.
-      - dependency-name: zod
-        update-types: ["version-update:semver-major"]
       # @types/node tracks the engines floor, not the newest Node.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
