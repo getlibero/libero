@@ -25,9 +25,14 @@ This is `channels/example/channel.toml` in the repository, kept in sync with the
 name        = "engineering"
 description = "Deploys, code review, incident response."
 
+# Hard caps on a single task. The proxy's daily meter below is the
+# authoritative spend limit; these stop one task running away.
 [llm]
-model               = "claude-sonnet-4-6"   # per-channel override
-max_tokens_per_task = 60000
+model                   = "claude-sonnet-4-6"   # per-channel override
+max_tool_calls_per_task = 25
+max_task_seconds        = 300                   # wall time, seconds
+max_tokens_per_task     = 60000
+max_tokens_per_turn     = 8192                  # ceiling on one turn's output
 
 [budget]
 daily_tokens     = 2_000_000
@@ -64,9 +69,13 @@ writing: it is how the model knows what kind of channel it is in.
 
 ### `[llm]`
 
-The per-channel model override and the per-task token ceiling. Libero is model-agnostic —
-Anthropic, OpenAI, Google, Groq and Ollama are supported directly, and the optional LiteLLM
-sidecar covers everything else behind an OpenAI-compatible endpoint.
+The per-channel model override and the four hard caps on a single task: tool calls, wall time,
+total tokens, and one turn's output. The agent loop enforces them, and a task that hits one stops
+and says which. They bound a single runaway task — the per-day spend limit is `[budget]` below,
+metered in the proxy. Every cap has a default, so a channel with no `[llm]` block is still capped.
+
+Libero is model-agnostic — Anthropic, OpenAI, Google, Groq and Ollama are supported directly, and
+the optional LiteLLM sidecar covers everything else behind an OpenAI-compatible endpoint.
 
 ### `[budget]`
 

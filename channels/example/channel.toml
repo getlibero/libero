@@ -12,9 +12,14 @@
 name        = "engineering"
 description = "Deploys, code review, incident response."
 
+# Hard caps on a single task. The proxy's daily meter below is the
+# authoritative spend limit; these stop one task running away.
 [llm]
-model               = "claude-sonnet-4-6"   # per-channel override
-max_tokens_per_task = 60000
+model                   = "claude-sonnet-4-6"   # per-channel override
+max_tool_calls_per_task = 25
+max_task_seconds        = 300                   # wall time, seconds
+max_tokens_per_task     = 60000
+max_tokens_per_turn     = 8192                  # ceiling on one turn's output
 
 [budget]
 daily_tokens     = 2_000_000

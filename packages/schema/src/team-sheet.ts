@@ -36,7 +36,15 @@ export const TeamSheet = z.object({
   llm: z
     .object({
       model: z.string().min(1).optional(),
-      max_tokens_per_task: z.number().int().positive().optional(),
+      // The four per-task hard caps, mirroring DEFAULT_AGENT_LOOP_CAPS in
+      // packages/agent/src/loop/types.ts — what the loop uses when no sheet
+      // resolved. Keep the two in step by hand: schema is the base package and
+      // cannot import from agent. Seconds here, milliseconds in the loop; the
+      // conversion belongs to whoever maps sheet to caps.
+      max_tool_calls_per_task: z.number().int().positive().default(25),
+      max_task_seconds: z.number().int().positive().default(300),
+      max_tokens_per_task: z.number().int().positive().default(200_000),
+      max_tokens_per_turn: z.number().int().positive().default(8_192),
     })
     .prefault({}),
   budget: z
