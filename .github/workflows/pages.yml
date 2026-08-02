@@ -33,9 +33,9 @@ jobs:
       run:
         working-directory: site
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           # Astro 7 requires >=22.12; the core packages share the Node 22
           # floor in ci.yml. Build-time toolchain only; nothing shipped
@@ -54,7 +54,7 @@ jobs:
         # Catches word boundaries swallowed across an inline tag. It has to run
         # against the built output: the defect does not exist in dev.
         run: pnpm check:html
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           path: site/dist
@@ -72,4 +72,4 @@ jobs:
       id-token: write
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

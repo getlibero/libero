@@ -12,9 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -37,7 +37,7 @@ jobs:
     # nothing under packages/agent references the proxy package.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Enforce agent/proxy boundary
         run: |
           if grep -rn --include='*.ts' -e '@getlibero/proxy' -e 'packages/proxy' packages/agent/; then
@@ -52,7 +52,7 @@ jobs:
     # way boundary-check backs up the ESLint rule above.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: No checkout in privileged workflows
         run: |
           # Match YAML keys, not any occurrence of the words: this file
