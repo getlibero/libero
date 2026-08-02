@@ -21,11 +21,19 @@
   flex: 1;
 }
 
+/* The page gutter lives here and nowhere else.
+ *
+ * .wrap is routinely combined with a rhythm class on the same element
+ * (`class="wrap wrap--narrow section"`), so every rule that sets vertical
+ * spacing below must use padding-block. The `padding` shorthand would reset
+ * the inline padding to zero and take the gutters with it — which is exactly
+ * what happened, and it was invisible until a viewport got narrow enough for
+ * the gutter to be the only thing keeping text off the edge. */
 .wrap {
   width: 100%;
   max-width: 1120px;
   margin: 0 auto;
-  padding: 0 32px;
+  padding-inline: 32px;
 }
 
 .wrap--narrow {
@@ -35,11 +43,11 @@
 /* Sections are separated by space and, where a boundary needs stating, one
    hairline. Never by a background gradient. */
 .section {
-  padding: 88px 0;
+  padding-block: 88px;
 }
 
 .section--tight {
-  padding: 56px 0;
+  padding-block: 56px;
 }
 
 .section + .section {
@@ -111,7 +119,7 @@
 
 @media (max-width: 720px) {
   .wrap {
-    padding: 0 20px;
+    padding-inline: 20px;
   }
   .site-header__inner {
     gap: 12px;
@@ -120,15 +128,20 @@
     padding: 7px 8px;
     font-size: 13px;
   }
+}
+
+/* The header sheds links as it narrows, and the thresholds are the widths the
+   row actually needs rather than round numbers: 429px with the full nav, 338px
+   once Why and Blog have gone. Everything dropped is still in the footer.
+   The name never goes — it is the one element that says what the site is. */
+@media (max-width: 480px) {
   .site-header__link--hide-sm {
     display: none;
   }
 }
 
-/* Below this the nav stops fitting alongside the wordmark. The mark alone is
-   still the brand and still links home; the footer carries every link. */
-@media (max-width: 460px) {
-  .site-header__brand .lb-wordmark {
+@media (max-width: 370px) {
+  .site-header__link--hide-xs {
     display: none;
   }
 }
@@ -138,7 +151,7 @@
  * ------------------------------------------------------------------ */
 
 .hero {
-  padding: 96px 0 72px;
+  padding-block: 96px 72px;
 }
 
 .hero__status {
@@ -321,15 +334,24 @@
   border-top: 0;
 }
 
+/* The title carries a file path, which has no spaces to break at. Left to
+   itself it sets the row's minimum width and pushes the whole page wider than
+   a phone. */
 .sample-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 10px 14px;
   background: var(--lb-bg-raised);
   border: 1px solid var(--lb-border);
   border-radius: var(--lb-radius) var(--lb-radius) 0 0;
+}
+
+.sample-title > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------------------ *
@@ -393,13 +415,13 @@
 }
 
 .page-head {
-  padding: 72px 0 0;
+  padding-block: 72px 0;
 }
 
 /* A page head is already the section opener, so the section under it does not
    need its own full top rhythm. */
 .page-head + .section {
-  padding-top: 48px;
+  padding-block-start: 48px;
 }
 
 .page-head__title {
@@ -422,7 +444,7 @@
 
 .site-footer {
   border-top: 1px solid var(--lb-border);
-  padding: 40px 0 56px;
+  padding-block: 40px 56px;
 }
 
 .site-footer__inner {

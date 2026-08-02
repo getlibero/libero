@@ -4,11 +4,13 @@ import ThemeToggle from './ThemeToggle.astro';
 
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';
 
+// `hide` is the width below which a link drops out of the header. Everything
+// dropped is still reachable from the footer, which lists all of them.
 const links = [
   { href: '/docs', label: 'Docs' },
-  { href: '/security', label: 'Security' },
-  { href: '/why', label: 'Why', small: false },
-  { href: '/blog', label: 'Blog', small: false },
+  { href: '/security', label: 'Security', hide: 'xs' },
+  { href: '/why', label: 'Why', hide: 'sm' },
+  { href: '/blog', label: 'Blog', hide: 'sm' },
 ];
 ---
 
@@ -24,7 +26,7 @@ const links = [
         links.map((link) => (
           <a
             href={link.href}
-            class:list={['site-header__link', link.small === false && 'site-header__link--hide-sm']}
+            class:list={['site-header__link', link.hide && `site-header__link--hide-${link.hide}`]}
             aria-current={path === link.href || path.startsWith(link.href + '/') ? 'page' : undefined}
           >
             {link.label}
