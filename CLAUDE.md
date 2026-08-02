@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pnpm install                          # Node 20+, pnpm 9+
+pnpm install                          # Node 22+, pnpm 9+
 pnpm -r build                         # tsc per package
 pnpm typecheck                        # tsc --noEmit per package
 pnpm lint                             # eslint . (includes the agent→proxy import ban)
@@ -106,8 +106,8 @@ by `.github/workflows/pages.yml`. Like `design/`, it is **outside the pnpm
 workspace**: it has its own `pnpm-workspace.yaml`, its own lockfile, and its own
 CI job, so Astro's dependency tree never reaches `pnpm -r` or the core license
 gate. Run everything from inside `site/` (`pnpm install`, `pnpm dev`,
-`pnpm build`, `pnpm check`). It needs **Node 22.12+** — Astro 7's floor, ahead
-of the Node 20 the core packages build against.
+`pnpm build`, `pnpm check`). It needs **Node 22.12+** — Astro 7's floor; the
+core packages share the Node 22 floor.
 
 - Marketing pages are `src/pages/`; docs are `src/content/docs/docs/` and serve
   at `/docs/*` because the marketing pages own the root.
