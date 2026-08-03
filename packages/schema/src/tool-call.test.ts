@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ResolvedToolCall, ToolCall } from "./tool-call.js";
+import { ToolCall, resolveToolCall } from "./tool-call.js";
 
 const wire = { id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } };
 
@@ -54,20 +54,41 @@ describe("the wire tool call", () => {
   });
 });
 
-describe("the resolved tool call", () => {
-  it("carries the channel the proxy bound to it", () => {
-    const resolved = ResolvedToolCall.parse({ ...wire, channel: "C0ENGINEERING" });
-    expect(resolved.channel).toBe("C0ENGINEERING");
-    expect(resolved.tool).toBe("list_prs");
+describe("resolving a call to a channel", () => {
+  it("binds the channel the proxy authenticated as", () => {
+    const resolved = resolveToolCall(ToolCall.parse(wire), "C0ENGINEERING");
+    expect(resolved).toEqual({ ...wire, channel: "C0ENGINEERING" });
   });
 
-  it("requires the channel: there is no unbound resolved call", () => {
-    expect(ResolvedToolCall.safeParse(wire).success).toBe(false);
-    expect(ResolvedToolCall.safeParse({ ...wire, channel: "" }).success).toBe(false);
+  it("does not mutate the call it was given", () => {
+    const call = ToolCall.parse(wire);
+    resolveToolCall(call, "C0ENGINEERING");
+    expect(call).not.toHaveProperty("channel");
   });
 
-  it("stays strict once extended", () => {
-    const result = ResolvedToolCall.safeParse({ ...wire, channel: "C123", approved: true });
-    expect(result.success).toBe(false);
+  // The id becomes a directory name and a SQLite filename downstream, and the
+  // one-file-per-channel layout is the isolation boundary. The proxy's identity
+  // resolver checks this first; this is the second of two, positioned to catch
+  // a caller that got an id from somewhere other than a certificate.
+  it("refuses an id that is not a safe path segment", () => {
+    const call = ToolCall.parse(wire);
+    for (const channel of ["", "..", "../../etc", "a/b", ".hidden", "C 123", "x".repeat(65)]) {
+      expect(() => resolveToolCall(call, channel)).toThrow();
+    }
+  });
+
+  it("does not put the offending id in the thrown message", () => {
+    // In this process a thrown value is a thing that gets logged, and the id
+    // reaching here from an unexpected place is exactly when it is untrusted.
+    expect(() => resolveToolCall(ToolCall.parse(wire), "../../etc")).toThrow(
+      /^resolveToolCall: channel is not a valid channel id$/
+    );
+  });
+
+  it("accepts the ids the dev-certs script mints", () => {
+    const call = ToolCall.parse(wire);
+    for (const channel of ["C0ENGINEERING", "engineering", "eng-ops", "team.core", "C123_456"]) {
+      expect(resolveToolCall(call, channel).channel).toBe(channel);
+    }
   });
 });

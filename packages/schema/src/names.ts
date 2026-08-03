@@ -57,3 +57,26 @@ export const DestinationHost = z
   .min(1)
   .max(253)
   .regex(/^[A-Za-z0-9.:_-]+$/, "must be a host, without scheme, path, or query");
+
+/**
+ * A channel id — the one name here that is not a name at all but a principal.
+ *
+ * Load-bearing rather than hygiene. The id becomes a directory name
+ * (`channels/<id>/channel.toml`) and a SQLite filename, and the one-file-per-
+ * channel layout *is* the isolation boundary. So "." and ".." are rejected by
+ * the leading-character rule, and a separator never survives the character
+ * class: everything downstream may treat a validated id as a safe path segment.
+ *
+ * It lives here, in the base package, because two places need the same answer
+ * and a channel id that satisfied one but not the other would be a hole. The
+ * proxy resolves ids from client certificates and imports the pattern for its
+ * hot path; anything that stores or routes on an id validates with the schema.
+ * One rule, stated once.
+ */
+export const CHANNEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export const ChannelId = z
+  .string()
+  .regex(CHANNEL_ID_PATTERN, "must be a safe path segment: no separator, no leading dot");
+
+export type ChannelId = z.infer<typeof ChannelId>;
