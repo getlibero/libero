@@ -10,14 +10,40 @@ import {
   createProxyServer,
   createUnavailableDispatcher,
   createUnmeteredSpend,
-  loadTlsOptions
+  loadTlsOptions,
+  openVault
 } from "@getlibero/proxy";
-import { channelsRootFromEnv, hostFromEnv, portFromEnv, requiredEnv } from "./env.js";
+import {
+  channelsRootFromEnv,
+  hostFromEnv,
+  portFromEnv,
+  requiredEnv,
+  vaultFileFromEnv,
+  vaultKeyFromEnv
+} from "./env.js";
 
 const logger = createJsonLogger();
 const host = hostFromEnv(process.env);
 const listenPort = portFromEnv(process.env);
 const sheets = new TeamSheetStore({ root: channelsRootFromEnv(process.env), logger });
+
+// Before anything binds. Nothing consumes a credential yet — that is #51, and
+// the vault reaches the dispatcher rather than the server — but opening it here
+// is what proves the operator's key and file are right at `docker compose up`
+// instead of at the far end of a Slack thread once tool calls run.
+const vault = openVault({
+  file: vaultFileFromEnv(process.env),
+  key: vaultKeyFromEnv(process.env),
+  logger
+});
+logger.log("info", { event: "vault_opened", count: vault.size });
+
+// Defence in depth, and worth being precise about what it does: it keeps the
+// key out of anything that later dumps `process.env`, and out of the
+// environment of any child process (compose mounts the Docker socket for the
+// sandbox runner). It does *not* change /proc/<pid>/environ on Linux, which
+// still reflects the environment the process started with.
+delete process.env.PROXY_VAULT_KEY;
 
 const server = createProxyServer({
   tls: loadTlsOptions({

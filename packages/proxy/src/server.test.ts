@@ -10,6 +10,7 @@
 // only worth asserting against the real handshake.
 
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:https";
 import type { Server } from "node:https";
@@ -34,6 +35,9 @@ import { createJsonLogger } from "./log.js";
 import { MAX_BODY_BYTES, createProxyServer } from "./server.js";
 import { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 import { loadTlsOptions } from "./tls.js";
+import { openVault, parseVaultKey } from "./vault.js";
+import type { Vault } from "./vault.js";
+import { writeVaultEntries } from "./vault-file.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const CHANNEL = "C024BE91L";
@@ -700,5 +704,91 @@ url = "https://api.github.com"
     });
     // Budget is enforced before the call is served, like every other refusal.
     expect(dispatcher.seen).toEqual([]);
+  });
+});
+
+describe("no route returns a credential", () => {
+  // The vault holds a value in this same process while every route is walked.
+  //
+  // Nothing here consumes a credential yet — that is #51 — so this is not
+  // testing injection. It is the honest form of "no route, response, log line,
+  // or error can be made to emit a stored secret" while the vault is loaded and
+  // the surface it must not reach is fully built. It survives #51 unchanged, as
+  // the regression harness for the moment a credential really does reach a
+  // tool call.
+  const VAULT_VALUE = "ghp_leaked_value_16C7e42F292c6912E7710c838347Ae178B4a";
+
+  let vaultDir: string;
+  let vault: Vault;
+
+  beforeAll(() => {
+    vaultDir = mkdtempSync(join(tmpdir(), "libero-proxy-vault-"));
+    const parsed = parseVaultKey(randomBytes(32).toString("base64"));
+    if (!parsed.ok) throw new Error("test key did not parse");
+    const file = join(vaultDir, "vault.enc");
+    writeVaultEntries(file, parsed.key, new Map([["github_service_account", VAULT_VALUE]]));
+    vault = openVault({ file, key: parsed.key });
+  });
+
+  afterAll(() => {
+    rmSync(vaultDir, { recursive: true, force: true });
+  });
+
+  it("holds the value, so the assertions below are not vacuous", () => {
+    const found = vault.lookup("github_service_account");
+    expect(found.status).toBe("found");
+    if (found.status === "found") expect(found.secret.reveal()).toBe(VAULT_VALUE);
+  });
+
+  it("emits it from no route, on any outcome", async () => {
+    logLines = [];
+    const cert = clientCert(certs, CHANNEL);
+    const bodyOf = (call: unknown): string => JSON.stringify(call);
+
+    const responses = [
+      // Every route, every method the table answers.
+      await call("/health", cert),
+      await call("/v1/whoami", cert),
+      await call("/v1/tools", cert),
+      // Ran, refused, held — the three ways a call is answered.
+      await post("/v1/tools/call", { id: "toolu_01", server: "github", tool: "list_prs" }),
+      await post("/v1/tools/call", { id: "toolu_02", server: "github", tool: "not_listed" }),
+      await post("/v1/tools/call", { id: "toolu_03", server: "not_listed", tool: "list_prs" }),
+      await post("/v1/tools/call", { id: "toolu_04", server: "github", tool: "merge_pr" }),
+      // A body the model wrote that does not parse, and one asserting a channel.
+      await post("/v1/tools/call", { id: "toolu_05", server: "github" }),
+      await post("/v1/tools/call", {
+        id: "toolu_06",
+        server: "github",
+        tool: "list_prs",
+        channel: OTHER_CHANNEL
+      }),
+      // Arguments carrying something secret-shaped, which must not echo either.
+      await post("/v1/tools/call", {
+        id: "toolu_07",
+        server: "github",
+        tool: "list_prs",
+        arguments: { token: VAULT_VALUE }
+      }),
+      // The error paths: unknown route, wrong method, oversized body.
+      await call("/v1/nope", cert),
+      await call("/v1/tools", cert, "POST"),
+      await call(
+        "/v1/tools/call",
+        cert,
+        "POST",
+        port,
+        bodyOf({ id: "toolu_08", server: "github", tool: "list_prs", arguments: { pad: "x".repeat(MAX_BODY_BYTES) } })
+      )
+    ];
+
+    // Every request was answered — a walk that silently failed to reach a route
+    // would assert nothing.
+    expect(responses).toHaveLength(13);
+    for (const response of responses) {
+      expect(response.status).toBeGreaterThan(0);
+      expect(JSON.stringify(response.body)).not.toContain("ghp_");
+    }
+    expect(logLines.join("")).not.toContain("ghp_");
   });
 });

@@ -18,9 +18,11 @@
 // one, and no route may accept a channel from a header, a query parameter, or
 // a body.
 //
-// What is not here yet: the credential vault (#50) and the MCP client pool
+// What is not here yet: credential injection (#51) and the MCP client pool
 // (#39). Both sit behind the dispatcher seam, past the point where enforcement
-// has already answered.
+// has already answered. The vault itself exists — see ./vault.ts — and the
+// process opens it at startup, but no route reaches it: a credential is
+// resolved by whatever serves an allowed call, and nothing serves one yet.
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";

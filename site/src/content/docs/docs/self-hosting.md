@@ -5,9 +5,10 @@ description: The target deployment — two containers, one team sheet per channe
 
 :::caution[Not deployable yet]
 This page describes the target deployment. What exists today is early phase 1: the proxy process
-starts, speaks mutual TLS, and binds every request to a channel — but the vault, team-sheet
-enforcement, approvals, budgets, and the audit log do not exist yet, and neither does the gateway.
-Do not run this against a workspace you care about: the parts that make it safe are not built.
+starts, speaks mutual TLS, binds every request to a channel, enforces team sheets, and holds
+credentials in an encrypted vault — but nothing yet uses a credential, so a permitted call answers
+501, and approvals, budgets, the audit log, and the gateway do not exist. Do not run this against
+a workspace you care about: the parts that make it safe are not all built.
 :::
 
 ## The shape of a deployment
@@ -21,9 +22,22 @@ sh scripts/dev-certs.sh      # mints the mutual-TLS material (see below)
 docker compose up            # starts gateway+agent and proxy
 ```
 
-`init` writes the host configuration and the encrypted vault; `docker compose up` starts both
-services from `deploy/docker-compose.yml`. An optional LiteLLM sidecar is included for models
-without first-class support.
+`init` writes the host configuration and generates `PROXY_VAULT_KEY`, the master key that encrypts
+the vault; `docker compose up` starts both services from `deploy/docker-compose.yml`. An optional
+LiteLLM sidecar is included for models without first-class support.
+
+Credentials go into the vault from inside the proxy container, so the master key never has to
+exist on the host:
+
+```bash
+docker compose run --rm proxy node dist/vault.js set github_service_account < token.txt
+docker compose run --rm proxy node dist/vault.js list    # names only
+```
+
+The value is read from stdin rather than an argument, because `ps` shows arguments to every user
+on the box and a shell writes them to history. There is no command that prints a credential back.
+The proxy reads the vault at startup, so a change takes effect on restart — and losing the master
+key means losing the vault: there is no recovery path and no escrow.
 
 ## What you provide
 
