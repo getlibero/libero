@@ -28,10 +28,12 @@ extending `../../tsconfig.base.json`.
 
 ## Current state
 
-Early phase 1. `packages/schema` (zod team-sheet schema, proxy error shape),
-`packages/agent` (provider-agnostic completion layer, ReAct loop with per-task
-caps), `packages/proxy` (mTLS listener and per-channel identity — no vault, no
-enforcement yet), `apps/proxy-server` (the process composing it),
+Early phase 1. `packages/schema` (zod team-sheet schema, tool call, refusal,
+listing, and proxy error shapes), `packages/agent` (provider-agnostic
+completion layer, ReAct loop with per-task caps), `packages/proxy` (mTLS
+listener, per-channel identity, and team-sheet enforcement on both gates —
+still no vault, so an allowed call has no upstream and answers 501),
+`apps/proxy-server` (the process composing it),
 `packages/cli` (placeholder npm release), `design/` (the design system — plain
 CSS, no TypeScript), and `site/` (getlibero.com). `packages/{gateway, memory}`
 are README stubs, `apps/server` is a scaffold, and `e2e/` is empty.

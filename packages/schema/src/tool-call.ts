@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CHANNEL_ID_PATTERN, ResourceName } from "./names.js";
+import { ToolRefusal } from "./refusal.js";
 
 /**
  * The tool call the agent sends the proxy, and what it becomes once the proxy
@@ -78,3 +79,66 @@ export function resolveToolCall(call: ToolCall, channel: string): ResolvedToolCa
   }
   return { ...call, channel };
 }
+
+/**
+ * What a tool produced, once it ran.
+ *
+ * `isError` marks a failure the model should see and may recover from — a 404
+ * from the tool, a bad argument. It is not an enforcement outcome and not a
+ * transport failure; both of those are other variants of `ToolCallResponse`.
+ * Mirrors the agent loop's `ToolResult`, which is the shape this becomes on
+ * the other side of the wire.
+ */
+export const ToolResult = z
+  .object({
+    content: z.string(),
+    isError: z.boolean().default(false)
+  })
+  .strict();
+
+export type ToolResult = z.infer<typeof ToolResult>;
+
+/**
+ * The proxy's answer to a tool call.
+ *
+ * All three variants are **served requests** — HTTP 200 — because a refusal is
+ * the system working rather than a failure. `ProxyError` stays what it was:
+ * the shape of a request that could not be answered at all. Keeping refusals
+ * off that shape is what lets the agent relay one to the channel without
+ * having to tell "the call was not permitted" apart from "the proxy broke".
+ *
+ * `held` is separate from `refused` on purpose. Both mean the call did not
+ * run, but a hold is a question put to a human and a refusal is an answer, and
+ * the approval broker (#37) needs to tell them apart without re-deriving the
+ * distinction from the refusal reason. Until that broker exists a client that
+ * treats a hold as a refusal is behaving correctly — which is why the hold
+ * carries the full refusal rather than a bare marker.
+ *
+ * Every variant echoes `id` so a client with several calls in flight can match
+ * the answer to the tool-use block that asked for it.
+ */
+export const ToolCallResponse = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      outcome: z.literal("ran"),
+      id: z.string().min(1).max(128),
+      result: ToolResult
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("held"),
+      id: z.string().min(1).max(128),
+      refusal: ToolRefusal
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("refused"),
+      id: z.string().min(1).max(128),
+      refusal: ToolRefusal
+    })
+    .strict()
+]);
+
+export type ToolCallResponse = z.infer<typeof ToolCallResponse>;

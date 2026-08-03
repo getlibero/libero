@@ -27,6 +27,29 @@ export function requiredEnv(env: Env, name: string): string {
   return value;
 }
 
+/**
+ * Where per-channel team sheets live:
+ * `<PROXY_CHANNELS_ROOT>/<channel id>/channel.toml`.
+ *
+ * Prefixed like every other variable this process reads, and deliberately not
+ * the `CHANNELS_DIR` that `deploy/docker-compose.yml` used to declare. Both
+ * services mount the same directory, but they do not read it the same way: for
+ * the proxy this path is the authorization source — what it resolves here
+ * decides what every channel may do — and naming it as the proxy's own setting
+ * keeps that from reading as a shared convenience path. The compose file sets
+ * both services from one anchor.
+ *
+ * Required, with no default. A default would be a path that might happen to be
+ * empty, and an empty root is indistinguishable from a correct one that has no
+ * sheets: every channel resolves to `no_team_sheet` and every call is refused.
+ * That fails safe, but it fails safe *silently*, at the far end of a Slack
+ * thread. Making the operator name the directory turns a misconfiguration into
+ * a startup error instead.
+ */
+export function channelsRootFromEnv(env: Env): string {
+  return requiredEnv(env, "PROXY_CHANNELS_ROOT");
+}
+
 export function hostFromEnv(env: Env): string {
   const raw = env.PROXY_HOST;
   // "" falls back alongside undefined, and the distinction is not cosmetic:

@@ -1,6 +1,15 @@
 import { type ResolvedToolCall, type TeamSheet, TeamSheet as TeamSheetSchema } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
-import { type BudgetSpend, DESTRUCTIVE_VERBS, decide, decideFromState, isDestructiveName } from "./enforce.js";
+import {
+  type BudgetSpend,
+  DESTRUCTIVE_VERBS,
+  decide,
+  decideFromState,
+  isDestructiveName,
+  permittedTools,
+  permittedToolsFromState,
+  resolveApproval
+} from "./enforce.js";
 
 /** Parsed through the real schema, so no test asserts against a shape a sheet could not have. */
 function sheetOf(input: unknown): TeamSheet {
@@ -358,5 +367,82 @@ describe("purity", () => {
       spend: NO_SPEND
     });
     expect(loaded).toEqual(plain);
+  });
+});
+
+describe("the approval rule", () => {
+  it("takes an explicit requirement from the sheet", () => {
+    expect(resolveApproval([{ name: "trigger_workflow", approval: "required" }], "trigger_workflow")).toBe(
+      "required"
+    );
+  });
+
+  it("lets an explicit `none` suppress the destructive-name default", () => {
+    expect(resolveApproval([{ name: "delete_branch", approval: "none" }], "delete_branch")).toBe("none");
+  });
+
+  it("falls back to the destructive-name default when the sheet says nothing", () => {
+    expect(resolveApproval([{ name: "drop_stale_refs" }], "drop_stale_refs")).toBe("required");
+    expect(resolveApproval([{ name: "list_prs" }], "list_prs")).toBe("none");
+  });
+
+  it("resolves duplicate entries most-restrictively, in either order", () => {
+    const required = { name: "deploy_app", approval: "required" } as const;
+    const none = { name: "deploy_app", approval: "none" } as const;
+    expect(resolveApproval([required, none], "deploy_app")).toBe("required");
+    expect(resolveApproval([none, required], "deploy_app")).toBe("required");
+  });
+
+  it("answers `required` for a tool no entry names", () => {
+    // Not this function's question — every caller has already established the
+    // tool is on the sheet — so the answer is the one that cannot become an
+    // unreviewed call if some future caller gets that wrong.
+    expect(resolveApproval([], "list_prs")).toBe("required");
+  });
+});
+
+describe("the tool listing", () => {
+  it("lists every permitted tool with its resolved approval", () => {
+    expect(permittedTools(sheet)).toEqual([
+      { server: "github", tool: "list_prs", approval: "none" },
+      { server: "github", tool: "trigger_workflow", approval: "required" },
+      { server: "github", tool: "delete_branch", approval: "none" },
+      { server: "github", tool: "drop_stale_refs", approval: "required" }
+    ]);
+  });
+
+  // The agreement that matters: a listing that disagrees with the gate is
+  // either a confusing bug or an unreviewed destructive call. Both read the
+  // same sheet through `resolveApproval`, and this is what says so.
+  it("agrees with the decision for every tool it lists", () => {
+    for (const listed of permittedTools(sheet)) {
+      const decision = decide({ sheet, call: callTo(listed.server, listed.tool), spend: NO_SPEND });
+      expect(decision.outcome).toBe(listed.approval === "required" ? "hold" : "allow");
+    }
+  });
+
+  it("collapses a tool the sheet lists twice into one most-restrictive entry", () => {
+    const duplicated = sheetOf({
+      ...BASE,
+      mcp_server: [
+        {
+          name: "github",
+          transport: "http",
+          tool: [{ name: "sync" }, { name: "sync", approval: "required" }]
+        }
+      ]
+    });
+    expect(permittedTools(duplicated)).toEqual([
+      { server: "github", tool: "sync", approval: "required" }
+    ]);
+  });
+
+  it("permits nothing without a sheet in force", () => {
+    expect(permittedToolsFromState({ status: "absent" })).toEqual([]);
+    expect(permittedToolsFromState({ status: "unusable" })).toEqual([]);
+    // A stale sheet is still a sheet: it is what the operator last said.
+    expect(permittedToolsFromState({ status: "active", sheet, stale: true })).toEqual(
+      permittedTools(sheet)
+    );
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ToolCall, resolveToolCall } from "./tool-call.js";
+import { ToolCall, ToolCallResponse, resolveToolCall } from "./tool-call.js";
 
 const wire = { id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } };
 
@@ -90,5 +90,54 @@ describe("resolving a call to a channel", () => {
     for (const channel of ["C0ENGINEERING", "engineering", "eng-ops", "team.core", "C123_456"]) {
       expect(resolveToolCall(call, channel).channel).toBe(channel);
     }
+  });
+});
+
+describe("the proxy's answer to a call", () => {
+  const refusal = { reason: "tool_not_allowed", server: "github", tool: "force_push" } as const;
+
+  it("parses each of the three outcomes", () => {
+    expect(
+      ToolCallResponse.parse({ outcome: "ran", id: "toolu_01", result: { content: "ok" } })
+    ).toEqual({ outcome: "ran", id: "toolu_01", result: { content: "ok", isError: false } });
+
+    for (const outcome of ["held", "refused"] as const) {
+      expect(ToolCallResponse.parse({ outcome, id: "toolu_01", refusal })).toEqual({
+        outcome,
+        id: "toolu_01",
+        refusal
+      });
+    }
+  });
+
+  // Held and refused both mean the call did not run, and they are still two
+  // answers: a hold is a question put to a human, and the approval broker has
+  // to tell them apart without re-deriving it from the refusal reason.
+  it("keeps held and refused distinct", () => {
+    const held = ToolCallResponse.parse({ outcome: "held", id: "toolu_01", refusal });
+    const refused = ToolCallResponse.parse({ outcome: "refused", id: "toolu_01", refusal });
+    expect(held.outcome).not.toBe(refused.outcome);
+  });
+
+  it("rejects a variant carrying the other's payload", () => {
+    expect(
+      ToolCallResponse.safeParse({ outcome: "ran", id: "toolu_01", refusal }).success
+    ).toBe(false);
+    expect(
+      ToolCallResponse.safeParse({ outcome: "refused", id: "toolu_01", result: { content: "" } })
+        .success
+    ).toBe(false);
+  });
+
+  it("rejects any field a credential could ride in", () => {
+    for (const extra of [{ detail: "Bearer sk-live-abc" }, { cause: "ghp_x" }, { headers: {} }]) {
+      expect(
+        ToolCallResponse.safeParse({ outcome: "refused", id: "toolu_01", refusal, ...extra }).success
+      ).toBe(false);
+    }
+  });
+
+  it("requires the id, so an answer can be matched to its call", () => {
+    expect(ToolCallResponse.safeParse({ outcome: "refused", refusal }).success).toBe(false);
   });
 });

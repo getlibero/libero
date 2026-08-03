@@ -42,6 +42,23 @@ export interface LogFields {
   column?: number;
   /** What a rejected team sheet left in force. A code, not prose. */
   effect?: "previous_sheet_retained" | "no_sheet_in_force";
+  /**
+   * The MCP server and tool a call named. Both are `ResourceName`s out of the
+   * team sheet — names, never a URL and never a credential. A call for a server
+   * the sheet does not list is logged with the name it asked for, which is how
+   * an operator sees what an agent is reaching for.
+   */
+  server?: string;
+  tool?: string;
+  /**
+   * What the proxy did with a tool call. The wire vocabulary, so a log line and
+   * the response the client got say the same word.
+   */
+  outcome?: "ran" | "held" | "refused" | "unavailable";
+  /** Which team-sheet state a request resolved against. */
+  sheet?: "active" | "absent" | "unusable";
+  /** How many tools a listing returned. A count, not the list. */
+  count?: number;
 }
 
 export interface Logger {

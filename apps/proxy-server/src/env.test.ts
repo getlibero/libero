@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HOST, DEFAULT_PORT, hostFromEnv, portFromEnv, requiredEnv } from "./env.js";
+import {
+  DEFAULT_HOST,
+  DEFAULT_PORT,
+  channelsRootFromEnv,
+  hostFromEnv,
+  portFromEnv,
+  requiredEnv
+} from "./env.js";
 
 describe("requiredEnv", () => {
   it("returns a set value", () => {
@@ -42,5 +49,20 @@ describe("portFromEnv", () => {
 
   it.each(["0", "65536", "-1", "8443.5", "https"])("refuses %j", raw => {
     expect(() => portFromEnv({ PROXY_PORT: raw })).toThrow(/PROXY_PORT/);
+  });
+});
+
+describe("channelsRootFromEnv", () => {
+  it("returns the directory team sheets are read from", () => {
+    expect(channelsRootFromEnv({ PROXY_CHANNELS_ROOT: "/data/channels" })).toBe("/data/channels");
+  });
+
+  it("refuses to start without one", () => {
+    // No default. An unset PROXY_CHANNELS_ROOT would otherwise become an empty
+    // directory, every channel would resolve to `no_team_sheet`, and the
+    // misconfiguration would surface as every call being refused in Slack
+    // rather than as a process that did not come up.
+    expect(() => channelsRootFromEnv({})).toThrow(/PROXY_CHANNELS_ROOT/);
+    expect(() => channelsRootFromEnv({ PROXY_CHANNELS_ROOT: "" })).toThrow(/PROXY_CHANNELS_ROOT/);
   });
 });

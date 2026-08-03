@@ -16,8 +16,10 @@
 // allowlist and not from the model.
 
 import type {
+  ApprovalMode,
   BudgetLimit,
   McpServer,
+  PermittedTool,
   ResolvedToolCall,
   TeamSheet,
   ToolEntry,
@@ -111,6 +113,32 @@ function toolsNamed(servers: readonly McpServer[], name: string): ToolEntry[] {
 }
 
 /**
+ * Whether a permitted tool needs a human, given every sheet entry naming it.
+ *
+ * One function with two callers — the decision below, and the tool listing the
+ * proxy serves at session start. Those two must never disagree: the listing
+ * telling a channel a tool runs freely while the decision holds it is a
+ * confusing bug, and the reverse is an unreviewed destructive call. A rule
+ * stated twice is a rule that eventually drifts, so it is stated once.
+ *
+ * Duplicate entries are an operator slip, not a syntax error, so they get a
+ * defined resolution rather than an arbitrary one: the most restrictive entry
+ * wins. A sheet listing a tool twice, once requiring approval, requires
+ * approval. Explicit beats implicit, so an entry saying `none` suppresses the
+ * heuristic even alongside an entry that says nothing.
+ *
+ * Callers pass entries that are already known to be permitted. An empty list
+ * means the tool is not on the sheet at all, which is not this function's
+ * question, and it answers `required` rather than inventing an allow.
+ */
+export function resolveApproval(entries: readonly ToolEntry[], tool: string): ApprovalMode {
+  if (entries.length === 0) return "required";
+  if (entries.some(entry => entry.approval === "required")) return "required";
+  if (entries.some(entry => entry.approval === "none")) return "none";
+  return isDestructiveName(tool) ? "required" : "none";
+}
+
+/**
  * Which daily limit, if either, is spent.
  *
  * Tokens are checked before tool calls so that a channel over both gets the
@@ -153,22 +181,65 @@ export function decide(input: EnforcementInput): Decision {
     return refuse({ reason: "budget_exhausted", limit });
   }
 
-  // Duplicate entries are an operator slip, not a syntax error, so they get a
-  // defined resolution rather than an arbitrary one: the most restrictive entry
-  // wins. A sheet listing a tool twice, once requiring approval, requires
-  // approval. Explicit beats implicit, so an entry saying `none` suppresses the
-  // heuristic even alongside an entry that says nothing.
-  if (tools.some(tool => tool.approval === "required")) {
-    return { outcome: "hold", refusal: { reason: "approval_required", server: call.server, tool: call.tool } };
-  }
-  if (tools.some(tool => tool.approval === "none")) {
-    return { outcome: "allow" };
-  }
-  if (isDestructiveName(call.tool)) {
+  if (resolveApproval(tools, call.tool) === "required") {
     return { outcome: "hold", refusal: { reason: "approval_required", server: call.server, tool: call.tool } };
   }
 
   return { outcome: "allow" };
+}
+
+/**
+ * Everything this channel may call, as the session-start listing.
+ *
+ * The other half of the same policy: `decide` answers "may this call run", and
+ * this answers "which calls could". They read the same sheet through the same
+ * approval rule, so a tool listed here as `none` is a tool `decide` allows —
+ * that agreement is a property of sharing `resolveApproval`, not of the two
+ * functions being written to match.
+ *
+ * Order follows the sheet, and duplicates in the sheet collapse to one entry
+ * per (server, tool) resolved most-restrictively — the listing describes what
+ * a call would do, and a call cannot hit two entries differently.
+ */
+export function permittedTools(sheet: TeamSheet): PermittedTool[] {
+  const listed: PermittedTool[] = [];
+  const seen = new Set<string>();
+
+  for (const server of sheet.mcp_server) {
+    for (const entry of server.tool) {
+      // Scanning the sheet rather than indexing a lookup object, for the same
+      // reason `serversNamed` does: a tool named `constructor` must not find
+      // something on `Object.prototype`. The Set is keyed on a separator that
+      // cannot occur in a ResourceName, so `a.b` + `c` and `a` + `b.c` stay
+      // distinct.
+      const key = `${server.name} ${entry.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const entries = toolsNamed(serversNamed(sheet, server.name), entry.name);
+      listed.push({
+        server: server.name,
+        tool: entry.name,
+        approval: resolveApproval(entries, entry.name)
+      });
+    }
+  }
+
+  return listed;
+}
+
+/**
+ * The same listing, starting from what the team-sheet store resolved.
+ *
+ * A channel with no sheet, or with one that has never parsed, permits nothing
+ * and gets an empty list. That is the honest answer rather than an error:
+ * listing asks what is permitted, and "nothing" is a permission state. The
+ * refusal reason a caller would want is the one its next call gets, from
+ * `decideFromState`, which is where the distinction between an absent sheet
+ * and an unreadable one is worth drawing.
+ */
+export function permittedToolsFromState(state: SheetState): PermittedTool[] {
+  return state.status === "active" ? permittedTools(state.sheet) : [];
 }
 
 /**

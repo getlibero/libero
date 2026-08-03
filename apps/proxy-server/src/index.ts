@@ -4,12 +4,20 @@
 // cleanly. Everything it does lives in @getlibero/proxy — and the environment
 // rules in env.ts — where they can be tested without a process.
 
-import { createJsonLogger, createProxyServer, loadTlsOptions } from "@getlibero/proxy";
-import { hostFromEnv, portFromEnv, requiredEnv } from "./env.js";
+import {
+  TeamSheetStore,
+  createJsonLogger,
+  createProxyServer,
+  createUnavailableDispatcher,
+  createUnmeteredSpend,
+  loadTlsOptions
+} from "@getlibero/proxy";
+import { channelsRootFromEnv, hostFromEnv, portFromEnv, requiredEnv } from "./env.js";
 
 const logger = createJsonLogger();
 const host = hostFromEnv(process.env);
 const listenPort = portFromEnv(process.env);
+const sheets = new TeamSheetStore({ root: channelsRootFromEnv(process.env), logger });
 
 const server = createProxyServer({
   tls: loadTlsOptions({
@@ -17,6 +25,13 @@ const server = createProxyServer({
     key: requiredEnv(process.env, "PROXY_TLS_KEY"),
     ca: requiredEnv(process.env, "PROXY_TLS_CA")
   }),
+  sheets,
+  // Both provisional, and both named so they read that way. Enforcement is
+  // real; what happens after an `allow` is not built. Replacing the dispatcher
+  // without also replacing the meter is a startup error rather than a silently
+  // unmetered proxy — see `assertServableComposition` in @getlibero/proxy.
+  spend: createUnmeteredSpend(),
+  dispatcher: createUnavailableDispatcher(),
   logger
 });
 
@@ -35,6 +50,9 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     }
     closing = true;
     logger.log("info", { event: "shutting_down", reason: signal });
+    // Releases the per-channel file watchers; without it the process can stay
+    // alive on them after the listener has closed.
+    sheets.close();
     // Stops accepting connections and waits for in-flight requests. Nothing
     // here is long-running yet; when tool calls land, this is what gives them
     // a chance to finish rather than being cut mid-call.
