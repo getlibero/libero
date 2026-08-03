@@ -5,10 +5,20 @@ export const SITE = {
   url: 'https://getlibero.com',
   repo: 'https://github.com/getlibero/libero',
   /**
-   * Permanent invite — never expires, unlimited uses. Also the target of the
-   * /discord redirect in astro.config.mjs, which is the form to hand out when
-   * a link has to be spoken or typed. Anything that renders a clickable link
-   * should use this constant directly and skip the hop.
+   * Permanent invite — never expires, unlimited uses. The one place the invite
+   * is written down, and the target of the /discord redirect in
+   * astro.config.mjs.
+   *
+   * The site links the invite directly: it redeploys on every push, so a
+   * rotated invite propagates immediately, and there is no reason to make a
+   * clickable link take an extra hop.
+   *
+   * Everything outside site/ links https://getlibero.com/discord instead —
+   * packages/cli/README.md is baked into every published version on npm, and
+   * the root README, CONTRIBUTING.md, and the issue-template config are
+   * mirrored and scraped far beyond our reach. Those surfaces cannot be fixed
+   * after the fact, so they get the redirect. This inconsistency is the point;
+   * do not "fix" it by pointing them back at the invite.
    */
   discord: 'https://discord.gg/7JXpyBa6ZJ',
   tagline: 'The open-source AI teammate for Slack.',
