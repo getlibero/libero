@@ -7,6 +7,9 @@ export type { ProxyTlsPaths } from "./tls.js";
 export { CHANNEL_CN_PREFIX, channelFromCommonName, resolveChannel } from "./identity.js";
 export type { ChannelIdentity, IdentityRejection } from "./identity.js";
 
+export { DESTRUCTIVE_VERBS, decide, decideFromState, isDestructiveName } from "./enforce.js";
+export type { BudgetSpend, Decision, EnforcementInput } from "./enforce.js";
+
 export { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 export type { SheetState, TeamSheetStoreOptions } from "./team-sheet-store.js";
 

@@ -105,6 +105,18 @@ thread. Approvals are per-call, recorded with the approver's Slack user id, and 
 minutes by default. Destructive verbs — delete, drop, transfer, deploy — default to
 approval-required unless the sheet explicitly opts out.
 
+The verb check is a plain substring match on the tool's name, and it errs towards holding calls it
+did not need to. A tool named `get_dropdown_options` contains "drop" and will ask for approval
+until you add `approval = "none"` to its entry. That is the intended direction: an unnecessary
+approval costs one click and one line, and the alternative errs towards running a destructive call
+nobody reviewed. An explicit `approval` in the sheet always wins — the heuristic is only consulted
+when the entry says nothing.
+
+Names are matched exactly. `GitHub` is not `github`, and a tool listed as `List_PRs` will not match
+a call to `list_prs` — the call is refused as an unlisted tool. If a tool you allowlisted is being
+refused, check the spelling before anything else. If the same tool appears twice with different
+approval settings, the stricter one applies.
+
 ### `[egress]`
 
 Where the agent's traffic may go, including from inside the code-execution sandbox. The sandbox

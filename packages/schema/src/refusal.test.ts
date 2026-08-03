@@ -4,6 +4,8 @@ import { RefusalReason, ToolRefusal, refusalMessage } from "./refusal.js";
 /** One well-formed refusal per reason, keyed so the totality test can check
  *  that the union covers every reason the enum declares. */
 const samples: Record<RefusalReason, ToolRefusal> = {
+  no_team_sheet: { reason: "no_team_sheet" },
+  team_sheet_unreadable: { reason: "team_sheet_unreadable" },
   server_not_allowed: { reason: "server_not_allowed", server: "stripe" },
   tool_not_allowed: { reason: "tool_not_allowed", server: "github", tool: "delete_repo" },
   approval_required: { reason: "approval_required", server: "github", tool: "trigger_workflow" },
