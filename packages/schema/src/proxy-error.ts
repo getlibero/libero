@@ -20,8 +20,18 @@ export const ProxyErrorCode = z.enum([
    *  handshake and never reaches a route. */
   "unauthenticated",
   "bad_request",
+  /** The request body exceeded the proxy's read cap and was not buffered. */
+  "payload_too_large",
   "not_found",
   "method_not_allowed",
+  /**
+   * The call was permitted and could not be served, because the thing that
+   * would serve it is not built. Distinct from `internal`: nothing failed, and
+   * a caller retrying gets the same answer until the deployment gains an
+   * upstream. Enforcement has already run when this is returned — a refused
+   * call never reaches it.
+   */
+  "not_implemented",
   "internal",
 ]);
 
@@ -49,7 +59,9 @@ export type ProxyError = z.infer<typeof ProxyError>;
 export const PROXY_ERROR_STATUS: Record<ProxyErrorCode, number> = {
   unauthenticated: 401,
   bad_request: 400,
+  payload_too_large: 413,
   not_found: 404,
   method_not_allowed: 405,
+  not_implemented: 501,
   internal: 500,
 };

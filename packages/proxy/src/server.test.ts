@@ -10,16 +10,29 @@
 // only worth asserting against the real handshake.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:https";
 import type { Server } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ProxyError } from "@getlibero/schema";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ProxyError,
+  type ResolvedToolCall,
+  ToolCallResponse,
+  ToolListing
+} from "@getlibero/schema";
+import {
+  type SpendMeter,
+  createUnavailableDispatcher,
+  createUnmeteredSpend,
+  type ToolDispatcher
+} from "./dispatch.js";
+import type { BudgetSpend } from "./enforce.js";
 import { createJsonLogger } from "./log.js";
-import { createProxyServer } from "./server.js";
+import { MAX_BODY_BYTES, createProxyServer } from "./server.js";
+import { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 import { loadTlsOptions } from "./tls.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -39,6 +52,16 @@ interface ClientCert {
 let certs: string;
 /** A second, unrelated CA. Its certificates are well-formed and worthless. */
 let foreignCerts: string;
+let channelsRoot: string;
+let sheets: TeamSheetStore;
+let dispatcher: ToolDispatcher & { seen: ResolvedToolCall[] };
+/**
+ * A real meter, because the recording dispatcher below really serves calls and
+ * `assertServableComposition` will not let those two be paired with the
+ * provisional one. Mutable so a test can spend a channel's budget.
+ */
+let spent: BudgetSpend = { tokens: 0, toolCalls: 0 };
+const meter: SpendMeter = { read: () => spent };
 let server: Server;
 let port: number;
 let logLines: string[] = [];
@@ -58,7 +81,13 @@ function clientCert(dir: string, label: string): ClientCert {
 }
 
 /** One request. Resolves on a response; rejects when the connection does not survive. */
-function call(path: string, client?: ClientCert, method = "GET", targetPort = port): Promise<Response> {
+function call(
+  path: string,
+  client?: ClientCert,
+  method = "GET",
+  targetPort = port,
+  body?: string
+): Promise<Response> {
   return new Promise((resolve, reject) => {
     const req = request(
       {
@@ -79,9 +108,63 @@ function call(path: string, client?: ClientCert, method = "GET", targetPort = po
       }
     );
     req.on("error", reject);
-    req.end();
+    req.end(body);
   });
 }
+
+/** A tool call as the agent would send it, against the shared server. */
+function post(path: string, body: unknown, channel = CHANNEL): Promise<Response> {
+  return call(path, clientCert(certs, channel), "POST", port, JSON.stringify(body));
+}
+
+/**
+ * A dispatcher that records what reached it and otherwise does nothing.
+ *
+ * The instrument for the property this whole issue exists to establish:
+ * reaching the dispatcher is what opens a connection and resolves a
+ * credential, so "a refused call leaves no trace upstream" is the assertion
+ * that `seen` is still empty.
+ */
+function recordingDispatcher(): ToolDispatcher & { seen: ResolvedToolCall[] } {
+  const seen: ResolvedToolCall[] = [];
+  return {
+    seen,
+    dispatch(call: ResolvedToolCall) {
+      seen.push(call);
+      return { outcome: "ran", result: { content: "upstream said so", isError: false } };
+    }
+  };
+}
+
+function writeSheet(channel: string, toml: string): void {
+  mkdirSync(join(channelsRoot, channel), { recursive: true });
+  writeFileSync(join(channelsRoot, channel, SHEET_FILENAME), toml);
+}
+
+/** The sheet the shared server serves for CHANNEL, restored before each test. */
+const SHEET = `
+[channel]
+name = "engineering"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "https://api.github.com"
+
+  [[mcp_server.tool]]
+  name = "list_prs"
+
+  [[mcp_server.tool]]
+  name = "delete_branch"
+
+  [[mcp_server.tool]]
+  name = "merge_pr"
+  approval = "required"
+
+  [[mcp_server.tool]]
+  name = "drop_stale_caches"
+  approval = "none"
+`;
 
 beforeAll(() => {
   certs = mkdtempSync(join(tmpdir(), "libero-proxy-certs-"));
@@ -100,12 +183,19 @@ beforeAll(() => {
   ]);
   mint(foreignCerts, ["--channels", CHANNEL]);
 
+  channelsRoot = mkdtempSync(join(tmpdir(), "libero-proxy-channels-"));
+  sheets = new TeamSheetStore({ root: channelsRoot });
+  dispatcher = recordingDispatcher();
+
   server = createProxyServer({
     tls: loadTlsOptions({
       cert: join(certs, "proxy", "server.pem"),
       key: join(certs, "proxy", "server.key"),
       ca: join(certs, "ca.pem")
     }),
+    sheets,
+    spend: meter,
+    dispatcher,
     logger: createJsonLogger(line => {
       logLines.push(line);
     })
@@ -122,10 +212,22 @@ beforeAll(() => {
   // default timeout on CI; raised here so a loaded runner does not flake.
 }, 120_000);
 
+beforeEach(() => {
+  // Several tests below edit or delete the sheet mid-run — that is the point of
+  // them — so each starts from the same one.
+  rmSync(channelsRoot, { recursive: true, force: true });
+  writeSheet(CHANNEL, SHEET);
+  dispatcher.seen.length = 0;
+  spent = { tokens: 0, toolCalls: 0 };
+  logLines = [];
+});
+
 afterAll(() => {
   server.close();
+  sheets.close();
   rmSync(certs, { recursive: true, force: true });
   rmSync(foreignCerts, { recursive: true, force: true });
+  rmSync(channelsRoot, { recursive: true, force: true });
 });
 
 describe("mutual TLS", () => {
@@ -251,6 +353,9 @@ describe("routing", () => {
         key: join(certs, "proxy", "server.key"),
         ca: join(certs, "ca.pem")
       }),
+      sheets,
+      spend: createUnmeteredSpend(),
+      dispatcher: createUnavailableDispatcher(),
       logger: createJsonLogger(line => {
         lines.push(line);
       }),
@@ -297,5 +402,303 @@ describe("routing", () => {
       path: "/v1/nope",
       status: 404
     });
+  });
+});
+
+describe("the tool listing", () => {
+  it("returns only what the channel's team sheet permits", async () => {
+    const res = await call("/v1/tools", clientCert(certs, CHANNEL));
+    expect(res.status).toBe(200);
+    const { tools } = ToolListing.parse(res.body);
+
+    expect(tools.map(tool => tool.tool).sort()).toEqual([
+      "delete_branch",
+      "drop_stale_caches",
+      "list_prs",
+      "merge_pr"
+    ]);
+    expect(tools.every(tool => tool.server === "github")).toBe(true);
+  });
+
+  it("resolves approval rather than copying the sheet's optional field", () => {
+    // The listing has to answer the question the sheet only sometimes answers,
+    // and it has to answer it the way the call-time gate will.
+    const approval = async (tool: string): Promise<string> => {
+      const res = await call("/v1/tools", clientCert(certs, CHANNEL));
+      const found = ToolListing.parse(res.body).tools.find(entry => entry.tool === tool);
+      return found?.approval ?? "missing";
+    };
+
+    return Promise.all([
+      expect(approval("list_prs")).resolves.toBe("none"),
+      // Explicit in the sheet.
+      expect(approval("merge_pr")).resolves.toBe("required"),
+      // Nothing in the sheet; the destructive-name default applies.
+      expect(approval("delete_branch")).resolves.toBe("required"),
+      // Destructive-looking, and the sheet has answered. Explicit wins.
+      expect(approval("drop_stale_caches")).resolves.toBe("none")
+    ]);
+  });
+
+  it("gives a channel with no sheet an empty list, not an error", async () => {
+    const res = await call("/v1/tools", clientCert(certs, OTHER_CHANNEL));
+    // Empty is a permission state: this channel may call nothing. A 4xx here
+    // would make "not provisioned" indistinguishable from "the proxy is broken".
+    expect(res.status).toBe(200);
+    expect(ToolListing.parse(res.body).tools).toEqual([]);
+  });
+
+  it("reflects a sheet edited under a running proxy", async () => {
+    const before = await call("/v1/tools", clientCert(certs, CHANNEL));
+    expect(ToolListing.parse(before.body).tools).not.toHaveLength(0);
+
+    writeSheet(
+      CHANNEL,
+      `
+[channel]
+name = "engineering"
+`
+    );
+
+    const after = await call("/v1/tools", clientCert(certs, CHANNEL));
+    expect(ToolListing.parse(after.body).tools).toEqual([]);
+  });
+
+  it("lists per channel, not per process", async () => {
+    writeSheet(
+      OTHER_CHANNEL,
+      `
+[channel]
+name = "support"
+
+[[mcp_server]]
+name = "zendesk"
+transport = "http"
+url = "https://example.zendesk.com"
+
+  [[mcp_server.tool]]
+  name = "list_tickets"
+`
+    );
+
+    const mine = await call("/v1/tools", clientCert(certs, CHANNEL));
+    const theirs = await call("/v1/tools", clientCert(certs, OTHER_CHANNEL));
+
+    expect(ToolListing.parse(mine.body).tools.map(tool => tool.server)).not.toContain("zendesk");
+    expect(ToolListing.parse(theirs.body).tools).toEqual([
+      { server: "zendesk", tool: "list_tickets", approval: "none" }
+    ]);
+  });
+});
+
+describe("the call-time gate", () => {
+  const CALL = { id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } };
+
+  it("serves an allowed call to the dispatcher", async () => {
+    const res = await post("/v1/tools/call", CALL);
+    expect(res.status).toBe(200);
+    const answer = ToolCallResponse.parse(res.body);
+    expect(answer).toMatchObject({ outcome: "ran", id: "toolu_01" });
+    // And the dispatcher was handed a call bound to the certificate's channel.
+    expect(dispatcher.seen).toHaveLength(1);
+    expect(dispatcher.seen[0]).toMatchObject({ channel: CHANNEL, tool: "list_prs" });
+  });
+
+  it("refuses an unlisted server and an unlisted tool, structurally", async () => {
+    const unlistedServer = await post("/v1/tools/call", { ...CALL, server: "gitlab" });
+    expect(unlistedServer.status).toBe(200);
+    expect(ToolCallResponse.parse(unlistedServer.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "server_not_allowed", server: "gitlab" }
+    });
+
+    const unlistedTool = await post("/v1/tools/call", { ...CALL, tool: "force_push" });
+    expect(ToolCallResponse.parse(unlistedTool.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "tool_not_allowed", server: "github", tool: "force_push" }
+    });
+  });
+
+  it("holds a tool the sheet marks as needing approval", async () => {
+    const res = await post("/v1/tools/call", { ...CALL, tool: "merge_pr" });
+    expect(ToolCallResponse.parse(res.body)).toMatchObject({
+      outcome: "held",
+      refusal: { reason: "approval_required", server: "github", tool: "merge_pr" }
+    });
+  });
+
+  // The criterion this issue exists for. Reaching the dispatcher is what opens
+  // a connection and resolves a credential, so every not-allowed outcome has to
+  // leave it untouched — including a hold, which is not a denial but is also
+  // not permission to go and do the thing.
+  it("leaves no trace upstream for any call that was not allowed", async () => {
+    await post("/v1/tools/call", { ...CALL, server: "gitlab" });
+    await post("/v1/tools/call", { ...CALL, tool: "force_push" });
+    await post("/v1/tools/call", { ...CALL, tool: "merge_pr" });
+    await post("/v1/tools/call", { ...CALL, tool: "delete_branch" });
+    await post("/v1/tools/call", CALL, OTHER_CHANNEL);
+    await post("/v1/tools/call", { id: "x" });
+
+    expect(dispatcher.seen).toEqual([]);
+  });
+
+  it("refuses a body that asserts a channel, and does not honour it", async () => {
+    const res = await post("/v1/tools/call", { ...CALL, channel: OTHER_CHANNEL });
+    // The strict schema rejects the field rather than dropping it, so the
+    // attempt is a 400 an operator can see rather than a silently ignored one.
+    expect(res.status).toBe(400);
+    expect(ProxyError.parse(res.body).error.code).toBe("bad_request");
+    expect(ProxyError.parse(res.body).error.channel).toBe(CHANNEL);
+    expect(dispatcher.seen).toEqual([]);
+  });
+
+  it("refuses every call from a channel with no team sheet", async () => {
+    const res = await post("/v1/tools/call", CALL, OTHER_CHANNEL);
+    expect(ToolCallResponse.parse(res.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "no_team_sheet" }
+    });
+  });
+
+  it("refuses the next call for a tool removed from a live sheet, with no restart", async () => {
+    const before = await post("/v1/tools/call", CALL);
+    expect(ToolCallResponse.parse(before.body).outcome).toBe("ran");
+
+    writeSheet(
+      CHANNEL,
+      `
+[channel]
+name = "engineering"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "https://api.github.com"
+
+  [[mcp_server.tool]]
+  name = "merge_pr"
+  approval = "required"
+`
+    );
+
+    const after = await post("/v1/tools/call", CALL);
+    expect(ToolCallResponse.parse(after.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "tool_not_allowed", tool: "list_prs" }
+    });
+  });
+
+  it("refuses every call once the sheet is deleted — revocation is removing it", async () => {
+    rmSync(join(channelsRoot, CHANNEL), { recursive: true, force: true });
+
+    const res = await post("/v1/tools/call", CALL);
+    expect(ToolCallResponse.parse(res.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "no_team_sheet" }
+    });
+    expect(dispatcher.seen).toEqual([]);
+  });
+
+  it("audits the call with names, an outcome, and no arguments", async () => {
+    await post("/v1/tools/call", { ...CALL, tool: "force_push", arguments: { token: "ghp_secret" } });
+
+    const audit = logLines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(entry => entry.event === "tool_call");
+
+    expect(audit).toMatchObject({
+      channel: CHANNEL,
+      server: "github",
+      tool: "force_push",
+      outcome: "refused",
+      reason: "tool_not_allowed"
+    });
+    // The model wrote the arguments, so they are not a thing this process logs.
+    expect(logLines.join("")).not.toContain("ghp_secret");
+  });
+});
+
+describe("request bodies", () => {
+  it("rejects a body past the cap without buffering it", async () => {
+    const res = await post("/v1/tools/call", {
+      id: "toolu_01",
+      server: "github",
+      tool: "list_prs",
+      arguments: { blob: "x".repeat(MAX_BODY_BYTES) }
+    });
+
+    expect(res.status).toBe(413);
+    expect(ProxyError.parse(res.body).error.code).toBe("payload_too_large");
+    expect(dispatcher.seen).toEqual([]);
+  });
+
+  it("rejects a body that is not JSON", async () => {
+    const res = await call("/v1/tools/call", clientCert(certs, CHANNEL), "POST", port, "not json");
+    expect(res.status).toBe(400);
+    expect(ProxyError.parse(res.body).error.code).toBe("bad_request");
+  });
+
+  // The drain path. A route that does not read a body still has to answer a
+  // client that sent one, rather than leaving it waiting for the body to be
+  // consumed. Both early returns that a POST can reach are exercised.
+  it("still answers a route that reads no body when one is sent anyway", async () => {
+    const body = JSON.stringify({ ignored: true });
+
+    const wrongMethod = await call("/v1/tools", clientCert(certs, CHANNEL), "POST", port, body);
+    expect(wrongMethod.status).toBe(405);
+
+    const noRoute = await call("/v1/nope", clientCert(certs, CHANNEL), "POST", port, body);
+    expect(noRoute.status).toBe(404);
+  });
+});
+
+describe("composing the proxy", () => {
+  it("refuses to build one that would serve calls without metering them", () => {
+    expect(() =>
+      createProxyServer({
+        tls: loadTlsOptions({
+          cert: join(certs, "proxy", "server.pem"),
+          key: join(certs, "proxy", "server.key"),
+          ca: join(certs, "ca.pem")
+        }),
+        sheets,
+        // The stand-in that never exhausts a budget, with a dispatcher that
+        // really serves calls. Nothing binds; the process does not start.
+        spend: createUnmeteredSpend(),
+        dispatcher: recordingDispatcher()
+      })
+    ).toThrow(/needs a real spend meter/);
+  });
+});
+
+describe("the budget gate", () => {
+  it("refuses a call once the channel's daily tool calls are spent", async () => {
+    writeSheet(
+      CHANNEL,
+      `
+[channel]
+name = "engineering"
+
+[budget]
+daily_tool_calls = 5
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "https://api.github.com"
+
+  [[mcp_server.tool]]
+  name = "list_prs"
+`
+    );
+    spent = { tokens: 0, toolCalls: 5 };
+
+    const res = await post("/v1/tools/call", { id: "1", server: "github", tool: "list_prs" });
+    expect(ToolCallResponse.parse(res.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" }
+    });
+    // Budget is enforced before the call is served, like every other refusal.
+    expect(dispatcher.seen).toEqual([]);
   });
 });

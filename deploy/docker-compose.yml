@@ -46,7 +46,12 @@ services:
       dockerfile: apps/proxy-server/Dockerfile
     environment:
       VAULT_KEY: ${LIBERO_VAULT_KEY}            # encrypts credentials at rest
-      CHANNELS_DIR: /data/channels
+      # Read, and required. The proxy resolves
+      # <PROXY_CHANNELS_ROOT>/<channel>/channel.toml on every call and refuses
+      # anything the sheet does not permit, so for this service the directory is
+      # the authorization source rather than shared state. Removing a channel's
+      # directory is how that channel is revoked.
+      PROXY_CHANNELS_ROOT: /data/channels
       AUDIT_DB: /data/audit/audit.db
       # 0.0.0.0 reaches only the private bridge below, which publishes no
       # ports. Outside compose the default is 127.0.0.1.
