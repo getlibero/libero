@@ -89,6 +89,11 @@ One block per MCP server this channel may reach. `credential` is a name; the pro
 against the vault and injects it into the outbound call. The agent never receives the value and
 never learns it exists beyond the name.
 
+Server, tool, and credential names are short identifiers: letters, digits, dot, dash, and
+underscore, starting with a letter or digit, up to 64 characters. The same shape applies wherever
+a name crosses between the agent and the proxy, so a name that validates in a sheet is a name that
+survives a call and a refusal.
+
 ### `[[mcp_server.tool]]`
 
 The allowlist. **A tool that is not listed does not exist as far as this channel is concerned** —

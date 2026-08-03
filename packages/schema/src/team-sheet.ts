@@ -1,3 +1,4 @@
+import { CredentialName, ResourceName } from "./names.js";
 import { z } from "zod";
 
 /**
@@ -12,17 +13,20 @@ import { z } from "zod";
 
 export const ApprovalMode = z.enum(["required", "none"]);
 
+// Server, tool, and credential names are the same shapes the proxy accepts in a
+// call and returns in a refusal — imported, not restated, so a name that parses
+// in a sheet is a name that survives the round trip. See ./names.ts.
 export const ToolEntry = z.object({
-  name: z.string().min(1),
+  name: ResourceName,
   approval: ApprovalMode.optional(),
 });
 
 export const McpServer = z.object({
-  name: z.string().min(1),
+  name: ResourceName,
   transport: z.enum(["http", "stdio"]),
   url: z.url().optional(),
   /** Name of a credential in the proxy vault. Never a secret value. */
-  credential: z.string().min(1).optional(),
+  credential: CredentialName.optional(),
   tool: z.array(ToolEntry).default([]),
 });
 
