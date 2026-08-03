@@ -4,6 +4,7 @@ import starlight from '@astrojs/starlight';
 import sitemap from '@astrojs/sitemap';
 import { SITE } from './src/consts';
 import { liberoDark, liberoLight, styleOverrides } from './src/lib/code-theme.mjs';
+import { lastModified } from './src/lib/last-modified.mjs';
 
 // getlibero.com. Static output, deployed to GitHub Pages from
 // .github/workflows/pages.yml. Docs live under /docs/ because the marketing
@@ -48,6 +49,15 @@ export default defineConfig({
       description:
         'Documentation for Libero — the open-source AI teammate for Slack. Self-hosted, credential-isolated, every tool call audited.',
       favicon: '/favicon.svg',
+      // Starlight emits twitter:card=summary_large_image but no og:image, so
+      // without this every docs page shares as a large *empty* card. Same
+      // /og.png the marketing layout uses — the card advertises the project,
+      // not the page, so one image is honest for all of them.
+      head: [
+        { tag: 'meta', attrs: { property: 'og:image', content: `${SITE.url}/og.png` } },
+        { tag: 'meta', attrs: { property: 'og:image:alt', content: SITE.ogImageAlt } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: `${SITE.url}/og.png` } },
+      ],
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/getlibero/libero' },
         { icon: 'discord', label: 'Discord', href: SITE.discord },
@@ -107,7 +117,13 @@ export default defineConfig({
       },
     }),
 
-    sitemap(),
+    sitemap({
+      // Dates come from git, not the build clock — see src/lib/last-modified.mjs.
+      serialize: (item) => {
+        const lastmod = lastModified(new URL(item.url).pathname);
+        return lastmod ? { ...item, lastmod } : item;
+      },
+    }),
   ],
 
   vite: {
