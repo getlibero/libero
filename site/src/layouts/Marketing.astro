@@ -14,14 +14,31 @@ import { themeScript } from '../lib/theme-script';
 interface Props {
   title: string;
   description?: string;
-  /** Set on the home page, where the title is already the site name. */
+  /** Set where the title already contains the site name, so it isn't repeated. */
   bareTitle?: boolean;
+  /** Blog posts are articles; everything else is a website. */
+  ogType?: 'website' | 'article';
+  /** Required for og:type="article" — the post's publication date. */
+  publishedTime?: Date;
 }
 
-const { title, description = SITE.description, bareTitle = false } = Astro.props;
+const {
+  title,
+  description = SITE.description,
+  bareTitle = false,
+  ogType = 'website',
+  publishedTime,
+} = Astro.props;
 
 const pageTitle = bareTitle ? title : `${title} — ${SITE.name}`;
-const canonical = new URL(Astro.url.pathname.replace(/\/$/, '') || '/', Astro.site ?? SITE.url);
+
+// Trailing slash, always. GitHub Pages serves /why/ from why/index.html and
+// 301s /why to it, so the un-slashed form is a redirect — pointing a canonical
+// at a redirect throws away the signal and contradicts the sitemap, which
+// @astrojs/sitemap emits with the slash. Starlight already canonicalises this
+// way; this is the marketing side agreeing with it.
+const path = Astro.url.pathname.endsWith('/') ? Astro.url.pathname : `${Astro.url.pathname}/`;
+const canonical = new URL(path, Astro.site ?? SITE.url);
 const social = new URL('/og.png', Astro.site ?? SITE.url);
 ---
 
@@ -37,12 +54,16 @@ const social = new URL('/og.png', Astro.site ?? SITE.url);
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="alternate" type="application/rss+xml" title={`${SITE.name} blog`} href="/rss.xml" />
 
-    <meta property="og:type" content="website" />
+    <meta property="og:type" content={ogType} />
     <meta property="og:site_name" content={SITE.name} />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
     <meta property="og:image" content={social} />
+    <meta property="og:image:alt" content={SITE.ogImageAlt} />
+    {publishedTime && (
+      <meta property="article:published_time" content={publishedTime.toISOString()} />
+    )}
     <meta name="twitter:card" content="summary_large_image" />
 
     {/* Inlined so the theme is settled before first paint. Shared verbatim
