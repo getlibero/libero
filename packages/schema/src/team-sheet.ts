@@ -30,6 +30,14 @@ export const McpServer = z.object({
   tool: z.array(ToolEntry).default([]),
 });
 
+// Inferred types alongside the schemas, as TeamSheet already has. Enforcement
+// reads a sheet apart from parsing one, and reaching for
+// TeamSheet["mcp_server"][number] at each of those sites is how two names for
+// the same thing get started.
+export type ApprovalMode = z.infer<typeof ApprovalMode>;
+export type ToolEntry = z.infer<typeof ToolEntry>;
+export type McpServer = z.infer<typeof McpServer>;
+
 export const TeamSheet = z.object({
   channel: z.object({
     name: z.string().min(1),

@@ -26,6 +26,16 @@ import { CredentialName, DestinationHost, ResourceName } from "./names.js";
  */
 
 export const RefusalReason = z.enum([
+  /** The channel has no team sheet. Not provisioned, or revoked. */
+  "no_team_sheet",
+  /**
+   * A team sheet exists, has never parsed, and no earlier version is in force.
+   *
+   * Kept apart from `no_team_sheet` even though both refuse every call, because
+   * the two send an operator to different places. Collapsing them tells someone
+   * their channel has no sheet while they are looking at the file.
+   */
+  "team_sheet_unreadable",
   /** The channel's team sheet does not list this MCP server at all. */
   "server_not_allowed",
   /** The server is listed; this tool is not on its allowlist. */
@@ -48,6 +58,10 @@ export const BudgetLimit = z.enum(["daily_tokens", "daily_tool_calls"]);
 export type BudgetLimit = z.infer<typeof BudgetLimit>;
 
 export const ToolRefusal = z.discriminatedUnion("reason", [
+  // These two carry no facts beyond the reason. Naming the channel would add
+  // nothing a reader of the message does not already have: they are in it.
+  z.object({ reason: z.literal("no_team_sheet") }).strict(),
+  z.object({ reason: z.literal("team_sheet_unreadable") }).strict(),
   z
     .object({
       reason: z.literal("server_not_allowed"),
@@ -100,6 +114,10 @@ export type ToolRefusal = z.infer<typeof ToolRefusal>;
  */
 export function refusalMessage(refusal: ToolRefusal): string {
   switch (refusal.reason) {
+    case "no_team_sheet":
+      return "This channel has no team sheet, so no tool call is permitted. An admin provisions one at `channels/<channel id>/channel.toml`.";
+    case "team_sheet_unreadable":
+      return "This channel's team sheet could not be read and no earlier version is in force, so no tool call is permitted. The proxy log names the file and the fault.";
     case "server_not_allowed":
       return `This channel's team sheet does not list the server \`${refusal.server}\`. The call was not made.`;
     case "tool_not_allowed":
