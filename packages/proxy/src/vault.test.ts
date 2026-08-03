@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { createCipheriv, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -259,6 +259,34 @@ describe("the log and the error", () => {
     expect(existsSync(file)).toBe(false);
     expect(lines).toEqual([{ level: "warn", fields: { event: "vault_absent", file } }]);
   });
+
+  // A vault that exists but cannot be reached is not an absent one. Starting
+  // up with zero credentials over a permissions regression would surface as
+  // `credential_unresolved` mid-request instead of a startup failure. Root
+  // reads through mode 000, so the test is meaningless there.
+  it.runIf(process.getuid?.() !== 0)(
+    "refuses to open a vault it cannot stat rather than starting empty",
+    () => {
+      const k = key();
+      const inner = join(dir, "sealed");
+      mkdirSync(inner);
+      const sealed = join(inner, "vault.enc");
+      writeVaultEntries(sealed, k, new Map([[NAME, VALUE]]));
+      chmodSync(inner, 0o000);
+      const { logger, lines } = recordingLogger();
+
+      try {
+        expect(() => openVault({ file: sealed, key: k, logger })).toThrow(
+          expect.objectContaining({ reason: "unreadable" })
+        );
+        expect(lines).toEqual([
+          { level: "error", fields: { event: "vault_unreadable", file: sealed, reason: "unreadable" } }
+        ]);
+      } finally {
+        chmodSync(inner, 0o700);
+      }
+    }
+  );
 
   it("warns about a readable-by-others vault and still opens it", () => {
     const k = key();

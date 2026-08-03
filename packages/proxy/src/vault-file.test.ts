@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -143,6 +144,21 @@ describe("reading a vault for editing", () => {
       expect.objectContaining({ reason: "too_large" })
     );
   });
+
+  // The failure this guards against is total: a vault owned by another user,
+  // read as empty and then written back, is every stored credential gone.
+  // Root reads through mode 000, so the test is meaningless there.
+  it.runIf(process.getuid?.() !== 0)(
+    "refuses a vault it cannot read rather than treating it as empty",
+    () => {
+      const k = key();
+      writeVaultEntries(file, k, new Map([[NAME, VALUE]]));
+      chmodSync(file, 0o000);
+      expect(() => readVaultEntries(file, k)).toThrow(
+        expect.objectContaining({ reason: "unreadable" })
+      );
+    }
+  );
 
   it("agrees with the proxy's own reader", () => {
     const k = key();

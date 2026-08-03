@@ -26,6 +26,7 @@
 
 import { createDecipheriv, hkdfSync } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { CredentialName } from "@getlibero/schema";
 import type { Logger } from "./log.js";
 
@@ -286,14 +287,24 @@ function readEntries(
   key: VaultKey,
   logger: Logger | undefined
 ): ReadonlyMap<string, string> {
-  const stat = statOf(file);
-  if (stat === null) {
-    // Absent is not a failure: a deployment that has loaded no credentials yet
-    // is a valid one, and it is distinguishable from an empty vault, which is a
-    // file that decrypts to nothing. Neither creates the file — the read path
-    // does not write.
-    logger?.log("warn", { event: "vault_absent", file });
-    return new Map();
+  let stat: Stats;
+  try {
+    stat = statSync(file);
+  } catch (error) {
+    if (isAbsence(error)) {
+      // Absent is not a failure: a deployment that has loaded no credentials
+      // yet is a valid one, and it is distinguishable from an empty vault,
+      // which is a file that decrypts to nothing. Neither creates the file —
+      // the read path does not write.
+      logger?.log("warn", { event: "vault_absent", file });
+      return new Map();
+    }
+    // ENOENT and nothing else means absent. EACCES on the volume, EISDIR,
+    // a symlink loop — those are a vault that exists and cannot be reached,
+    // and starting up as though no credentials were loaded would turn a
+    // permissions regression into `credential_unresolved` at the far end of
+    // a Slack thread instead of a startup failure here.
+    throw fail(logger, file, "unreadable");
   }
 
   if (stat.size > MAX_VAULT_BYTES) {
@@ -327,13 +338,16 @@ function readEntries(
   }
 }
 
-function statOf(file: string): { size: number; mode: number } | null {
-  try {
-    const stat = statSync(file);
-    return { size: stat.size, mode: stat.mode };
-  } catch {
-    return null;
-  }
+/**
+ * ENOENT and nothing else.
+ *
+ * Every other filesystem error is a file that exists and could not be read,
+ * and the two callers — here and ./vault-file.ts — must not treat one as an
+ * empty vault: the reader would come up with no credentials, and the editor
+ * would clobber a store it never saw.
+ */
+export function isAbsence(error: unknown): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 function fail(logger: Logger | undefined, file: string, reason: VaultFailure): VaultError {
@@ -409,6 +423,12 @@ export function deriveKey(key: VaultKey, salt: Buffer): Buffer {
  * Pairs rather than an object, because a JSON object collapses duplicate keys
  * silently and last-wins. An operator whose vault somehow holds the same name
  * twice should be told, not quietly served one of them.
+ *
+ * Names are re-validated; values are not — no size cap, no emptiness check.
+ * That asymmetry is deliberate: a name is an identifier the rest of the proxy
+ * indexes with, while a value's constraints exist to catch operator mistakes
+ * at `set` time, and a file that decrypts under the key is already inside the
+ * trust boundary those checks guard the entrance to.
  */
 export function parseEntries(plaintext: Buffer): ReadonlyMap<string, string> {
   const malformed = (): VaultError => new VaultError("malformed_plaintext");

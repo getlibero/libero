@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openVault, parseVaultKey } from "@getlibero/proxy";
@@ -71,6 +71,25 @@ describe("set", () => {
     const result = await run(["set", NAME], VALUE);
     expect(result.text).not.toContain("ghp_");
   });
+
+  // A vault this cannot read must not be read as empty and then replaced —
+  // that is every stored credential gone on a permissions mistake. Root reads
+  // through mode 000, so the test is meaningless there.
+  it.runIf(process.getuid?.() !== 0)(
+    "refuses to touch a vault it cannot read",
+    async () => {
+      await run(["set", NAME], VALUE);
+      const before = readFileSync(file);
+      chmodSync(file, 0o000);
+
+      const result = await run(["set", "other_credential"], "second-value");
+
+      expect(result.code).toBe(EXIT_ERROR);
+      expect(result.err).toEqual(["vault: unreadable"]);
+      chmodSync(file, 0o600);
+      expect(readFileSync(file).equals(before)).toBe(true);
+    }
+  );
 
   // `echo secret |` and `printf secret |` must store the same thing.
   it.each([

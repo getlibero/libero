@@ -22,6 +22,7 @@ import {
   buildHeader,
   decodeVault,
   deriveKey,
+  isAbsence,
   serializeEntries
 } from "./vault.js";
 import type { VaultKey } from "./vault.js";
@@ -54,17 +55,21 @@ export class VaultEntryError extends Error {
 /**
  * Read the entry set for editing.
  *
- * An absent file is an empty set rather than a failure: the first `vault set`
- * on a fresh deployment has nothing to read. Every other failure — a wrong key,
- * a corrupt file — throws, because overwriting a vault this process could not
- * read would silently discard whatever was in it.
+ * An absent file — ENOENT, and only ENOENT — is an empty set rather than a
+ * failure: the first `vault set` on a fresh deployment has nothing to read.
+ * Every other failure — a file that exists but cannot be read, a wrong key, a
+ * corrupt file — throws, because overwriting a vault this process could not
+ * read would silently discard whatever was in it. EACCES is the live case: a
+ * vault owned by another user, read as empty and then replaced, is every
+ * stored credential gone without a warning.
  */
 export function readVaultEntries(file: string, key: VaultKey): VaultEntries {
   let raw: Buffer;
   try {
     raw = readFileSync(file);
-  } catch {
-    return new Map();
+  } catch (error) {
+    if (isAbsence(error)) return new Map();
+    throw new VaultError("unreadable");
   }
   if (raw.length > MAX_VAULT_BYTES) throw new VaultError("too_large");
   return decodeVault(raw, key);

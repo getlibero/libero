@@ -6,6 +6,13 @@
 // call site. There is no `message` field and no metadata bag: if something new
 // needs logging, it gets a named field here and a reviewer looks at it.
 //
+// One rule for that reviewer: no field may ever hold a credential value — and
+// that includes a hash or fingerprint of one, which is crackable when the
+// secret is low-entropy and would immediately attract "just log the
+// fingerprint". Credential *names* are fine, in the same sense `server` and
+// `tool` are names; the field arrives when credential injection (#51) has a
+// call site that writes it.
+//
 // One JSON object per line on stdout — the shape a container log collector
 // wants, and greppable without a parser.
 
@@ -55,16 +62,6 @@ export interface LogFields {
    * the response the client got say the same word.
    */
   outcome?: "ran" | "held" | "refused" | "unavailable";
-  /**
-   * A `CredentialName` — out of a team sheet, or out of a vault operation. A
-   * name, in the same sense `server` and `tool` are names.
-   *
-   * There is no field on this interface a credential *value* has a home in, and
-   * adding one is not a change a reviewer should accept. That includes a hash
-   * or a fingerprint of a value: a hash of a low-entropy secret is crackable,
-   * and such a field would immediately attract "just log the fingerprint".
-   */
-  credential?: string;
   /** Which team-sheet state a request resolved against. */
   sheet?: "active" | "absent" | "unusable";
   /** How many tools a listing returned. A count, not the list. */
