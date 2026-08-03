@@ -11,20 +11,17 @@
 // is a separate question the team sheet answers on every call.
 
 import type { TLSSocket } from "node:tls";
+import { CHANNEL_ID_PATTERN } from "@getlibero/schema";
 
 /** Client certificate subjects are "channel:<id>". Nothing else is a principal. */
 export const CHANNEL_CN_PREFIX = "channel:";
 
-/**
- * A channel id must start alphanumeric and stay within a conservative set.
- *
- * This is load-bearing rather than hygiene. The id becomes a directory name
- * (`channels/<id>/channel.toml`) and a SQLite filename, and the one-file-per-
- * channel layout *is* the isolation boundary — so "." and ".." are rejected by
- * the leading-character rule, and a separator never survives the character
- * class. Everything downstream may treat a resolved id as a safe path segment.
- */
-const CHANNEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// What a channel id may look like is defined once, in @getlibero/schema, and
+// imported here rather than restated — a certificate that minted an id this
+// process accepted but the storage layer rejected (or worse, the other way
+// round) is a hole, and two copies of a regex is how that happens. The pattern
+// rather than the zod schema, because this runs on every request and the
+// rejection taxonomy below is this module's own.
 
 /** Why a connection produced no channel. Logged; never returned to the caller. */
 export type IdentityRejection =
@@ -51,7 +48,7 @@ export function channelFromCommonName(commonName: string | undefined): ChannelId
     return { ok: false, reason: "not_a_channel_principal", commonName };
   }
   const channel = commonName.slice(CHANNEL_CN_PREFIX.length);
-  if (!CHANNEL_ID.test(channel)) {
+  if (!CHANNEL_ID_PATTERN.test(channel)) {
     return { ok: false, reason: "malformed_channel_id", commonName };
   }
   return { ok: true, channel };
