@@ -120,6 +120,17 @@ Team sheets are watched and validated against the schema on file change. An inva
 rejected loudly and **the previous valid version stays active** — a typo cannot silently widen or
 disable enforcement.
 
+Deleting a sheet is the exception, and the difference is deliberate. A typo leaves your intent
+unknown, so the last good sheet keeps running. Removing the file states your intent plainly, and
+removing a channel's sheet is how a channel is revoked — so it takes effect immediately rather
+than leaving the old permissions in force. A channel with no sheet is refused every call, and that
+refusal is distinct from the one a channel gets when its sheet exists but has never been readable:
+the same denial, but different mistakes, and you should not go looking for a typo in a file that
+was never there.
+
+A sheet added while the services are running is picked up on first use. Provisioning a channel does
+not need a restart.
+
 Because the sheets are files in your git repo, the review trail for "who allowed the agent to
 deploy" is your normal pull request history. That is deliberate: a web admin UI is an explicit
 non-goal for v1, and the files *are* the admin UI.
