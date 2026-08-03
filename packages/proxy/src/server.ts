@@ -2,7 +2,15 @@
 //
 // Node's own https server and an exact-match route table, no framework. This
 // process holds every credential in the deployment, so its dependency list is
-// a security property in its own right and stays at zero.
+// a security property in its own right.
+//
+// The rule, stated as what is actually enforced rather than as "zero": nothing
+// third-party here beyond what reading a team sheet requires — today zod and
+// smol-toml, reached through @getlibero/schema, each with no dependencies of
+// its own and both on the licence allowlist. A framework, a logger, an HTTP
+// client, or a TOML parser this process pulls in directly are all things a
+// reviewer should reject. The claim was previously "zero", which was never
+// quite true: zod has been in this tree since the first team-sheet import.
 //
 // Every request that reaches a route has already proved two things: it opened
 // a connection with a certificate the local CA signed, and that certificate

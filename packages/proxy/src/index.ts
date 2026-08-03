@@ -7,5 +7,8 @@ export type { ProxyTlsPaths } from "./tls.js";
 export { CHANNEL_CN_PREFIX, channelFromCommonName, resolveChannel } from "./identity.js";
 export type { ChannelIdentity, IdentityRejection } from "./identity.js";
 
+export { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
+export type { SheetState, TeamSheetStoreOptions } from "./team-sheet-store.js";
+
 export { createJsonLogger, createSilentLogger } from "./log.js";
 export type { LogFields, Logger, LogLevel } from "./log.js";

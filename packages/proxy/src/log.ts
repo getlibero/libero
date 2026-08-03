@@ -26,6 +26,22 @@ export interface LogFields {
   commonName?: string;
   host?: string;
   port?: number;
+  /**
+   * A path on disk. Separate from `path`, which is a request path — one field
+   * carrying both would make either one ambiguous to grep for.
+   */
+  file?: string;
+  /**
+   * Validation failures in a team sheet, as `path: code` — the schema's own
+   * field names and zod's issue codes. Both closed vocabularies; neither
+   * carries a value out of the file. See `parseTeamSheet`.
+   */
+  issues?: string[];
+  /** Position of a TOML syntax error. */
+  line?: number;
+  column?: number;
+  /** What a rejected team sheet left in force. A code, not prose. */
+  effect?: "previous_sheet_retained" | "no_sheet_in_force";
 }
 
 export interface Logger {
