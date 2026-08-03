@@ -1,6 +1,9 @@
 // Environment parsing for the proxy process, apart from index.ts so the
 // rules — and their failure modes — can be tested without starting a listener.
 
+import { VAULT_KEY_BYTES, parseVaultKey } from "@getlibero/proxy";
+import type { VaultKey } from "@getlibero/proxy";
+
 /**
  * Localhost by default.
  *
@@ -48,6 +51,47 @@ export function requiredEnv(env: Env, name: string): string {
  */
 export function channelsRootFromEnv(env: Env): string {
   return requiredEnv(env, "PROXY_CHANNELS_ROOT");
+}
+
+/**
+ * The vault file: `PROXY_VAULT_FILE`.
+ *
+ * Required with no default, on the same argument `channelsRootFromEnv` makes.
+ * A defaulted path that happens to be empty is indistinguishable from a correct
+ * one holding nothing, and the symptom — every credential unresolved — surfaces
+ * at the far end of a Slack thread rather than at startup.
+ */
+export function vaultFileFromEnv(env: Env): string {
+  return requiredEnv(env, "PROXY_VAULT_FILE");
+}
+
+/**
+ * The vault master key: `PROXY_VAULT_KEY`, base64, 32 bytes.
+ *
+ * One name, prefixed like everything else this process reads. It replaces the
+ * `LIBERO_VAULT_KEY`/`VAULT_KEY` pair that `deploy/docker-compose.yml` and
+ * `.env.example` used to disagree about and that no code ever read.
+ *
+ * The failure messages name the variable and the shape expected, and carry
+ * nothing of what was actually set. An error message is the one place a
+ * rejected key would be printed, logged, and pasted into an issue.
+ *
+ * Passing the key by environment variable is the phase-1 form. It is readable
+ * by anyone who can `docker inspect` the container — as `SLACK_APP_TOKEN` and
+ * `ANTHROPIC_API_KEY` already are in the same compose file — and a file or KMS
+ * source is the hardened path, documented in the proxy's README and not built.
+ */
+export function vaultKeyFromEnv(env: Env): VaultKey {
+  const raw = requiredEnv(env, "PROXY_VAULT_KEY");
+  const parsed = parseVaultKey(raw);
+  if (!parsed.ok) {
+    throw new Error(
+      parsed.reason === "not_base64"
+        ? "proxy: PROXY_VAULT_KEY is not base64 (generate with: openssl rand -base64 32)"
+        : `proxy: PROXY_VAULT_KEY must decode to ${VAULT_KEY_BYTES} bytes (generate with: openssl rand -base64 32)`
+    );
+  }
+  return parsed.key;
 }
 
 export function hostFromEnv(env: Env): string {

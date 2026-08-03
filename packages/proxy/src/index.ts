@@ -30,3 +30,24 @@ export type { SheetState, TeamSheetStoreOptions } from "./team-sheet-store.js";
 
 export { createJsonLogger, createSilentLogger } from "./log.js";
 export type { LogFields, Logger, LogLevel } from "./log.js";
+
+export {
+  MAX_VAULT_BYTES,
+  VAULT_KEY_BYTES,
+  VaultError,
+  openVault,
+  parseVaultKey
+} from "./vault.js";
+export type { CredentialLookup, Secret, Vault, VaultFailure, VaultKey, VaultKeyParse, VaultOptions } from "./vault.js";
+
+// The write path is exported for the operator's CLI and reached by nothing in
+// the server. See the header of ./vault-file.ts.
+export {
+  MAX_SECRET_BYTES,
+  VaultEntryError,
+  readVaultEntries,
+  removeEntry,
+  setEntry,
+  writeVaultEntries
+} from "./vault-file.js";
+export type { EntryRejection, VaultEntries } from "./vault-file.js";

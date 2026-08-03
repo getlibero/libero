@@ -5,7 +5,7 @@ it. See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) for the
 specification.
 
 What is here today: mutual TLS, the rule that decides which channel a request
-belongs to, and team-sheet enforcement on the call path.
+belongs to, team-sheet enforcement on the call path, and the credential vault.
 
 - `tls.ts` — server options that refuse a client with no certificate the local
   CA signed. `requestCert` and `rejectUnauthorized` together, TLS 1.3 only.
@@ -23,6 +23,14 @@ belongs to, and team-sheet enforcement on the call path.
   provisional stand-ins for them are marked: `createProxyServer` throws rather
   than build a proxy that pairs a dispatcher which really serves calls with the
   meter that never exhausts a budget.
+- `vault.ts` — the credential vault, read side. One AES-256-GCM blob over the
+  whole entry set, so the names are encrypted along with the values; a per-write
+  HKDF subkey; the header authenticated as AAD. Opened once at startup. A value
+  leaves only through `Secret.reveal()`, and a `Secret` renders as `[redacted]`
+  through `JSON.stringify`, string coercion, and `util.inspect`.
+- `vault-file.ts` — the write side, reached only by the operator's CLI in
+  `apps/proxy-server`. Apart from `vault.ts` so that file's imports can be read
+  as a claim: the process serving tool calls never writes the vault.
 - `server.ts` — `node:https` and an exact-match route table, behind mutual TLS.
 - `log.ts` — JSON lines over a closed field set. This process holds every
   credential, so there is no free-form log message for one to be interpolated
@@ -32,8 +40,15 @@ Nothing at runtime but `@getlibero/schema`, which fixes the shape of every
 error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
-Still to come, each with its own issue: the credential vault, the egress
-allowlist, the approval broker, the budget meter, and the audit writer.
+Still to come, each with its own issue: credential injection into outbound calls
+(#51), the redaction pass that scrubs known secret values out of tool results
+(#52 — it needs the loaded values, which is a second reason the vault decrypts
+into memory rather than per lookup), the egress allowlist, the approval broker,
+the budget meter, and the audit writer.
+
+A credential is therefore stored but not yet used: an allowed call still answers
+501, because nothing serves one. `apps/proxy-server/README.md` documents loading
+secrets into the vault.
 
 ## Endpoints
 

@@ -9,7 +9,7 @@ pointer to the repository and nothing else.
 
 Commands land in phase 1 alongside the governed core:
 
-- `libero init` — scaffold host configuration and the encrypted vault
+- `libero init` — scaffold host configuration and generate the vault master key
 - `libero channel add` — register a channel and its team sheet
 - `libero audit` — query and export the append-only audit log
 - `libero budget reset` — reset a channel's daily budget

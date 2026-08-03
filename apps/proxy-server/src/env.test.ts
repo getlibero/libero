@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HOST,
@@ -5,7 +6,9 @@ import {
   channelsRootFromEnv,
   hostFromEnv,
   portFromEnv,
-  requiredEnv
+  requiredEnv,
+  vaultFileFromEnv,
+  vaultKeyFromEnv
 } from "./env.js";
 
 describe("requiredEnv", () => {
@@ -64,5 +67,51 @@ describe("channelsRootFromEnv", () => {
     // rather than as a process that did not come up.
     expect(() => channelsRootFromEnv({})).toThrow(/PROXY_CHANNELS_ROOT/);
     expect(() => channelsRootFromEnv({ PROXY_CHANNELS_ROOT: "" })).toThrow(/PROXY_CHANNELS_ROOT/);
+  });
+});
+
+describe("vaultFileFromEnv", () => {
+  it("returns the vault path", () => {
+    expect(vaultFileFromEnv({ PROXY_VAULT_FILE: "/data/vault/vault.enc" })).toBe(
+      "/data/vault/vault.enc"
+    );
+  });
+
+  it("refuses to start without one", () => {
+    expect(() => vaultFileFromEnv({})).toThrow(/PROXY_VAULT_FILE/);
+    expect(() => vaultFileFromEnv({ PROXY_VAULT_FILE: "" })).toThrow(/PROXY_VAULT_FILE/);
+  });
+});
+
+describe("vaultKeyFromEnv", () => {
+  it("decodes a key from `openssl rand -base64 32`", () => {
+    const raw = randomBytes(32).toString("base64");
+    expect(vaultKeyFromEnv({ PROXY_VAULT_KEY: raw }).toString("base64")).toBe(raw);
+  });
+
+  it("refuses to start without one", () => {
+    expect(() => vaultKeyFromEnv({})).toThrow(/PROXY_VAULT_KEY/);
+    expect(() => vaultKeyFromEnv({ PROXY_VAULT_KEY: "" })).toThrow(/PROXY_VAULT_KEY/);
+  });
+
+  it("tells a non-base64 key apart from one of the wrong length", () => {
+    expect(() => vaultKeyFromEnv({ PROXY_VAULT_KEY: "hunter2!!!!hunter2!!!!" })).toThrow(/base64/);
+    expect(() =>
+      vaultKeyFromEnv({ PROXY_VAULT_KEY: randomBytes(16).toString("base64") })
+    ).toThrow(/32 bytes/);
+  });
+
+  // The error message is the one place a rejected key would be printed, logged,
+  // and pasted into an issue.
+  it("keeps the rejected key out of the failure", () => {
+    for (const raw of ["hunter2!!!!hunter2!!!!", randomBytes(16).toString("base64")]) {
+      let thrown: unknown;
+      try {
+        vaultKeyFromEnv({ PROXY_VAULT_KEY: raw });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(`${String(thrown)}${(thrown as Error).stack}`).not.toContain(raw);
+    }
   });
 });

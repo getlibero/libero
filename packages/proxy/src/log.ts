@@ -55,6 +55,16 @@ export interface LogFields {
    * the response the client got say the same word.
    */
   outcome?: "ran" | "held" | "refused" | "unavailable";
+  /**
+   * A `CredentialName` — out of a team sheet, or out of a vault operation. A
+   * name, in the same sense `server` and `tool` are names.
+   *
+   * There is no field on this interface a credential *value* has a home in, and
+   * adding one is not a change a reviewer should accept. That includes a hash
+   * or a fingerprint of a value: a hash of a low-entropy secret is crackable,
+   * and such a field would immediately attract "just log the fingerprint".
+   */
+  credential?: string;
   /** Which team-sheet state a request resolved against. */
   sheet?: "active" | "absent" | "unusable";
   /** How many tools a listing returned. A count, not the list. */

@@ -14,3 +14,11 @@ coverage/
 deploy/certs/
 *.key
 *.pem
+
+# The credential vault. Ciphertext, so committing one would not disclose a
+# secret on its own — but it is deployment state, and a repository is exactly
+# where a copy of it sits next to the key in someone's .env. The glob covers
+# the writer's temporary files.
+deploy/vault/
+vault.enc*
+.vault.enc*
