@@ -21,13 +21,28 @@ the model's cooperation.
 6. **Sandboxed code execution.** Ephemeral container, no network unless the team sheet grants an
    egress allowlist, invoked by the proxy so it is audited and budgeted like any other tool.
 7. **Physical channel isolation.** One SQLite file per channel; no query path can join across
-   channels.
+   channels. The layout enforces the storage boundary. Which channel a task acts as is bound by
+   the agent when the session is created, from the Slack event and not from anything the model
+   produces — see the trust assumption below.
 
 ## Trust assumptions
 
 The operator's Slack workspace is trusted. Individual channel members are not.
 
 Out of scope for v1: a malicious operator, a compromised host, and Slack itself.
+
+One assumption worth stating plainly, because it is the only place a mitigation leans on the agent
+being correct rather than on the proxy. The agent process holds one client certificate per channel
+it serves, so it is able to act as any of them. Prompt injection cannot reach that choice — the
+channel is taken from the Slack event, and the proxy will not read one from a header or a request
+body — but it does mean two things. A bug that binds a task to the wrong channel is not something
+the proxy can detect, since the certificate presented is genuine. And full compromise of the agent
+process, as opposed to the model-level cases above, yields the union of those channels' tool
+surfaces rather than one channel's. No secrets either way: none are in that process.
+
+Related, and also not built yet: a leaked client key cannot be revoked without retiring the
+channel, because the replacement certificate carries the same subject as the leaked one. Pinning a
+channel's key in its team sheet is the intended fix.
 
 ## What "not a mitigation" means here
 
