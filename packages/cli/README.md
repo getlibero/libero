@@ -16,4 +16,5 @@ Commands land in phase 1 alongside the governed core:
 - `libero doctor` — check a deployment's wiring
 
 `@getlibero/cli` is the only npm-published Libero package; the services ship as Docker images.
-Follow progress at [github.com/getlibero/libero](https://github.com/getlibero/libero).
+Follow progress at [github.com/getlibero/libero](https://github.com/getlibero/libero), or ask in
+[Discord](https://discord.gg/7JXpyBa6ZJ).

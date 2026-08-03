@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import sitemap from '@astrojs/sitemap';
+import { SITE } from './src/consts';
 import { liberoDark, liberoLight, styleOverrides } from './src/lib/code-theme.mjs';
 
 // getlibero.com. Static output, deployed to GitHub Pages from
@@ -33,6 +34,14 @@ export default defineConfig({
   // build if one comes back.
   compressHTML: false,
 
+  // Short links we hand out in places where a bare domain is easier to say than
+  // a URL full of invite noise. Static output turns each one into a meta-refresh
+  // page with rel=canonical and robots=noindex, which is all GitHub Pages can do
+  // — there is no server to return a 301.
+  redirects: {
+    '/discord': SITE.discord,
+  },
+
   integrations: [
     starlight({
       title: 'Libero',
@@ -41,6 +50,7 @@ export default defineConfig({
       favicon: '/favicon.svg',
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/getlibero/libero' },
+        { icon: 'discord', label: 'Discord', href: SITE.discord },
       ],
       editLink: {
         baseUrl: 'https://github.com/getlibero/libero/edit/main/site/',

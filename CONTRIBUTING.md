@@ -2,6 +2,14 @@
 
 Thanks for considering a contribution. A few things to know before your first PR.
 
+## Where to ask
+
+- **[Discord](https://discord.gg/7JXpyBa6ZJ)** — questions, design discussion, and checking whether anyone is already on something.
+- **[GitHub issues](https://github.com/getlibero/libero/issues)** — bugs and feature requests, so they stay searchable and can be scheduled into a phase.
+- **Neither, for vulnerabilities.** Use private reporting; see [SECURITY.md](SECURITY.md).
+
+A decision only counts once it is written down in an issue or a PR. Discord is for working things out, not for recording them.
+
 ## CLA
 
 A Contributor License Agreement (Apache-style) is required from your first PR; a CLA bot will prompt you in CI. The rationale is documented in [GOVERNANCE.md](GOVERNANCE.md) — read it, it's short and it was written before you asked.

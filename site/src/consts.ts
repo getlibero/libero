@@ -4,6 +4,13 @@ export const SITE = {
   name: 'Libero',
   url: 'https://getlibero.com',
   repo: 'https://github.com/getlibero/libero',
+  /**
+   * Permanent invite — never expires, unlimited uses. Also the target of the
+   * /discord redirect in astro.config.mjs, which is the form to hand out when
+   * a link has to be spoken or typed. Anything that renders a clickable link
+   * should use this constant directly and skip the hop.
+   */
+  discord: 'https://discord.gg/7JXpyBa6ZJ',
   tagline: 'The open-source AI teammate for Slack.',
   description:
     'A self-hosted AI teammate that lives in Slack channels. Credentials never enter the agent process, every tool call is checked against a per-channel allowlist, and dangerous calls wait for a human click.',

@@ -1,6 +1,7 @@
 ---
 import Mark from './Mark.astro';
 import ThemeToggle from './ThemeToggle.astro';
+import { SITE } from '../consts';
 
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';
 
@@ -39,6 +40,15 @@ const links = [
         rel="noopener"
       >
         GitHub
+      </a>
+      {/* Drops at the same width as Security. The docs header carries Discord
+          next to GitHub, so this keeps the two headers saying the same thing. */}
+      <a
+        href={SITE.discord}
+        class="site-header__link site-header__link--hide-xs"
+        rel="noopener"
+      >
+        Discord
       </a>
       <ThemeToggle />
     </nav>
