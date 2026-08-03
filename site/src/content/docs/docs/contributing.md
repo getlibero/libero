@@ -7,6 +7,17 @@ The canonical version of this lives in
 [CONTRIBUTING.md](https://github.com/getlibero/libero/blob/main/CONTRIBUTING.md) in the
 repository. This page is the short form.
 
+## Where to ask
+
+[Discord](https://discord.gg/7JXpyBa6ZJ) is for questions, design discussion, and checking whether
+anyone is already on something. [GitHub issues](https://github.com/getlibero/libero/issues) are for
+bugs and feature requests, so they stay searchable and can be scheduled into a phase. Neither is
+for vulnerabilities — use private reporting, described in the
+[security model](/docs/security).
+
+A decision only counts once it is written down in an issue or a pull request. Discord is for
+working things out, not for recording them.
+
 ## Ground rules CI enforces
 
 - **`packages/agent` may never import `packages/proxy`.** The only path from agent to tools is the

@@ -15,13 +15,15 @@
   <a href="https://getlibero.com/docs/roadmap">Roadmap</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="design/README.md">Design</a>
+  <a href="design/README.md">Design</a> ·
+  <a href="https://discord.gg/7JXpyBa6ZJ">Discord</a>
 </p>
 
 <p align="center">
   <a href="https://getlibero.com"><img alt="Site: getlibero.com" src="https://img.shields.io/badge/site-getlibero.com-1BA85A?style=flat-square&labelColor=131A18"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1BA85A?style=flat-square&labelColor=131A18">
   <img alt="Status: Phase 0, pre-release" src="https://img.shields.io/badge/status-phase_0-8FA39D?style=flat-square&labelColor=131A18">
+  <a href="https://discord.gg/7JXpyBa6ZJ"><img alt="Discord: join the server" src="https://img.shields.io/badge/discord-join-1BA85A?style=flat-square&labelColor=131A18"></a>
 </p>
 
 Libero is a self-hostable, LLM-agnostic AI teammate that lives in Slack channels as a shared agent — one session per channel, not per user — with persistent curated memory, admin-governed tool access, and asynchronous task execution.

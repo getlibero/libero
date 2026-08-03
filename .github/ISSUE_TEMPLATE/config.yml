@@ -5,6 +5,11 @@ contact_links:
     about: >-
       Do not open a public issue. Use private vulnerability reporting; we aim
       to acknowledge within 72 hours.
+  - name: Questions and design discussion
+    url: https://discord.gg/7JXpyBa6ZJ
+    about: >-
+      Ask in Discord rather than opening an issue. Issues are for bugs and
+      feature requests, which get scheduled into a roadmap phase.
   - name: Documentation
     url: https://getlibero.com/docs
     about: The design of record — architecture, team sheets, security model, roadmap.

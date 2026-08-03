@@ -1,5 +1,6 @@
 ---
 import Mark from './Mark.astro';
+import { SITE } from '../consts';
 
 const year = new Date().getFullYear();
 
@@ -20,6 +21,7 @@ const columns = [
       { href: '/security', label: 'Security' },
       { href: '/blog', label: 'Blog' },
       { href: '/docs/contributing', label: 'Contributing' },
+      { href: SITE.discord, label: 'Discord' },
     ],
   },
   {
