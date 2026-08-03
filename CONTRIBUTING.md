@@ -4,7 +4,7 @@ Thanks for considering a contribution. A few things to know before your first PR
 
 ## Where to ask
 
-- **[Discord](https://discord.gg/7JXpyBa6ZJ)** — questions, design discussion, and checking whether anyone is already on something.
+- **[Discord](https://getlibero.com/discord)** — questions, design discussion, and checking whether anyone is already on something.
 - **[GitHub issues](https://github.com/getlibero/libero/issues)** — bugs and feature requests, so they stay searchable and can be scheduled into a phase.
 - **Neither, for vulnerabilities.** Use private reporting; see [SECURITY.md](SECURITY.md).
 

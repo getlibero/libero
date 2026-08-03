@@ -6,7 +6,7 @@ contact_links:
       Do not open a public issue. Use private vulnerability reporting; we aim
       to acknowledge within 72 hours.
   - name: Questions and design discussion
-    url: https://discord.gg/7JXpyBa6ZJ
+    url: https://getlibero.com/discord
     about: >-
       Ask in Discord rather than opening an issue. Issues are for bugs and
       feature requests, which get scheduled into a roadmap phase.
