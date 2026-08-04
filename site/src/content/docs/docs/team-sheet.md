@@ -125,8 +125,30 @@ approval settings, the stricter one applies.
 
 ### `[egress]`
 
-Where the agent's traffic may go, including from inside the code-execution sandbox. The sandbox
-has no network at all unless this list grants it.
+Where traffic may go when the sheet does not already say. The code-execution sandbox has no
+network at all unless this list grants it, and anything later that takes a URL as an argument
+answers to the same list.
+
+**A server's own `url` does not go here.** Declaring it under `[[mcp_server]]` is what authorizes
+it — that block also carries the tool allowlist and the credential name, so the destination has
+already been stated by an admin, and restating it would add a second place to get it wrong.
+
+The two are separate on purpose. Listing `api.github.com` here so a GitHub MCP server can be
+reached would also let sandboxed code call the GitHub API directly, around the tool allowlist that
+is the whole reason for going through an MCP server. Listing the MCP server's own host would let
+sandboxed code dial the server. A channel can reach the GitHub MCP server without its sandbox
+reaching GitHub.
+
+Default deny: a channel with no `[egress]` block reaches nothing. An entry is a host, optionally
+prefixed with `*.` — `api.github.com`, or `*.internal.example.com`. The wildcard stands for one or
+more subdomain labels and nothing else: `*.internal.example.com` matches
+`build.internal.example.com` and `a.b.internal.example.com`, and does **not** match
+`internal.example.com` itself, `evil-internal.example.com`, or
+`internal.example.com.attacker.com`. There is no allow-all pattern; a bare `*` is rejected when
+the sheet loads, along with a wildcard anywhere but the leftmost label.
+
+Redirects are not followed. An upstream answering `302` would send the proxy to a host no sheet
+named, so the call fails instead.
 
 ### `[ambient]`
 

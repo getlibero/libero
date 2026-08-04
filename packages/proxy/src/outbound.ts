@@ -26,9 +26,12 @@
 // exported from the package index: `callUpstream` is the only exported way to
 // send a credential, and it always redacts what comes back.
 //
-// **What this file does not do.** It does not check the egress allowlist (#73).
-// That belongs on this path and is not built; the caller composes it around
-// this.
+// **What this file does not do.** It does not check the egress allowlist, and
+// that is not an omission. `[egress]` governs destinations the sheet does not
+// pin; the url below comes from an `[[mcp_server]]` block, which is where an
+// admin authorized it. See the header of packages/schema/src/egress.ts for why
+// merging the two lists would widen both. What this file does own is the one
+// destination nothing declared — a redirect target — and it refuses to follow.
 
 import { redactSecrets } from "./redact.js";
 import type { Secret } from "./vault.js";
@@ -47,6 +50,14 @@ export type AuthScheme = "bearer";
 
 /** How long the proxy waits on an upstream before giving up. */
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
+
+/**
+ * The statuses that mean "go somewhere else", which the proxy will not do.
+ *
+ * Enumerated rather than tested as a 3xx range so that 304 — not a redirect —
+ * is not swept in with them.
+ */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
  * The header name and value a scheme produces.
@@ -94,7 +105,7 @@ export function injectCredential(
  * that holds a secret, so the failure a caller reports has to be something the
  * caller chose from a list rather than a string that came back from the stack.
  */
-export type UpstreamFailure = "timed_out" | "unreachable";
+export type UpstreamFailure = "timed_out" | "unreachable" | "redirected";
 
 /**
  * An outbound call that did not complete.
@@ -174,6 +185,28 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
       method: "POST",
       headers,
       body: JSON.stringify(request.body),
+      // Not followed. A redirect target is the only destination in the system
+      // that nothing declared: the url above comes from the team sheet, and
+      // `[egress]` covers the hosts an operator wrote down, but a 302 is chosen
+      // by the upstream at call time. Following one opens a connection to a
+      // host no sheet named and hands its body back to the agent with every
+      // check already passed.
+      //
+      // Refused outright rather than checked against the egress list, because
+      // the two are different questions: an MCP call redirecting is still MCP
+      // traffic, so the list it would have to satisfy is the server's own
+      // declared host — and an upstream that needs to move has an operator who
+      // can change the url. Following manually would also mean owning loop
+      // limits, the method rewrite on 303, and which headers survive a hop,
+      // all on the one path in the tree that holds a credential.
+      //
+      // `manual` rather than `error`: both decline to follow, but `error`
+      // reports it as a generic fetch failure whose only distinguishing mark is
+      // the wording of a nested cause, and classifying a redirect by matching
+      // an undici message string is a test that passes until Node rewords it.
+      // `manual` hands back the 3xx itself, so the check below is a status
+      // code. The response is refused unread either way.
+      redirect: "manual",
       signal: AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS)
     });
   } catch (error) {
@@ -181,6 +214,13 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
     // Nothing else about it is kept — see the note on `UpstreamError`.
     const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
     throw new UpstreamError(timedOut ? "timed_out" : "unreachable");
+  }
+
+  // Before the body is read, so nothing from the 3xx is parsed, scanned, or
+  // returned. 304 is deliberately not in the set: it is not a redirect, and the
+  // proxy sends no conditional headers that could provoke one.
+  if (REDIRECT_STATUSES.has(response.status)) {
+    throw new UpstreamError("redirected");
   }
 
   let body: string;
@@ -210,11 +250,11 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
 }
 
 /**
- * The host an upstream URL names, for logging and for the egress check (#73).
+ * The host an upstream URL names, for the log line.
  *
  * Host only. A full URL in a log line is a place a query-string token ends up,
- * and the `[egress]` allowlist is written in hosts, so this is the string both
- * want. Returns `null` for a URL that does not parse — the sheet's `url` is
+ * and hosts are also what an operator compares against when reading one.
+ * Returns `null` for a URL that does not parse — the sheet's `url` is
  * `z.url()` so that should not happen, but the caller decides what to do about
  * it rather than being handed an exception on the credential path.
  */

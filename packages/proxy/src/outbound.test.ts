@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -145,6 +147,76 @@ describe("the outbound call", () => {
     expect(seen).not.toContain(VALUE);
     expect(seen).not.toContain("ghp_");
     expect((thrown as { cause?: unknown }).cause).toBeUndefined();
+  });
+});
+
+// A redirect target is the only destination in the system nothing declared: the
+// url comes from the team sheet and `[egress]` holds hosts an operator wrote
+// down, but a 302 is chosen by the upstream at call time.
+describe("a redirecting upstream", () => {
+  it("asks the transport not to follow", async () => {
+    const { calls, fetch } = recordingFetch();
+    await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    expect(calls[0]?.init.redirect).toBe("manual");
+  });
+
+  it.each([301, 302, 303, 307, 308])("refuses a %i rather than following it", async (status) => {
+    const { fetch } = recordingFetch("", status);
+    await expect(
+      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: secretOf(VALUE), fetch })
+    ).rejects.toMatchObject({ name: "UpstreamError", failure: "redirected" });
+  });
+
+  // 304 is not a redirect, and the proxy sends nothing conditional that could
+  // provoke one. Swept in with the others it would turn a cacheable answer into
+  // a transport failure.
+  it("does not treat a 304 as a redirect", async () => {
+    // Built by hand rather than through `recordingFetch`: 304 is a null-body
+    // status, and the Response constructor rejects a body for one.
+    const fetch = (async () => new Response(null, { status: 304 })) as unknown as typeof globalThis.fetch;
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      fetch
+    });
+    expect(response.status).toBe(304);
+  });
+
+  // The claim the stub cannot make: that no second socket is opened. Two real
+  // servers, and the one being redirected to must never be asked for anything.
+  it("opens no connection to the host it was redirected to", async () => {
+    const target = createServer((_request, response) => {
+      targetHits += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+    });
+    let targetHits = 0;
+    await new Promise<void>(resolve => target.listen(0, "127.0.0.1", resolve));
+    const targetPort = (target.address() as AddressInfo).port;
+
+    const redirector = createServer((_request, response) => {
+      response.writeHead(302, { location: `http://127.0.0.1:${targetPort}/moved` });
+      response.end();
+    });
+    await new Promise<void>(resolve => redirector.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const thrown = await callUpstream({
+        url: `http://127.0.0.1:${(redirector.address() as AddressInfo).port}`,
+        body: {},
+        scheme: "bearer",
+        secret: secretOf(VALUE)
+      }).catch((error: unknown) => error);
+
+      expect(thrown).toBeInstanceOf(UpstreamError);
+      expect((thrown as UpstreamError).failure).toBe("redirected");
+      expect(targetHits).toBe(0);
+    } finally {
+      await new Promise<void>(resolve => redirector.close(() => resolve()));
+      await new Promise<void>(resolve => target.close(() => resolve()));
+    }
   });
 });
 
