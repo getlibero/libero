@@ -43,7 +43,8 @@ key means losing the vault: there is no recovery path and no escrow.
 
 ## What you provide
 
-**A Slack app** with Socket Mode enabled, in a workspace you administer.
+**A Slack app** with Socket Mode enabled, in a workspace you administer. One app serves every
+channel — see [the Slack app](#the-slack-app) for the scopes and events it needs.
 
 **A model provider.** Anthropic, OpenAI, Google, Groq or Ollama out of the box, set globally and
 overridable per channel in the team sheet.
@@ -69,6 +70,63 @@ the [team sheet reference](/docs/team-sheet).
 
 The proxy listens only on localhost or a private network, with mutual TLS between the two
 services. Put nothing else on that interface.
+
+## The Slack app
+
+One app, installed once, serving every channel it is invited to. Not one app per channel: which
+channel a task runs as comes from the Slack event, and that is what selects the client certificate
+the agent presents to the proxy.
+
+Socket Mode means there is no Request URL to configure anywhere — not for events, not for
+interactivity. The gateway dials out and holds the connection open, which is why the deployment
+publishes no ports.
+
+### Tokens
+
+| Token | Where it comes from | Env var |
+| --- | --- | --- |
+| App-level (`xapp-`) | Created when you enable Socket Mode; needs `connections:write` | `SLACK_APP_TOKEN` |
+| Bot (`xoxb-`) | Issued when you install the app to the workspace | `SLACK_BOT_TOKEN` |
+
+Both live in the gateway process, because that is what holds the socket. They are not tool
+credentials and do not go in the vault: the vault is for the credentials the proxy injects into
+calls the team sheet permits, and the gateway's own token is not one of them. Scope the app
+narrowly and install it only in the workspace that needs it — a leaked bot token can post as the
+app and read history anywhere the app is installed.
+
+### Bot scopes
+
+| Scope | What needs it |
+| --- | --- |
+| `app_mentions:read` | Receiving the mention that starts a task |
+| `chat:write` | Posting replies, and editing its own messages for the live checklist |
+| `channels:history` | Storing channel messages for recall and for thread follow-ups |
+| `groups:history` | The same, for private channels — omit if the agent only serves public ones |
+| `users:read` | Display names, so the model can address the right person |
+
+### Event subscriptions
+
+| Event | What needs it |
+| --- | --- |
+| `app_mention` | The trigger |
+| `message.channels` | Messages that are not mentions: thread follow-ups, and the message store |
+| `message.groups` | The same, for private channels |
+
+Message events carry deletions as a subtype rather than as their own event, and the gateway acts
+on them: a message deleted in Slack is deleted from that channel's store, index included. Slack
+retention is respected rather than quietly outlived.
+
+### Interactivity
+
+Turn it on. Approve / Request changes cards are Slack interactions, and the approver's identity
+arrives in the interaction payload — the one identity in the system Slack vouches for rather than
+the agent asserting it. No extra scope, and no Request URL.
+
+### Use a scratch workspace first
+
+A free workspace you create is enough to bring the gateway up and watch it answer a mention. Point
+the app at a workspace you care about only once the enforcement path is one you have read — the
+caution at the top of this page is not a formality.
 
 ## Mutual TLS between the services
 
