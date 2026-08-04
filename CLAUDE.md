@@ -77,7 +77,16 @@ execution plan, not the spec.
   `security` marks issues load-bearing for the security property or part of
   the attack suite; `parked` marks valid work that belongs to a later phase —
   parked issues stay open, carry no milestone, and are picked up when their
-  phase opens.
+  phase opens; `needs-triage` marks community issues not yet looked at (the
+  issue templates apply it).
+- **Triage is removing `needs-triage`** by doing exactly one of: assign the
+  open milestone (plus `area:*`, attached to a tracking issue where one fits),
+  apply `parked`, or close as duplicate/invalid/Discord-question. Target: under
+  a week. An issue is approved to build against only when milestoned and
+  unblocked — that rule is stated in CONTRIBUTING.md, so point contributors
+  there rather than re-deriving it. A security-sensitive report filed publicly
+  gets minimal in-thread discussion and a request to refile via private
+  vulnerability reporting.
 - No Projects board. Milestone + labels + the issue list is the whole system.
 
 The public version of this convention is the "How work is planned" section of
