@@ -12,8 +12,9 @@ import { CredentialName, DestinationHost, ResourceName } from "./names.js";
  * The variants are the questions the proxy answers on every call — is this
  * server allowed for this channel, is this tool on the allowlist, does the call
  * need a human, is the budget spent, is the destination permitted — plus the
- * one operator failure the agent must be able to report precisely: a credential
- * the team sheet names that the vault cannot resolve.
+ * two operator failures the agent must be able to report precisely: a
+ * credential the team sheet names that the vault cannot resolve, and a sheet
+ * whose duplicate server entries disagree about where a tool goes.
  *
  * **There is no free-text field on any variant.** The relayable sentence is
  * derived from the enumerated fields by `refusalMessage`, so the text cannot
@@ -40,6 +41,18 @@ export const RefusalReason = z.enum([
   "server_not_allowed",
   /** The server is listed; this tool is not on its allowlist. */
   "tool_not_allowed",
+  /**
+   * The sheet lists this server more than once, and the entries that carry the
+   * tool disagree about where it goes or what it authenticates with.
+   *
+   * Duplicate server names are legitimate — a sheet may split one server's
+   * tools across blocks, and the allowlist unions them. What is not legitimate
+   * is two blocks of the same name pointing at different upstreams: the entry
+   * whose allowlist permitted the tool would not be the entry the call was sent
+   * to, and that gap is a bypass. There is no safe way to pick, so neither is
+   * picked.
+   */
+  "server_ambiguous",
   /** Permitted, but held for a human. The approval broker takes it from here. */
   "approval_required",
   /** The channel's daily meter is spent. Authoritative in the proxy. */
@@ -71,6 +84,13 @@ export const ToolRefusal = z.discriminatedUnion("reason", [
   z
     .object({
       reason: z.literal("tool_not_allowed"),
+      server: ResourceName,
+      tool: ResourceName
+    })
+    .strict(),
+  z
+    .object({
+      reason: z.literal("server_ambiguous"),
       server: ResourceName,
       tool: ResourceName
     })
@@ -122,6 +142,8 @@ export function refusalMessage(refusal: ToolRefusal): string {
       return `This channel's team sheet does not list the server \`${refusal.server}\`. The call was not made.`;
     case "tool_not_allowed":
       return `This channel's team sheet lists \`${refusal.server}\` but not the tool \`${refusal.tool}\`. The call was not made.`;
+    case "server_ambiguous":
+      return `This channel's team sheet lists \`${refusal.server}\` more than once, and the entries carrying \`${refusal.tool}\` point at different upstreams. An admin resolves it in the sheet. The call was not made.`;
     case "approval_required":
       return `\`${refusal.server}.${refusal.tool}\` requires approval from a human before it runs. The call is held.`;
     case "budget_exhausted":

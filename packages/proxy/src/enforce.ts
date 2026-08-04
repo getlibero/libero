@@ -65,9 +65,18 @@ export interface EnforcementInput {
  * no approval broker wired — which is every deployment until #37 lands — can
  * relay it to the channel as an ordinary refusal and be correct. The seam
  * degrades to the safe behaviour instead of to an unhandled case.
+ *
+ * `allow` carries the sheet entry it matched, and that is a security property
+ * rather than a convenience. The dispatcher needs a destination and a
+ * credential name, and the only two ways to get them are this field or a second
+ * lookup after the fact. A second lookup can disagree with the first — the
+ * sheet is watched and reloads on file change, so the entry that authorized the
+ * call is not necessarily the entry a later read returns — and the call would
+ * then go somewhere the decision never approved. Handing the matched entry
+ * forward closes that window by construction: there is nothing to re-resolve.
  */
 export type Decision =
-  | { readonly outcome: "allow" }
+  | { readonly outcome: "allow"; readonly upstream: McpServer }
   | { readonly outcome: "hold"; readonly refusal: ToolRefusal }
   | { readonly outcome: "refuse"; readonly refusal: ToolRefusal };
 
@@ -110,6 +119,41 @@ function serversNamed(sheet: TeamSheet, name: string): McpServer[] {
 
 function toolsNamed(servers: readonly McpServer[], name: string): ToolEntry[] {
   return servers.flatMap(server => server.tool.filter(tool => tool.name === name));
+}
+
+/**
+ * The entries that actually carry the tool, not merely the name.
+ *
+ * `toolsNamed` flattens the entries away because approval only cares about the
+ * tool rows. Dispatch cares about which block they came from: a sheet may split
+ * one server's tools across several `[[mcp_server]]` blocks, and the block that
+ * listed the tool is the block that authorized it. Sending the call to a
+ * different block that happens to share the name is the bypass `serversNamed`
+ * warns about, one level down.
+ */
+function serversCarrying(servers: readonly McpServer[], tool: string): McpServer[] {
+  return servers.filter(server => server.tool.some(entry => entry.name === tool));
+}
+
+/** Same destination, same authentication. Everything dispatch reads. */
+function sameUpstream(a: McpServer, b: McpServer): boolean {
+  return a.transport === b.transport && a.url === b.url && a.credential === b.credential;
+}
+
+/**
+ * Which upstream serves the call, or `null` if the sheet does not say.
+ *
+ * Duplicate blocks are fine and common — that is how a sheet groups tools by
+ * approval, and the allowlist unions them. They are only a problem when the
+ * blocks carrying this tool disagree about where it goes, because then the
+ * sheet authorizes one thing and describes two. Picking either would mean the
+ * entry checked against the allowlist need not be the entry dispatched to.
+ * Nothing here resolves that; the caller refuses.
+ */
+function selectUpstream(carriers: readonly McpServer[]): McpServer | null {
+  const first = carriers[0];
+  if (first === undefined) return null;
+  return carriers.every(server => sameUpstream(server, first)) ? first : null;
 }
 
 /**
@@ -176,6 +220,15 @@ export function decide(input: EnforcementInput): Decision {
     return refuse({ reason: "tool_not_allowed", server: call.server, tool: call.tool });
   }
 
+  // Before the budget and before approval, for the reason the ordering note
+  // above gives: a sheet whose blocks contradict each other is a structural
+  // fault, not a condition that clears tomorrow, and no human should be asked
+  // to approve a call that has nowhere to go.
+  const upstream = selectUpstream(serversCarrying(servers, call.tool));
+  if (upstream === null) {
+    return refuse({ reason: "server_ambiguous", server: call.server, tool: call.tool });
+  }
+
   const limit = exhaustedLimit(sheet, spend);
   if (limit !== null) {
     return refuse({ reason: "budget_exhausted", limit });
@@ -185,7 +238,7 @@ export function decide(input: EnforcementInput): Decision {
     return { outcome: "hold", refusal: { reason: "approval_required", server: call.server, tool: call.tool } };
   }
 
-  return { outcome: "allow" };
+  return { outcome: "allow", upstream };
 }
 
 /**

@@ -8,6 +8,7 @@ const samples: Record<RefusalReason, ToolRefusal> = {
   team_sheet_unreadable: { reason: "team_sheet_unreadable" },
   server_not_allowed: { reason: "server_not_allowed", server: "stripe" },
   tool_not_allowed: { reason: "tool_not_allowed", server: "github", tool: "delete_repo" },
+  server_ambiguous: { reason: "server_ambiguous", server: "github", tool: "list_prs" },
   approval_required: { reason: "approval_required", server: "github", tool: "trigger_workflow" },
   budget_exhausted: { reason: "budget_exhausted", limit: "daily_tool_calls" },
   egress_denied: { reason: "egress_denied", destination: "api.example.net" },

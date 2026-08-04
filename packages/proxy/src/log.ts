@@ -10,8 +10,8 @@
 // that includes a hash or fingerprint of one, which is crackable when the
 // secret is low-entropy and would immediately attract "just log the
 // fingerprint". Credential *names* are fine, in the same sense `server` and
-// `tool` are names; the field arrives when credential injection (#51) has a
-// call site that writes it.
+// `tool` are names; `credential` below is that field, and it holds the name out
+// of the team sheet and nothing else.
 //
 // One JSON object per line on stdout — the shape a container log collector
 // wants, and greppable without a parser.
@@ -57,6 +57,22 @@ export interface LogFields {
    */
   server?: string;
   tool?: string;
+  /**
+   * The credential a call used, **by name**. A `CredentialName` out of the team
+   * sheet — the same string an operator typed into `libero vault set`, which is
+   * why it is safe and why it is useful: it is how "which credential did that
+   * call authenticate with" gets answered without the value going anywhere.
+   *
+   * Never the value, never a hash of it. See the rule at the top of this file.
+   */
+  credential?: string;
+  /**
+   * A destination host, for the outbound side. Host only — no scheme, no path,
+   * no query — because a URL is a place a token gets put by a careless caller
+   * and a query string is where it would land. The `[egress]` allowlist is
+   * written in hosts too, so this is the string an operator compares against.
+   */
+  destination?: string;
   /**
    * What the proxy did with a tool call. The wire vocabulary, so a log line and
    * the response the client got say the same word.

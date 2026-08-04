@@ -8,6 +8,22 @@ export {
 } from "./dispatch.js";
 export type { Dispatch, SpendMeter, ToolDispatcher } from "./dispatch.js";
 
+// Credential injection. `createHttpDispatcher` is a *real* dispatcher, so
+// pairing it with `createUnmeteredSpend()` is a startup error until #38 lands
+// a meter — see `assertServableComposition`.
+export { createHttpDispatcher, toolRequestBody } from "./http-dispatcher.js";
+export type { HttpDispatcherOptions } from "./http-dispatcher.js";
+
+export {
+  DEFAULT_UPSTREAM_TIMEOUT_MS,
+  UpstreamError,
+  callUpstream,
+  credentialHeader,
+  destinationHost,
+  injectCredential
+} from "./outbound.js";
+export type { AuthScheme, UpstreamFailure, UpstreamRequest, UpstreamResponse } from "./outbound.js";
+
 export { loadTlsOptions } from "./tls.js";
 export type { ProxyTlsPaths } from "./tls.js";
 

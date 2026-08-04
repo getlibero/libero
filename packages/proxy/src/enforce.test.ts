@@ -244,6 +244,108 @@ describe("duplicate entries", () => {
   });
 });
 
+describe("which upstream an allow names", () => {
+  // The whole point of carrying the entry rather than the name: the dispatcher
+  // is handed a destination the decision matched, not one it looks up later.
+  it("carries the matched entry, with its url and credential", () => {
+    const decision = decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND });
+    expect(decision).toEqual({
+      outcome: "allow",
+      upstream: expect.objectContaining({ name: "github", transport: "http" })
+    });
+  });
+
+  // The bypass this closes: block A lists the tool, block B shares the name and
+  // points somewhere else. The call must go to A, which authorized it.
+  it("picks the block that lists the tool, not the first block with the name", () => {
+    const split = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://decoy:3001", tool: [{ name: "list_prs" }] },
+        { name: "github", transport: "http", url: "http://real:3001", tool: [{ name: "get_issue" }] }
+      ]
+    });
+    const decision = decide({ sheet: split, call: callTo("github", "get_issue"), spend: NO_SPEND });
+    expect(decision.outcome).toBe("allow");
+    expect(decision.outcome === "allow" && decision.upstream.url).toBe("http://real:3001");
+  });
+
+  it("keeps the credential name attached to the block that carried the tool", () => {
+    const split = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://a:3001", credential: "cred_a", tool: [{ name: "list_prs" }] },
+        { name: "github", transport: "http", url: "http://b:3001", credential: "cred_b", tool: [{ name: "get_issue" }] }
+      ]
+    });
+    const decision = decide({ sheet: split, call: callTo("github", "get_issue"), spend: NO_SPEND });
+    expect(decision.outcome === "allow" && decision.upstream.credential).toBe("cred_b");
+  });
+
+  // Blocks may repeat; they may not contradict. Each field dispatch reads is
+  // its own way to disagree, so each gets a case.
+  it.each([
+    ["url", { url: "http://a:3001" }, { url: "http://b:3001" }],
+    ["credential", { credential: "cred_a" }, { credential: "cred_b" }],
+    ["transport", { transport: "http", url: "http://a:3001" }, { transport: "stdio" }],
+    ["a url against no url", { url: "http://a:3001" }, {}]
+  ])("refuses when the blocks carrying the tool disagree on %s", (_label, left, right) => {
+    const conflicting = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", tool: [{ name: "get_issue" }], ...left },
+        { name: "github", transport: "http", tool: [{ name: "get_issue" }], ...right }
+      ]
+    });
+    const decision = decide({ sheet: conflicting, call: callTo("github", "get_issue"), spend: NO_SPEND });
+    expect(decision).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "server_ambiguous", server: "github", tool: "get_issue" }
+    });
+  });
+
+  it("allows identical duplicate blocks, which contradict nothing", () => {
+    const identical = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://a:3001", credential: "c", tool: [{ name: "get_issue" }] },
+        { name: "github", transport: "http", url: "http://a:3001", credential: "c", tool: [{ name: "get_issue" }] }
+      ]
+    });
+    const decision = decide({ sheet: identical, call: callTo("github", "get_issue"), spend: NO_SPEND });
+    expect(decision.outcome === "allow" && decision.upstream.url).toBe("http://a:3001");
+  });
+
+  // A block that shares the name but does not carry the tool is not a
+  // disagreement — it never had a claim on this call.
+  it("ignores a conflicting block that does not list the tool", () => {
+    const unrelated = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://a:3001", tool: [{ name: "get_issue" }] },
+        { name: "github", transport: "stdio", tool: [{ name: "list_prs" }] }
+      ]
+    });
+    const decision = decide({ sheet: unrelated, call: callTo("github", "get_issue"), spend: NO_SPEND });
+    expect(decision.outcome === "allow" && decision.upstream.url).toBe("http://a:3001");
+  });
+
+  // Ordering: a structural fault is not a condition that clears tomorrow, and
+  // no human is asked to approve a call that has nowhere to go.
+  it("refuses an ambiguous call ahead of the budget and the approval hold", () => {
+    const conflicting = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://a:3001", tool: [{ name: "deploy_app" }] },
+        { name: "github", transport: "http", url: "http://b:3001", tool: [{ name: "deploy_app" }] }
+      ]
+    });
+    const spent = { tokens: 100_000, toolCalls: 100_000 };
+    const decision = decide({ sheet: conflicting, call: callTo("github", "deploy_app"), spend: spent });
+    expect(decision.outcome === "refuse" && decision.refusal.reason).toBe("server_ambiguous");
+  });
+});
+
 describe("the budget seam", () => {
   it("allows a call under both limits", () => {
     expect(decide({ sheet, call: callTo("github", "list_prs"), spend: { tokens: 999, toolCalls: 9 } }).outcome).toBe("allow");
