@@ -65,10 +65,16 @@ export function createUnmeteredSpend(): Provisional<SpendMeter> {
  * `ChannelIdentity`: on this path a thrown value can carry a credential in its
  * message, so the states worth distinguishing are enumerated instead.
  *
- * `refused` is here as well as in `decide` because two refusal reasons cannot
- * be answered from the team sheet alone — `credential_unresolved` needs the
- * vault (#51) and `egress_denied` needs the resolved destination (#73). Those
- * are refusals discovered while serving, not permissions denied before it.
+ * `refused` is here as well as in `decide` because one refusal reason cannot be
+ * answered from the team sheet alone: `credential_unresolved` needs the vault
+ * (#51). That is a refusal discovered while serving, not a permission denied
+ * before it.
+ *
+ * `egress_denied` is **not** one of these, though an earlier note here guessed
+ * it would be. The destination of an MCP call comes from the `[[mcp_server]]`
+ * block that authorized the tool, so nothing about it is discovered at dispatch
+ * time; `[egress]` governs the destinations the sheet does not pin, and its
+ * first caller is the sandbox runner. See packages/schema/src/egress.ts.
  */
 export type Dispatch =
   | { readonly outcome: "ran"; readonly result: ToolResult }

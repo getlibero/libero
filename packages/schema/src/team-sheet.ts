@@ -1,3 +1,4 @@
+import { EgressPattern } from "./egress.js";
 import { CredentialName, ResourceName } from "./names.js";
 import { z } from "zod";
 
@@ -100,9 +101,12 @@ export const TeamSheet = z.object({
     })
     .prefault({}),
   mcp_server: z.array(McpServer).default([]),
+  // Where traffic may go when the sheet does not already pin the destination —
+  // the code-execution sandbox today. An [[mcp_server]] url is not listed here;
+  // declaring it there is what authorizes it. See ./egress.ts.
   egress: z
     .object({
-      allow: z.array(z.string()).default([]),
+      allow: z.array(EgressPattern).default([]),
     })
     .prefault({}),
   ambient: z

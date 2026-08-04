@@ -39,6 +39,15 @@ credential = "github_service_account"       # name only; value lives in the vaul
   name     = "trigger_workflow"
   approval = "required"                     # held for a human Approve click
 
+# Where traffic may go when this sheet does not already say. The MCP server
+# above is NOT listed here: declaring its url in [[mcp_server]] is what
+# authorizes it. This list is for the destinations nothing pinned — the
+# code-execution sandbox today. Keeping them apart is why allowing the GitHub
+# MCP server does not also let sandboxed code call api.github.com directly.
+#
+# Default deny. "*." stands for one or more subdomain labels, so
+# *.internal.example.com covers build.internal.example.com but not
+# internal.example.com itself. There is no allow-all.
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 

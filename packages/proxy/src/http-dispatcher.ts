@@ -4,8 +4,8 @@
 // and the team-sheet entry enforcement matched, resolves that entry's named
 // credential against the vault, and hands both to ./outbound.ts. It is the only
 // module that holds a `Vault` and a network transport at once, which is why the
-// two refusals that cannot be answered from a sheet — `credential_unresolved`
-// here, `egress_denied` when #73 lands — are discovered at this level.
+// one refusal that cannot be answered from a sheet — `credential_unresolved` —
+// is discovered at this level.
 //
 // **The request body shape is provisional and belongs to #39.** What goes on
 // the wire below is `{ tool, arguments }` as JSON, which is a placeholder good
@@ -15,11 +15,13 @@
 // should need to change for it: the credential path does not depend on the
 // protocol.
 //
-// What this does not do, deliberately: it does not check the egress allowlist
-// (#73). The comment on that seam below says where it goes. Nor does it redact
-// — that happens a level down in ./outbound.ts, for the structural reason set
-// out in that file's header: the function that sent the credential is the only
-// one that can be certain of catching it echoed back.
+// What this does not do, deliberately: it does not check the egress allowlist.
+// `[egress]` governs destinations the sheet does not pin, and this call's
+// destination is the `[[mcp_server]]` url that authorized the tool — see the
+// header of packages/schema/src/egress.ts. Nor does it redact: that happens a
+// level down in ./outbound.ts, for the structural reason set out in that file's
+// header: the function that sent the credential is the only one that can be
+// certain of catching it echoed back.
 
 import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
 import type { Dispatch, ToolDispatcher } from "./dispatch.js";
@@ -136,9 +138,8 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): ToolDispat
         secret = lookup.secret;
       }
 
-      // Where the egress allowlist check goes (#73): after the destination is
-      // known, before `callUpstream` opens anything. `destinationHost` already
-      // returns the string that list is written in.
+      // For the log lines below, and for nothing else. There is no egress check
+      // to make here: this destination is the one the sheet declared.
       const destination = destinationHost(upstream.url);
 
       try {

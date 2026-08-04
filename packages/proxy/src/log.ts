@@ -69,8 +69,8 @@ export interface LogFields {
   /**
    * A destination host, for the outbound side. Host only — no scheme, no path,
    * no query — because a URL is a place a token gets put by a careless caller
-   * and a query string is where it would land. The `[egress]` allowlist is
-   * written in hosts too, so this is the string an operator compares against.
+   * and a query string is where it would land. Team sheets name destinations
+   * as hosts too, so this is the string an operator compares against.
    */
   destination?: string;
   /**

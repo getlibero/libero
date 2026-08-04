@@ -298,7 +298,7 @@ export function createProxyServer(options: ProxyServerOptions): Server {
         return ok({ outcome: "ran", id: call.id, result: dispatched.result } satisfies ToolCallResponse);
       case "refused":
         // Refused while serving rather than before: the vault could not resolve
-        // a credential (#51), or the destination is off the egress list (#73).
+        // a credential the sheet names (#51).
         audit("refused", dispatched.refusal.reason);
         return ok({
           outcome: "refused",
