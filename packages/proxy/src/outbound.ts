@@ -12,11 +12,25 @@
 // stand up themselves — the same shape `packages/agent/src/completion/*.ts`
 // uses for provider clients.
 //
-// **What this file does not do.** It does not check the egress allowlist (#73)
-// and it does not redact the response (#52). Both belong on this path and
-// neither is built; the caller composes them around this. What is here is the
-// injection itself and the rules that keep the secret inside the request.
+// **The secret does not come back, either.** `callUpstream` redacts the
+// response before returning it, and the reason that is sufficient rather than
+// merely helpful is structural: a credential value can only appear in a
+// response if it was sent in a request, the only place a credential is revealed
+// and sent is this function, so scrubbing here covers every path by which a
+// stored secret can be echoed back. That is why redaction lives at this level
+// and not in a dispatcher — `ToolDispatcher` is an injected interface, so a
+// pass inside one implementation would leave #39's client pool and every test
+// double uncovered, and it would need a second `reveal()` to do it.
+//
+// The same argument is why `credentialHeader` and `injectCredential` are not
+// exported from the package index: `callUpstream` is the only exported way to
+// send a credential, and it always redacts what comes back.
+//
+// **What this file does not do.** It does not check the egress allowlist (#73).
+// That belongs on this path and is not built; the caller composes it around
+// this.
 
+import { redactSecrets } from "./redact.js";
 import type { Secret } from "./vault.js";
 
 /**
@@ -35,17 +49,18 @@ export type AuthScheme = "bearer";
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
 
 /**
- * The header name and value a scheme produces. Separated from the request so
- * the injection is testable without a socket, and so the one `reveal()` sits in
- * a function that does nothing else.
+ * The header name and value a scheme produces.
+ *
+ * Takes the already-revealed value rather than the `Secret`. The single
+ * `reveal()` moved up into `callUpstream` when redaction landed, because the
+ * same value is needed twice — once to attach to the request and once to scan
+ * the response for — and revealing it twice would put a second call site in the
+ * tree, which is the thing the grep test forbids.
  */
-export function credentialHeader(scheme: AuthScheme, secret: Secret): readonly [string, string] {
+export function credentialHeader(scheme: AuthScheme, value: string): readonly [string, string] {
   switch (scheme) {
     case "bearer":
-      // The only place a credential value exists as a plain string. It is
-      // handed straight to the header map below and never stored, logged,
-      // returned, or interpolated into a message.
-      return ["authorization", `Bearer ${secret.reveal()}`];
+      return ["authorization", `Bearer ${value}`];
   }
 }
 
@@ -57,7 +72,7 @@ export function credentialHeader(scheme: AuthScheme, secret: Secret): readonly [
  * secret that outlives the request. The caller passes this straight to `fetch`
  * and drops it.
  *
- * A `Secret | undefined` rather than two functions, because "this upstream
+ * A `string | undefined` rather than two functions, because "this upstream
  * needs no credential" is an ordinary case — an MCP server on the private
  * network may want none — and making it a separate path is how the no-auth
  * branch stops being tested.
@@ -65,11 +80,11 @@ export function credentialHeader(scheme: AuthScheme, secret: Secret): readonly [
 export function injectCredential(
   headers: Readonly<Record<string, string>>,
   scheme: AuthScheme,
-  secret: Secret | undefined
+  value: string | undefined
 ): Record<string, string> {
-  if (secret === undefined) return { ...headers };
-  const [name, value] = credentialHeader(scheme, secret);
-  return { ...headers, [name]: value };
+  if (value === undefined) return { ...headers };
+  const [header, headerValue] = credentialHeader(scheme, value);
+  return { ...headers, [header]: headerValue };
 }
 
 /**
@@ -107,6 +122,12 @@ export interface UpstreamRequest {
   readonly scheme: AuthScheme;
   /** Resolved from the vault by the caller. `undefined` for an unauthenticated upstream. */
   readonly secret: Secret | undefined;
+  /**
+   * The credential's team-sheet name, for the redaction marker. Required
+   * whenever `secret` is set — a response scrubbed of a value has to say which
+   * credential it was, and `[redacted:undefined]` is not an answer.
+   */
+  readonly credentialName?: string;
   readonly timeoutMs?: number;
   /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
   readonly fetch?: typeof globalThis.fetch;
@@ -135,10 +156,16 @@ export interface UpstreamResponse {
  */
 export async function callUpstream(request: UpstreamRequest): Promise<UpstreamResponse> {
   const send = request.fetch ?? globalThis.fetch;
+
+  // The one `reveal()` in the tree. It is held in this local for the length of
+  // one request and used twice: to build the header going out, and to build the
+  // needle list for the response coming back. Both uses are inside this
+  // function, so there is still exactly one place a value leaves the vault.
+  const value = request.secret?.reveal();
   const headers = injectCredential(
     { "content-type": "application/json", accept: "application/json" },
     request.scheme,
-    request.secret
+    value
   );
 
   let response: Response;
@@ -165,7 +192,21 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
     throw new UpstreamError("unreachable");
   }
 
-  return { status: response.status, body };
+  // Before the body goes anywhere. Not at the caller's discretion and not
+  // behind a flag: the return statement below is the only way out of this
+  // function, so a response cannot leave without passing through here.
+  //
+  // Throws `RedactionError` on a value the scan cannot be run for. That is
+  // deliberately *not* caught — see the fail-closed note in ./redact.ts. It
+  // unwinds past the dispatcher to the server's handler catch, which answers a
+  // constant 500 without inspecting the thrown value, so a redaction that could
+  // not be performed produces no response rather than an unscrubbed one.
+  const redacted =
+    value === undefined
+      ? body
+      : redactSecrets(body, [{ name: request.credentialName ?? "credential", value }]);
+
+  return { status: response.status, body: redacted };
 }
 
 /**

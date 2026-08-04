@@ -30,12 +30,27 @@ credential injection into outbound HTTP calls.
   timeout so a silent upstream cannot pin a request; and errors built from a
   closed set with no `cause`, because a rethrown `fetch` error can carry the
   request headers and those carry the credential. A test asserts the single
-  call site by grep.
+  call site by grep. It also **redacts the response before returning it**, and
+  the reason that is sufficient rather than merely helpful is structural: a
+  credential can only appear in a response if it was sent in a request, and this
+  is the only function that sends one. `credentialHeader` and `injectCredential`
+  are not exported from the package for the same reason — `callUpstream` is the
+  only exported way to send a credential, and it always scrubs the reply.
+- `redact.ts` — the scanning rules, kept apart from the custody so they can be
+  property-tested without a `Secret` or a socket. Replaces every occurrence of a
+  value, in raw, base64 (standard and URL-safe, padded and unpadded), and
+  percent-encoded form, with `[redacted:<name>]`. It closes the "upstream echoes
+  its own auth header" class and says plainly in its header what no scan can
+  close — a value the upstream *transforms* is invisible to any search for it.
+  An empty stored value throws rather than shredding the body.
 - `http-dispatcher.ts` — serves an allowed call against an HTTP upstream:
   resolves the entry's named credential against the vault, then calls out. A
   credential the vault cannot resolve refuses by name **before any connection
-  is opened**. The request body it posts is a placeholder; MCP's JSON-RPC
-  framing and the client pool are #39.
+  is opened**. A transport failure becomes an error result — a tool failing,
+  which the model may recover from — while a redaction failure is rethrown, so
+  it reaches the server's handler catch and answers a constant 500 instead of
+  serving bytes nobody could scrub. The request body it posts is a placeholder;
+  MCP's JSON-RPC framing and the client pool are #39.
 - `vault.ts` — the credential vault, read side. One AES-256-GCM blob over the
   whole entry set, so the names are encrypted along with the values; a per-write
   HKDF subkey; the header authenticated as AAD. Opened once at startup. A value
@@ -53,12 +68,9 @@ Nothing at runtime but `@getlibero/schema`, which fixes the shape of every
 error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
-Still to come, each with its own issue: the redaction pass that scrubs known
-secret values out of tool results (#52 — it needs the loaded values, which is a
-second reason the vault decrypts into memory rather than per lookup), the egress
-allowlist (#73), the MCP client pool (#39), the approval broker, the budget
-meter, and the audit writer. `http-dispatcher.ts` marks where the first two
-slot in.
+Still to come, each with its own issue: the egress allowlist (#73), the MCP
+client pool (#39), the approval broker, the budget meter, and the audit writer.
+`http-dispatcher.ts` marks where the egress check slots in.
 
 **The shipped process still answers 501.** `createHttpDispatcher` is a real
 dispatcher, so composing it with `createUnmeteredSpend()` is a startup error

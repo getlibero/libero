@@ -35,6 +35,7 @@ import {
 import type { BudgetSpend } from "./enforce.js";
 import { createHttpDispatcher } from "./http-dispatcher.js";
 import { createJsonLogger } from "./log.js";
+import { RedactionError } from "./redact.js";
 import { MAX_BODY_BYTES, createProxyServer } from "./server.js";
 import { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 import { loadTlsOptions } from "./tls.js";
@@ -816,7 +817,9 @@ describe("no route returns a credential", () => {
         req.resume();
         req.on("end", () => {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ prs: [] }));
+          // Echoes its own Authorization header back, which is the leak class
+          // the redaction pass closes and the worst realistic upstream.
+          res.end(JSON.stringify({ prs: [], sawAuth: req.headers.authorization }));
         });
       });
       await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
@@ -886,6 +889,30 @@ credential = "github_service_account"
 
       expect(ToolCallResponse.parse(response.body)).toMatchObject({ outcome: "ran" });
       expect(upstreamSaw).toEqual([`Bearer ${VAULT_VALUE}`]);
+    });
+
+    // The acceptance criterion for the redaction pass, and the reason it is
+    // asserted here rather than only as a unit: this is the real proxy, the
+    // real vault, a real socket, and an upstream that genuinely reflects the
+    // header it was given. The value provably crossed outward on the request
+    // above and provably does not cross back on this one.
+    it("scrubs the credential out of a result the upstream echoed", async () => {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, INJECT_CHANNEL),
+        "POST",
+        injectedPort,
+        JSON.stringify({ id: "toolu_04", server: "github", tool: "list_prs" })
+      );
+
+      const parsed = ToolCallResponse.parse(response.body);
+      expect(parsed.outcome).toBe("ran");
+      const content = parsed.outcome === "ran" ? parsed.result.content : "";
+      // The upstream really did receive it, so the assertion below is not vacuous.
+      expect(upstreamSaw).toEqual([`Bearer ${VAULT_VALUE}`]);
+      expect(content).toContain("[redacted:github_service_account]");
+      expect(content).not.toContain(VAULT_VALUE);
+      expect(JSON.stringify(response.body)).not.toContain("ghp_");
     });
 
     // The other half of the acceptance criterion, and the reason the two are
@@ -990,6 +1017,53 @@ describe("a permitted call with no upstream", () => {
 
     expect(response.status).toBe(501);
     expect(ProxyError.parse(response.body).error.code).toBe("not_implemented");
+  });
+
+  // The fail-closed criterion, over the whole chain rather than link by link:
+  // a redaction that could not be performed must produce no response at all,
+  // not a served one carrying bytes nobody could scrub.
+  it("answers 500 and no upstream bytes when redaction fails", async () => {
+    const lines: string[] = [];
+    const throwing = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      spend: meter,
+      dispatcher: {
+        dispatch: () => {
+          throw new RedactionError("empty_value");
+        }
+      },
+      logger: createJsonLogger(line => lines.push(line))
+    });
+    const throwingPort = await new Promise<number>(resolve => {
+      throwing.listen(0, "127.0.0.1", () => resolve((throwing.address() as AddressInfo).port));
+    });
+
+    try {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, CHANNEL),
+        "POST",
+        throwingPort,
+        JSON.stringify({ id: "toolu_09", server: "github", tool: "list_prs" })
+      );
+
+      expect(response.status).toBe(500);
+      expect(ProxyError.parse(response.body).error.code).toBe("internal");
+      // Not a 200 with a result, and not a refusal — nothing was denied and
+      // nothing was served.
+      expect(JSON.stringify(response.body)).not.toContain("outcome");
+      expect(lines.map(line => JSON.parse(line) as { event: string })).toContainEqual(
+        expect.objectContaining({ event: "handler_failed" })
+      );
+    } finally {
+      throwing.closeAllConnections();
+      await new Promise<void>(resolve => throwing.close(() => resolve()));
+    }
   });
 
   it("still refuses an unlisted tool, so 501 is not a blanket answer", async () => {
