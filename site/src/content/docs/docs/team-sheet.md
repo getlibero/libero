@@ -89,6 +89,12 @@ One block per MCP server this channel may reach. `credential` is a name; the pro
 against the vault and injects it into the outbound call. The agent never receives the value and
 never learns it exists beyond the name.
 
+`transport` decides whether `url` is permitted. `transport = "http"` requires one — an HTTP
+upstream with no address cannot be called. `transport = "stdio"` rejects one, because a stdio
+upstream is a process rather than an address, and a field that is silently ignored is a field an
+operator writes and then trusts. Either mistake is rejected at load, naming the block and the
+field, rather than surfacing as a failed call later.
+
 Server, tool, and credential names are short identifiers: letters, digits, dot, dash, and
 underscore, starting with a letter or digit, up to 64 characters. The same shape applies wherever
 a name crosses between the agent and the proxy, so a name that validates in a sheet is a name that

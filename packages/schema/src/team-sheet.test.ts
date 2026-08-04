@@ -62,6 +62,45 @@ describe("defaults", () => {
   });
 });
 
+// The two shapes that used to parse and then fail at dispatch. What is asserted
+// here is the issue *path*: the loader logs `path: code`, so the path is what
+// sends an operator to the block to fix, and a rejection that named no field
+// would meet the letter of "invalid sheets are rejected" and none of its point.
+describe("an mcp_server's transport decides its url", () => {
+  const serverSheet = (server: Record<string, unknown>) => ({
+    channel: { name: "ops" },
+    mcp_server: [server],
+  });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("accepts http with a url", () => {
+    expect(paths(serverSheet({ name: "github", transport: "http", url: "http://mcp:3001" }))).toBeNull();
+  });
+
+  it("accepts stdio without one", () => {
+    expect(paths(serverSheet({ name: "github", transport: "stdio" }))).toBeNull();
+  });
+
+  it("rejects http with no url, naming the field", () => {
+    expect(paths(serverSheet({ name: "github", transport: "http" }))).toEqual([
+      "mcp_server.0.url: invalid_type",
+    ]);
+  });
+
+  // Not "ignores it": a field an operator wrote and then trusts is worse than
+  // one they are told is wrong.
+  it("rejects stdio with a url, naming the field", () => {
+    expect(paths(serverSheet({ name: "github", transport: "stdio", url: "http://mcp:3001" }))).toEqual([
+      "mcp_server.0.url: invalid_type",
+    ]);
+  });
+});
+
 describe("rejections", () => {
   it("rejects an unknown transport", () => {
     const result = TeamSheet.safeParse({

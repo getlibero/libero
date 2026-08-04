@@ -54,7 +54,28 @@ describe("reporting why a sheet did not parse", () => {
     );
     expect(result.ok).toBe(false);
     if (result.ok || result.reason !== "schema_invalid") return;
-    expect(result.issues).toContainEqual({ path: "mcp_server.0.transport", code: "invalid_value" });
+    // `invalid_union`, not `invalid_value`: McpServer is discriminated on
+    // transport, so an unknown one fails to select a member rather than failing
+    // an enum. The path is the part that matters and it still names the field.
+    expect(result.issues).toContainEqual({ path: "mcp_server.0.transport", code: "invalid_union" });
+  });
+
+  // The two shapes #89 made unrepresentable, through the loader's own reporting
+  // rather than the schema's: this is the line an operator reads.
+  it("names the url when a transport and its address disagree", () => {
+    const missing = parseTeamSheet(
+      '[channel]\nname = "ops"\n\n[[mcp_server]]\nname = "github"\ntransport = "http"\n'
+    );
+    expect(missing.ok).toBe(false);
+    if (missing.ok || missing.reason !== "schema_invalid") return;
+    expect(missing.issues).toContainEqual({ path: "mcp_server.0.url", code: "invalid_type" });
+
+    const spurious = parseTeamSheet(
+      '[channel]\nname = "ops"\n\n[[mcp_server]]\nname = "github"\ntransport = "stdio"\nurl = "http://mcp:3001"\n'
+    );
+    expect(spurious.ok).toBe(false);
+    if (spurious.ok || spurious.reason !== "schema_invalid") return;
+    expect(spurious.issues).toContainEqual({ path: "mcp_server.0.url", code: "invalid_type" });
   });
 
   it("reports every failure, not just the first", () => {

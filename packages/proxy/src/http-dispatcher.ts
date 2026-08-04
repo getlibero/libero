@@ -105,19 +105,11 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): ToolDispat
         return { outcome: "unavailable" };
       }
 
-      // A sheet may declare `transport = "http"` and omit `url` — the schema
-      // makes it optional (see the note in packages/schema/src/team-sheet.ts).
-      // An operator slip, not a denial, so it reads as unavailable and is
-      // logged loudly enough to find.
-      if (upstream.url === undefined) {
-        logger.log("error", {
-          event: "dispatch_upstream_has_no_url",
-          channel: call.channel,
-          server: call.server,
-          tool: call.tool
-        });
-        return { outcome: "unavailable" };
-      }
+      // `upstream.url` is a string from here down, and by construction rather
+      // than by check: `McpServer` is discriminated on transport, so the guard
+      // above narrows to the member that requires one (#89). A sheet declaring
+      // `transport = "http"` with no url is rejected at load, which is where an
+      // operator can still see it.
 
       // Resolved before any connection is opened, so a sheet naming a
       // credential the vault does not hold refuses without the upstream ever

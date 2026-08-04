@@ -15,6 +15,7 @@ daily_tokens = 500000
 [[mcp_server]]
 name = "github"
 transport = "http"
+url = "http://mcp-github:3001"
 credential = "github_service_account"
 
   [[mcp_server.tool]]
@@ -28,6 +29,7 @@ name = "engineering"
 [[mcp_server]]
 name = "github"
 transport = "http"
+url = "http://mcp-github:3001"
 
   [[mcp_server.tool]]
   name = "list_prs"
@@ -226,7 +228,11 @@ describe("an invalid edit", () => {
     expect(complaint?.level).toBe("error");
     expect(complaint?.fields.file).toBe(sheetPath("engineering"));
     expect(complaint?.fields.reason).toBe("schema_invalid");
-    expect(complaint?.fields.issues).toContain("mcp_server.0.transport: invalid_value");
+    // `invalid_union` rather than `invalid_value` since #89 discriminated
+    // McpServer on transport: an unknown transport now fails to select a member
+    // rather than failing an enum. The path still lands on the offending field,
+    // which is what an operator reads.
+    expect(complaint?.fields.issues).toContain("mcp_server.0.transport: invalid_union");
     expect(complaint?.fields.effect).toBe("previous_sheet_retained");
   });
 
