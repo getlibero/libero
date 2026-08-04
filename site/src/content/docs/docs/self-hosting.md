@@ -166,8 +166,29 @@ files are not.
 `libero audit` queries and exports the append-only audit log — every tool call with its
 requester, its arguments' hash, its result, and its approver if it had one.
 
-Budget exhaustion is visible in-thread: a soft limit warns, a hard limit stops the loop until an
-admin resets it or the day rolls over.
+Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
+or an admin resets the channel. (A soft limit that warns before the hard one bites is on the
+roadmap and is not built.)
+
+```bash
+docker compose run --rm proxy node dist/budget.js show  C024BE91L   # today's counters
+docker compose run --rm proxy node dist/budget.js reset C024BE91L   # clears today only
+```
+
+The reset is a second process against the proxy's own database rather than a request to the proxy,
+for the same reason the vault commands are: it runs where the data is. It takes effect on the
+running proxy's next call, so nothing needs restarting. It clears today; earlier days stay as
+history.
+
+`PROXY_BUDGET_DB` is required and has no default — a budget file invented under a path nobody meant
+is a channel whose hard limits never bite, which is the one misconfiguration here that fails open.
+SQLite writes `-wal` and `-shm` files beside it, so the *directory* must be writable and not just
+the file. Nothing in it is a secret.
+
+The meter uses Node's built-in `node:sqlite` — no dependency, no native build — which needs Node
+22.13 or newer and is still marked experimental, so some Node versions print an
+`ExperimentalWarning` for it at startup. If that is noise in your log collector, set
+`NODE_OPTIONS: --disable-warning=ExperimentalWarning` on the proxy service.
 
 Team sheet edits are picked up on file change. An invalid sheet is rejected and the previous valid
 version stays active, so a bad edit degrades to "no change" rather than "no enforcement".

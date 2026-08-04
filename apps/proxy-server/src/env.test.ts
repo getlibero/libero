@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
+  budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
   portFromEnv,
@@ -80,6 +81,21 @@ describe("vaultFileFromEnv", () => {
   it("refuses to start without one", () => {
     expect(() => vaultFileFromEnv({})).toThrow(/PROXY_VAULT_FILE/);
     expect(() => vaultFileFromEnv({ PROXY_VAULT_FILE: "" })).toThrow(/PROXY_VAULT_FILE/);
+  });
+});
+
+describe("budgetDbFromEnv", () => {
+  it("returns the budget database path", () => {
+    expect(budgetDbFromEnv({ PROXY_BUDGET_DB: "/data/budget/budget.db" })).toBe(
+      "/data/budget/budget.db"
+    );
+  });
+
+  // The one of the three whose default would fail *open*: a budget file under
+  // a path nobody meant is a channel whose hard limits never bite.
+  it("refuses to start without one", () => {
+    expect(() => budgetDbFromEnv({})).toThrow(/PROXY_BUDGET_DB/);
+    expect(() => budgetDbFromEnv({ PROXY_BUDGET_DB: "" })).toThrow(/PROXY_BUDGET_DB/);
   });
 });
 

@@ -40,7 +40,25 @@ const BASE = {
 };
 
 const sheet = sheetOf(BASE);
-const NO_SPEND: BudgetSpend = { tokens: 0, toolCalls: 0 };
+
+/**
+ * Spend expressed as a plain token total and a call count.
+ *
+ * The tokens go in as *input* tokens, which count 1:1 whatever the sheet's
+ * cache weights are — so every test below that is not about weighting reads the
+ * same as it did before the four counts were split apart.
+ */
+function spending(tokens: number, toolCalls: number): BudgetSpend {
+  return {
+    toolCalls,
+    inputTokens: tokens,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0
+  };
+}
+
+const NO_SPEND: BudgetSpend = spending(0, 0);
 
 function callTo(server: string, tool: string): ResolvedToolCall {
   return { id: "toolu_01", server, tool, arguments: {}, channel: "C0ENGINEERING" };
@@ -366,7 +384,7 @@ describe("which upstream an allow names", () => {
         { name: "github", transport: "http", url: "http://b:3001", tool: [{ name: "deploy_app" }] }
       ]
     });
-    const spent = { tokens: 100_000, toolCalls: 100_000 };
+    const spent = spending(100_000, 100_000);
     const decision = decide({ sheet: conflicting, call: callTo("github", "deploy_app"), spend: spent });
     expect(decision.outcome === "refuse" && decision.refusal.reason).toBe("server_ambiguous");
   });
@@ -374,23 +392,23 @@ describe("which upstream an allow names", () => {
 
 describe("the budget seam", () => {
   it("allows a call under both limits", () => {
-    expect(decide({ sheet, call: callTo("github", "list_prs"), spend: { tokens: 999, toolCalls: 9 } }).outcome).toBe("allow");
+    expect(decide({ sheet, call: callTo("github", "list_prs"), spend: spending(999, 9) }).outcome).toBe("allow");
   });
 
   it("refuses at the limit, not one past it", () => {
-    const decision = decide({ sheet, call: callTo("github", "list_prs"), spend: { tokens: 1000, toolCalls: 0 } });
+    const decision = decide({ sheet, call: callTo("github", "list_prs"), spend: spending(1000, 0) });
     expect(decision.outcome).toBe("refuse");
     expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("budget_exhausted");
   });
 
   it("names which limit ran out", () => {
-    const tokens = decide({ sheet, call: callTo("github", "list_prs"), spend: { tokens: 5000, toolCalls: 0 } });
+    const tokens = decide({ sheet, call: callTo("github", "list_prs"), spend: spending(5000, 0) });
     expect(tokens.outcome !== "allow" && tokens.refusal).toEqual({
       reason: "budget_exhausted",
       limit: "daily_tokens"
     });
 
-    const calls = decide({ sheet, call: callTo("github", "list_prs"), spend: { tokens: 0, toolCalls: 10 } });
+    const calls = decide({ sheet, call: callTo("github", "list_prs"), spend: spending(0, 10) });
     expect(calls.outcome !== "allow" && calls.refusal).toEqual({
       reason: "budget_exhausted",
       limit: "daily_tool_calls"
@@ -398,7 +416,7 @@ describe("the budget seam", () => {
   });
 
   it("is deterministic when both limits are spent", () => {
-    const spend = { tokens: 9999, toolCalls: 9999 };
+    const spend = spending(9999, 9999);
     const first = decide({ sheet, call: callTo("github", "list_prs"), spend });
     const second = decide({ sheet, call: callTo("github", "list_prs"), spend });
     expect(first).toEqual(second);
@@ -410,7 +428,7 @@ describe("the budget seam", () => {
     const decision = decide({
       sheet,
       call: callTo("github", "force_push"),
-      spend: { tokens: 9999, toolCalls: 9999 }
+      spend: spending(9999, 9999)
     });
     expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("tool_not_allowed");
   });
@@ -421,10 +439,72 @@ describe("the budget seam", () => {
     const decision = decide({
       sheet,
       call: callTo("github", "trigger_workflow"),
-      spend: { tokens: 9999, toolCalls: 0 }
+      spend: spending(9999, 0)
     });
     expect(decision.outcome).toBe("refuse");
     expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("budget_exhausted");
+  });
+});
+
+// What a cached token is worth is a team sheet setting, so the weighting is
+// policy and resolves here, next to the comparison. The meter stores the four
+// counts raw and knows none of this.
+describe("weighting cached tokens against the daily limit", () => {
+  const call = callTo("github", "list_prs");
+
+  const cached = (cacheReadTokens: number): BudgetSpend => ({
+    ...NO_SPEND,
+    cacheReadTokens
+  });
+
+  it("charges input and output tokens at face value", () => {
+    // 600 + 401 is over the sheet's 1000; 600 + 399 is not.
+    const over: BudgetSpend = { ...NO_SPEND, inputTokens: 600, outputTokens: 401 };
+    const under: BudgetSpend = { ...NO_SPEND, inputTokens: 600, outputTokens: 399 };
+    expect(decide({ sheet, call, spend: over }).outcome).toBe("refuse");
+    expect(decide({ sheet, call, spend: under }).outcome).toBe("allow");
+  });
+
+  // The default is Anthropic's ratio: ten cache reads cost one input token.
+  // Counted at face value this channel would have been refused long before.
+  it("discounts a cache read by the sheet's weight", () => {
+    expect(decide({ sheet, call, spend: cached(9_000) }).outcome).toBe("allow");
+    expect(decide({ sheet, call, spend: cached(10_000) }).outcome).toBe("refuse");
+  });
+
+  it("charges a cache write at its own weight, above face value", () => {
+    const write = (cacheWriteTokens: number): BudgetSpend => ({ ...NO_SPEND, cacheWriteTokens });
+    // 1.25 each, so the limit lands at 800 rather than 1000.
+    expect(decide({ sheet, call, spend: write(799) }).outcome).toBe("allow");
+    expect(decide({ sheet, call, spend: write(800) }).outcome).toBe("refuse");
+  });
+
+  // The weight is the operator's, and it reaches spend already recorded: the
+  // meter kept raw counts, so an edit re-prices the day rather than the future.
+  it("re-prices the same counters when the sheet's weight changes", () => {
+    const spend = cached(9_000);
+    const strict = sheetOf({ ...BASE, budget: { ...BASE.budget, cache_read_weight: 1 } });
+    const free = sheetOf({ ...BASE, budget: { ...BASE.budget, cache_read_weight: 0 } });
+
+    expect(decide({ sheet: strict, call, spend }).outcome).toBe("refuse");
+    expect(decide({ sheet: free, call, spend }).outcome).toBe("allow");
+  });
+
+  // A weight of zero is a deliberate setting, not a missing one: this channel
+  // has decided cache reads do not count. It must not re-enable itself.
+  it("never charges for a cache read weighted at zero", () => {
+    const free = sheetOf({ ...BASE, budget: { ...BASE.budget, cache_read_weight: 0 } });
+    expect(decide({ sheet: free, call, spend: cached(500_000) }).outcome).toBe("allow");
+  });
+
+  // Fractional totals are compared as they are. Rounding would make the same
+  // sheet answer differently depending on how the day's spend happened to
+  // split between cached and uncached tokens.
+  it("compares the weighted total without rounding it", () => {
+    const spend: BudgetSpend = { ...NO_SPEND, inputTokens: 999, cacheReadTokens: 5 };
+    // 999 + 0.5 = 999.5, which is under 1000 and stays under.
+    expect(decide({ sheet, call, spend }).outcome).toBe("allow");
+    expect(decide({ sheet, call, spend: { ...spend, cacheReadTokens: 10 } }).outcome).toBe("refuse");
   });
 });
 

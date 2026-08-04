@@ -68,7 +68,33 @@ by anyone who can `docker inspect` the container — as `SLACK_APP_TOKEN` and
 `ANTHROPIC_API_KEY` already are. A file-backed or KMS-backed key source is the
 hardened path and is not built.
 
-Nothing yet consumes a credential: an allowed call still answers 501, because
-the thing that would attach a credential to an outbound request is credential
-injection (#51). The vault is opened at startup anyway, so a wrong key or an
-unreadable file is a startup failure rather than a surprise later.
+The vault is opened at startup, before anything binds, so a wrong key or an
+unreadable file is a startup failure rather than a surprise at the far end of a
+Slack thread.
+
+## The budget
+
+`PROXY_BUDGET_DB` is the daily meter: tool calls and tokens, per channel per UTC
+day, authoritative. Required with no default, and opened before anything binds
+for the same reason the vault is — but this one is the misconfiguration that
+fails *open*, because a budget file under a path nobody meant is a channel whose
+hard limits never bite. SQLite writes `-wal` and `-shm` beside it, so the
+directory has to be writable and not just the file. Nothing in it is a secret.
+
+```bash
+docker compose run --rm proxy node dist/budget.js show  C024BE91L
+docker compose run --rm proxy node dist/budget.js reset C024BE91L
+docker compose run --rm proxy node dist/budget.js prune
+```
+
+A second entrypoint rather than a route, and that is the security argument
+rather than a convenience one. A reset makes a hard limit soft again; the proxy
+has no admin principal, since identity is `CN=channel:<id>` and nothing else; and
+`daily_tool_calls` surviving compromise of the agent process is exactly what a
+reset verb on the agent's listener would cost. It takes effect on the running
+proxy's next call — the database is WAL and the meter caches nothing — so
+nothing needs restarting.
+
+The counters `show` prints are raw. What they cost against `daily_tokens`
+depends on the channel's `cache_read_weight` and `cache_write_weight`, which are
+read from the team sheet when a call is decided.

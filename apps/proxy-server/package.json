@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "vault": "node dist/vault.js",
+    "budget": "node dist/budget.js",
     "test": "vitest run"
   },
   "dependencies": {

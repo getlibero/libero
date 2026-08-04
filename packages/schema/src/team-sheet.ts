@@ -94,10 +94,31 @@ export const TeamSheet = z.object({
       max_tokens_per_turn: z.number().int().positive().default(8_192),
     })
     .prefault({}),
+  // The daily caps the proxy meters, and the weights it counts them with.
+  //
+  // The two limits rest on different things, and the difference matters more
+  // than the numbers. `daily_tool_calls` is counted by the proxy from calls it
+  // serves, so it holds even under full compromise of the agent process.
+  // `daily_tokens` is counted from what the agent reports — from the provider's
+  // response envelope, not from anything the model writes, so it holds against
+  // a prompt-injected model but not against a compromised agent process. See
+  // ./spend-report.ts.
   budget: z
     .object({
       daily_tokens: z.number().int().positive().default(1_000_000),
       daily_tool_calls: z.number().int().positive().default(200),
+      // What a cached token is worth against `daily_tokens`. Cache reads and
+      // cache writes bill differently from ordinary input tokens, and by how
+      // much is the provider's decision, not ours — so it is an operator
+      // setting rather than a constant. The defaults are Anthropic's ratios;
+      // a channel pins its provider by pinning `[llm] model`, which is what
+      // makes a per-channel weight a per-provider weight.
+      //
+      // The meter stores the raw counts, so a weight edit applies to spend
+      // already recorded today, on the next call. `0` is legal and means a
+      // cache read costs nothing against the budget.
+      cache_read_weight: z.number().nonnegative().max(100).default(0.1),
+      cache_write_weight: z.number().nonnegative().max(100).default(1.25),
     })
     .prefault({}),
   mcp_server: z.array(McpServer).default([]),

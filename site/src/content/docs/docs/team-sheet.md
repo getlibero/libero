@@ -37,6 +37,8 @@ max_tokens_per_turn     = 8192                  # ceiling on one turn's output
 [budget]
 daily_tokens     = 2_000_000
 daily_tool_calls = 400
+cache_read_weight  = 0.1                    # what a cached token costs
+cache_write_weight = 1.25
 
 [[mcp_server]]
 name       = "github"
@@ -79,9 +81,59 @@ the optional LiteLLM sidecar covers everything else behind an OpenAI-compatible 
 
 ### `[budget]`
 
-Tokens and tool calls, per channel per day. The agent loop applies its own caps, but this is the
-authoritative meter and it lives in the proxy. A soft limit warns in-thread; a hard limit stops
-the loop until an admin resets it or the day rolls over.
+Tokens and tool calls, per channel per day, metered in the proxy. The agent loop applies its own
+caps, but this is the authoritative meter. A hard limit stops the loop until an admin resets it or
+the day rolls over. The day is the UTC calendar day, and rollover is a property of the clock rather
+than of the process: a proxy restarted at noon reads the same counters it wrote at eleven, and a
+new day reads as zero because it is a key nothing has written yet. Yesterday's counters stay where
+they are.
+
+**The two limits are not equally strong, and the difference is worth knowing before you rely on
+one.**
+
+`daily_tool_calls` is counted by the proxy from calls it serves. It needs nobody's cooperation and
+it holds even under full compromise of the agent process — a loop that ignores its own caps, or a
+process rewritten by an attacker, still cannot get a call served past this number.
+
+`daily_tokens` is counted from what the agent reports to the proxy after each turn. That is not
+the same as trusting the model: the numbers are parsed out of the provider's HTTP response
+envelope, and a prompt-injected model emits text, which has no reach into the envelope its own
+tokens are counted in. So it holds against the documented threat. It does **not** hold under full
+compromise of the agent process, which the [security model](/docs/security/) already states as an
+assumption — and that scenario yields the union of that agent's channel tool surfaces, which is a
+larger problem than an under-reported token count. The limit is worth having because it catches
+what actually costs money: a runaway loop, a retry storm, an expensive model swapped into a sheet.
+
+`cache_read_weight` and `cache_write_weight` decide what a cached token costs against
+`daily_tokens`. Cache reads and cache writes bill differently from ordinary input tokens, and by
+how much is your provider's decision — so these are settings rather than constants. The defaults
+are Anthropic's ratios. A channel pins its provider by pinning `[llm] model`, which is what makes a
+per-channel weight a per-provider weight; set `cache_read_weight = 0` to stop counting cache reads
+against the budget at all.
+
+The meter stores the four raw counts — input, output, cache read, cache write — and the weights are
+applied when a call is decided. So changing a weight re-prices spend already recorded today, on the
+channel's next call, rather than only what comes after the edit.
+
+The limit is enforced within a small overshoot: the proxy reads the counters, decides, and then
+records, so calls in flight at the same moment for one channel can each be admitted against the
+same reading. A task's loop is sequential, so that is bounded by how many tasks a channel is
+running at once — and the property that matters survives it, because a runaway loop overshoots once
+and is then refused for the rest of the day. Token counts lag further by construction, since a
+turn's tokens are reported after the calls they paid for.
+
+**Resetting a channel.** The reset is an operator command against the proxy's own data, not a route
+on the proxy — a state-clearing verb on the listener the agent talks to would let a compromised
+agent clear its own hard limit, which is the one property `daily_tool_calls` is worth having for.
+It takes effect on the next call, with no restart:
+
+```bash
+docker compose run --rm proxy node dist/budget.js reset C024BE91L
+docker compose run --rm proxy node dist/budget.js show  C024BE91L
+```
+
+A soft limit that warns in-thread before the hard one bites is on the roadmap and is not built:
+today the hard limit is the only one, and it refuses rather than warns.
 
 ### `[[mcp_server]]`
 

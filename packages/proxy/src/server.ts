@@ -18,13 +18,17 @@
 // one, and no route may accept a channel from a header, a query parameter, or
 // a body.
 //
+// Two of the routes below take a body, and only one of them makes a decision.
+// `/v1/tools/call` is the gate; `/v1/spend` is a write to the budget meter and
+// nothing else. They deliberately share no handler and no sheet lookup — see
+// ./spend-route.ts, where the asymmetry and what keeps it are written down.
+//
 // What is not here yet: the MCP client pool (#39). It sits behind the
 // dispatcher seam, past the point where enforcement has already answered.
 // Credential injection is built — ./http-dispatcher.ts resolves a credential
 // and ./outbound.ts attaches it — but no route reaches the vault even so: a
 // credential is resolved by whatever serves an allowed call, and this file
-// hands that a decision rather than a secret. `apps/proxy-server` still
-// composes the stand-ins, so the shipped process continues to answer 501.
+// hands that a decision rather than a secret.
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -43,6 +47,7 @@ import { assertServableComposition, type SpendMeter, type ToolDispatcher } from 
 import { decideFromState, permittedToolsFromState } from "./enforce.js";
 import { resolveChannel } from "./identity.js";
 import { createJsonLogger, type LogFields, type Logger } from "./log.js";
+import { createSpendRoute } from "./spend-route.js";
 import type { TeamSheetStore } from "./team-sheet-store.js";
 
 /**
@@ -92,7 +97,7 @@ export interface RouteResponse {
 }
 
 /** May return a promise; the dispatcher resolves it before serializing. */
-type RouteHandler = (ctx: RequestContext) => RouteResponse | Promise<RouteResponse>;
+export type RouteHandler = (ctx: RequestContext) => RouteResponse | Promise<RouteResponse>;
 
 interface Route {
   readonly handler: RouteHandler;
@@ -289,6 +294,17 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       return ok({ outcome, id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
     }
 
+    // Counted at the moment the proxy commits to serving, not once the upstream
+    // has answered. A crash between here and the reply loses the result, not
+    // the count, and over-counting a call that then failed is the direction
+    // that fails closed.
+    //
+    // A meter that cannot write must not serve. This is deliberately not
+    // wrapped: a throw becomes the handler's 500 and the dispatcher below is
+    // never reached, because a served call that went uncounted is an unmetered
+    // one — the exact state `assertServableComposition` exists to prevent.
+    await options.spend.recordToolCall(ctx.channel);
+
     // The upstream comes off the decision, not from a second lookup: the entry
     // that authorized the call is the entry the call goes to. See `Decision`.
     const dispatched = await options.dispatcher.dispatch(call, decision.upstream);
@@ -319,6 +335,10 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     }
   };
 
+  // Built from `options.spend` narrowed to `TokenRecorder`, so the handler's
+  // closure holds the write path and not the read one. See ./spend-route.ts.
+  const recordSpend = createSpendRoute({ meter: options.spend, logger });
+
   const routes = new Map<string, Map<string, Route>>([
     [
       // Behind mutual TLS *and* the channel-identity gate like everything
@@ -340,7 +360,21 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       new Map<string, Route>([["GET", { handler: ctx => ok({ channel: ctx.channel }) }]])
     ],
     ["/v1/tools", new Map<string, Route>([["GET", { handler: listTools }]])],
-    ["/v1/tools/call", new Map<string, Route>([["POST", { handler: callTool, body: "json" }]])]
+    ["/v1/tools/call", new Map<string, Route>([["POST", { handler: callTool, body: "json" }]])],
+    [
+      // The one route on this listener with no authorization decision on it.
+      // It resolves no team sheet, reads no allowlist, and returns no verdict —
+      // reporting spend is not asking for anything, so there is nothing to
+      // decide. It is also not built here: the handler comes from
+      // ./spend-route.ts, which has no import that could reach a sheet, and it
+      // is handed a `TokenRecorder` rather than the meter. See that file for
+      // why the asymmetry is spelled out rather than left to be inferred.
+      //
+      // The channel still comes from the client certificate, exactly as it does
+      // above. That is the one thing the two routes must share.
+      "/v1/spend",
+      new Map<string, Route>([["POST", { handler: recordSpend, body: "json" }]])
+    ]
   ]);
 
   const server = createServer(options.tls, (req: IncomingMessage, res: ServerResponse) => {

@@ -15,5 +15,8 @@
   "dependencies": {
     "zod": "^4.4.3",
     "smol-toml": "^1.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
   }
 }

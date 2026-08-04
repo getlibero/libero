@@ -1,16 +1,32 @@
 export { createProxyServer, MAX_BODY_BYTES } from "./server.js";
-export type { ProxyServerOptions, RequestContext, RouteResponse } from "./server.js";
+export type { ProxyServerOptions, RequestContext, RouteHandler, RouteResponse } from "./server.js";
 
 export {
   assertServableComposition,
   createUnavailableDispatcher,
-  createUnmeteredSpend
+  markProvisional
 } from "./dispatch.js";
-export type { Dispatch, SpendMeter, ToolDispatcher } from "./dispatch.js";
+export type {
+  Dispatch,
+  SpendMeter,
+  SpendReader,
+  SpendRecord,
+  TokenRecorder,
+  ToolCallRecorder,
+  ToolDispatcher
+} from "./dispatch.js";
 
-// Credential injection. `createHttpDispatcher` is a *real* dispatcher, so
-// pairing it with `createUnmeteredSpend()` is a startup error until #38 lands
-// a meter — see `assertServableComposition`.
+// The budget meter. Real, and required by any composition that also has a real
+// dispatcher — see `assertServableComposition`.
+export { NO_SPEND, openBudgetDb, utcDay, BUDGET_SCHEMA_VERSION } from "./budget-db.js";
+export type { BudgetDb, BudgetDbOptions, DailySpend, TurnTokens } from "./budget-db.js";
+export { TURN_RETENTION_MS, createSqliteSpendMeter, openSpendMeter } from "./budget-meter.js";
+export type { SpendMeterOptions } from "./budget-meter.js";
+
+// The operator's paths on the meter, exported for the budget CLI and reached by
+// nothing in the server. See the header of ./budget-admin.ts.
+export { channelDays, pruneTurnReports, readChannelSpend, resetChannel } from "./budget-admin.js";
+
 export { createHttpDispatcher, toolRequestBody } from "./http-dispatcher.js";
 export type { HttpDispatcherOptions } from "./http-dispatcher.js";
 

@@ -66,6 +66,25 @@ export function vaultFileFromEnv(env: Env): string {
 }
 
 /**
+ * The budget meter's database: `PROXY_BUDGET_DB`.
+ *
+ * Required with no default, on the argument the two above make — but the
+ * failure mode here is the worst of the three, which is why it is worth
+ * restating rather than cross-referencing. An absent channels root refuses
+ * every call and an absent vault resolves no credential; both fail closed. A
+ * budget file the proxy invented under a path nobody meant fails *open*: the
+ * counters are real, and they are in a file the operator will never reset and
+ * a container will throw away, so every day is the first day and no hard limit
+ * ever bites.
+ *
+ * SQLite writes `-wal` and `-shm` beside this path, so the directory has to be
+ * writable and not just the file.
+ */
+export function budgetDbFromEnv(env: Env): string {
+  return requiredEnv(env, "PROXY_BUDGET_DB");
+}
+
+/**
  * The vault master key: `PROXY_VAULT_KEY`, base64, 32 bytes.
  *
  * One name, prefixed like everything else this process reads. It replaces the

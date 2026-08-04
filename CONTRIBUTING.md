@@ -51,7 +51,8 @@ pnpm -r build
 pnpm -r test
 ```
 
-Node 22+, pnpm 9+. The e2e harness (mock Slack + mock MCP server) lands in `e2e/` with phase 1.
+Node 22.13+, pnpm 9+ — 22.13 because the budget meter uses the built-in `node:sqlite`, which needs
+a flag below that. The e2e harness (mock Slack + mock MCP server) lands in `e2e/` with phase 1.
 
 ### Getting pnpm
 

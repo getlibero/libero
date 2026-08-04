@@ -29,5 +29,28 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    // The second boundary, and the same mechanism. `POST /v1/spend` writes the
+    // budget meter and makes no authorization decision — see the header of
+    // spend-route.ts. The risk is not this file as written but a later change
+    // quietly putting a decision on it, which next to the route that *does*
+    // decide would not look wrong. A module that cannot import a sheet resolver
+    // cannot grow one by accident.
+    files: ["packages/proxy/src/spend-route.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/team-sheet-store*", "**/enforce*", "@getlibero/proxy"],
+              message:
+                "The spend report route makes no authorization decision: it resolves no team sheet and shares no handler that does. A rule that needs one belongs on /v1/tools/call."
+            }
+          ]
+        }
+      ]
+    }
   }
 );

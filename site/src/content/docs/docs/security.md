@@ -16,12 +16,21 @@ the model's cooperation.
    proxy. The model's cooperation is never part of the enforcement path.
 3. **Human approval for dangerous calls.** Per-call, recorded with the approver's Slack user id,
    expiring by default in 15 minutes. Destructive verbs default to approval-required.
-4. **Budgets.** Token and tool-call metering per channel per day, authoritative in the proxy.
+4. **Budgets.** Token and tool-call metering per channel per day, authoritative in the proxy. The
+   tool-call limit is counted by the proxy from calls it serves and holds even under full
+   compromise of the agent process; the token limit is counted from what the agent reports, which
+   a prompt-injected model cannot forge — the numbers come out of the provider's response envelope
+   — but a compromised agent process could. The reset is an operator command against the proxy's
+   own file, deliberately not a route, so a compromised agent cannot clear its own hard limit.
 5. **Attribution.** Append-only audit log of every tool call and its requester.
 6. **Sandboxed code execution.** Ephemeral container, no network unless the team sheet grants an
    egress allowlist, invoked by the proxy so it is audited and budgeted like any other tool.
-7. **Physical channel isolation.** One SQLite file per channel; no query path can join across
-   channels. The layout enforces the storage boundary. Which channel a task acts as is bound by
+7. **Physical channel isolation.** One SQLite file per channel for anything holding channel
+   *content* — messages, memory — so no query path can join across channels and the layout
+   enforces the storage boundary. The budget meter is the stated exception and shares one file: it
+   holds five integers per channel per day and no content, its interface takes one channel id at a
+   time, and every statement against it lives in a single module so the per-channel scoping is
+   checkable in one place. Which channel a task acts as is bound by
    the agent when the session is created, from the Slack event and not from anything the model
    produces — see the trust assumption below.
 
