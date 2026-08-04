@@ -36,9 +36,9 @@ const enforced = [
 ];
 
 const phases = [
-  { n: '0', name: 'Skeleton', state: 'current', body: 'Monorepo, schema package, design system, site, CI with the license gate and boundary checks, CLI placeholder on npm.' },
-  { n: '1', name: 'The governed core', state: 'next', body: 'Slack gateway, vault, team-sheet enforcement, approval cards, budget meter, audit log — and the e2e suite that attacks all of them.' },
-  { n: '2', name: 'Memory', state: 'later', body: 'Curation inner loop, MEMORY.md tooling, semantic recall, Slack-deletion mirroring.' },
+  { n: '0', name: 'Skeleton', state: 'done', body: 'Monorepo, schema package, design system, site, CI with the license gate and boundary checks, CLI placeholder on npm.' },
+  { n: '1', name: 'The governed core', state: 'current', body: 'Slack gateway, vault, team-sheet enforcement, approval cards, budget meter, audit log — and the e2e suite that attacks all of them.' },
+  { n: '2', name: 'Memory', state: 'next', body: 'Curation inner loop, MEMORY.md tooling, semantic recall, Slack-deletion mirroring.' },
   { n: '3', name: 'Skills', state: 'later', body: 'Author turn, retrieval-based loading, lifecycle job, curator-as-diff.' },
   { n: '4', name: 'Ambient', state: 'later', body: 'Heartbeat evaluation and scheduled tasks, disabled by default, behind the budget meter.' },
   { n: '5', name: 'Breadth', state: 'later', body: 'Discord adapter, durable orchestration, proxy hardening, audit hash-chaining.' },
@@ -67,8 +67,8 @@ const phases = [
     </div>
 
     <p class="hero__note">
-      Not deployable yet. Phase 0 is the skeleton — see <a href="/docs/roadmap">the roadmap</a> for
-      what lands when.
+      Not deployable yet. Phase 1 is part-built — the governed core is going in first. See
+      <a href="/docs/roadmap">the roadmap</a> for what lands when.
     </p>
   </section>
 
@@ -285,7 +285,7 @@ enabled = false  <i># off by default, always</i></code></pre>
     <div class="wrap grid grid--split">
       <div>
         <span class="lb-label lb-label--dim">Status</span>
-        <h2 class="lb-h2 u-mt-20">Phase 0. The governed core comes before the features.</h2>
+        <h2 class="lb-h2 u-mt-20">Phase 1. The governed core comes before the features.</h2>
         <p class="feature__body u-mt-20" style="font-size:15px;">
           The phases are gated on purpose. Nothing that depends on the proxy ships before the proxy
           can be attacked and hold.
@@ -308,6 +308,14 @@ enabled = false  <i># off by default, always</i></code></pre>
               <div class="step__body">
                 <div class="lb-cluster lb-gap-10">
                   <span class="lb-h3">{phase.name}</span>
+                  {/*
+                    Neutral for a finished phase, not green. Green means allowed
+                    and executed in the design spec and amber means awaiting a
+                    human; a phase that is simply behind us is neither, and
+                    borrowing a status colour for progress is how the two
+                    vocabularies start to blur.
+                  */}
+                  {phase.state === 'done' && <span class="pill-neutral">done</span>}
                   {phase.state === 'current' && (
                     <span class="lb-pill lb-pill--allowed">
                       <span class="lb-dot" />

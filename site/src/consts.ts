@@ -33,6 +33,15 @@ export const SITE = {
   /** Alt text for /og.png, which is the social card for every page on both surfaces. */
   ogImageAlt:
     'Libero — the open-source AI teammate for Slack. Self-hosted, credential-isolated, every tool call audited.',
-  /** Phase 0 — stated on every surface rather than implied. */
-  status: 'Phase 0 · pre-release',
+  /**
+   * Stated on every surface rather than implied, and read from here rather than
+   * retyped — a status string that lives in two places is a status string that
+   * is wrong in one of them.
+   *
+   * Phase 1 is *in progress*, which is not the same as usable: the governed
+   * core is part-built, and the pre-release warning next to this on every page
+   * is doing the load-bearing work. Move this on when a phase opens, not when
+   * it finishes.
+   */
+  status: 'Phase 1 · pre-release',
 } as const;

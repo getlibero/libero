@@ -126,5 +126,7 @@ and fails the build if a word boundary is swallowed again.
 ## Voice
 
 Plain, terse, technical. Name the tool call. State what is and is not permitted. No exclamation
-marks, no emoji, no "AI magic" language. Say what does not exist yet — the project is at phase 0
-and the site should never imply otherwise.
+marks, no emoji, no "AI magic" language. Say what does not exist yet — the project is at phase 1,
+part-built, and the site should never imply otherwise. The status string lives in
+`src/consts.ts` (`SITE.status`) and is read, never retyped: a status in two places is a status
+that is wrong in one of them.

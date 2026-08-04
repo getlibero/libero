@@ -112,9 +112,13 @@ const attempts = [
           compromised host, and Slack itself are out of scope for v1.
         </p>
         <p>
-          Libero is at phase 0. The proxy described here is the specification, not shipped code.
-          The <a href="/docs/roadmap">roadmap</a> is gated so that nothing depending on the proxy
-          ships before the proxy can be attacked and hold.
+          Libero is at phase 1, part-built. The credential half of the proxy is shipped code:
+          mutual TLS, per-channel identity from the client certificate, team-sheet enforcement on
+          both gates, an encrypted vault, credential injection, and a redaction pass on results.
+          The rest of this page is still specification — approvals, budgets, the audit log, and the
+          sandbox do not exist, and the end-to-end suite that attacks all of it is not written. Do
+          not deploy this. The <a href="/docs/roadmap">roadmap</a> is gated so that nothing
+          depending on the proxy ships before the proxy can be attacked and hold.
         </p>
 
         <h2>Reporting a vulnerability</h2>
