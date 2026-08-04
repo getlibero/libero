@@ -15,9 +15,11 @@
 // should need to change for it: the credential path does not depend on the
 // protocol.
 //
-// What this does not do, both deliberately: it does not check the egress
-// allowlist (#73), and it does not redact the response (#52). The comment on
-// each seam below says where it goes.
+// What this does not do, deliberately: it does not check the egress allowlist
+// (#73). The comment on that seam below says where it goes. Nor does it redact
+// — that happens a level down in ./outbound.ts, for the structural reason set
+// out in that file's header: the function that sent the credential is the only
+// one that can be certain of catching it echoed back.
 
 import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
 import type { Dispatch, ToolDispatcher } from "./dispatch.js";
@@ -29,6 +31,7 @@ import {
   destinationHost,
   type UpstreamResponse
 } from "./outbound.js";
+import { RedactionError } from "./redact.js";
 import type { Vault } from "./vault.js";
 
 /**
@@ -152,6 +155,9 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): ToolDispat
           body: toolRequestBody(call),
           scheme: SCHEME,
           secret,
+          // For the redaction marker, so a scrubbed result says which
+          // credential the upstream echoed rather than just that one leaked.
+          ...(upstream.credential !== undefined ? { credentialName: upstream.credential } : {}),
           ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
           ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {})
         });
@@ -166,12 +172,21 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): ToolDispat
           ...(upstream.credential !== undefined ? { credential: upstream.credential } : {})
         });
 
-        // Where the redaction pass goes (#52): the result crosses back to the
-        // agent from here, and an upstream that echoes its own auth header is
-        // the leak class it closes. Until then this is a straight pass-through,
-        // which is why the mock upstream in the tests is made to echo.
+        // Already scrubbed. `callUpstream` redacts before it returns, because
+        // it is the only function that ever sent the value and therefore the
+        // only one that can be sure of catching it coming back. Nothing here
+        // re-scans — there is no second copy of the secret at this level to
+        // scan with, which is the point.
         return { outcome: "ran", result: resultOf(response) };
       } catch (error) {
+        // Fail closed. A redaction that could not be performed is the proxy
+        // unable to guarantee its own boundary, not a tool failing, and the two
+        // must not share a `catch` — converting it to a result here would serve
+        // the agent a 200 for a response nobody could scrub. Rethrowing sends
+        // it to the server's handler catch, which answers a constant 500
+        // without inspecting the thrown value, so no upstream bytes cross.
+        if (error instanceof RedactionError) throw error;
+
         // `UpstreamError` carries a reason from a closed set and nothing else —
         // no `cause`, because the underlying fetch error can hold the request
         // headers and those hold the credential. Anything unexpected is

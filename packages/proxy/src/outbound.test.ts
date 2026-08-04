@@ -11,6 +11,7 @@ import {
   destinationHost,
   injectCredential
 } from "./outbound.js";
+import { RedactionError } from "./redact.js";
 import type { Secret } from "./vault.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -39,12 +40,12 @@ function recordingFetch(body = "{}", status = 200) {
 
 describe("injecting the credential", () => {
   it("puts the value in an Authorization: Bearer header", () => {
-    expect(credentialHeader("bearer", secretOf(VALUE))).toEqual(["authorization", `Bearer ${VALUE}`]);
+    expect(credentialHeader("bearer", VALUE)).toEqual(["authorization", `Bearer ${VALUE}`]);
   });
 
   it("returns a fresh object rather than mutating the caller's headers", () => {
     const original = Object.freeze({ accept: "application/json" });
-    const injected = injectCredential(original, "bearer", secretOf(VALUE));
+    const injected = injectCredential(original, "bearer", VALUE);
     expect(injected).not.toBe(original);
     expect(original).toEqual({ accept: "application/json" });
     expect(injected.authorization).toBe(`Bearer ${VALUE}`);
@@ -144,6 +145,82 @@ describe("the outbound call", () => {
     expect(seen).not.toContain(VALUE);
     expect(seen).not.toContain("ghp_");
     expect((thrown as { cause?: unknown }).cause).toBeUndefined();
+  });
+});
+
+describe("the secret does not come back", () => {
+  // The leak class: an upstream that reflects the header it was given. The
+  // fixture echoes the whole request, which is what a debug endpoint does.
+  it("scrubs a credential the upstream echoed", async () => {
+    const fetch = (async (_url: string, init: RequestInit) =>
+      new Response(`upstream saw ${JSON.stringify(init.headers)}`)) as unknown as typeof globalThis.fetch;
+
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "github_token",
+      fetch
+    });
+
+    expect(response.body).not.toContain(VALUE);
+    expect(response.body).toContain("[redacted:github_token]");
+  });
+
+  it.each([
+    ["base64", (s: string) => Buffer.from(s).toString("base64")],
+    ["base64url", (s: string) => Buffer.from(s).toString("base64url")],
+    ["percent-encoded", (s: string) => encodeURIComponent(s)]
+  ])("scrubs it when the upstream re-encoded it as %s", async (_label, encode) => {
+    const fetch = (async () => new Response(`echo ${encode(VALUE)}`)) as unknown as typeof globalThis.fetch;
+
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "c",
+      fetch
+    });
+
+    expect(response.body).not.toContain(encode(VALUE));
+    expect(response.body).toContain("[redacted:c]");
+  });
+
+  it("leaves a clean response byte-identical", async () => {
+    const fetch = (async () => new Response('{"prs":[]}')) as unknown as typeof globalThis.fetch;
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "c",
+      fetch
+    });
+    expect(response.body).toBe('{"prs":[]}');
+  });
+
+  it("passes the body through untouched when there is no credential", async () => {
+    const fetch = (async () => new Response("anything at all")) as unknown as typeof globalThis.fetch;
+    const response = await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    expect(response.body).toBe("anything at all");
+  });
+
+  // Fail-closed: the redactor throws on a value it cannot scan for, and
+  // callUpstream must not swallow it into a returned body.
+  it("throws rather than returning a body it could not scrub", async () => {
+    const fetch = (async () => new Response("body")) as unknown as typeof globalThis.fetch;
+    await expect(
+      callUpstream({
+        url: "http://u:1",
+        body: {},
+        scheme: "bearer",
+        secret: secretOf(""),
+        credentialName: "c",
+        fetch
+      })
+    ).rejects.toBeInstanceOf(RedactionError);
   });
 });
 

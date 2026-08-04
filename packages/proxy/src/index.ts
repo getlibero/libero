@@ -14,15 +14,18 @@ export type { Dispatch, SpendMeter, ToolDispatcher } from "./dispatch.js";
 export { createHttpDispatcher, toolRequestBody } from "./http-dispatcher.js";
 export type { HttpDispatcherOptions } from "./http-dispatcher.js";
 
-export {
-  DEFAULT_UPSTREAM_TIMEOUT_MS,
-  UpstreamError,
-  callUpstream,
-  credentialHeader,
-  destinationHost,
-  injectCredential
-} from "./outbound.js";
+// `credentialHeader` and `injectCredential` are deliberately **not** exported.
+// They take a revealed credential value, and exporting them would make it
+// possible to attach one to a request without going through `callUpstream` —
+// which is also the function that redacts the response. Keeping them module-
+// private is what makes "everything that sends a credential also scrubs the
+// reply" true by construction rather than by convention. Their tests import
+// them from ./outbound.js directly.
+export { DEFAULT_UPSTREAM_TIMEOUT_MS, UpstreamError, callUpstream, destinationHost } from "./outbound.js";
 export type { AuthScheme, UpstreamFailure, UpstreamRequest, UpstreamResponse } from "./outbound.js";
+
+export { RedactionError, redactSecrets, redactionMarker } from "./redact.js";
+export type { RedactionFailure, SecretValue } from "./redact.js";
 
 export { loadTlsOptions } from "./tls.js";
 export type { ProxyTlsPaths } from "./tls.js";

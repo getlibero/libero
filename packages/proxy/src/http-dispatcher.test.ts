@@ -4,6 +4,7 @@ import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createHttpDispatcher, toolRequestBody } from "./http-dispatcher.js";
 import { createJsonLogger } from "./log.js";
+import { RedactionError } from "./redact.js";
 import type { CredentialLookup, Secret, Vault } from "./vault.js";
 
 // A real socket rather than a stubbed `fetch`, because the claim under test is
@@ -25,6 +26,8 @@ let received: Received[] = [];
 let origin = "";
 /** Set per-test to control what the mock answers. */
 let respond: (body: string) => { status: number; body: string } = () => ({ status: 200, body: "{}" });
+/** When true the mock reflects its request headers into the response body. */
+let upstreamEchoesHeaders = false;
 
 beforeAll(async () => {
   upstream = createServer((req, res) => {
@@ -35,7 +38,9 @@ beforeAll(async () => {
       received.push({ authorization: req.headers.authorization, body, headers: req.headers });
       const answer = respond(body);
       res.writeHead(answer.status, { "content-type": "application/json" });
-      res.end(answer.body);
+      // The echoing upstream: reflects every header it received, the way a
+      // debug endpoint or a verbose error handler does.
+      res.end(upstreamEchoesHeaders ? `${answer.body} ${JSON.stringify(req.headers)}` : answer.body);
     });
   });
   await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
@@ -49,6 +54,7 @@ afterAll(async () => {
 beforeEach(() => {
   received = [];
   respond = () => ({ status: 200, body: "{}" });
+  upstreamEchoesHeaders = false;
 });
 
 function secretOf(value: string): Secret {
@@ -246,8 +252,6 @@ describe("what the proxy writes down", () => {
     expect(written).not.toContain("Bearer");
   });
 
-  // #52 owns scrubbing an echoed secret out of the *result*. What #51 owns is
-  // that the proxy's own logs never carry it, even when the upstream does.
   it("keeps an echoing upstream out of the log", async () => {
     respond = body => ({ status: 200, body: `echo ${body} auth was leaked` });
     const { lines, logger } = capturingLogger();
@@ -255,5 +259,56 @@ describe("what the proxy writes down", () => {
     await dispatcher.dispatch(callTo(), serverAt(origin));
 
     expect(lines.join("")).not.toContain(SECRET);
+  });
+});
+
+describe("an upstream that echoes its own auth header", () => {
+  // The leak class the redaction pass exists to close. The mock reflects every
+  // header it received, which is what a debug endpoint or a verbose error
+  // handler does in practice.
+  it("does not hand the value back in the result", async () => {
+    respond = () => ({ status: 200, body: "" });
+    upstreamEchoesHeaders = true;
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+    const result = await dispatcher.dispatch(callTo(), serverAt(origin));
+
+    expect(result.outcome).toBe("ran");
+    const content = result.outcome === "ran" ? result.result.content : "";
+    // The upstream really did receive it — otherwise this asserts nothing.
+    expect(received[0]?.authorization).toBe(`Bearer ${SECRET}`);
+    expect(content).toContain("[redacted:github_service_account]");
+    expect(content).not.toContain(SECRET);
+    expect(content).not.toContain("ghp_");
+  });
+
+  it("scrubs it out of an error body too", async () => {
+    respond = body => ({ status: 500, body: `request failed: ${body}` });
+    upstreamEchoesHeaders = true;
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+    const result = await dispatcher.dispatch(callTo(), serverAt(origin));
+
+    expect(result.outcome === "ran" && result.result.isError).toBe(true);
+    expect(result.outcome === "ran" && result.result.content).not.toContain(SECRET);
+  });
+});
+
+describe("fail-closed", () => {
+  // A redaction that cannot be performed must not be converted into a served
+  // result. It has to escape the catch that handles transport failures.
+  it("rethrows a redaction failure instead of answering with a result", async () => {
+    // An empty stored value: rejected by `vault set`, reachable only from a
+    // corrupt or hand-edited vault, and exactly the case where quiet nonsense
+    // would be worse than no answer.
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: "" }) });
+
+    await expect(dispatcher.dispatch(callTo(), serverAt(origin))).rejects.toBeInstanceOf(RedactionError);
+  });
+
+  it("still converts a transport failure into a result, which is a tool failing", async () => {
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+    const result = await dispatcher.dispatch(callTo(), serverAt("http://127.0.0.1:1"));
+
+    expect(result.outcome).toBe("ran");
+    expect(result.outcome === "ran" && result.result.isError).toBe(true);
   });
 });

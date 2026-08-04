@@ -1,0 +1,154 @@
+// Scrubbing known secret values out of text on its way to the agent.
+//
+// This closes one leak class and only one: an upstream that **echoes** a
+// credential it was given. A tool that reflects its own `Authorization` header
+// in a debug field, or quotes the failing request in an error body, hands the
+// agent the value the proxy exists to keep from it. That is a real and common
+// shape, and it is the one this file catches.
+//
+// **What no scan can catch, stated plainly rather than implied away.** An
+// upstream that *transforms* the value is invisible here: a hash of it, a
+// substring, a re-chunked base64 of a blob that merely contains it, an
+// encryption of it, or the same secret spelled with different capitalisation
+// than it was stored in. Searching for a value only finds the value. Redaction
+// is therefore a backstop for a careless upstream, not a boundary — the
+// boundary is that the agent process never holds a credential in the first
+// place, which is what `vault.ts` and the mTLS split are for. Anyone tempted to
+// describe this as "the thing that stops secrets leaking" should read that
+// sentence again.
+//
+// Pure string work, deliberately: no `Secret`, no vault, no I/O. Custody lives
+// in ./outbound.ts, which is the only file that can produce a value to pass in
+// here, and keeping the rules apart from the custody is what lets the rules be
+// property-tested without standing anything up.
+
+/** What replaces a match. Names the credential; never any part of the value. */
+export function redactionMarker(name: string): string {
+  return `[redacted:${name}]`;
+}
+
+/**
+ * Why a redaction could not be performed.
+ *
+ * One member, and a closed set for the same reason `VaultFailure` is one: this
+ * runs on the path that holds a secret, so a caller reports something chosen
+ * from a list rather than a string that came back from somewhere.
+ */
+export type RedactionFailure = "empty_value";
+
+/**
+ * A redaction that could not be completed.
+ *
+ * Separate from `UpstreamError` on purpose. An upstream failure is a tool
+ * failing, which the model should see and may recover from; a redaction failure
+ * is the proxy being unable to guarantee its own boundary, and the two must not
+ * be handled by the same `catch`. `http-dispatcher.ts` converts one and
+ * rethrows the other.
+ *
+ * No `cause`, per `VaultError`: the values in scope here are the ones that must
+ * not end up in a log line.
+ */
+export class RedactionError extends Error {
+  readonly failure: RedactionFailure;
+
+  constructor(failure: RedactionFailure) {
+    super(`proxy redaction: ${failure}`);
+    this.name = "RedactionError";
+    this.failure = failure;
+  }
+}
+
+/** A credential to scrub, by name and by value. */
+export interface SecretValue {
+  /** The team-sheet name. Goes into the marker, so it reaches the agent. */
+  readonly name: string;
+  readonly value: string;
+}
+
+/**
+ * Every spelling of a value worth searching for.
+ *
+ * The issue's "cheap encodings", enumerated rather than gestured at:
+ *
+ * - the value itself;
+ * - base64, standard alphabet, padded and unpadded — an upstream that
+ *   round-trips a header through a JSON transport often base64s it, and the
+ *   padding depends on the length, so both are generated rather than guessed;
+ * - base64url, padded and unpadded — the same, for anything that put the value
+ *   in a URL or a JWT-shaped field;
+ * - percent-encoding, in both hex cases, for a value reflected back inside a
+ *   query string. `encodeURIComponent` emits uppercase hex; plenty of servers
+ *   emit lowercase, and a case-insensitive scan over the whole body would be
+ *   wrong for the raw form, so the two are listed as separate needles instead.
+ *
+ * Duplicates are expected and harmless — a value with no percent-escapable
+ * characters encodes to itself — and are removed so the replace pass does not
+ * run twice for nothing.
+ */
+export function encodingsOf(value: string): string[] {
+  const raw = Buffer.from(value, "utf8");
+  const base64 = raw.toString("base64");
+  const base64url = raw.toString("base64url");
+  const percent = encodeURIComponent(value);
+
+  const candidates = [
+    value,
+    base64,
+    base64.replace(/=+$/, ""),
+    base64url,
+    base64url.replace(/=+$/, ""),
+    percent,
+    // Lowercase only the escape sequences, not the whole string: the
+    // surrounding characters are the value and must not be case-folded.
+    percent.replace(/%[0-9A-F]{2}/g, match => match.toLowerCase())
+  ];
+
+  // Longest first. A padded base64 string contains its unpadded form, so
+  // replacing the short one first would leave a stray `=` behind where the long
+  // one should have matched.
+  return [...new Set(candidates)].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Replace every occurrence of every secret, in every encoding, with its marker.
+ *
+ * `replaceAll` on a string needle, not a `RegExp`: a credential is arbitrary
+ * bytes and may contain regex metacharacters, so building a pattern from one
+ * would either need escaping that is easy to get subtly wrong or would match
+ * the wrong thing. There is no pattern here to get wrong.
+ *
+ * Order matters twice. Longest-encoding-first within a secret, per
+ * `encodingsOf`. And each secret is fully applied before the next begins.
+ *
+ * That second ordering has one pathological consequence worth naming rather
+ * than discovering later: a marker already written into the text is ordinary
+ * text to every subsequent secret, so a credential whose *value* happens to be
+ * a substring of one — the literal string `redacted`, say — will match inside
+ * it and be replaced again, yielding `[[redacted:second]:first]`. Absurd as a
+ * real credential, and the outcome is more redaction rather than less, so it is
+ * left alone: the failure direction is safe, and a two-phase substitution to
+ * avoid it would add machinery whose own bugs would not be.
+ *
+ * **Fail-closed on an empty value.** `setEntry` rejects `empty_value`
+ * (`vault-file.ts`), so this should be unreachable from a vault written by the
+ * CLI — but `replaceAll("")` inserts the marker between every character of the
+ * body, turning a leak into a garbage response that still looks like it
+ * worked. A hand-edited or corrupt vault is exactly the case where quiet
+ * nonsense is worse than a refusal to answer.
+ *
+ * A short-but-nonempty value is *not* guarded. A one-character credential makes
+ * this over-redact the body, which is useless but safe, and the operator
+ * problem it signals is not one this function should paper over by returning
+ * text it knows may still carry the value.
+ */
+export function redactSecrets(text: string, secrets: readonly SecretValue[]): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret.value.length === 0) throw new RedactionError("empty_value");
+    const marker = redactionMarker(secret.name);
+    for (const needle of encodingsOf(secret.value)) {
+      out = out.replaceAll(needle, marker);
+    }
+  }
+  return out;
+}
