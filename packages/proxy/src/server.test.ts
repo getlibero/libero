@@ -870,6 +870,61 @@ describe("the budget gate", () => {
   });
 });
 
+// The property the shared budget file rests on. Channels share one table
+// because spend is operator-facing data and cross-channel aggregation is what
+// it is for — so what has to hold instead is that the people who live in a
+// channel cannot manipulate its numbers. A prompt-injected member drives the
+// agent, and the agent reaches only these routes.
+describe("no route can lower a counter", () => {
+  it("leaves every counter at or above where it started, whatever is called", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50"));
+    await callN(2);
+    await post("/v1/spend", {
+      turn: "turn_floor",
+      usage: { inputTokens: 100, outputTokens: 10 }
+    });
+    const before = await meter.read(CHANNEL);
+
+    // Everything an agent can reach, including the shapes an attacker would
+    // reach for: a negative report, a zeroing one, a replayed turn, and a
+    // body trying to name someone else's channel or a past day.
+    await call("/health", clientCert(certs, CHANNEL));
+    await call("/v1/whoami", clientCert(certs, CHANNEL));
+    await call("/v1/tools", clientCert(certs, CHANNEL));
+    await post("/v1/tools/call", { id: "1", server: "github", tool: "nope" });
+    await post("/v1/spend", { turn: "t", usage: { inputTokens: -500, outputTokens: 0 } });
+    await post("/v1/spend", { turn: "t", usage: { inputTokens: 0, outputTokens: 0 } });
+    await post("/v1/spend", { turn: "turn_floor", usage: { inputTokens: 0, outputTokens: 0 } });
+    await post("/v1/spend", { turn: "t2", usage: { inputTokens: 1, outputTokens: 0 }, reset: true });
+    await post("/v1/spend", { turn: "t3", usage: { inputTokens: 1, outputTokens: 0 }, day: "1999-01-01" });
+
+    const after = await meter.read(CHANNEL);
+    expect(after.toolCalls).toBeGreaterThanOrEqual(before.toolCalls);
+    expect(after.inputTokens).toBeGreaterThanOrEqual(before.inputTokens);
+    expect(after.outputTokens).toBeGreaterThanOrEqual(before.outputTokens);
+    expect(after.cacheReadTokens).toBeGreaterThanOrEqual(before.cacheReadTokens);
+    expect(after.cacheWriteTokens).toBeGreaterThanOrEqual(before.cacheWriteTokens);
+  });
+
+  // The other half: one channel's agent cannot reach across to another's row,
+  // because the only channel it can name is the one its certificate proves.
+  it("cannot touch another channel's counters", async () => {
+    writeSheet(OTHER_CHANNEL, budgetSheet("daily_tool_calls = 50"));
+    await callN(2, OTHER_CHANNEL);
+    const before = await meter.read(OTHER_CHANNEL);
+
+    await post("/v1/spend", { turn: "x", usage: { inputTokens: 9_999, outputTokens: 0 } }, CHANNEL);
+    await post(
+      "/v1/spend",
+      { turn: "y", usage: { inputTokens: 1, outputTokens: 0 }, channel: OTHER_CHANNEL },
+      CHANNEL
+    );
+    await callN(3, CHANNEL);
+
+    expect(await meter.read(OTHER_CHANNEL)).toEqual(before);
+  });
+});
+
 describe("reporting spend", () => {
   const usage = {
     inputTokens: 120,

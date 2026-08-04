@@ -114,18 +114,30 @@ These are load-bearing, not stylistic:
   sheets authorize — revocation is removing a channel's sheet, not a CRL.
 - **One SQLite file per channel is the isolation boundary** for anything holding
   channel *content* — messages, memory. No schema or query there should be able
-  to join across channels.
+  to join across channels. `packages/memory` is the next one, and it keeps the
+  strict reading: a factory that takes one channel id and no API that can ask
+  for a second.
 
-  **The budget meter is the stated exception**, decided in #96 rather than
-  drifted into. It is one file keyed `(channel, day)` holding five integers per
-  channel per day: no content, nothing to leak that the operator's own log
-  lines do not already carry, and an interface (`read(channel)`,
-  `recordToolCall(channel)`) that is channel-parameterized anyway — so a file
-  split would express no guarantee the type signature does not. The
-  compensation is that **every SQL string in `packages/proxy` lives in
-  `src/budget-db.ts`**, so "no statement omits `WHERE channel = ?`" is checkable
-  by reading one file. Keep it that way. A store that holds channel content
-  gets its own file per channel, and `packages/memory` is the next one.
+  **The line is whose data it is and who reads it, not how much of it there
+  is.** Content belongs to a channel's members and is read on their behalf, so a
+  cross-channel join is one channel's members seeing another's conversation.
+  Operator-facing tables — the budget meter, and the audit log when it lands —
+  are read by the operator, and cross-channel aggregation there is a feature
+  rather than a hazard: a team asking how a workspace is tracking against its
+  caps needs exactly the query the per-file layout would forbid.
+
+  So the budget meter is one file keyed `(channel, day)`, decided in #96 rather
+  than drifted into. What has to hold instead is that **channel members cannot
+  manipulate the numbers**: the channel comes from the certificate, every write
+  is `x = x + n`, and the server's whole surface on the meter is `read`,
+  `recordToolCall`, `recordTokens` — clearing a counter lives in
+  `budget-admin.ts`, which the server never imports. Keep all three. Also keep
+  **every SQL string in `packages/proxy` in `src/budget-db.ts`**, so
+  "no statement omits `WHERE channel = ?`" is checkable by reading one file.
+
+  **Aggregate reads go on the operator path** (`budget-admin.ts`), never on the
+  interface the server closes over. Reading one channel is a serving concern;
+  reading all of them is an operator concern.
 - **`packages/schema` is the single source of truth** for team sheets, audit
   records, tool calls, approvals, and memory ops. Both services import from it;
   don't redefine those shapes locally. `channels/example/channel.toml` is the

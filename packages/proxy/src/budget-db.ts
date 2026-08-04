@@ -8,17 +8,41 @@
 // what makes that claim checkable by reading one screen instead of grepping a
 // package. A statement added anywhere else is a review failure.
 //
-// The invariant it departs from is real and stated in CLAUDE.md: one SQLite
-// file per channel, so no schema or query *can* join across channels. It holds
-// for channel content — messages, memory — where a cross-channel join is a data
-// breach. It is narrowed here, deliberately and in the open, for a table that
-// holds five integers per channel per day: there is nothing in it to leak that
-// the operator's own log lines do not already carry, and the interface above it
-// (`read(channel)`, `recordToolCall(channel)`) is channel-parameterized anyway,
-// so a file split would express no guarantee the type signature does not
-// already express. Complying literally would buy a connection pool, three file
-// descriptors per channel ever seen, and a reset path that has to go looking
-// for the right file.
+// CLAUDE.md's one-file-per-channel invariant is narrowed rather than broken,
+// and the line is about **whose data it is and who reads it**, not about how
+// much of it there is.
+//
+// Channel content — messages, memory — belongs to that channel's members and is
+// read on their behalf. A cross-channel join there is one channel's members
+// seeing another's conversation, so the layout has to make it impossible and
+// the file split is the mechanism.
+//
+// Spend belongs to the operator and is read by the operator. Cross-channel
+// aggregation is not a hazard to be designed out; it is a feature this data
+// exists for — a platform or finance team asking how a workspace is tracking
+// against its caps needs exactly the query the per-file layout would forbid.
+// Building that on N files would mean opening N handles to reassemble something
+// that was one table all along. (The same argument covers the audit log, which
+// #38 already describes as one table with a channel column.)
+//
+// What has to hold instead is that **the people who live in the channels cannot
+// manipulate the numbers**, and that is structural here:
+//
+//   - The channel comes from the client certificate, so an agent can only ever
+//     write its own row. No request body names a channel.
+//   - Every write is `x = x + n`. There is no decrement in this file.
+//   - The server's whole surface on the meter is `read`, `recordToolCall`,
+//     `recordTokens` (see `SpendMeter` in ./dispatch.js). Clearing a counter
+//     lives in ./budget-admin.ts, which nothing in the server imports.
+//
+// So the worst a prompt-injected channel member can do is spend more of their
+// own channel's budget, which is the limit doing its job.
+//
+// **The forward rule, while it is still cheap to state:** an aggregate read —
+// spend across channels, progress against caps for a workspace — belongs on the
+// operator path in ./budget-admin.ts. It must never appear on the interface the
+// server closes over. Reading one channel is a serving concern; reading all of
+// them is an operator concern, and the two must not share a method.
 //
 // `node:sqlite` rather than a driver from npm. It is built in, so the proxy
 // gains no dependency and the license gate has nothing new to check — and this

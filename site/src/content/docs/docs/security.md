@@ -27,10 +27,13 @@ the model's cooperation.
    egress allowlist, invoked by the proxy so it is audited and budgeted like any other tool.
 7. **Physical channel isolation.** One SQLite file per channel for anything holding channel
    *content* — messages, memory — so no query path can join across channels and the layout
-   enforces the storage boundary. The budget meter is the stated exception and shares one file: it
-   holds five integers per channel per day and no content, its interface takes one channel id at a
-   time, and every statement against it lives in a single module so the per-channel scoping is
-   checkable in one place. Which channel a task acts as is bound by
+   enforces the storage boundary. The line is whose data it is: content belongs to a channel's
+   members, and a cross-channel join is one channel's members seeing another's conversation.
+   Operator-facing tables — the budget meter, and the audit log — are read by the operator, and
+   cross-channel aggregation there is a feature rather than a hazard. What holds for those instead
+   is that channel members cannot manipulate the numbers: the channel comes from the client
+   certificate, every write is an increment, and clearing a counter lives on an operator path the
+   serving process does not import. Which channel a task acts as is bound by
    the agent when the session is created, from the Slack event and not from anything the model
    produces — see the trust assumption below.
 
