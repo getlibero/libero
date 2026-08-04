@@ -7,7 +7,7 @@ import type { VaultKey } from "@getlibero/proxy";
 /**
  * Localhost by default.
  *
- * The proxy holds every credential in the deployment and has no business on a
+ * The proxy holds every tool credential in the deployment and has no business on a
  * routable interface. Under compose it is set to 0.0.0.0 so the agent
  * container can reach it over the private bridge network, which publishes no
  * ports; anywhere else, binding it wider is a decision an operator has to make

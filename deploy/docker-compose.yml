@@ -1,6 +1,8 @@
 # Libero deployment — two services plus per-channel state.
-# The security property everything hangs on: secrets live only in the proxy,
-# and the agent reaches tools only through it.
+# The security property everything hangs on: tool credentials live only in the
+# proxy, and the agent reaches tools only through it. The Slack tokens and the
+# model provider key are set on the agent service below, because the gateway
+# holds the socket and the loop calls the provider; they reach no tool.
 #
 # Run `sh scripts/dev-certs.sh` before the first `docker compose up`: the two
 # services speak mutual TLS, and the certificate the agent presents is what

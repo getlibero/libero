@@ -42,7 +42,7 @@ See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https:/
 
 ## Architecture in one paragraph
 
-Two services. The **gateway + agent** (service 1) connects to Slack over Socket Mode, routes each `(workspace, channel)` to a shared session, and runs a provider-agnostic agent loop. The **tool proxy** (service 2) holds all credentials, enforces each channel's **team sheet** (a git-managed TOML manifest declaring allowed tools, budgets, and approval requirements), brokers human-in-the-loop approvals, meters spend, and writes the audit log. The agent reaches tools only through the proxy; compromise of the agent process yields zero secrets.
+Two services. The **gateway + agent** (service 1) connects to Slack over Socket Mode, routes each `(workspace, channel)` to a shared session, and runs a provider-agnostic agent loop. The **tool proxy** (service 2) holds every tool credential, enforces each channel's **team sheet** (a git-managed TOML manifest declaring allowed tools, budgets, and approval requirements), brokers human-in-the-loop approvals, meters spend, and writes the audit log. The agent reaches tools only through the proxy; compromise of the agent process yields no tool credentials. It holds the Slack tokens and the model provider key — the gateway cannot open the socket without them — and those reach nothing a team sheet governs.
 
 ## Quick start (target UX — not live yet)
 

@@ -63,10 +63,17 @@ the [team sheet reference](/docs/team-sheet).
 | --- | --- | --- |
 | Talks to Slack | yes | no |
 | Runs the model loop | yes | no |
-| Holds credentials | **no** | yes |
+| Holds tool credentials | **no** | yes |
+| Holds gateway and model credentials | yes | no |
 | Enforces the allowlist | no | yes |
 | Meters budget | advisory | **authoritative** |
 | Writes the audit log | no | yes |
+
+The two credential rows are the whole distinction. Slack tokens and the model provider key are in
+the agent process because the gateway holds the socket and the loop calls the provider; everything
+a team sheet governs is in the proxy's vault and the agent never sees it. The
+[security model](/docs/security#which-secrets-are-where) states what a leak of each gets an
+attacker.
 
 The proxy listens only on localhost or a private network, with mutual TLS between the two
 services. Put nothing else on that interface.

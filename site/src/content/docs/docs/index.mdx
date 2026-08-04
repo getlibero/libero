@@ -28,14 +28,17 @@ the gateway, and memory do not. The [roadmap](/docs/roadmap) says what lands whe
 Two deployable services plus per-channel state.
 
 The **gateway and agent** connects to Slack over Socket Mode, routes each `(workspace, channel)`
-pair to a shared session, and runs a provider-agnostic agent loop. The **tool proxy** holds all
-credentials, enforces each channel's team sheet, brokers human approvals, meters spend, and writes
-the audit log.
+pair to a shared session, and runs a provider-agnostic agent loop. The **tool proxy** holds every
+tool credential, enforces each channel's team sheet, brokers human approvals, meters spend, and
+writes the audit log.
 
-The security property the whole design hangs on: secrets live only in the proxy, and the agent
-reaches tools only through it. Compromise of the agent process — prompt injection, a malicious
-skill, a misbehaving model — yields zero secrets and only the tool surface that channel's team
-sheet allows, with every call audited.
+The security property the whole design hangs on: tool credentials live only in the proxy, and the
+agent reaches tools only through it. Compromise of the agent process — prompt injection, a
+malicious skill, a misbehaving model — yields no tool credentials and only the tool surface that
+channel's team sheet allows, with every call audited. The agent process holds the Slack tokens and
+the model provider key, because the gateway and the loop cannot run without them; neither reaches
+a tool the proxy guards. The [security model](/docs/security#which-secrets-are-where) has the
+full account.
 
 ## What an admin actually configures
 

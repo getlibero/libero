@@ -6,7 +6,7 @@ const attempts = [
   {
     attack: 'A channel member talks the agent into printing its GitHub token.',
     result: 'Nothing to print.',
-    body: 'The agent process never receives a credential value. Team sheets, logs, errors and tool definitions carry names. The proxy injects the secret into the outbound call and scrubs known secret values out of the result before it comes back.',
+    body: 'The agent process never receives a tool credential value. Team sheets, logs, errors and tool definitions carry names. The proxy injects the secret into the outbound call and scrubs known secret values out of the result before it comes back.',
     tone: 'allowed',
   },
   {
@@ -90,8 +90,8 @@ const attempts = [
         <h2 style="margin-top:0;">Why the split is the whole design</h2>
         <p>
           Libero runs as two processes. The <strong>gateway and agent</strong> talks to Slack and
-          runs the model loop. The <strong>tool proxy</strong> holds every credential and enforces
-          what each channel may do. They speak over mutual TLS on a private network, and the only
+          runs the model loop. The <strong>tool proxy</strong> holds every tool credential and
+          enforces what each channel may do. They speak over mutual TLS on a private network, and the only
           thing that crosses is a tool call and its result.
         </p>
         <p>
