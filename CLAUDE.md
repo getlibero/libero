@@ -18,13 +18,21 @@ Scoping to one package or test:
 ```bash
 pnpm --filter @getlibero/schema test
 pnpm --filter @getlibero/schema exec vitest run src/<file>.test.ts
-pnpm --filter @getlibero/schema exec vitest run -t "<test name>"
+pnpm --filter @getlibero/schema exec vitest run --exclude '**/dist/**' -t "<test name>"
 ```
 
 Root scripts are `pnpm -r` fan-outs, so a new workspace package is invisible to
 CI until it has a `package.json` with `build`, `typecheck`, and `test` scripts
-(use `vitest run --passWithNoTests` while it has no tests) and a `tsconfig.json`
-extending `../../tsconfig.base.json`.
+(use `vitest run --exclude '**/dist/**' --passWithNoTests` while it has no
+tests) and a `tsconfig.json` extending `../../tsconfig.base.json`.
+
+**Every `test` script carries `--exclude '**/dist/**'`, and a new one must
+too.** Vitest's default excludes are `node_modules` and `.git` only, so without
+it each test file is collected twice — once from `src`, once from its compiled
+copy — and CI builds before it tests, so `dist` is always there. That doubles
+every reported count and keeps running tests that were deleted from `src` until
+someone does a clean build. The flag adds to the defaults rather than replacing
+them; `node_modules` stays excluded (#107).
 
 ## Current state
 
