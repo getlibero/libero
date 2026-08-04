@@ -37,9 +37,18 @@ calls, the redaction pass on the way back, and the daily budget meter over
 `node:sqlite`), `apps/proxy-server` (the process composing all of it — a
 permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
+`packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
+into the thread, and a reconnect ladder the gateway owns rather than the SDK),
 `packages/cli` (placeholder npm release), `design/` (the design system — plain
-CSS, no TypeScript), and `site/` (getlibero.com). `packages/{gateway, memory}`
-are README stubs, `apps/server` is a scaffold, and `e2e/` is empty.
+CSS, no TypeScript), and `site/` (getlibero.com). `packages/memory` is a README
+stub, `apps/server` is a scaffold, and `e2e/` is empty.
+
+**Nothing composes the gateway yet.** `packages/gateway` reads no `process.env`
+and nothing constructs it: `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` are declared
+in `deploy/docker-compose.yml` and read by no code, the same way `PROXY_URL` is.
+The issue that wires gateway + agent into `apps/server` is what makes the two
+tokens live. Until then the adapter is exercised by its tests and by a throwaway
+script.
 
 **Nothing sends a token report yet.** `POST /v1/spend` is built, tested over
 real mTLS, and idempotent — but no proxy client exists in `packages/agent` or
