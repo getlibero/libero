@@ -26,13 +26,16 @@ import {
   ToolCallResponse,
   ToolListing
 } from "@getlibero/schema";
+import { resetChannel } from "./budget-admin.js";
+import { openBudgetDb } from "./budget-db.js";
+import type { BudgetDb } from "./budget-db.js";
+import { createSqliteSpendMeter } from "./budget-meter.js";
 import {
   type SpendMeter,
   createUnavailableDispatcher,
-  createUnmeteredSpend,
+  markProvisional,
   type ToolDispatcher
 } from "./dispatch.js";
-import type { BudgetSpend } from "./enforce.js";
 import { createHttpDispatcher } from "./http-dispatcher.js";
 import { createJsonLogger } from "./log.js";
 import { RedactionError } from "./redact.js";
@@ -66,12 +69,21 @@ let channelsRoot: string;
 let sheets: TeamSheetStore;
 let dispatcher: ToolDispatcher & { seen: ResolvedToolCall[] };
 /**
- * A real meter, because the recording dispatcher below really serves calls and
- * `assertServableComposition` will not let those two be paired with the
- * provisional one. Mutable so a test can spend a channel's budget.
+ * The real meter over a real file, not a stand-in.
+ *
+ * The recording dispatcher below really serves calls, so
+ * `assertServableComposition` would refuse a provisional meter anyway — but the
+ * reason to use the shipped one is that the write path is what these tests are
+ * for. A hand-rolled `{ read: () => spent }` would assert that enforcement
+ * reads a number, and say nothing about whether serving a call records one.
+ *
+ * `budgetClock` is the injected clock, so a test can cross a UTC midnight
+ * without waiting for one.
  */
-let spent: BudgetSpend = { tokens: 0, toolCalls: 0 };
-const meter: SpendMeter = { read: () => spent };
+let budgetDir: string;
+let budgetDb: BudgetDb;
+let budgetClock = Date.UTC(2026, 7, 4, 12, 0, 0);
+let meter: SpendMeter;
 let server: Server;
 let port: number;
 let logLines: string[] = [];
@@ -197,6 +209,10 @@ beforeAll(() => {
   sheets = new TeamSheetStore({ root: channelsRoot });
   dispatcher = recordingDispatcher();
 
+  budgetDir = mkdtempSync(join(tmpdir(), "libero-proxy-budget-"));
+  budgetDb = openBudgetDb({ file: join(budgetDir, "budget.db") });
+  meter = createSqliteSpendMeter({ db: budgetDb, now: () => budgetClock });
+
   server = createProxyServer({
     tls: loadTlsOptions({
       cert: join(certs, "proxy", "server.pem"),
@@ -228,16 +244,21 @@ beforeEach(() => {
   rmSync(channelsRoot, { recursive: true, force: true });
   writeSheet(CHANNEL, SHEET);
   dispatcher.seen.length = 0;
-  spent = { tokens: 0, toolCalls: 0 };
+  // Each test starts on a fresh day rather than a cleared counter: rollover is
+  // the meter's own reset, so using it here exercises it on every test instead
+  // of reaching past the API to truncate a table.
+  budgetClock += 24 * 60 * 60 * 1000;
   logLines = [];
 });
 
 afterAll(() => {
   server.close();
   sheets.close();
+  budgetDb.close();
   rmSync(certs, { recursive: true, force: true });
   rmSync(foreignCerts, { recursive: true, force: true });
   rmSync(channelsRoot, { recursive: true, force: true });
+  rmSync(budgetDir, { recursive: true, force: true });
 });
 
 describe("mutual TLS", () => {
@@ -364,7 +385,7 @@ describe("routing", () => {
         ca: join(certs, "ca.pem")
       }),
       sheets,
-      spend: createUnmeteredSpend(),
+      spend: meter,
       dispatcher: createUnavailableDispatcher(),
       logger: createJsonLogger(line => {
         lines.push(line);
@@ -672,25 +693,38 @@ describe("composing the proxy", () => {
           ca: join(certs, "ca.pem")
         }),
         sheets,
-        // The stand-in that never exhausts a budget, with a dispatcher that
-        // really serves calls. Nothing binds; the process does not start.
-        spend: createUnmeteredSpend(),
+        // A meter that never exhausts a budget, with a dispatcher that really
+        // serves calls. Nothing binds; the process does not start.
+        //
+        // No such meter ships any more — #96 deleted the stand-in — so this
+        // builds one. The check stays because the seams that land next arrive
+        // before their implementations, and a stand-in meter is the obvious way
+        // to test one of those.
+        spend: markProvisional({
+          read: () => ({
+            toolCalls: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0
+          }),
+          recordToolCall: () => {},
+          recordTokens: () => ({ outcome: "recorded" as const })
+        }),
         dispatcher: recordingDispatcher()
       })
     ).toThrow(/needs a real spend meter/);
   });
 });
 
-describe("the budget gate", () => {
-  it("refuses a call once the channel's daily tool calls are spent", async () => {
-    writeSheet(
-      CHANNEL,
-      `
+/** A one-server sheet with whatever `[budget]` lines a test needs. */
+function budgetSheet(budget: string): string {
+  return `
 [channel]
 name = "engineering"
 
 [budget]
-daily_tool_calls = 5
+${budget}
 
 [[mcp_server]]
 name = "github"
@@ -699,17 +733,310 @@ url = "https://api.github.com"
 
   [[mcp_server.tool]]
   name = "list_prs"
-`
-    );
-    spent = { tokens: 0, toolCalls: 5 };
+`;
+}
 
-    const res = await post("/v1/tools/call", { id: "1", server: "github", tool: "list_prs" });
-    expect(ToolCallResponse.parse(res.body)).toMatchObject({
-      outcome: "refused",
-      refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" }
-    });
-    // Budget is enforced before the call is served, like every other refusal.
+const listPrs = (id: string) => ({ id, server: "github", tool: "list_prs" });
+
+async function callN(times: number, channel = CHANNEL): Promise<Response[]> {
+  const out: Response[] = [];
+  for (let i = 0; i < times; i += 1) {
+    // Sequentially, because the point of these tests is the counter and not
+    // the overshoot window that concurrency opens. See the note on
+    // `SpendReader.read` in ./dispatch.ts.
+    out.push(await post("/v1/tools/call", listPrs(String(i)), channel));
+  }
+  return out;
+}
+
+describe("the budget gate", () => {
+  // The headline property, and the reason this issue exists: the proxy counts
+  // what it serves, so a loop that ignores its own caps still cannot get a
+  // call served past the sheet's limit. Nothing about this depends on the
+  // agent behaving.
+  it("stops a loop at the sheet's limit however many times it asks", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 3"));
+
+    const responses = await callN(5);
+
+    expect(responses.slice(0, 3).map(r => (r.body as { outcome: string }).outcome)).toEqual([
+      "ran",
+      "ran",
+      "ran"
+    ]);
+    for (const res of responses.slice(3)) {
+      expect(ToolCallResponse.parse(res.body)).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" }
+      });
+    }
+    // Enforced before the call is served, like every other refusal: exactly
+    // three calls reached the dispatcher and the refusals left no trace.
+    expect(dispatcher.seen).toHaveLength(3);
+  });
+
+  it("counts a call the upstream never answered, because it was still served", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 2"));
+
+    // The recording dispatcher answers; what matters is that the count was
+    // written before it was asked, so a failure downstream cannot uncount it.
+    await post("/v1/tools/call", listPrs("1"));
+    expect((await meter.read(CHANNEL)).toolCalls).toBe(1);
+  });
+
+  it("never counts a refused or held call", async () => {
+    await post("/v1/tools/call", { id: "1", server: "stripe", tool: "charge" });
+    await post("/v1/tools/call", { id: "2", server: "github", tool: "force_push" });
+    await post("/v1/tools/call", { id: "3", server: "github", tool: "merge_pr" });
+
+    expect(await meter.read(CHANNEL)).toMatchObject({ toolCalls: 0 });
     expect(dispatcher.seen).toEqual([]);
+  });
+
+  // One file, and the isolation rests on every statement being scoped to a
+  // channel. Asserted end to end, over two certificates, not just at the store.
+  it("meters two channels at once without either seeing the other", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 2"));
+    writeSheet(OTHER_CHANNEL, budgetSheet("daily_tool_calls = 2"));
+
+    await callN(2, CHANNEL);
+
+    const exhausted = await post("/v1/tools/call", listPrs("x"), CHANNEL);
+    expect(ToolCallResponse.parse(exhausted.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "budget_exhausted" }
+    });
+
+    const other = await post("/v1/tools/call", listPrs("y"), OTHER_CHANNEL);
+    expect(ToolCallResponse.parse(other.body)).toMatchObject({ outcome: "ran" });
+    expect((await meter.read(OTHER_CHANNEL)).toolCalls).toBe(1);
+  });
+
+  // The reset is an operator path on a second handle to the same file, because
+  // the proxy has no admin principal and a state-clearing verb must not sit on
+  // the listener the agent talks to. The server keeps running throughout.
+  it("is restored by an admin reset with no restart", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 1"));
+    await callN(1);
+
+    const refused = await post("/v1/tools/call", listPrs("2"));
+    expect(ToolCallResponse.parse(refused.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "budget_exhausted" }
+    });
+
+    const operator = openBudgetDb({ file: join(budgetDir, "budget.db") });
+    resetChannel(operator, CHANNEL, budgetClock);
+    operator.close();
+
+    const served = await post("/v1/tools/call", listPrs("3"));
+    expect(ToolCallResponse.parse(served.body)).toMatchObject({ outcome: "ran" });
+  });
+
+  // Rollover is a key change, not a sweep, and it happens on the clock rather
+  // than at process start — the server here has been up the whole time.
+  it("rolls over at the day boundary and leaves yesterday's count behind", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 1"));
+    await callN(1);
+    const yesterday = budgetClock;
+
+    budgetClock += 24 * 60 * 60 * 1000;
+    const served = await post("/v1/tools/call", listPrs("2"));
+    expect(ToolCallResponse.parse(served.body)).toMatchObject({ outcome: "ran" });
+
+    budgetClock = yesterday;
+    expect((await meter.read(CHANNEL)).toolCalls).toBe(1);
+  });
+
+  // The token limit, and the weighting that decides it. Same stored counters,
+  // two sheets, two answers: the weight is policy read at decision time, not a
+  // number the meter baked in when it wrote the row.
+  it("charges a cache read at the weight the sheet gives it", async () => {
+    await post("/v1/spend", {
+      turn: "turn_cache_weight",
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 5_000 }
+    });
+
+    writeSheet(CHANNEL, budgetSheet("daily_tokens = 1000\ncache_read_weight = 0.1"));
+    const discounted = await post("/v1/tools/call", listPrs("1"));
+    expect(ToolCallResponse.parse(discounted.body)).toMatchObject({ outcome: "ran" });
+
+    writeSheet(CHANNEL, budgetSheet("daily_tokens = 1000\ncache_read_weight = 1"));
+    const charged = await post("/v1/tools/call", listPrs("2"));
+    expect(ToolCallResponse.parse(charged.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "budget_exhausted", limit: "daily_tokens" }
+    });
+  });
+});
+
+// The property the shared budget file rests on. Channels share one table
+// because spend is operator-facing data and cross-channel aggregation is what
+// it is for — so what has to hold instead is that the people who live in a
+// channel cannot manipulate its numbers. A prompt-injected member drives the
+// agent, and the agent reaches only these routes.
+describe("no route can lower a counter", () => {
+  it("leaves every counter at or above where it started, whatever is called", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50"));
+    await callN(2);
+    await post("/v1/spend", {
+      turn: "turn_floor",
+      usage: { inputTokens: 100, outputTokens: 10 }
+    });
+    const before = await meter.read(CHANNEL);
+
+    // Everything an agent can reach, including the shapes an attacker would
+    // reach for: a negative report, a zeroing one, a replayed turn, and a
+    // body trying to name someone else's channel or a past day.
+    await call("/health", clientCert(certs, CHANNEL));
+    await call("/v1/whoami", clientCert(certs, CHANNEL));
+    await call("/v1/tools", clientCert(certs, CHANNEL));
+    await post("/v1/tools/call", { id: "1", server: "github", tool: "nope" });
+    await post("/v1/spend", { turn: "t", usage: { inputTokens: -500, outputTokens: 0 } });
+    await post("/v1/spend", { turn: "t", usage: { inputTokens: 0, outputTokens: 0 } });
+    await post("/v1/spend", { turn: "turn_floor", usage: { inputTokens: 0, outputTokens: 0 } });
+    await post("/v1/spend", { turn: "t2", usage: { inputTokens: 1, outputTokens: 0 }, reset: true });
+    await post("/v1/spend", { turn: "t3", usage: { inputTokens: 1, outputTokens: 0 }, day: "1999-01-01" });
+
+    const after = await meter.read(CHANNEL);
+    expect(after.toolCalls).toBeGreaterThanOrEqual(before.toolCalls);
+    expect(after.inputTokens).toBeGreaterThanOrEqual(before.inputTokens);
+    expect(after.outputTokens).toBeGreaterThanOrEqual(before.outputTokens);
+    expect(after.cacheReadTokens).toBeGreaterThanOrEqual(before.cacheReadTokens);
+    expect(after.cacheWriteTokens).toBeGreaterThanOrEqual(before.cacheWriteTokens);
+  });
+
+  // The other half: one channel's agent cannot reach across to another's row,
+  // because the only channel it can name is the one its certificate proves.
+  it("cannot touch another channel's counters", async () => {
+    writeSheet(OTHER_CHANNEL, budgetSheet("daily_tool_calls = 50"));
+    await callN(2, OTHER_CHANNEL);
+    const before = await meter.read(OTHER_CHANNEL);
+
+    await post("/v1/spend", { turn: "x", usage: { inputTokens: 9_999, outputTokens: 0 } }, CHANNEL);
+    await post(
+      "/v1/spend",
+      { turn: "y", usage: { inputTokens: 1, outputTokens: 0 }, channel: OTHER_CHANNEL },
+      CHANNEL
+    );
+    await callN(3, CHANNEL);
+
+    expect(await meter.read(OTHER_CHANNEL)).toEqual(before);
+  });
+});
+
+describe("reporting spend", () => {
+  const usage = {
+    inputTokens: 120,
+    outputTokens: 8,
+    cacheReadInputTokens: 100,
+    cacheCreationInputTokens: 20
+  };
+
+  // A fresh id per test, because a turn id is remembered across days — the
+  // dedupe window is time-based, not daily, so reusing one would make every
+  // test after the first report a duplicate.
+  let turn: string;
+  let turnSeq = 0;
+
+  beforeEach(() => {
+    turnSeq += 1;
+    turn = `turn_${turnSeq}`;
+  });
+
+  it("records what a turn cost against the reporting channel", async () => {
+    const res = await post("/v1/spend", { turn, usage });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ outcome: "recorded" });
+    expect(await meter.read(CHANNEL)).toMatchObject({
+      inputTokens: 120,
+      outputTokens: 8,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 20
+    });
+  });
+
+  // The channel comes from the certificate here exactly as it does on the
+  // call route. That is the one thing the two routes share.
+  it("binds the report to the certificate and not to anything in the body", async () => {
+    await post("/v1/spend", { turn, usage }, OTHER_CHANNEL);
+
+    expect((await meter.read(OTHER_CHANNEL)).inputTokens).toBe(120);
+    expect((await meter.read(CHANNEL)).inputTokens).toBe(0);
+  });
+
+  it("rejects a report that asserts a channel", async () => {
+    const res = await post("/v1/spend", { turn, usage, channel: OTHER_CHANNEL });
+
+    expect(res.status).toBe(400);
+    expect(ProxyError.parse(res.body).error.code).toBe("bad_request");
+    expect((await meter.read(CHANNEL)).inputTokens).toBe(0);
+  });
+
+  // Retry safety. A report that arrives twice — a failed response, a restart
+  // mid-flight — must move the meter once.
+  it("is safe to retry: the repeat is a duplicate and spends nothing", async () => {
+    await post("/v1/spend", { turn, usage });
+    const again = await post("/v1/spend", { turn, usage });
+
+    expect(again.status).toBe(200);
+    expect(again.body).toEqual({ outcome: "duplicate" });
+    expect((await meter.read(CHANNEL)).inputTokens).toBe(120);
+  });
+
+  it("rejects a malformed report without relaying what was wrong with it", async () => {
+    const res = await post("/v1/spend", { turn, usage: { inputTokens: -1, outputTokens: 0 } });
+
+    expect(res.status).toBe(400);
+    const error = ProxyError.parse(res.body).error;
+    expect(error.code).toBe("bad_request");
+    expect(error.message).toBe("the request body is not a valid spend report");
+  });
+
+  it("takes no other method", async () => {
+    const res = await call("/v1/spend", clientCert(certs, CHANNEL), "GET");
+    expect(res.status).toBe(405);
+  });
+
+  // The sharpest available statement of "this route makes no authorization
+  // decision". A channel with no team sheet at all cannot make a tool call —
+  // every one is refused `no_team_sheet` — and its report is still recorded,
+  // because nothing on this path asked the sheet anything.
+  it("records a report for a channel that has no team sheet", async () => {
+    rmSync(join(channelsRoot, OTHER_CHANNEL), { recursive: true, force: true });
+
+    const refused = await post("/v1/tools/call", listPrs("1"), OTHER_CHANNEL);
+    expect(ToolCallResponse.parse(refused.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "no_team_sheet" }
+    });
+
+    const reported = await post("/v1/spend", { turn, usage }, OTHER_CHANNEL);
+    expect(reported.status).toBe(200);
+    expect(reported.body).toEqual({ outcome: "recorded" });
+  });
+
+  // And the mechanical form of the same claim: the sheet store is not touched.
+  it("resolves no team sheet at all", async () => {
+    const resolve = vi.spyOn(sheets, "resolve");
+    try {
+      await post("/v1/spend", { turn, usage });
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
+  it("logs the report without a verdict, because it made none", async () => {
+    await post("/v1/spend", { turn, usage });
+
+    const reported = logLines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(line => line.event === "spend_reported");
+    expect(reported).toMatchObject({ channel: CHANNEL, report: "recorded", tokens: 248 });
+    expect(reported).not.toHaveProperty("outcome");
+    expect(reported).not.toHaveProperty("reason");
   });
 });
 
@@ -891,6 +1218,25 @@ credential = "github_service_account"
       expect(upstreamSaw).toEqual([`Bearer ${VAULT_VALUE}`]);
     });
 
+    // The composition `apps/proxy-server` now ships: a real meter, a real
+    // dispatcher, a real vault, a real upstream. It is what ends the 501 —
+    // and the call it serves is metered, which is what makes serving it legal.
+    it("serves a permitted call instead of 501, and meters it", async () => {
+      const before = (await meter.read(INJECT_CHANNEL)).toolCalls;
+
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, INJECT_CHANNEL),
+        "POST",
+        injectedPort,
+        JSON.stringify({ id: "toolu_02", server: "github", tool: "list_prs" })
+      );
+
+      expect(response.status).toBe(200);
+      expect(ToolCallResponse.parse(response.body)).toMatchObject({ outcome: "ran" });
+      expect((await meter.read(INJECT_CHANNEL)).toolCalls).toBe(before + 1);
+    });
+
     // The acceptance criterion for the redaction pass, and the reason it is
     // asserted here rather than only as a unit: this is the real proxy, the
     // real vault, a real socket, and an upstream that genuinely reflects the
@@ -987,9 +1333,9 @@ describe("a permitted call with no upstream", () => {
         ca: join(certs, "ca.pem")
       }),
       sheets,
-      // The pairing `apps/proxy-server` ships: both provisional, which
-      // `assertServableComposition` permits precisely because nothing is served.
-      spend: createUnmeteredSpend(),
+      // A real meter with the unavailable dispatcher: a deployment ahead of
+      // its upstream, which `assertServableComposition` permits.
+      spend: meter,
       dispatcher: createUnavailableDispatcher(),
       logger: createJsonLogger(() => {})
     });

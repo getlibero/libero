@@ -18,13 +18,22 @@ credential injection into outbound HTTP calls.
   last valid one stays in force.
 - `enforce.ts` — the decision, as a pure function of a sheet and a call. No
   I/O, no clock, no model, and nothing in it reads a tool's arguments.
-- `dispatch.ts` — the two seams past the decision: what a channel has spent
-  (the budget meter, #38) and what serves an allowed call. Both are required
-  options with no defaults, and the provisional stand-ins for them are marked:
+- `dispatch.ts` — the two seams past the decision: what a channel has spent and
+  what serves an allowed call. Both are required options with no defaults, and
   `createProxyServer` throws rather than build a proxy that pairs a dispatcher
-  which really serves calls with the meter that never exhausts a budget. A
-  dispatcher is handed the team-sheet entry enforcement matched, not the
+  which really serves calls with a meter that can never exhaust a budget. The
+  meter interface is split three ways — read, count a call, record a turn's
+  tokens — so the report route can be handed the last of those and nothing
+  else. A dispatcher is handed the team-sheet entry enforcement matched, not the
   sheet — the entry that authorized a call is the entry the call goes to.
+- `budget-db.ts` / `budget-meter.ts` / `budget-admin.ts` — the daily meter over
+  `node:sqlite`: counters keyed `(channel, UTC day)` so rollover is a key change
+  rather than a sweep, a turn-id table so a retried report cannot double-count,
+  and the operator's reset kept in its own module away from the serving path.
+  **Every SQL string in this package is in `budget-db.ts`**, which is what makes
+  "no statement omits `WHERE channel = ?`" checkable in one place.
+- `spend-route.ts` — `POST /v1/spend`. The one route with no authorization
+  decision on it, and the header says why and what keeps it that way.
 - `outbound.ts` — the outbound call, and the **one place in the tree that calls
   `Secret.reveal()`**. `Authorization: Bearer` for every upstream; a fixed
   timeout so a silent upstream cannot pin a request; and errors built from a
@@ -69,15 +78,20 @@ error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
 Still to come, each with its own issue: the egress allowlist (#73), the MCP
-client pool (#39), the approval broker, the budget meter, and the audit writer.
+client pool (#39), the approval broker, and the audit writer.
 `http-dispatcher.ts` marks where the egress check slots in.
 
-**The shipped process still answers 501.** `createHttpDispatcher` is a real
-dispatcher, so composing it with `createUnmeteredSpend()` is a startup error
-until #38 lands a real meter — `apps/proxy-server` therefore keeps both
-stand-ins, and injection is exercised against a mock upstream in tests. That
-pairing is deliberate: a proxy that serves calls without metering them never
-exhausts a budget, and that failure is silent.
+**A permitted call is now served.** `apps/proxy-server` composes the real meter
+with `createHttpDispatcher`, so the 501 is gone.
+`assertServableComposition` stays and still guards the one pairing that must not
+exist — it simply has no provisional meter to reject any more, which is the
+point: the seams that land next arrive before their implementations do, and a
+stand-in meter is the obvious way to test one.
+
+**Nothing sends a token report yet.** `POST /v1/spend` is built and tested over
+real mTLS, but no proxy client exists anywhere in the tree, so in a live
+deployment `daily_tokens` meters at zero and only `daily_tool_calls` bites. The
+sender belongs to whichever issue builds the agent's proxy client.
 `apps/proxy-server/README.md` documents loading secrets into the vault.
 
 ## Endpoints
@@ -91,6 +105,7 @@ anonymous surface.
 | `GET /v1/whoami` | what the connection authenticated as | |
 | `GET /v1/tools` | what this channel may call | `{ tools: [{ server, tool, approval }] }` |
 | `POST /v1/tools/call` | one tool call | `ToolCall` in, `ToolCallResponse` out |
+| `POST /v1/spend` | what a turn cost | `SpendReport` in, `{ outcome }` out; no decision is made on it |
 
 Two gates, deliberately. `/v1/tools` keeps an unlisted tool out of the model's
 context; `/v1/tools/call` is what actually enforces, and it holds on its own —

@@ -12,7 +12,12 @@ describe("the example team sheet", () => {
 
   it("validates against the schema", () => {
     expect(sheet.channel.name).toBe("engineering");
-    expect(sheet.budget).toEqual({ daily_tokens: 2_000_000, daily_tool_calls: 400 });
+    expect(sheet.budget).toEqual({
+      daily_tokens: 2_000_000,
+      daily_tool_calls: 400,
+      cache_read_weight: 0.1,
+      cache_write_weight: 1.25,
+    });
   });
 
   it("carries all four per-task caps", () => {
@@ -55,10 +60,27 @@ describe("defaults", () => {
 
   it("fills every optional section from a minimal sheet", () => {
     const sheet = TeamSheet.parse({ channel: { name: "ops" } });
-    expect(sheet.budget).toEqual({ daily_tokens: 1_000_000, daily_tool_calls: 200 });
+    expect(sheet.budget).toEqual({
+      daily_tokens: 1_000_000,
+      daily_tool_calls: 200,
+      cache_read_weight: 0.1,
+      cache_write_weight: 1.25,
+    });
     expect(sheet.mcp_server).toEqual([]);
     expect(sheet.egress.allow).toEqual([]);
     expect(sheet.ambient.enabled).toBe(false);
+  });
+
+  // A weight is a price ratio, not a count: fractional is the normal case, and
+  // zero is a deliberate setting meaning a cache read costs nothing here.
+  it("accepts a fractional or zero cache weight and rejects a negative one", () => {
+    const weighted = (budget: Record<string, unknown>) =>
+      TeamSheet.safeParse({ channel: { name: "ops" }, budget });
+
+    expect(weighted({ cache_read_weight: 0 }).success).toBe(true);
+    expect(weighted({ cache_read_weight: 0.25, cache_write_weight: 2 }).success).toBe(true);
+    expect(weighted({ cache_read_weight: -0.1 }).success).toBe(false);
+    expect(weighted({ cache_write_weight: 101 }).success).toBe(false);
   });
 });
 

@@ -58,6 +58,12 @@ services:
       # the authorization source rather than shared state. Removing a channel's
       # directory is how that channel is revoked.
       PROXY_CHANNELS_ROOT: /data/channels
+      # Read, and required. The daily budget meter: per channel, per UTC day,
+      # authoritative. SQLite writes -wal and -shm beside this file, so the
+      # volume is mounted read-write and the *directory* has to be writable.
+      # Reset a channel without restarting anything with
+      # `docker compose run --rm proxy node dist/budget.js reset <channel>`.
+      PROXY_BUDGET_DB: /data/budget/budget.db
       AUDIT_DB: /data/audit/audit.db
       # 0.0.0.0 reaches only the private bridge below, which publishes no
       # ports. Outside compose the default is 127.0.0.1.
@@ -74,6 +80,7 @@ services:
       - ./certs/ca.pem:/etc/libero/certs/ca.pem:ro
       - ./certs/proxy:/etc/libero/certs/proxy:ro
       - audit-data:/data/audit
+      - budget-data:/data/budget
       - vault-data:/data/vault
       - /var/run/docker.sock:/var/run/docker.sock   # sandbox runner (see docs for gVisor)
     networks: [libero]
@@ -96,4 +103,5 @@ networks:
 
 volumes:
   audit-data:
+  budget-data:
   vault-data:

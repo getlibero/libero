@@ -11,51 +11,92 @@
 // happens — the omission has to be a type error, not a quiet allow.
 
 import type { BudgetSpend } from "./enforce.js";
-import type { McpServer, ResolvedToolCall, ToolRefusal, ToolResult } from "@getlibero/schema";
+import type {
+  McpServer,
+  ResolvedToolCall,
+  TokenUsageReport,
+  ToolRefusal,
+  ToolResult
+} from "@getlibero/schema";
 
 /**
  * How much this channel has spent today.
  *
- * The seam for the budget meter (#38), which owns persistence, rollover, and
- * the counting itself. Enforcement compares these numbers against the sheet —
- * the comparison is policy and lives with the sheet; the numbers are
- * accounting and live here.
+ * Raw counters, never a verdict: enforcement compares them against the sheet,
+ * because the comparison and the weighting are policy and live with the sheet.
+ * ./budget-meter.ts is the implementation, and it owns persistence and
+ * rollover.
+ *
+ * **A read can be stale by the calls in flight beside it.** The server reads
+ * here, decides, and only then records, so two concurrent calls for one channel
+ * can both see the count below the cap and both be served. The overshoot is
+ * bounded by that channel's concurrency — a task's loop is sequential — and the
+ * property that matters survives it: a runaway loop overshoots once and is then
+ * refused for the rest of the day. Tokens lag further by construction, since a
+ * turn's tokens are reported after the calls they paid for. Closing the window
+ * means holding a per-channel lock across read → decide → record, which is a
+ * clean change and not this seam's job.
  */
-export interface SpendMeter {
+export interface SpendReader {
   read(channel: string): BudgetSpend | Promise<BudgetSpend>;
 }
 
 /**
- * Marks the two provisional implementations below.
+ * Counts a call the proxy has committed to serving.
+ *
+ * No count parameter. It is called once per served call, from one place, and a
+ * caller that could write "5" is a caller that could write "0".
+ */
+export interface ToolCallRecorder {
+  recordToolCall(channel: string): void | Promise<void>;
+}
+
+/**
+ * Records what a turn cost, once.
+ *
+ * Separate from `ToolCallRecorder` rather than one `record({tokens, calls})`,
+ * and the split is load-bearing. The tool-call count is written by the proxy
+ * from its own observation; the token count is written from a report the agent
+ * sends. One method would make it structurally possible for the report route to
+ * write a tool-call count — and `daily_tool_calls` holding under agent
+ * compromise is precisely the property that would cost.
+ *
+ * The report route (./spend-route.ts) closes over this interface and nothing
+ * wider, so it cannot read a counter either.
+ */
+export interface TokenRecorder {
+  recordTokens(
+    channel: string,
+    turn: string,
+    usage: TokenUsageReport
+  ): SpendRecord | Promise<SpendRecord>;
+}
+
+/**
+ * Whether a report moved the meter. `duplicate` is the right answer to a retry
+ * and is not a failure — nothing was denied, because reporting is not asking.
+ */
+export type SpendRecord = { readonly outcome: "recorded" | "duplicate" };
+
+export interface SpendMeter extends SpendReader, ToolCallRecorder, TokenRecorder {}
+
+/**
+ * Marks a provisional implementation.
  *
  * A symbol rather than a name or an `instanceof`, so the mark cannot be set by
- * accident and does not widen the interfaces: an implementation written by #38
- * or #51 has no way to acquire it without importing it and saying so.
+ * accident and does not widen the interfaces: a real implementation has no way
+ * to acquire it without importing this and saying so.
  */
 const PROVISIONAL = Symbol("libero.provisional");
 
 type Provisional<T> = T & { readonly [PROVISIONAL]: true };
 
-function isProvisional(value: object): boolean {
-  return PROVISIONAL in value;
+export function markProvisional<T extends object>(value: T): Provisional<T> {
+  return Object.assign(value, { [PROVISIONAL]: true as const });
 }
 
-/**
- * A meter that reports nothing spent, ever.
- *
- * Stands in until #38. **It is not a stub that fails safe** — a channel served
- * by this meter never exhausts its budget, so `budget_exhausted` is
- * unreachable and one of the five things a team sheet promises is not being
- * kept. That is acceptable only because no deployment can currently make a tool
- * call at all: the dispatcher below refuses to serve one.
- *
- * The pairing is not left to whoever lands #51 to remember.
- * `assertServableComposition` refuses to build a proxy that has a real
- * dispatcher and this meter, so the day tool calls start working is the day
- * this either gets replaced or the process does not start.
- */
-export function createUnmeteredSpend(): Provisional<SpendMeter> {
-  return { [PROVISIONAL]: true, read: () => ({ tokens: 0, toolCalls: 0 }) };
+function isProvisional(value: object): boolean {
+  return PROVISIONAL in value;
 }
 
 /**
@@ -111,17 +152,24 @@ export interface ToolDispatcher {
  * their team sheet is correct and the proxy is unfinished, which is true.
  */
 export function createUnavailableDispatcher(): Provisional<ToolDispatcher> {
-  return { [PROVISIONAL]: true, dispatch: () => ({ outcome: "unavailable" }) };
+  return markProvisional({ dispatch: () => ({ outcome: "unavailable" }) as Dispatch });
 }
 
 /**
  * Refuse to compose a proxy that would serve calls without metering them.
  *
  * The one combination that is not allowed to exist: a dispatcher that really
- * serves a call, alongside the meter that reports nothing spent. Every other
+ * serves a call, alongside a meter that cannot exhaust a budget. Every other
  * pairing is fine — a real meter with the unavailable dispatcher is just a
- * deployment ahead of its upstream, and both provisional together is what ships
- * today.
+ * deployment ahead of its upstream.
+ *
+ * **There is no provisional meter left for this to reject.** `#96` deleted
+ * `createUnmeteredSpend()` and wired the real one, so the check currently
+ * cannot fire in this repository. It stays because the pairing it guards is the
+ * thing that goes wrong next: the approval broker (#37), the MCP client pool
+ * (#39), and the message store (#63) each land a seam before they land an
+ * implementation, and a stand-in meter is the obvious way to test one of them.
+ * The check is what catches that, rather than a reviewer noticing.
  *
  * A thrown error at construction rather than a warning in the log, because the
  * failure this prevents is silent by nature: an unmetered proxy does not
@@ -135,7 +183,7 @@ export function assertServableComposition(spend: SpendMeter, dispatcher: ToolDis
   if (isProvisional(spend) && !isProvisional(dispatcher)) {
     throw new Error(
       "proxy: a dispatcher that serves tool calls needs a real spend meter — " +
-        "createUnmeteredSpend() never exhausts a budget (see #38)"
+        "a provisional meter never exhausts a budget (see createSqliteSpendMeter)"
     );
   }
 }

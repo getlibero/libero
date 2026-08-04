@@ -36,7 +36,7 @@ Governance first, features second: the agent process never holds a secret, its t
 
 Pre-release (Phase 1, part-built). Nothing here is ready to deploy yet.
 
-What exists is the credential half of the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, and a redaction pass that scrubs echoed secrets out of results. What does not: approvals, budgets, the audit log, the Slack gateway, memory, and the end-to-end suite that attacks all of it. A permitted tool call currently answers 501, because the process deliberately ships without a real dispatcher until the budget meter lands.
+What exists is most of the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, a redaction pass that scrubs echoed secrets out of results, and the daily budget meter — so a permitted tool call is now served rather than answered 501. Two caveats on the budget: only the tool-call half bites today, because nothing in the tree yet reports token usage to the proxy; and the soft in-thread warning is not built, so a hard limit refuses rather than warns. What does not exist at all: approvals, the audit log, the Slack gateway, memory, and the end-to-end suite that attacks all of it.
 
 See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pnpm install                          # Node 22+, pnpm 9+
+pnpm install                          # Node 22.13+, pnpm 9+
 pnpm -r build                         # tsc per package
 pnpm typecheck                        # tsc --noEmit per package
 pnpm lint                             # eslint . (includes the agent→proxy import ban)
@@ -28,18 +28,26 @@ extending `../../tsconfig.base.json`.
 
 ## Current state
 
-Early phase 1. `packages/schema` (zod team-sheet schema, tool call, refusal,
-listing, and proxy error shapes), `packages/agent` (provider-agnostic
-completion layer, ReAct loop with per-task caps), `packages/proxy` (mTLS
-listener, per-channel identity, team-sheet enforcement on both gates, the
-credential vault, credential injection into outbound HTTP calls, and the
-redaction pass on the way back), `apps/proxy-server` (the process composing it —
-still with the provisional dispatcher and spend meter, so a permitted call
-answers 501 until the budget meter lands and `assertServableComposition` will
-let a real dispatcher be wired in),
+Early phase 1. `packages/schema` (zod team-sheet schema, tool call, spend
+report, refusal, listing, and proxy error shapes), `packages/agent`
+(provider-agnostic completion layer, ReAct loop with per-task caps),
+`packages/proxy` (mTLS listener, per-channel identity, team-sheet enforcement
+on both gates, the credential vault, credential injection into outbound HTTP
+calls, the redaction pass on the way back, and the daily budget meter over
+`node:sqlite`), `apps/proxy-server` (the process composing all of it — a
+permitted call is now served rather than answered 501, plus a `budget`
+entrypoint alongside `vault` for the operator),
 `packages/cli` (placeholder npm release), `design/` (the design system — plain
 CSS, no TypeScript), and `site/` (getlibero.com). `packages/{gateway, memory}`
 are README stubs, `apps/server` is a scaffold, and `e2e/` is empty.
+
+**Nothing sends a token report yet.** `POST /v1/spend` is built, tested over
+real mTLS, and idempotent — but no proxy client exists in `packages/agent` or
+anywhere else (`PROXY_URL` in `deploy/docker-compose.yml` is read by no code).
+So in a live deployment `daily_tokens` meters at zero and only
+`daily_tool_calls` bites. The sender belongs to whichever issue builds the
+agent's proxy client; when it lands, `packages/agent` gains its first
+`@getlibero/schema` dependency and `loop/caps.ts:totalTokens` can be revisited.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
@@ -104,8 +112,32 @@ These are load-bearing, not stylistic:
   become a channel id: the process on the other end runs the model, so anything
   the model can influence is not a boundary. Certificates authenticate; team
   sheets authorize — revocation is removing a channel's sheet, not a CRL.
-- **One SQLite file per channel is the isolation boundary.** No schema or query
-  should be able to join across channels.
+- **One SQLite file per channel is the isolation boundary** for anything holding
+  channel *content* — messages, memory. No schema or query there should be able
+  to join across channels. `packages/memory` is the next one, and it keeps the
+  strict reading: a factory that takes one channel id and no API that can ask
+  for a second.
+
+  **The line is whose data it is and who reads it, not how much of it there
+  is.** Content belongs to a channel's members and is read on their behalf, so a
+  cross-channel join is one channel's members seeing another's conversation.
+  Operator-facing tables — the budget meter, and the audit log when it lands —
+  are read by the operator, and cross-channel aggregation there is a feature
+  rather than a hazard: a team asking how a workspace is tracking against its
+  caps needs exactly the query the per-file layout would forbid.
+
+  So the budget meter is one file keyed `(channel, day)`, decided in #96 rather
+  than drifted into. What has to hold instead is that **channel members cannot
+  manipulate the numbers**: the channel comes from the certificate, every write
+  is `x = x + n`, and the server's whole surface on the meter is `read`,
+  `recordToolCall`, `recordTokens` — clearing a counter lives in
+  `budget-admin.ts`, which the server never imports. Keep all three. Also keep
+  **every SQL string in `packages/proxy` in `src/budget-db.ts`**, so
+  "no statement omits `WHERE channel = ?`" is checkable by reading one file.
+
+  **Aggregate reads go on the operator path** (`budget-admin.ts`), never on the
+  interface the server closes over. Reading one channel is a serving concern;
+  reading all of them is an operator concern.
 - **`packages/schema` is the single source of truth** for team sheets, audit
   records, tool calls, approvals, and memory ops. Both services import from it;
   don't redefine those shapes locally. `channels/example/channel.toml` is the
@@ -147,7 +179,8 @@ workspace**: it has its own `pnpm-workspace.yaml`, its own lockfile, and its own
 CI job, so Astro's dependency tree never reaches `pnpm -r` or the core license
 gate. Run everything from inside `site/` (`pnpm install`, `pnpm dev`,
 `pnpm build`, `pnpm check`). It needs **Node 22.12+** — Astro 7's floor; the
-core packages share the Node 22 floor.
+core packages sit just above it at **22.13**, which is where `node:sqlite`
+stopped needing `--experimental-sqlite`.
 
 - Marketing pages are `src/pages/`; docs are `src/content/docs/docs/` and serve
   at `/docs/*` because the marketing pages own the root.

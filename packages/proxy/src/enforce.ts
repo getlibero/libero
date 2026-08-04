@@ -37,14 +37,22 @@ export const DESTRUCTIVE_VERBS = ["delete", "drop", "transfer", "deploy"] as con
 /**
  * Spend so far, for the channel, for the day.
  *
- * The seam for the budget meter (#38). The decision takes counters and compares
- * them against the sheet, rather than taking a verdict — the sheet is where
- * policy lives, so the comparison belongs on this side and the meter stays
- * accounting. #38 supplies the numbers and owns persistence and rollover.
+ * Raw counts, not a verdict and not a total. The decision compares them against
+ * the sheet, because the sheet is where policy lives — the meter's job ends at
+ * counting, and it owns persistence and rollover (./budget-meter.ts).
+ *
+ * The four token counts stay apart all the way to here for the same reason.
+ * What a cached token is worth against `daily_tokens` is a per-channel team
+ * sheet setting, so the weighting is policy and belongs on this side; a meter
+ * that stored a weighted total would have baked yesterday's weights into the
+ * numbers and an operator's edit could not reach spend already recorded.
  */
 export interface BudgetSpend {
-  readonly tokens: number;
   readonly toolCalls: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
 }
 
 export interface EnforcementInput {
@@ -183,6 +191,30 @@ export function resolveApproval(entries: readonly ToolEntry[], tool: string): Ap
 }
 
 /**
+ * What the day's tokens are worth against `daily_tokens`.
+ *
+ * Cache reads and cache writes bill differently from ordinary input tokens, and
+ * by how much is the provider's decision — so the weights are team sheet fields
+ * rather than constants, and a channel pins its provider by pinning
+ * `[llm] model`. Counting a cache read at full weight would exhaust a heavily
+ * cached channel for spend it never incurred; dropping it would let a loop
+ * replaying a large cached context run far past what its number implies.
+ *
+ * A price *ratio*, not a price: `daily_tokens` is a token count, and
+ * cost-denominated caps are a separate thing (#62). The product is fractional
+ * and compared as such — rounding it would make the same sheet answer
+ * differently depending on how the day's spend happened to split.
+ */
+function billableTokens(sheet: TeamSheet, spend: BudgetSpend): number {
+  return (
+    spend.inputTokens +
+    spend.outputTokens +
+    spend.cacheReadTokens * sheet.budget.cache_read_weight +
+    spend.cacheWriteTokens * sheet.budget.cache_write_weight
+  );
+}
+
+/**
  * Which daily limit, if either, is spent.
  *
  * Tokens are checked before tool calls so that a channel over both gets the
@@ -190,7 +222,7 @@ export function resolveApproval(entries: readonly ToolEntry[], tool: string): Ap
  * limit has no budget left for the next call.
  */
 function exhaustedLimit(sheet: TeamSheet, spend: BudgetSpend): BudgetLimit | null {
-  if (spend.tokens >= sheet.budget.daily_tokens) return "daily_tokens";
+  if (billableTokens(sheet, spend) >= sheet.budget.daily_tokens) return "daily_tokens";
   if (spend.toolCalls >= sheet.budget.daily_tool_calls) return "daily_tool_calls";
   return null;
 }

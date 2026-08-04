@@ -16,12 +16,24 @@ the model's cooperation.
    proxy. The model's cooperation is never part of the enforcement path.
 3. **Human approval for dangerous calls.** Per-call, recorded with the approver's Slack user id,
    expiring by default in 15 minutes. Destructive verbs default to approval-required.
-4. **Budgets.** Token and tool-call metering per channel per day, authoritative in the proxy.
+4. **Budgets.** Token and tool-call metering per channel per day, authoritative in the proxy. The
+   tool-call limit is counted by the proxy from calls it serves and holds even under full
+   compromise of the agent process; the token limit is counted from what the agent reports, which
+   a prompt-injected model cannot forge — the numbers come out of the provider's response envelope
+   — but a compromised agent process could. The reset is an operator command against the proxy's
+   own file, deliberately not a route, so a compromised agent cannot clear its own hard limit.
 5. **Attribution.** Append-only audit log of every tool call and its requester.
 6. **Sandboxed code execution.** Ephemeral container, no network unless the team sheet grants an
    egress allowlist, invoked by the proxy so it is audited and budgeted like any other tool.
-7. **Physical channel isolation.** One SQLite file per channel; no query path can join across
-   channels. The layout enforces the storage boundary. Which channel a task acts as is bound by
+7. **Physical channel isolation.** One SQLite file per channel for anything holding channel
+   *content* — messages, memory — so no query path can join across channels and the layout
+   enforces the storage boundary. The line is whose data it is: content belongs to a channel's
+   members, and a cross-channel join is one channel's members seeing another's conversation.
+   Operator-facing tables — the budget meter, and the audit log — are read by the operator, and
+   cross-channel aggregation there is a feature rather than a hazard. What holds for those instead
+   is that channel members cannot manipulate the numbers: the channel comes from the client
+   certificate, every write is an increment, and clearing a counter lives on an operator path the
+   serving process does not import. Which channel a task acts as is bound by
    the agent when the session is created, from the Slack event and not from anything the model
    produces — see the trust assumption below.
 

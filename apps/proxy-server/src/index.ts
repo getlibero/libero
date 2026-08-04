@@ -6,14 +6,16 @@
 
 import {
   TeamSheetStore,
+  createHttpDispatcher,
   createJsonLogger,
   createProxyServer,
-  createUnavailableDispatcher,
-  createUnmeteredSpend,
+  createSqliteSpendMeter,
   loadTlsOptions,
+  openBudgetDb,
   openVault
 } from "@getlibero/proxy";
 import {
+  budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
   portFromEnv,
@@ -45,6 +47,12 @@ logger.log("info", { event: "vault_opened", count: vault.size });
 // still reflects the environment the process started with.
 delete process.env.PROXY_VAULT_KEY;
 
+// Also before anything binds, and for the same reason as the vault: a budget
+// file whose directory is missing or unwritable must be a startup failure. The
+// alternative fails *open* — a proxy that cannot record spend is a proxy whose
+// hard limits never bite — and it would do so silently.
+const budget = openBudgetDb({ file: budgetDbFromEnv(process.env), logger });
+
 const server = createProxyServer({
   tls: loadTlsOptions({
     cert: requiredEnv(process.env, "PROXY_TLS_CERT"),
@@ -52,12 +60,16 @@ const server = createProxyServer({
     ca: requiredEnv(process.env, "PROXY_TLS_CA")
   }),
   sheets,
-  // Both provisional, and both named so they read that way. Enforcement is
-  // real; what happens after an `allow` is not built. Replacing the dispatcher
-  // without also replacing the meter is a startup error rather than a silently
-  // unmetered proxy — see `assertServableComposition` in @getlibero/proxy.
-  spend: createUnmeteredSpend(),
-  dispatcher: createUnavailableDispatcher(),
+  // Both real. Enforcement decides, the meter counts, and the dispatcher
+  // serves — so a permitted call is answered rather than met with a 501.
+  //
+  // `assertServableComposition` still runs inside `createProxyServer` and still
+  // guards the pairing it always guarded: a dispatcher that really serves calls
+  // alongside a meter that can never exhaust a budget. There is no such meter in
+  // the tree today, which is exactly why the check is worth keeping — the seams
+  // that land next arrive before their implementations do.
+  spend: createSqliteSpendMeter({ db: budget, logger }),
+  dispatcher: createHttpDispatcher({ vault, logger }),
   logger
 });
 
@@ -72,6 +84,11 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
       // A second signal is an operator done waiting. Without this, one hung
       // keep-alive socket holds the process open until something sends
       // SIGKILL.
+      //
+      // The budget database is left unclosed here, and that is safe rather
+      // than overlooked: it commits with `synchronous = FULL`, so every count
+      // it acknowledged is already on disk. The same is true of a SIGKILL or a
+      // host crash, which is why that pragma was chosen.
       process.exit(1);
     }
     closing = true;
@@ -79,9 +96,13 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     // Releases the per-channel file watchers; without it the process can stay
     // alive on them after the listener has closed.
     sheets.close();
-    // Stops accepting connections and waits for in-flight requests. Nothing
-    // here is long-running yet; when tool calls land, this is what gives them
-    // a chance to finish rather than being cut mid-call.
-    server.close(() => process.exit(0));
+    // Stops accepting connections and waits for in-flight requests — which is
+    // what gives a tool call in flight a chance to finish rather than being cut
+    // mid-call. The budget file closes in the callback, after those requests
+    // have finished writing to it, and not before.
+    server.close(() => {
+      budget.close();
+      process.exit(0);
+    });
   });
 }

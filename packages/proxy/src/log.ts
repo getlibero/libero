@@ -82,6 +82,18 @@ export interface LogFields {
   sheet?: "active" | "absent" | "unusable";
   /** How many tools a listing returned. A count, not the list. */
   count?: number;
+  /**
+   * Whether a token report moved the meter. `duplicate` is a retry of a turn
+   * already counted, which is a success — so this is not a `reason`.
+   */
+  report?: "recorded" | "duplicate";
+  /**
+   * How many tokens a report carried, unweighted. The report route knows no
+   * team sheet and therefore no weights, so this is the raw sum of the four
+   * counts and not what the budget was charged. A number out of a provider's
+   * response envelope; nothing about it is a secret.
+   */
+  tokens?: number;
 }
 
 export interface Logger {
