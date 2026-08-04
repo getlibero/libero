@@ -5,8 +5,8 @@ import { SITE } from '../consts';
 const enforced = [
   {
     label: 'Credential vault',
-    title: 'The agent process holds no secrets',
-    body: 'Credentials are encrypted at rest in the proxy and referenced by name in team sheets, logs, and errors. The proxy injects them into the outbound call and scrubs known secret values out of the result before it crosses back. Compromise the agent — prompt injection, a bad skill, a misbehaving model — and you get zero credentials.',
+    title: 'The agent process holds no tool credentials',
+    body: 'Credentials are encrypted at rest in the proxy and referenced by name in team sheets, logs, and errors. The proxy injects them into the outbound call and scrubs known secret values out of the result before it crosses back. Compromise the agent — prompt injection, a bad skill, a misbehaving model — and you get none of them. The Slack tokens and the model key are in that process, because the gateway holds the socket; they reach nothing a team sheet governs.',
   },
   {
     label: 'Allowlist',
@@ -77,11 +77,11 @@ const phases = [
     <div class="wrap grid grid--split">
       <div>
         <span class="lb-label lb-label--dim">The security property</span>
-        <h2 class="lb-h2 u-mt-20">Secrets live in the proxy. The agent reaches tools only through it.</h2>
+        <h2 class="lb-h2 u-mt-20">Tool credentials live in the proxy. The agent reaches tools only through it.</h2>
         <p class="feature__body u-mt-20" style="font-size:15px;">
           Two processes. The <strong>gateway and agent</strong> talk to Slack and run the model loop.
-          The <strong>tool proxy</strong> holds every credential and decides what each channel may
-          do. They speak over mutual TLS on a private network, and the only thing that crosses is a
+          The <strong>tool proxy</strong> holds every tool credential and decides what each channel
+          may do. They speak over mutual TLS on a private network, and the only thing that crosses is a
           tool call and its result.
         </p>
         <p class="feature__body u-mt-20" style="font-size:15px;">

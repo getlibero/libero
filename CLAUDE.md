@@ -97,9 +97,17 @@ sync when the convention changes.
 
 Two services. **gateway + agent** (`apps/server`) talks to Slack over Socket
 Mode and runs the model loop. **tool proxy** (`apps/proxy-server`) holds every
-credential and enforces what each channel may do. The security property the
-whole design hangs on: secrets live only in the proxy, and the agent reaches
-tools only through it, so compromising the agent process yields zero secrets.
+tool credential and enforces what each channel may do. The security property the
+whole design hangs on: tool credentials live only in the proxy, and the agent
+reaches tools only through it, so compromising the agent process yields no tool
+credentials.
+
+The agent process is not credential-free, and the docs say so rather than
+overstating the property (#100). It holds the Slack app and bot tokens — the
+gateway holds the socket, and brokering that through the proxy would make the
+proxy the gateway — and the model provider key. Neither reaches a tool the
+proxy guards, which is why the narrower claim is the true one. When you write
+about this, say *tool credentials*, not *secrets*.
 
 These are load-bearing, not stylistic:
 
