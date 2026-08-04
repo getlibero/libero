@@ -2,7 +2,7 @@
   "name": "@getlibero/gateway",
   "version": "0.0.1",
   "private": true,
-  "description": "Slack gateway for Libero: Socket Mode adapter, channel router, message store. Scaffold only — no behavior yet.",
+  "description": "Slack gateway for Libero: Socket Mode adapter, channel router, message store.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@slack/logger": "^5.0.0",
+    "@slack/socket-mode": "^3.0.0",
+    "@slack/web-api": "^8.0.0",
+    "undici": "^7.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
   }
 }

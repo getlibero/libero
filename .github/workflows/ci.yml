@@ -34,14 +34,14 @@ jobs:
 
   boundary-check:
     # Belt-and-suspenders alongside the ESLint rule: grep-level check that
-    # nothing on the agent side of the boundary — packages/agent, or the
-    # apps/server process that composes it — references the proxy package.
+    # nothing on the agent side of the boundary — packages/agent, packages/gateway,
+    # or the apps/server process that composes both — references the proxy package.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Enforce agent/proxy boundary
         run: |
-          if grep -rn --include='*.ts' -e '@getlibero/proxy' -e 'packages/proxy' packages/agent/ apps/server/; then
+          if grep -rn --include='*.ts' -e '@getlibero/proxy' -e 'packages/proxy' packages/agent/ packages/gateway/ apps/server/; then
             echo '::error::the agent side references the proxy. The only path from agent to tools is the network call.'
             exit 1
           fi
