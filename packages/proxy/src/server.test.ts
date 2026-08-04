@@ -12,8 +12,10 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { request } from "node:https";
 import type { Server } from "node:https";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +33,7 @@ import {
   type ToolDispatcher
 } from "./dispatch.js";
 import type { BudgetSpend } from "./enforce.js";
+import { createHttpDispatcher } from "./http-dispatcher.js";
 import { createJsonLogger } from "./log.js";
 import { MAX_BODY_BYTES, createProxyServer } from "./server.js";
 import { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
@@ -42,6 +45,8 @@ import { writeVaultEntries } from "./vault-file.js";
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const CHANNEL = "C024BE91L";
 const OTHER_CHANNEL = "C7ZZZ9999";
+/** Its own channel, so the injection sheet cannot disturb the shared one. */
+const INJECT_CHANNEL = "C5INJECT01";
 
 interface Response {
   status: number;
@@ -176,7 +181,7 @@ beforeAll(() => {
 
   mint(certs, [
     "--channels",
-    `${CHANNEL},${OTHER_CHANNEL}`,
+    `${CHANNEL},${OTHER_CHANNEL},${INJECT_CHANNEL}`,
     // A certificate this CA signed whose subject is not a channel principal —
     // the shape a single shared service certificate would have.
     "--raw-cn",
@@ -790,5 +795,216 @@ describe("no route returns a credential", () => {
       expect(JSON.stringify(response.body)).not.toContain("ghp_");
     }
     expect(logLines.join("")).not.toContain("ghp_");
+  });
+
+  // The moment the harness above was written for: a credential really does
+  // reach a tool call. Same vault, same value, but now a real dispatcher and a
+  // real upstream at the far end of a real socket, behind the real mTLS proxy.
+  describe("with credential injection wired end to end", () => {
+    let upstream: HttpServer;
+    let upstreamSaw: (string | undefined)[] = [];
+    let injected: Server;
+    let injectedPort: number;
+    let injectedLog: string[] = [];
+    /** Built in beforeAll once the mock upstream's port is known. */
+    let injectSheet = "";
+    const injectLogger = createJsonLogger(line => injectedLog.push(line));
+
+    beforeAll(async () => {
+      upstream = createHttpServer((req, res) => {
+        upstreamSaw.push(req.headers.authorization);
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ prs: [] }));
+        });
+      });
+      await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+      const upstreamPort = (upstream.address() as AddressInfo).port;
+      injectSheet = `
+[channel]
+name = "injected"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "http://127.0.0.1:${upstreamPort}"
+credential = "github_service_account"
+
+  [[mcp_server.tool]]
+  name = "list_prs"
+`;
+
+      injected = createProxyServer({
+        tls: loadTlsOptions({
+          cert: join(certs, "proxy", "server.pem"),
+          key: join(certs, "proxy", "server.key"),
+          ca: join(certs, "ca.pem")
+        }),
+        sheets,
+        // A real meter, because `createHttpDispatcher` is a real dispatcher and
+        // `assertServableComposition` will not pair one with the stand-in.
+        spend: meter,
+        // The same logger to both, as a deployment would: the dispatcher's
+        // outbound line and the server's request line land in one stream, which
+        // is what makes "no log line holds the value" worth asserting.
+        dispatcher: createHttpDispatcher({ vault, logger: injectLogger }),
+        logger: injectLogger
+      });
+
+      await new Promise<void>(resolve => {
+        injected.listen(0, "127.0.0.1", () => {
+          injectedPort = (injected.address() as AddressInfo).port;
+          resolve();
+        });
+      });
+    });
+
+    afterAll(async () => {
+      injected.closeAllConnections();
+      await new Promise<void>(resolve => injected.close(() => resolve()));
+      upstream.closeAllConnections();
+      await new Promise<void>(resolve => upstream.close(() => resolve()));
+    });
+
+    beforeEach(() => {
+      // After the outer beforeEach, which wipes the channels root to restore
+      // the shared sheet — so this channel's has to be rewritten each time.
+      writeSheet(INJECT_CHANNEL, injectSheet);
+      upstreamSaw = [];
+      injectedLog = [];
+    });
+
+    it("hands the upstream the real secret", async () => {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, INJECT_CHANNEL),
+        "POST",
+        injectedPort,
+        JSON.stringify({ id: "toolu_01", server: "github", tool: "list_prs" })
+      );
+
+      expect(ToolCallResponse.parse(response.body)).toMatchObject({ outcome: "ran" });
+      expect(upstreamSaw).toEqual([`Bearer ${VAULT_VALUE}`]);
+    });
+
+    // The other half of the acceptance criterion, and the reason the two are
+    // asserted in one place: the value provably crossed to the upstream on the
+    // request above, and provably did not cross back on this one.
+    it("returns a response and writes logs that hold no trace of it", async () => {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, INJECT_CHANNEL),
+        "POST",
+        injectedPort,
+        JSON.stringify({ id: "toolu_02", server: "github", tool: "list_prs" })
+      );
+
+      expect(JSON.stringify(response.body)).not.toContain("ghp_");
+      expect(injectedLog.join("")).not.toContain("ghp_");
+      expect(injectedLog.join("")).not.toContain("Bearer");
+      // The name is expected in the log; that is what makes it useful.
+      expect(injectedLog.join("")).toContain("github_service_account");
+    });
+
+    it("refuses by name when the sheet names a credential the vault lacks", async () => {
+      writeSheet(
+        INJECT_CHANNEL,
+        `
+[channel]
+name = "injected"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "http://127.0.0.1:1"
+credential = "absent_credential"
+
+  [[mcp_server.tool]]
+  name = "list_prs"
+`
+      );
+
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, INJECT_CHANNEL),
+        "POST",
+        injectedPort,
+        JSON.stringify({ id: "toolu_03", server: "github", tool: "list_prs" })
+      );
+
+      // A served request, not an error: 200 with the structured refusal.
+      expect(response.status).toBe(200);
+      expect(ToolCallResponse.parse(response.body)).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "credential_unresolved", credential: "absent_credential" }
+      });
+      expect(upstreamSaw).toEqual([]);
+    });
+  });
+});
+
+// Nothing covered this end to end: `unavailable` was only a unit assertion in
+// dispatch.test.ts. It is the behaviour every deployment currently has, so it
+// is worth pinning at the wire — a permitted call gets 501 and not a refusal,
+// because nothing was denied.
+describe("a permitted call with no upstream", () => {
+  let bare: Server;
+  let barePort: number;
+
+  beforeAll(async () => {
+    bare = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      // The pairing `apps/proxy-server` ships: both provisional, which
+      // `assertServableComposition` permits precisely because nothing is served.
+      spend: createUnmeteredSpend(),
+      dispatcher: createUnavailableDispatcher(),
+      logger: createJsonLogger(() => {})
+    });
+    await new Promise<void>(resolve => {
+      bare.listen(0, "127.0.0.1", () => {
+        barePort = (bare.address() as AddressInfo).port;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    bare.closeAllConnections();
+    await new Promise<void>(resolve => bare.close(() => resolve()));
+  });
+
+  it("answers 501, not a refusal", async () => {
+    const response = await call(
+      "/v1/tools/call",
+      clientCert(certs, CHANNEL),
+      "POST",
+      barePort,
+      JSON.stringify({ id: "toolu_01", server: "github", tool: "list_prs" })
+    );
+
+    expect(response.status).toBe(501);
+    expect(ProxyError.parse(response.body).error.code).toBe("not_implemented");
+  });
+
+  it("still refuses an unlisted tool, so 501 is not a blanket answer", async () => {
+    const response = await call(
+      "/v1/tools/call",
+      clientCert(certs, CHANNEL),
+      "POST",
+      barePort,
+      JSON.stringify({ id: "toolu_02", server: "github", tool: "not_listed" })
+    );
+
+    expect(response.status).toBe(200);
+    expect(ToolCallResponse.parse(response.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "tool_not_allowed" }
+    });
   });
 });

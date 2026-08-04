@@ -18,11 +18,13 @@
 // one, and no route may accept a channel from a header, a query parameter, or
 // a body.
 //
-// What is not here yet: credential injection (#51) and the MCP client pool
-// (#39). Both sit behind the dispatcher seam, past the point where enforcement
-// has already answered. The vault itself exists — see ./vault.ts — and the
-// process opens it at startup, but no route reaches it: a credential is
-// resolved by whatever serves an allowed call, and nothing serves one yet.
+// What is not here yet: the MCP client pool (#39). It sits behind the
+// dispatcher seam, past the point where enforcement has already answered.
+// Credential injection is built — ./http-dispatcher.ts resolves a credential
+// and ./outbound.ts attaches it — but no route reaches the vault even so: a
+// credential is resolved by whatever serves an allowed call, and this file
+// hands that a decision rather than a secret. `apps/proxy-server` still
+// composes the stand-ins, so the shipped process continues to answer 501.
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -287,7 +289,9 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       return ok({ outcome, id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
     }
 
-    const dispatched = await options.dispatcher.dispatch(call);
+    // The upstream comes off the decision, not from a second lookup: the entry
+    // that authorized the call is the entry the call goes to. See `Decision`.
+    const dispatched = await options.dispatcher.dispatch(call, decision.upstream);
     switch (dispatched.outcome) {
       case "ran":
         audit("ran");

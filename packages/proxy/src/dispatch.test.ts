@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResolvedToolCall } from "@getlibero/schema";
+import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
 import {
   type Dispatch,
   type SpendMeter,
@@ -24,7 +24,8 @@ describe("the provisional stand-ins", () => {
 
   it("serves no call at all", () => {
     const call = { id: "1", server: "github", tool: "list_prs", arguments: {}, channel: "C1" };
-    expect(createUnavailableDispatcher().dispatch(call as ResolvedToolCall)).toEqual({
+    const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
+    expect(createUnavailableDispatcher().dispatch(call as ResolvedToolCall, upstream)).toEqual({
       outcome: "unavailable"
     });
   });

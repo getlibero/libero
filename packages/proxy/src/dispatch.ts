@@ -11,7 +11,7 @@
 // happens — the omission has to be a type error, not a quiet allow.
 
 import type { BudgetSpend } from "./enforce.js";
-import type { ResolvedToolCall, ToolRefusal, ToolResult } from "@getlibero/schema";
+import type { McpServer, ResolvedToolCall, ToolRefusal, ToolResult } from "@getlibero/schema";
 
 /**
  * How much this channel has spent today.
@@ -79,14 +79,21 @@ export type Dispatch =
 /**
  * Serves an allowed call.
  *
- * The seam for credential injection (#51) and the MCP client pool (#39). The
- * server calls this **only** on an `allow`, which is the property the tests
- * assert against a recording implementation: a refused or held call must leave
- * no trace here, because reaching this interface at all is what opens a
- * connection and resolves a secret.
+ * The seam for the MCP client pool (#39); credential injection (#51) fills it
+ * with ./http-dispatcher.ts. The server calls this **only** on an `allow`,
+ * which is the property the tests assert against a recording implementation: a
+ * refused or held call must leave no trace here, because reaching this
+ * interface at all is what opens a connection and resolves a secret.
+ *
+ * `upstream` is the team-sheet entry enforcement matched, passed in rather than
+ * looked up. A dispatcher that resolved the sheet itself could get a different
+ * answer than the decision did — sheets are watched and reload on file change —
+ * and would then send the call somewhere nothing approved. See the note on
+ * `Decision` in ./enforce.ts. It also keeps this interface free of the sheet
+ * store, so a dispatcher cannot read policy it has no business reading.
  */
 export interface ToolDispatcher {
-  dispatch(call: ResolvedToolCall): Dispatch | Promise<Dispatch>;
+  dispatch(call: ResolvedToolCall, upstream: McpServer): Dispatch | Promise<Dispatch>;
 }
 
 /**
