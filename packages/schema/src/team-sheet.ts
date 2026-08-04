@@ -21,14 +21,48 @@ export const ToolEntry = z.object({
   approval: ApprovalMode.optional(),
 });
 
-export const McpServer = z.object({
+// Everything a server block carries whatever it speaks. Spread into both
+// members below rather than restated, so the two transports cannot drift in
+// what they allow beyond the one field that distinguishes them.
+const mcpServerBase = {
   name: ResourceName,
-  transport: z.enum(["http", "stdio"]),
-  url: z.url().optional(),
   /** Name of a credential in the proxy vault. Never a secret value. */
   credential: CredentialName.optional(),
   tool: z.array(ToolEntry).default([]),
-});
+};
+
+/**
+ * An MCP server, discriminated on transport so `url` cannot be wrong.
+ *
+ * A union rather than one object with an optional `url`, because a flat shape
+ * admits two sheets that parse and cannot serve a call: `http` with nothing to
+ * call, and `stdio` with a field that is silently ignored. The sheet is the
+ * admin surface and the loader's promise is that an invalid sheet is rejected
+ * loudly while the previous valid version stays in force — a sheet that parses
+ * and then fails at dispatch moves the failure from the operator's terminal at
+ * edit time to the far end of a Slack thread.
+ *
+ * The `stdio` member declares `url` as undefined rather than relying on
+ * `.strict()`. Zod strips keys it does not know, so an undeclared `url` on a
+ * stdio block would be dropped in silence, which is the failure this exists to
+ * prevent. Declared, a present `url` is an issue at `mcp_server.<n>.url` —
+ * `.strict()` would report `unrecognized_keys` against the block and name no
+ * field, and the field name is what an operator needs.
+ */
+export const McpServer = z.discriminatedUnion("transport", [
+  z.object({
+    ...mcpServerBase,
+    transport: z.literal("http"),
+    /** Required: an HTTP upstream with no address is not addressable. */
+    url: z.url(),
+  }),
+  z.object({
+    ...mcpServerBase,
+    transport: z.literal("stdio"),
+    /** Not permitted: a stdio upstream is a process, not an address. */
+    url: z.undefined().optional(),
+  }),
+]);
 
 // Inferred types alongside the schemas, as TeamSheet already has. Enforcement
 // reads a sheet apart from parsing one, and reaching for

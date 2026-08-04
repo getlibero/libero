@@ -78,15 +78,28 @@ function callTo(tool = "list_prs"): ResolvedToolCall {
   return { id: "toolu_01", server: "github", tool, arguments: { state: "open" }, channel: "C0ENGINEERING" };
 }
 
-function serverAt(url: string | undefined, overrides: Partial<McpServer> = {}): McpServer {
+/**
+ * An http upstream. `url` is required by the type, not by convention — the
+ * schema discriminates on transport (#89), so an http block with no address is
+ * rejected at load and there is no such value to build here.
+ */
+function serverAt(
+  url: string,
+  overrides: Partial<Pick<McpServer, "name" | "credential" | "tool">> = {}
+): McpServer {
   return {
     name: "github",
     transport: "http",
-    ...(url !== undefined ? { url } : {}),
+    url,
     credential: CRED,
     tool: [{ name: "list_prs" }],
     ...overrides
   };
+}
+
+/** A stdio upstream: a process, so no address at all. */
+function stdioServer(): McpServer {
+  return { name: "github", transport: "stdio", credential: CRED, tool: [{ name: "list_prs" }] };
 }
 
 /** Captures every log line the dispatcher writes, for the leak assertions. */
@@ -175,20 +188,8 @@ describe("a credential the vault cannot resolve", () => {
 describe("an upstream that cannot be served", () => {
   it("answers unavailable for a stdio transport, which is not a denial", async () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const stdio = serverAt(undefined, { transport: "stdio" });
-
-    expect(await dispatcher.dispatch(callTo(), stdio)).toEqual({ outcome: "unavailable" });
+    expect(await dispatcher.dispatch(callTo(), stdioServer())).toEqual({ outcome: "unavailable" });
     expect(received).toEqual([]);
-  });
-
-  // The schema admits `transport = "http"` with no `url`. An operator slip, so
-  // it reads as unavailable and is logged at error rather than crashing a call.
-  it("answers unavailable for an http upstream with no url", async () => {
-    const { lines, logger } = capturingLogger();
-    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-
-    expect(await dispatcher.dispatch(callTo(), serverAt(undefined))).toEqual({ outcome: "unavailable" });
-    expect(lines.join("")).toContain("dispatch_upstream_has_no_url");
   });
 
   it("resolves no credential for an upstream it cannot serve", async () => {
@@ -200,7 +201,7 @@ describe("an upstream that cannot be served", () => {
       },
       size: 0
     };
-    await createHttpDispatcher({ vault: counting }).dispatch(callTo(), serverAt(undefined, { transport: "stdio" }));
+    await createHttpDispatcher({ vault: counting }).dispatch(callTo(), stdioServer());
     expect(looked).toBe(0);
   });
 });

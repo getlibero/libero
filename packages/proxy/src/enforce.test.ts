@@ -16,6 +16,11 @@ function sheetOf(input: unknown): TeamSheet {
   return TeamSheetSchema.parse(input);
 }
 
+// Every http block needs one: the schema discriminates on transport, so an http
+// upstream with no address does not parse (#89). Where a test is about *which*
+// upstream was matched it names its own; elsewhere this stands in.
+const UPSTREAM = "http://mcp-github:3001";
+
 const BASE = {
   channel: { name: "engineering" },
   budget: { daily_tokens: 1000, daily_tool_calls: 10 },
@@ -23,6 +28,7 @@ const BASE = {
     {
       name: "github",
       transport: "http",
+      url: UPSTREAM,
       tool: [
         { name: "list_prs" },
         { name: "trigger_workflow", approval: "required" },
@@ -136,7 +142,10 @@ describe("names that only look allowed", () => {
     for (const name of nearMisses.filter(n => n !== "GitHub" && n !== "GITHUB" && n !== "github.")) {
       expect(TeamSheetSchema.safeParse({
         channel: { name: "ops" },
-        mcp_server: [{ name, transport: "http" }]
+        // The url is here so the sheet is otherwise valid. Without it the block
+        // would fail on the missing address (#89) and this test would pass
+        // while proving nothing about the name.
+        mcp_server: [{ name, transport: "http", url: UPSTREAM }]
       }).success, name).toBe(false);
     }
   });
@@ -176,6 +185,7 @@ describe("the destructive-verb heuristic", () => {
         {
           name: "github",
           transport: "http",
+          url: UPSTREAM,
           tool: [{ name: "get_dropdown_options", approval: "none" }]
         }
       ]
@@ -190,6 +200,7 @@ describe("the destructive-verb heuristic", () => {
         {
           name: "github",
           transport: "http",
+          url: UPSTREAM,
           tool: [
             { name: "delete_repo", approval: "none" },
             { name: "list_prs", approval: "required" }
@@ -212,7 +223,7 @@ describe("duplicate entries", () => {
     ]) {
       const duplicated = sheetOf({
         ...BASE,
-        mcp_server: [{ name: "github", transport: "http", tool: order }]
+        mcp_server: [{ name: "github", transport: "http", url: UPSTREAM, tool: order }]
       });
       expect(decide({ sheet: duplicated, call: callTo("github", "deploy_app"), spend: NO_SPEND }).outcome).toBe("hold");
     }
@@ -222,8 +233,8 @@ describe("duplicate entries", () => {
     const duplicated = sheetOf({
       ...BASE,
       mcp_server: [
-        { name: "github", transport: "http", tool: [{ name: "list_prs" }] },
-        { name: "github", transport: "http", tool: [{ name: "get_issue" }] }
+        { name: "github", transport: "http", url: UPSTREAM, tool: [{ name: "list_prs" }] },
+        { name: "github", transport: "http", url: UPSTREAM, tool: [{ name: "get_issue" }] }
       ]
     });
     expect(decide({ sheet: duplicated, call: callTo("github", "get_issue"), spend: NO_SPEND }).outcome).toBe("allow");
@@ -236,6 +247,7 @@ describe("duplicate entries", () => {
         {
           name: "github",
           transport: "http",
+          url: UPSTREAM,
           tool: [{ name: "drop_refs" }, { name: "drop_refs", approval: "none" }]
         }
       ]
@@ -283,18 +295,32 @@ describe("which upstream an allow names", () => {
   });
 
   // Blocks may repeat; they may not contradict. Each field dispatch reads is
-  // its own way to disagree, so each gets a case.
+  // its own way to disagree, so each gets a case. Whole blocks rather than
+  // overrides spread onto a shared base: since #89 the valid shape depends on
+  // the transport, and a base spread over by `{ transport: "stdio" }` would
+  // carry a url into a member that forbids one.
+  //
+  // There is no "a url against no url" case among http blocks any more. That
+  // disagreement needed one http block with no address, which the schema no
+  // longer admits; across transports it is the third case below.
   it.each([
-    ["url", { url: "http://a:3001" }, { url: "http://b:3001" }],
-    ["credential", { credential: "cred_a" }, { credential: "cred_b" }],
-    ["transport", { transport: "http", url: "http://a:3001" }, { transport: "stdio" }],
-    ["a url against no url", { url: "http://a:3001" }, {}]
+    [
+      "url",
+      { transport: "http", url: "http://a:3001" },
+      { transport: "http", url: "http://b:3001" }
+    ],
+    [
+      "credential",
+      { transport: "http", url: UPSTREAM, credential: "cred_a" },
+      { transport: "http", url: UPSTREAM, credential: "cred_b" }
+    ],
+    ["transport", { transport: "http", url: "http://a:3001" }, { transport: "stdio" }]
   ])("refuses when the blocks carrying the tool disagree on %s", (_label, left, right) => {
     const conflicting = sheetOf({
       ...BASE,
       mcp_server: [
-        { name: "github", transport: "http", tool: [{ name: "get_issue" }], ...left },
-        { name: "github", transport: "http", tool: [{ name: "get_issue" }], ...right }
+        { name: "github", tool: [{ name: "get_issue" }], ...left },
+        { name: "github", tool: [{ name: "get_issue" }], ...right }
       ]
     });
     const decision = decide({ sheet: conflicting, call: callTo("github", "get_issue"), spend: NO_SPEND });
@@ -530,6 +556,7 @@ describe("the tool listing", () => {
         {
           name: "github",
           transport: "http",
+          url: UPSTREAM,
           tool: [{ name: "sync" }, { name: "sync", approval: "required" }]
         }
       ]
