@@ -242,6 +242,60 @@ describe("createSocketModeSource", () => {
     expect((error as Error).message).toBe("connect_failed");
   });
 
+  it("does not wait out a socket that will not close", async () => {
+    // disconnect() resolves only once Slack answers the close frame. Measured
+    // at five seconds live, and the SDK puts the underlying ceiling near
+    // thirty — past the grace period between SIGTERM and SIGKILL.
+    const fake = fakeClient();
+    fake.client.disconnect = () => new Promise<void>(() => {});
+    const adapter = createSocketModeSource({
+      appToken: "xapp-placeholder-not-a-credential",
+      logger: createSilentLogger(),
+      createClient: () => fake.client,
+      closeTimeoutMs: 10
+    });
+    await adapter.connect();
+
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
+  it("does not let a rejected disconnect escape as an unhandled rejection", async () => {
+    const fake = fakeClient();
+    fake.client.disconnect = () => Promise.reject(new Error("socket already gone"));
+    const adapter = createSocketModeSource({
+      appToken: "xapp-placeholder-not-a-credential",
+      logger: createSilentLogger(),
+      createClient: () => fake.client,
+      closeTimeoutMs: 10
+    });
+    await adapter.connect();
+
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
+  it("still reports a close the gateway asked for as intentional after a timeout", async () => {
+    const fake = fakeClient();
+    fake.client.disconnect = () => new Promise<void>(() => {});
+    const adapter = createSocketModeSource({
+      appToken: "xapp-placeholder-not-a-credential",
+      logger: createSilentLogger(),
+      createClient: () => fake.client,
+      closeTimeoutMs: 10
+    });
+    let drops = 0;
+    adapter.onDrop(() => {
+      drops += 1;
+    });
+    await adapter.connect();
+    await adapter.close();
+
+    // The socket may still emit `disconnected` after the race gave up on it.
+    // Reconnecting then would resurrect a gateway that was told to stop.
+    fake.emit("disconnected", undefined);
+
+    expect(drops).toBe(0);
+  });
+
   it("reconnects through the same client rather than building a second one", async () => {
     const fake = fakeClient();
     const adapter = source(fake);

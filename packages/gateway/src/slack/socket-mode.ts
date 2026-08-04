@@ -20,6 +20,19 @@ import type { SlackEnvelope, SocketSource } from "./types.js";
 const DISCONNECTED_EVENT = "disconnected";
 
 /**
+ * How long `close()` waits for the socket to shut down politely.
+ *
+ * `disconnect()` sends a close frame and resolves only once Slack sends one
+ * back. Measured against a live workspace that round trip took five seconds,
+ * and the SDK's own comment puts the underlying library's ceiling near thirty —
+ * longer than the grace period a container gets between SIGTERM and SIGKILL. A
+ * process being told to stop should not be held up by the far end's manners:
+ * the socket is going away either way, and Slack drops a half-closed Socket
+ * Mode connection on its own.
+ */
+const CLOSE_TIMEOUT_MS = 1_000;
+
+/**
  * Errors from `apps.connections.open` that mean Slack will never accept this
  * app token. Mirrors the SDK's own `UnrecoverableSocketModeStartError`, which it
  * uses for the same decision internally but does not surface on the error.
@@ -51,6 +64,8 @@ export interface SocketSourceOptions {
   logger: Logger;
   /** Injected for tests. Omitted in production, where the SDK is constructed here. */
   createClient?: (appToken: string, logger: Logger) => SocketModeClientLike;
+  /** Defaults to CLOSE_TIMEOUT_MS. Injected for tests. */
+  closeTimeoutMs?: number;
 }
 
 /**
@@ -94,6 +109,7 @@ function connectError(cause: unknown): GatewayError {
 export function createSocketModeSource(options: SocketSourceOptions): SocketSource {
   const create = options.createClient ?? defaultCreateClient;
   const client = create(options.appToken, options.logger);
+  const closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
 
   let onMention: ((envelope: SlackEnvelope) => Promise<void>) | undefined;
   let onDrop: (() => void) | undefined;
@@ -140,7 +156,20 @@ export function createSocketModeSource(options: SocketSourceOptions): SocketSour
 
     async close(): Promise<void> {
       closing = true;
-      await client.disconnect();
+      // Bounded on purpose — see CLOSE_TIMEOUT_MS. The abandoned promise gets a
+      // catch because nothing awaits it after the race, and an unhandled
+      // rejection on the way out would take the process down with a stack
+      // trace instead of an exit code.
+      const disconnected = client.disconnect().catch(() => {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<void>(resolve => {
+        timer = setTimeout(resolve, closeTimeoutMs);
+      });
+      try {
+        await Promise.race([disconnected, expired]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
 
     onMention(listener: (envelope: SlackEnvelope) => Promise<void>): void {
