@@ -14,10 +14,13 @@ only as itself, under admin-provisioned service credentials, through an allowlis
 every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
 model self-restraint.
 
-<Aside type="caution" title="Phase 0">
+<Aside type="caution" title="Phase 1, part-built">
 Nothing here is deployable yet. The specification is ahead of the implementation on purpose —
-treat these pages as the design of record, not a description of running software. The
-[roadmap](/docs/roadmap) says what lands when.
+treat these pages as the design of record, not a description of running software. What exists
+today is the credential half of the proxy: mutual TLS, per-channel identity, team-sheet
+enforcement, the vault, credential injection, and redaction. Approvals, budgets, the audit log,
+the gateway, and memory do not. The [roadmap](/docs/roadmap) says what lands when, and
+[self-hosting](/docs/self-hosting) says what a deployment does today.
 </Aside>
 
 ## The shape of it

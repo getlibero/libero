@@ -22,7 +22,7 @@
 <p align="center">
   <a href="https://getlibero.com"><img alt="Site: getlibero.com" src="https://img.shields.io/badge/site-getlibero.com-1BA85A?style=flat-square&labelColor=131A18"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1BA85A?style=flat-square&labelColor=131A18">
-  <img alt="Status: Phase 0, pre-release" src="https://img.shields.io/badge/status-phase_0-8FA39D?style=flat-square&labelColor=131A18">
+  <img alt="Status: Phase 1, pre-release" src="https://img.shields.io/badge/status-phase_1-8FA39D?style=flat-square&labelColor=131A18">
   <a href="https://getlibero.com/discord"><img alt="Discord: join the server" src="https://img.shields.io/badge/discord-join-1BA85A?style=flat-square&labelColor=131A18"></a>
 </p>
 
@@ -34,7 +34,11 @@ Governance first, features second: the agent process never holds a secret, its t
 
 ## Status
 
-Pre-release (Phase 0). Nothing here is ready to deploy yet. See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
+Pre-release (Phase 1, part-built). Nothing here is ready to deploy yet.
+
+What exists is the credential half of the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, and a redaction pass that scrubs echoed secrets out of results. What does not: approvals, budgets, the audit log, the Slack gateway, memory, and the end-to-end suite that attacks all of it. A permitted tool call currently answers 501, because the process deliberately ships without a real dispatcher until the budget meter lands.
+
+See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
 ## Architecture in one paragraph
 

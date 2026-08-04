@@ -4,11 +4,13 @@ description: The target deployment — two containers, one team sheet per channe
 ---
 
 :::caution[Not deployable yet]
-This page describes the target deployment. What exists today is early phase 1: the proxy process
-starts, speaks mutual TLS, binds every request to a channel, enforces team sheets, and holds
-credentials in an encrypted vault — but nothing yet uses a credential, so a permitted call answers
-501, and approvals, budgets, the audit log, and the gateway do not exist. Do not run this against
-a workspace you care about: the parts that make it safe are not all built.
+This page describes the target deployment. What exists today is phase 1, part-built: the proxy
+process starts, speaks mutual TLS, binds every request to a channel, enforces team sheets, holds
+credentials in an encrypted vault, injects them into outbound calls, and scrubs them back out of
+results. But the process still composes a placeholder dispatcher, so a permitted call answers 501
+rather than reaching an upstream — and approvals, budgets, the audit log, and the gateway do not
+exist. Do not run this against a workspace you care about: the parts that make it safe are not
+all built.
 :::
 
 ## The shape of a deployment
