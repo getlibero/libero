@@ -43,6 +43,29 @@ Everything is planned in public GitHub issues; there is no separate tracker.
 - Issues labeled `help wanted` or `good first issue` are up for grabs. Comment
   on a sub-issue before starting it so work is not duplicated.
 
+## Triage
+
+New issues arrive labeled `needs-triage` (the templates apply it). Triage
+removes that label by doing exactly one of three things:
+
+- **Accept:** assign the open milestone and `area:*` labels, and attach the
+  issue as a sub-issue of the workstream it belongs to, where one fits.
+- **Park:** apply `parked` — valid, but belongs to a later phase. Kept open,
+  no milestone, picked up when its phase starts.
+- **Close:** duplicate, invalid, or a question that belongs in
+  [Discord](https://getlibero.com/discord) — with a comment saying which.
+
+Expect an issue to be triaged within a week. If a security-sensitive report is
+filed publicly by mistake, we will keep in-thread discussion to a minimum and
+ask you to refile it through private vulnerability reporting (see
+[SECURITY.md](SECURITY.md)).
+
+**An issue is ready to build against when it is in the open milestone and not
+blocked.** An issue that is untriaged or `parked` is not yet accepted — a PR
+for one may sit until its phase opens, however good the code is. Check before
+writing code; `help wanted` and `good first issue` mark the issues we would
+most like a hand with.
+
 ## Development
 
 ```bash

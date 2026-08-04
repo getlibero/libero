@@ -54,6 +54,12 @@ sub-issues; ordering is expressed with blocked-by relationships, so filtering ou
 shows what is workable now. Valid work that belongs to a later phase is labeled `parked` rather
 than closed, and picked up when its phase opens.
 
+New issues arrive labeled `needs-triage`; triage — within a week — either assigns the open
+milestone, parks, or closes. An issue is ready to build against when it is in the open milestone
+and not blocked; `help wanted` and `good first issue` mark the ones we would most like a hand
+with. A pull request for an untriaged or parked issue may wait until its phase opens, so check
+before writing code.
+
 ## Development
 
 ```bash
