@@ -118,8 +118,9 @@ execution plan, not the spec.
 - **Taking an issue is assigning it to yourself, before the first commit.** The
   assignee is the only in-progress signal — there is no `status:*` label and no
   board, so an unassigned milestoned issue reads as free and someone else may
-  start it. That applies to work you pick up on Jeff's behalf too: assign
-  `jss79` when you start, not when you open the PR. If the work stops or gets
+  start it. That applies to work you pick up on the user's behalf too: assign
+  their GitHub account (`gh api user --jq .login` says who) when you start, not
+  when you open the PR. If the work stops or gets
   descoped, unassign it in the same breath, so the queue never claims someone
   is on something they aren't. Open the PR with `Closes #N` in the body — merge
   then closes the issue, which is what ends the in-progress state.

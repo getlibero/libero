@@ -46,8 +46,9 @@ Everything is planned in public GitHub issues; there is no separate tracker.
   unassign if the work stops.
 - Issues labeled `help wanted` or `good first issue` are up for grabs. Comment
   on a sub-issue before starting it and a maintainer will assign it to you —
-  GitHub does not let non-collaborators self-assign, and the comment is what
-  keeps two people from writing the same PR. Say so in the thread if you drop
+  GitHub only allows assigning users who have participated in an issue, so the
+  comment is both the claim and what makes the assignment possible. Say so in
+  the thread if you drop
   it; we would rather free the issue than leave it looking taken.
 - Open the PR with `Closes #N` in the body, so merging closes the issue.
 
