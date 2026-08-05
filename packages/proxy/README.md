@@ -88,9 +88,13 @@ exist — it simply has no provisional meter to reject any more, which is the
 point: the seams that land next arrive before their implementations do, and a
 stand-in meter is the obvious way to test one.
 
-**Token reports arrive.** The agent's spend client sends one after each
-completed task (#110), so `daily_tokens` meters for real rather than reading
-zero. The report carries four raw counts and no total: what a cached token costs
+**Token reports arrive.** The agent's spend client sends one after each model
+turn (#110, #115), so `daily_tokens` meters for real rather than reading zero —
+and meters as a task runs, so a channel over its cap is refused at that task's
+next tool call rather than at its next mention. The dedupe key is
+`(channel, turn)` and a turn id is `<task>.<n>`, so a retried turn is a
+`duplicate` and the next turn is not. The report carries four raw counts and no
+total: what a cached token costs
 resolves from the channel's team sheet with the rest of policy, at decision
 time, so an operator changes it with a sheet edit rather than an agent release.
 `apps/proxy-server/README.md` documents loading secrets into the vault.

@@ -20,19 +20,22 @@
 // counter, and that is not worth a user's answer — so the report is awaited,
 // its failure is a log line, and the reply goes to the thread either way.
 
+import { randomUUID } from "node:crypto";
 import {
   DEFAULT_AGENT_LOOP_CAPS,
   ProxyClientError,
   createProxySpendClient,
   createProxyToolClient,
-  runAgentTask
+  runAgentTask,
+  totalTokens
 } from "@getlibero/agent";
 import type {
   AgentStopReason,
   AgentTaskResult,
   CompletionClient,
   ProxySpendClient,
-  ProxyTransport
+  ProxyTransport,
+  TokenUsage
 } from "@getlibero/agent";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { Logger, MentionHandler, SlackMention, SlackReply } from "@getlibero/gateway";
@@ -171,9 +174,17 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
       channel: mention.channelId
     });
 
+    // Minted here rather than by the loop, which is what `taskId` is for: a
+    // turn's report has to be named before the turn happens, and the loop only
+    // hands its id back when the task is over. Every turn's id derives from
+    // this one, so a task's reports, its tool calls, and its log lines all
+    // carry the same root.
+    const taskId = randomUUID();
+
     let result: AgentTaskResult;
     try {
       result = await runAgentTask({
+        taskId,
         completion: options.completion,
         toolSource: tools,
         toolExecutor: tools,
@@ -191,6 +202,9 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
         // The team sheet's `[llm]` caps are not read here — see the file
         // header. These are what a caller with no sheet gets.
         caps: DEFAULT_AGENT_LOOP_CAPS,
+        // Reported as the turns happen, not when the task ends. See
+        // `reportSpend`.
+        onTurn: (usage, turn) => reportSpend(spend, taskId, turn, usage, mention, logger),
         ...(options.signal !== undefined ? { signal: options.signal } : {})
       });
     } catch (error) {
@@ -220,10 +234,10 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
     }
 
     // The one thing the gateway's own `mention`/`replied` pair cannot show: why
-    // a task ended, and what it cost. Kept as its own line, rather than folded
-    // into the report below, because the two answer different questions and
-    // only one of them can fail: this says what the task did, and
-    // `spend_reported` says what the meter was told about it.
+    // a task ended, and what it cost in total. The per-turn `spend_reported`
+    // lines say what the meter was told and sum to this; a task line whose
+    // `totalTokens` is larger than its reports add up to is a meter that missed
+    // something, which is worth being able to see at a glance.
     logger.log("info", {
       event: "task",
       channel: mention.channelId,
@@ -234,31 +248,37 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
       turns: result.turns
     });
 
-    await reportSpend(spend, result, mention, logger);
-
     return replyFor(result);
   };
 }
 
 /**
- * Tell the meter what the task cost, and never let that cost the user an answer.
+ * Tell the meter what one turn cost, and never let that cost the user an answer.
  *
- * **Awaited rather than detached**, and not for tidiness: the process does not
- * drain in-flight work before exiting, so a detached send is one that is
- * usually killed — it gives up the ordering and buys nothing. The client
- * carries its own short deadline, so the worst a proxy that accepts a
- * connection and then goes quiet can do is delay one thread reply by it.
+ * **Per turn, not per task**, which is the loop's `onTurn` contract and the
+ * reason it exists. A report that waits for the task means a long task spends
+ * its whole cost before the meter hears any of it — so a channel already over
+ * its cap is refused starting with the *next mention* rather than this task's
+ * next tool call — and a task that dies mid-flight spends silently, because
+ * `runAgentTask` rejects and everything counted so far goes with the rejection.
+ * Reporting as the turns happen fixes both (#115).
  *
- * **The turn id is the task id.** Minted by the loop, never shown to the model,
- * and the same id on the `task` line above and on the audit records the proxy
- * will write for this task's tool calls (#97) — so one grep ties the reply, the
- * calls, and the spend together. A retry under it is a `duplicate`, which is
- * the meter saying it already counted the turn rather than an error.
+ * **The turn id is `<task>.<n>`.** The root is the task id this process minted
+ * and the model never saw, so a task's reports sit next to its tool calls and
+ * its `task` log line under one grep, and the audit records the proxy will
+ * write (#97) join on the same root. The suffix is what makes each turn its own
+ * idempotency key: a retry of turn 3 is a `duplicate`, and turn 4 is not.
  *
- * **A cancelled task still reports.** Tokens were spent, and `replyFor`
- * returning nothing is Slack etiquette rather than accounting. A task that
- * spent *nothing* reports nothing: four zeros move no counter, and at shutdown
- * every open task takes that path at once.
+ * **Awaited**, which the loop does on this function's behalf. A detached send
+ * would let the next turn start before this one was recorded, and would usually
+ * be killed anyway — the process does not drain in-flight work before exiting.
+ * The client carries its own short deadline, so the worst a proxy that accepts
+ * a connection and then goes quiet can do is delay each turn by it.
+ *
+ * **It never throws**, and that is load-bearing rather than tidy: the loop does
+ * not catch, so a rejection here would end the task and lose the user's answer
+ * because a *counter* could not be written. A turn that spent nothing reports
+ * nothing — four zeros move no counter.
  *
  * **No retry.** The report is idempotent, so one would be safe — but the
  * failures worth retrying are the ones that do not clear in milliseconds, a 400
@@ -268,32 +288,37 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
  */
 async function reportSpend(
   spend: ProxySpendClient,
-  result: AgentTaskResult,
+  taskId: string,
+  turn: number,
+  usage: TokenUsage,
   mention: SlackMention,
   logger: Logger
 ): Promise<void> {
-  if (result.totalTokens === 0) return;
+  const spent = totalTokens(usage);
+  if (spent === 0) return;
 
   try {
-    const outcome = await spend.report(result.taskId, result.usage);
+    const outcome = await spend.report(`${taskId}.${turn}`, usage);
     logger.log("info", {
       event: "spend_reported",
       channel: mention.channelId,
       eventId: mention.eventId,
-      task: result.taskId,
+      task: taskId,
+      turns: turn,
       report: outcome,
-      totalTokens: result.totalTokens
+      totalTokens: spent
     });
   } catch (error) {
     // Everything, including what is not a `ProxyClientError`. A bug in the
-    // sender must not become a lost reply — that is the whole reason this
-    // function exists rather than the call sitting inline.
+    // sender must not become a lost reply — and here that is not a figure of
+    // speech, because the loop propagates whatever this throws.
     logger.log("error", {
       event: "spend_report_failed",
       channel: mention.channelId,
       eventId: mention.eventId,
-      task: result.taskId,
-      totalTokens: result.totalTokens,
+      task: taskId,
+      turns: turn,
+      totalTokens: spent,
       reason: error instanceof ProxyClientError ? error.reason : "unknown"
     });
   }
