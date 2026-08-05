@@ -88,7 +88,16 @@ services:
       # Reset a channel without restarting anything with
       # `docker compose run --rm proxy node dist/budget.js reset <channel>`.
       PROXY_BUDGET_DB: /data/budget/budget.db
-      AUDIT_DB: /data/audit/audit.db
+      # Read, and required. The audit log: one row per decided tool call —
+      # served, held, refused, or permitted with no upstream. SQLite writes -wal
+      # and -shm beside this file, so the *directory* has to be writable.
+      #
+      # Append-only, enforced by triggers on the table itself, so there is no
+      # reset command and will not be one: deleting rows from an audit log is
+      # the operation an attacker wants. Growth is small — roughly 200 bytes a
+      # row, so 10k calls a day is about 2 MB a day — and the answer when that
+      # stops being small is to rotate the file, not to prune it.
+      PROXY_AUDIT_DB: /data/audit/audit.db
       # 0.0.0.0 reaches only the private bridge below, which publishes no
       # ports. Outside compose the default is 127.0.0.1.
       PROXY_HOST: 0.0.0.0

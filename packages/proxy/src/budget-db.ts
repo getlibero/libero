@@ -1,12 +1,15 @@
 // The budget meter's file on disk: opening it, its schema, and every statement
 // run against it.
 //
-// **Every SQL string in this package lives here.** That is the compensation for
-// keeping all channels in one file rather than one file each. The isolation
-// property — a channel never sees another channel's counters — rests on each
-// statement carrying `WHERE channel = ?`, and confining them to one module is
-// what makes that claim checkable by reading one screen instead of grepping a
-// package. A statement added anywhere else is a review failure.
+// **Every SQL string that runs against this file lives here**, and the same
+// holds for the audit log in ./audit-db.ts: one module per database, and no
+// statements anywhere else in the package. That is the compensation for keeping
+// all channels in one file rather than one file each. The isolation property — a
+// channel never sees another channel's counters — rests on each statement
+// carrying `WHERE channel = ?`, and confining them to one module is what makes
+// that claim checkable by reading one screen instead of grepping a package. A
+// second database does not weaken it as long as its statements are all on one
+// screen too. A statement added anywhere else is a review failure.
 //
 // CLAUDE.md's one-file-per-channel invariant is narrowed rather than broken,
 // and the line is about **whose data it is and who reads it**, not about how
@@ -23,7 +26,10 @@
 // against its caps needs exactly the query the per-file layout would forbid.
 // Building that on N files would mean opening N handles to reassemble something
 // that was one table all along. (The same argument covers the audit log, which
-// #38 already describes as one table with a channel column.)
+// is now built the same way: one table with a channel column, in ./audit-db.ts.
+// What is *not* shared is the write discipline — this file's statements are
+// `x = x + n` and the operator may clear a day, while that one only ever
+// inserts and a trigger refuses anything else.)
 //
 // What has to hold instead is that **the people who live in the channels cannot
 // manipulate the numbers**, and that is structural here:

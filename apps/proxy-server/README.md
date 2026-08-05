@@ -14,8 +14,13 @@ PROXY_TLS_CA=deploy/certs/ca.pem \
 PROXY_CHANNELS_ROOT=channels \
 PROXY_VAULT_FILE=deploy/vault/vault.enc \
 PROXY_VAULT_KEY="$(openssl rand -base64 32)" \
+PROXY_BUDGET_DB=deploy/budget/budget.db \
+PROXY_AUDIT_DB=deploy/audit/audit.db \
   pnpm --filter @getlibero/proxy-server start
 ```
+
+Both database directories have to exist first — nothing here creates one:
+`mkdir -p deploy/budget deploy/audit`.
 
 | variable | default | |
 | --- | --- | --- |
@@ -25,6 +30,8 @@ PROXY_VAULT_KEY="$(openssl rand -base64 32)" \
 | `PROXY_CHANNELS_ROOT` | — | team sheets, at `<root>/<channel id>/channel.toml` |
 | `PROXY_VAULT_FILE` | — | the encrypted credential vault |
 | `PROXY_VAULT_KEY` | — | its master key: base64, 32 bytes |
+| `PROXY_BUDGET_DB` | — | the daily budget meter |
+| `PROXY_AUDIT_DB` | — | the append-only audit log |
 | `PROXY_HOST` | `127.0.0.1` | empty means the default; compose sets `0.0.0.0`, on a bridge that publishes no ports |
 | `PROXY_PORT` | `8443` | |
 
@@ -86,6 +93,30 @@ docker compose run --rm proxy node dist/budget.js show  C024BE91L
 docker compose run --rm proxy node dist/budget.js reset C024BE91L
 docker compose run --rm proxy node dist/budget.js prune
 ```
+
+## The audit log
+
+`PROXY_AUDIT_DB` is one row per decided tool call — served, held, refused, or
+permitted with no upstream — appended and never rewritten. Required with no
+default, and opened before anything binds, on the same argument as the budget
+with the failure mode turned quiet: a file under a path nobody meant produces a
+deployment that looks audited and has nothing to show when someone finally
+looks. Nothing in it is a secret: names, ids, and a hash of the model's
+arguments, never an argument value and never a credential.
+
+**A proxy that cannot write this file refuses the call it could not record.**
+That is deliberate — serving a stream of calls with no record is the failure
+worth avoiding, and the realistic causes (a full disk, a read-only mount) are
+conditions that should stop the process.
+
+Append-only is enforced on the table by `BEFORE UPDATE` and `BEFORE DELETE`
+triggers, so it holds for `sqlite3` and any other connection, not just this
+process. There is no reset or prune command and there will not be one: deleting
+rows from an audit log is the operation an attacker wants. Growth is about 200
+bytes a row, so 10k calls a day is roughly 2 MB a day; when that stops being
+small the answer is to rotate the file.
+
+The read path — `libero audit`, with query and CSV export — is #98.
 
 A second entrypoint rather than a route, and that is the security argument
 rather than a convenience one. A reset makes a hard limit soft again; the proxy

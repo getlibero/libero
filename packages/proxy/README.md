@@ -30,8 +30,22 @@ credential injection into outbound HTTP calls.
   `node:sqlite`: counters keyed `(channel, UTC day)` so rollover is a key change
   rather than a sweep, a turn-id table so a retried report cannot double-count,
   and the operator's reset kept in its own module away from the serving path.
-  **Every SQL string in this package is in `budget-db.ts`**, which is what makes
-  "no statement omits `WHERE channel = ?`" checkable in one place.
+- `audit-db.ts` / `audit-log.ts` — the audit log over `node:sqlite`: one row per
+  decided tool call, and the only statement that touches the audit table is an
+  INSERT — the rest of the module's SQL is the `schema_version` bookkeeping
+  every database here carries.
+  Append-only comes from `BEFORE UPDATE`/`BEFORE DELETE` triggers that
+  `RAISE(ABORT)` — SQLite has no roles and no grants, so the write-only
+  interface and the file's permissions are defence in depth around those rather
+  than the mechanism. The row carries a hash of the model's arguments and never
+  the arguments: nothing on the write path holds a credential value, so nothing
+  on it could redact one. A failed write refuses the call rather than serving it
+  unrecorded. No tokens column — tokens are per turn, so the row carries the
+  result's byte length instead and cost joins by task id.
+
+  **Every SQL string in this package is in the module that opens the database it
+  runs against** — `budget-db.ts` and `audit-db.ts`, and nowhere else — which is
+  what makes "no statement omits `WHERE channel = ?`" checkable in one place.
 - `spend-route.ts` — `POST /v1/spend`. The one route with no authorization
   decision on it, and the header says why and what keeps it that way.
 - `outbound.ts` — the outbound call, and the **one place in the tree that calls
@@ -78,7 +92,7 @@ error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
 Still to come, each with its own issue: the egress allowlist (#73), the MCP
-client pool (#39), the approval broker, and the audit writer.
+client pool (#39), the approval broker, and the audit log's read path (#98).
 `http-dispatcher.ts` marks where the egress check slots in.
 
 **A permitted call is now served.** `apps/proxy-server` composes the real meter

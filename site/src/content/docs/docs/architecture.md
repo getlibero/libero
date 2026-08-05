@@ -65,7 +65,15 @@ The two limits rest on different things. `daily_tool_calls` is counted by the pr
 
 **The report route makes no authorization decision**, and that is structural rather than incidental: it resolves no team sheet, shares no handler with the route that does, and lives in a module with no import that could reach one — a lint rule in CI, not a comment, is what keeps it that way. Reporting spend is not asking for anything, so there is nothing to decide.
 
-**Audit writer.** Append-only SQLite table (WAL, no UPDATE/DELETE grants for the service role): timestamp, channel, requesting user, task id, tool, server, argument hash (args themselves optionally stored, redacted, behind a config flag), result status, tokens, approver if any. `libero audit` provides query and CSV export.
+**Audit writer.** Append-only SQLite table (WAL), one row per decided tool call: timestamp, channel, requesting user, task id, tool, server, argument hash, outcome, refusal reason, result size and error flag, approver if any. `libero audit` provides query and CSV export.
+
+Append-only is enforced by `BEFORE UPDATE` and `BEFORE DELETE` triggers on the table that `RAISE(ABORT)`. SQLite has neither roles nor grants, so a per-role permission is not available to implement — the triggers are, and they hold for every connection that opens the file rather than only for the service. The write-only interface the proxy holds and the file's permissions are defence in depth around that, not the mechanism. None of it stops an attacker who holds the file from dropping the table or replacing it: append-only means the service cannot rewrite history in normal operation. Tamper *evidence* — hash-chained rows — is phase 5.
+
+There is no retention command and there will not be a delete-based one; when the file needs to shrink, it rotates.
+
+**The arguments themselves are not stored, only their hash.** Redacting them would need the credential values, and neither the route nor the writer holds one — that is what makes the rest of this design checkable. Storing arguments redacted against a set the writer cannot see would be worse than storing none, because a column labelled redacted gets believed.
+
+**There is no per-call token count, because there is no such quantity.** Tokens are spent by model turns, not by tool calls; the meter records the real numbers per turn. The audit row carries the size of the result the proxy handed back, which it observes directly and which is the largest driver of the *next* turn's input tokens. To ask what a request cost, join on the task id: turn ids are `<task>.<n>`.
 
 ## The team sheet
 

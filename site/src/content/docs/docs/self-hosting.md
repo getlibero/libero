@@ -192,6 +192,14 @@ is a channel whose hard limits never bite, which is the one misconfiguration her
 SQLite writes `-wal` and `-shm` files beside it, so the *directory* must be writable and not just
 the file. Nothing in it is a secret.
 
+`PROXY_AUDIT_DB` is required on the same terms, and holds the audit log: one row per decided tool
+call, appended and never rewritten. Its failure mode is the budget's turned quiet — a file under a
+path nobody meant produces a deployment that looks audited and has nothing to show when someone
+finally looks. It has no reset command, because the table refuses `DELETE` from any connection.
+Nothing in it is a secret either: names, ids, and a hash of the model's arguments, never an argument
+value and never a credential. A proxy that cannot write this file refuses the call it could not
+record rather than serving it unrecorded.
+
 The meter uses Node's built-in `node:sqlite` — no dependency, no native build — which needs Node
 22.13 or newer and is still marked experimental, so some Node versions print an
 `ExperimentalWarning` for it at startup. If that is noise in your log collector, set

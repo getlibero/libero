@@ -11,10 +11,12 @@ import {
   createProxyServer,
   createSqliteSpendMeter,
   loadTlsOptions,
+  openAuditWriter,
   openBudgetDb,
   openVault
 } from "@getlibero/proxy";
 import {
+  auditDbFromEnv,
   budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
@@ -53,6 +55,13 @@ delete process.env.PROXY_VAULT_KEY;
 // hard limits never bite — and it would do so silently.
 const budget = openBudgetDb({ file: budgetDbFromEnv(process.env), logger });
 
+// And the audit log, before anything binds, for a reason the route depends on:
+// a failed audit write refuses the call it could not record. Opening the file
+// here turns a missing directory, a read-only mount and a schema from the future
+// into startup failures, which is where nearly all of that risk lives — leaving
+// the route to handle only the disk that fills while it is serving.
+const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(process.env), logger });
+
 const server = createProxyServer({
   tls: loadTlsOptions({
     cert: requiredEnv(process.env, "PROXY_TLS_CERT"),
@@ -70,6 +79,9 @@ const server = createProxyServer({
   // that land next arrive before their implementations do.
   spend: createSqliteSpendMeter({ db: budget, logger }),
   dispatcher: createHttpDispatcher({ vault, logger }),
+  // The writer, not the handle: the serving process appends and cannot close
+  // the file it is being audited into. `auditDb` stays here, where shutdown is.
+  audit,
   logger
 });
 
@@ -85,10 +97,11 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
       // keep-alive socket holds the process open until something sends
       // SIGKILL.
       //
-      // The budget database is left unclosed here, and that is safe rather
-      // than overlooked: it commits with `synchronous = FULL`, so every count
-      // it acknowledged is already on disk. The same is true of a SIGKILL or a
-      // host crash, which is why that pragma was chosen.
+      // The budget and audit databases are left unclosed here, and that is safe
+      // rather than overlooked: both commit with `synchronous = FULL`, so every
+      // count and every row either of them acknowledged is already on disk. The
+      // same is true of a SIGKILL or a host crash, which is why that pragma was
+      // chosen.
       process.exit(1);
     }
     closing = true;
@@ -98,10 +111,11 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     sheets.close();
     // Stops accepting connections and waits for in-flight requests — which is
     // what gives a tool call in flight a chance to finish rather than being cut
-    // mid-call. The budget file closes in the callback, after those requests
-    // have finished writing to it, and not before.
+    // mid-call. Both files close in the callback, after those requests have
+    // finished writing to them, and not before.
     server.close(() => {
       budget.close();
+      auditDb.close();
       process.exit(0);
     });
   });

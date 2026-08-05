@@ -85,6 +85,28 @@ export function budgetDbFromEnv(env: Env): string {
 }
 
 /**
+ * The audit log's database: `PROXY_AUDIT_DB`.
+ *
+ * Required with no default, and the failure mode is the budget's one turned
+ * quiet. An audit file the proxy invented under a path nobody meant produces a
+ * deployment that looks audited: every call is recorded, into a file no
+ * operator will ever query and a container will throw away. Nothing
+ * misbehaves — the symptom is an empty table, discovered by whoever goes
+ * looking after an incident, which is the one moment it cannot be fixed
+ * retroactively.
+ *
+ * SQLite writes `-wal` and `-shm` beside this path, so the directory has to be
+ * writable and not just the file.
+ *
+ * The name is `PROXY_AUDIT_DB` and not the `AUDIT_DB` that sat in
+ * deploy/docker-compose.yml unread until now: every variable this process reads
+ * carries the prefix, and an unprefixed one was config nothing consumed.
+ */
+export function auditDbFromEnv(env: Env): string {
+  return requiredEnv(env, "PROXY_AUDIT_DB");
+}
+
+/**
  * The vault master key: `PROXY_VAULT_KEY`, base64, 32 bytes.
  *
  * One name, prefixed like everything else this process reads. It replaces the
