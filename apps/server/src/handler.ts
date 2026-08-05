@@ -7,18 +7,24 @@
 // text. That is the channel router's job (#65, #66, #67), and a half-version
 // here is something those issues would have to unpick first.
 //
-// No tools. The stub tool source lists none and the executor refuses every
-// call, so the model answers or it does not. The real pair are network clients
-// against the tool proxy service, which is what keeps this process's
-// compromise worth no tool credential.
+// Tools come from the proxy, over mutual TLS, and from nowhere else. One tool
+// client per task, pinned to the mention's channel: the certificate it presents
+// is what tells the proxy which channel is calling, so a task cannot reach a
+// channel whose certificate this process does not hold. This process still
+// holds no tool credential — the proxy owns every one of them.
 
 import {
   DEFAULT_AGENT_LOOP_CAPS,
-  createStubToolSource,
-  createUnavailableToolExecutor,
+  ProxyClientError,
+  createProxyToolClient,
   runAgentTask
 } from "@getlibero/agent";
-import type { AgentStopReason, AgentTaskResult, CompletionClient } from "@getlibero/agent";
+import type {
+  AgentStopReason,
+  AgentTaskResult,
+  CompletionClient,
+  ProxyTransport
+} from "@getlibero/agent";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { Logger, MentionHandler, SlackMention, SlackReply } from "@getlibero/gateway";
 
@@ -32,9 +38,34 @@ import type { Logger, MentionHandler, SlackMention, SlackReply } from "@getliber
  */
 export const SYSTEM_PROMPT = [
   "You are Libero, answering in a Slack thread.",
-  "You have no tools available: answer from what you know, and say plainly when you do not know.",
+  "Your tools are whatever this channel's team sheet permits, and that list is",
+  "the whole of what you can do: a tool you were not given does not exist for",
+  "this channel, and there is no way to ask for one. A call may still be",
+  "refused or held for a human — relay what you are told and do not retry it.",
+  "Answer from what you know when no tool fits, and say plainly when you do not know.",
   "Be brief. A thread reply is a few sentences, not an essay."
 ].join(" ");
+
+/**
+ * What the channel is told when the tool listing could not be fetched.
+ *
+ * Posted rather than swallowed, which is a departure from how an unreachable
+ * model provider behaves. The reason is that this failure has a class the
+ * provider's does not: a channel whose client certificate was never minted will
+ * never answer again, and that is a first-run configuration mistake rather than
+ * an outage. Silence there is indistinguishable from being ignored, by the one
+ * group of people who cannot see the log.
+ *
+ * Neither sentence is a synthesized answer to what was asked — that is the
+ * thing this file refuses to do, and saying "the proxy could not be reached" is
+ * the opposite of it.
+ */
+export const PROXY_UNAVAILABLE: Record<"no_client_certificate" | "other", string> = {
+  no_client_certificate:
+    "This channel has no client certificate for the tool proxy, so no tool call is possible. An operator mints one with `scripts/dev-certs.sh`.",
+  other:
+    "The tool proxy could not be reached, so no tool call was possible. An operator has the detail in the server log."
+};
 
 /**
  * A task that produced no text at all — a model that returned an empty turn, or
@@ -85,6 +116,12 @@ export function replyFor(result: AgentTaskResult): SlackReply | undefined {
 
 export interface HandlerOptions {
   completion: CompletionClient;
+  /**
+   * The mutual-TLS connection to the tool proxy. Required: there is no
+   * toolless mode to fall back to, and `proxyConfigFromEnv` refuses to build
+   * one from a half-set environment.
+   */
+  transport: ProxyTransport;
   /** Model id, passed through verbatim. */
   model: string;
   /**
@@ -99,43 +136,77 @@ export interface HandlerOptions {
 /**
  * Builds the handler the gateway dispatches to.
  *
- * It never throws for a cap or a refusal — those are replies. It does throw
- * when the provider is unreachable, which the gateway logs as `handler_failed`
- * and answers by posting nothing: an operator problem is not something to
- * paper over with a synthesized answer in someone's thread.
+ * It never throws for a cap, a refusal, or a proxy that cannot be reached —
+ * all three are replies. It does still throw when the model provider is
+ * unreachable, which the gateway logs as `handler_failed` and answers by
+ * posting nothing: an operator problem is not something to paper over with a
+ * synthesized answer in someone's thread.
  */
 export function createMentionHandler(options: HandlerOptions): MentionHandler {
   const logger = options.logger ?? createSilentLogger();
 
   return async (mention: SlackMention): Promise<SlackReply | undefined> => {
-    const result = await runAgentTask({
-      completion: options.completion,
-      // Both stubs. Listing no tools is what makes this a hello-world agent;
-      // the executor pairs with it so a model that invents a call gets a
-      // refusal in the shape the real path uses rather than a dropped task.
-      toolSource: createStubToolSource(),
-      toolExecutor: createUnavailableToolExecutor(),
-      model: options.model,
-      // Attribution for the audit log, not authentication: nothing in the
-      // proxy decides anything from it. The mention's user id as Slack sent it
-      // — display-name resolution is the context assembler's (#67), and a name
-      // is not what an audit record wants anyway.
-      requestingUser: mention.userId,
-      system: SYSTEM_PROMPT,
-      // The mention text as it arrived, `<@U…>` token and all. Stripping it,
-      // resolving display names, and prepending thread history are the context
-      // assembler's (#67).
-      messages: [{ role: "user", content: mention.text }],
-      // The team sheet's `[llm]` caps are not read here — see the file header.
-      // These are what a caller with no sheet gets.
-      caps: DEFAULT_AGENT_LOOP_CAPS,
-      ...(options.signal !== undefined ? { signal: options.signal } : {})
+    // One client per task, holding this channel's certificate and no other's.
+    // Both halves come from the same object because they share the mapping from
+    // the name the model calls to the (server, tool) pair the proxy takes — a
+    // model can only call what this channel's sheet published.
+    const tools = createProxyToolClient({
+      transport: options.transport,
+      channel: mention.channelId
     });
+
+    let result: AgentTaskResult;
+    try {
+      result = await runAgentTask({
+        completion: options.completion,
+        toolSource: tools,
+        toolExecutor: tools,
+        model: options.model,
+        // Attribution for the audit log, not authentication: nothing in the
+        // proxy decides anything from it. The mention's user id as Slack sent
+        // it — display-name resolution is the context assembler's (#67), and a
+        // name is not what an audit record wants anyway.
+        requestingUser: mention.userId,
+        system: SYSTEM_PROMPT,
+        // The mention text as it arrived, `<@U…>` token and all. Stripping it,
+        // resolving display names, and prepending thread history are the
+        // context assembler's (#67).
+        messages: [{ role: "user", content: mention.text }],
+        // The team sheet's `[llm]` caps are not read here — see the file
+        // header. These are what a caller with no sheet gets.
+        caps: DEFAULT_AGENT_LOOP_CAPS,
+        ...(options.signal !== undefined ? { signal: options.signal } : {})
+      });
+    } catch (error) {
+      // Only the tool listing reaches here. A failed tool *call* never does —
+      // the loop turns it into an error result the model relays, so the task
+      // still answers — and every other throw is the provider's and stays the
+      // gateway's to log.
+      if (!(error instanceof ProxyClientError)) throw error;
+
+      // A cancelled listing is the process shutting down, and shutdown posts
+      // nothing: the operator asked for quiet, and this would otherwise put a
+      // line into every thread open at that moment.
+      if (error.reason === "cancelled") return undefined;
+
+      logger.log("error", {
+        event: "tools_unavailable",
+        channel: mention.channelId,
+        eventId: mention.eventId,
+        reason: error.reason
+      });
+      return {
+        text:
+          error.reason === "no_client_certificate"
+            ? PROXY_UNAVAILABLE.no_client_certificate
+            : PROXY_UNAVAILABLE.other
+      };
+    }
 
     // The one thing the gateway's own `mention`/`replied` pair cannot show: why
     // a task ended, and what it cost. Worth a line while nothing meters tokens
-    // — no proxy client sends a spend report yet, so this is the only place a
-    // token count is visible at all.
+    // — no spend report is sent yet (#110), so `daily_tokens` reads zero in the
+    // proxy and this is the only place a token count is visible at all.
     logger.log("info", {
       event: "task",
       channel: mention.channelId,
