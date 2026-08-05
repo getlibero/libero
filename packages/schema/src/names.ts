@@ -59,6 +59,36 @@ export const DestinationHost = z
   .regex(/^[A-Za-z0-9.:_-]+$/, "must be a host, without scheme, path, or query");
 
 /**
+ * The Slack user whose mention started the task, as the agent asserts it.
+ *
+ * Bounded for the same reason a server name is: it lands in a refusal, in the
+ * audit log, and in that log's CSV export (#98), so an unbounded value here is
+ * an unbounded value in three places a human reads. A Slack user id is a short
+ * identifier and fits the alphabet exactly.
+ *
+ * **This is attribution and can never be authorization.** The full argument is
+ * on the field itself, in ./tool-call.ts, which is where someone about to write
+ * an authorization rule will be looking.
+ */
+export const RequestingUser = identifier();
+
+/**
+ * The id grouping every tool call one ReAct run made.
+ *
+ * Minted by the agent loop, once per task, and never by the model — the same
+ * rule as `TurnId` in ./spend-report.ts, for the same reason: a model that
+ * chooses its own correlation id can split one task across many or collapse
+ * many into one, and the audit log is read to answer "what did that one request
+ * do".
+ *
+ * Bounded shorter than `TurnId`, which sits at 128 to match `ToolCall.id`'s
+ * bound because that id is model-authored and opaque. This one is not: it is
+ * generated in-process, a UUID fits in 36, and there is nothing here that wants
+ * the extra room.
+ */
+export const TaskId = identifier();
+
+/**
  * A channel id — the one name here that is not a name at all but a principal.
  *
  * Load-bearing rather than hygiene. The id becomes a directory name

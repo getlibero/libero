@@ -29,12 +29,33 @@ export interface ToolResult {
 }
 
 /**
+ * Who asked, and which task the call belongs to.
+ *
+ * Sent with every call so the tool proxy service can write an audit record that
+ * a human can read back. It is deliberately *not* part of `ToolCall`: that
+ * shape is what the model emitted, and these two fields are what this process
+ * knows about the request the model is serving. Keeping them apart is what
+ * stops a model-authored field ever being mistaken for one of these.
+ *
+ * **Attribution, not authentication.** Nothing in the proxy authorizes on
+ * either — the channel comes from the client certificate and is the only proved
+ * identity on the wire. The full argument lives on the fields themselves, in
+ * `ToolCall` in packages/schema/src/tool-call.ts.
+ */
+export interface ToolCallAttribution {
+  /** The Slack user behind the mention. Asserted by this process. */
+  readonly requestingUser: string;
+  /** Minted by the loop, once per task, stable across that task's calls. */
+  readonly taskId: string;
+}
+
+/**
  * Runs one tool call. The real implementation is a network call to the tool
  * proxy service, which owns every credential and resolves every allowlist,
  * approval, and budget decision without this process's cooperation.
  */
 export interface ToolExecutor {
-  execute(call: ToolCall, signal?: AbortSignal): Promise<ToolResult>;
+  execute(call: ToolCall, attribution: ToolCallAttribution, signal?: AbortSignal): Promise<ToolResult>;
 }
 
 /**
@@ -98,6 +119,20 @@ export interface AgentTaskOptions {
   toolExecutor: ToolExecutor;
   /** Model id, passed through verbatim. Per-channel override resolves upstream. */
   model: string;
+  /**
+   * The Slack user whose mention started this task, for the audit log.
+   *
+   * Required rather than optional: a call with no attribution is a call the
+   * audit log cannot answer "who asked" for, and an optional field is one a
+   * caller forgets. See `ToolCallAttribution` for what it is and is not.
+   */
+  requestingUser: string;
+  /**
+   * The task id, normally minted here. Supply one only to correlate this task
+   * with something outside the loop — or to make a test deterministic, which is
+   * the same need `now` covers for the clock.
+   */
+  taskId?: string;
   system?: string;
   /** Seed transcript. The loop appends to a copy and never mutates this array. */
   messages: CompletionMessage[];
@@ -110,6 +145,12 @@ export interface AgentTaskOptions {
 
 export interface AgentTaskResult {
   stopReason: AgentStopReason;
+  /**
+   * The id every tool call this task made was attributed to. Returned so the
+   * caller can log it next to the reply — an audit record is only reachable if
+   * something on the outside knows which task to look for.
+   */
+  taskId: string;
   /**
    * The most recent non-empty assistant text — what a channel reply is built
    * from. A tool-calling turn usually carries none, so the last turn's text is

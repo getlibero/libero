@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { ToolCall, ToolCallResponse, resolveToolCall } from "./tool-call.js";
 
-const wire = { id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } };
+const wire = {
+  id: "toolu_01",
+  server: "github",
+  tool: "list_prs",
+  arguments: { state: "open" },
+  requestingUser: "U024BE7LH",
+  task: "b9d5a2f0-1c4e-4a7f-9b3d-2e6c8a1f0d55"
+};
+
+/** A well-formed call minus some fields, for the cases about one being absent. */
+function without(...keys: (keyof typeof wire)[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(wire).filter(([key]) => !keys.includes(key as never)));
+}
 
 describe("the wire tool call", () => {
   it("parses what the agent sends", () => {
@@ -9,8 +21,7 @@ describe("the wire tool call", () => {
   });
 
   it("defaults absent arguments to an empty object", () => {
-    const call = ToolCall.parse({ id: "toolu_01", server: "github", tool: "list_prs" });
-    expect(call.arguments).toEqual({});
+    expect(ToolCall.parse(without("arguments")).arguments).toEqual({});
   });
 
   it("passes arguments through without inspecting them", () => {
@@ -33,9 +44,35 @@ describe("the wire tool call", () => {
   });
 
   it("rejects a missing id, server, or tool", () => {
-    expect(ToolCall.safeParse({ server: "github", tool: "list_prs" }).success).toBe(false);
-    expect(ToolCall.safeParse({ id: "toolu_01", tool: "list_prs" }).success).toBe(false);
-    expect(ToolCall.safeParse({ id: "toolu_01", server: "github" }).success).toBe(false);
+    expect(ToolCall.safeParse(without("id")).success).toBe(false);
+    expect(ToolCall.safeParse(without("server")).success).toBe(false);
+    expect(ToolCall.safeParse(without("tool")).success).toBe(false);
+  });
+
+  // Required, not optional. An audit record that cannot say who asked or which
+  // task it belonged to is most of the reason the record exists, and an
+  // optional field is one a client forgets on the path that matters.
+  it("requires both attribution fields", () => {
+    expect(ToolCall.safeParse(without("requestingUser", "task")).success).toBe(false);
+    expect(ToolCall.safeParse(without("requestingUser")).success).toBe(false);
+    expect(ToolCall.safeParse(without("task")).success).toBe(false);
+  });
+
+  // Both land in the audit log and in its CSV export (#98), so what a client
+  // can put in them is bounded here rather than at the point a human reads one.
+  it("rejects an attribution value that is not a short identifier", () => {
+    for (const bad of ["", "has space", "a/b", "x".repeat(65), "-leading", "U1\nU2"]) {
+      expect(ToolCall.safeParse({ ...wire, requestingUser: bad }).success).toBe(false);
+      expect(ToolCall.safeParse({ ...wire, task: bad }).success).toBe(false);
+    }
+  });
+
+  it("accepts a Slack user id and a generated task id", () => {
+    const parsed = ToolCall.parse(wire);
+    expect(parsed.requestingUser).toBe("U024BE7LH");
+    expect(parsed.task).toBe("b9d5a2f0-1c4e-4a7f-9b3d-2e6c8a1f0d55");
+    expect(ToolCall.safeParse({ ...wire, requestingUser: "W07WXYZ12" }).success).toBe(true);
+    expect(ToolCall.safeParse({ ...wire, requestingUser: "B01BOTID" }).success).toBe(true);
   });
 
   // Server and tool names are model-authored and come back out in a refusal

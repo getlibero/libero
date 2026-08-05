@@ -58,6 +58,21 @@ export interface LogFields {
   server?: string;
   tool?: string;
   /**
+   * Who a call says asked for it, and which task it says it was part of (#95).
+   *
+   * **Asserted by the agent, not proved.** Everything else identifying a call on
+   * this line comes from the certificate or the team sheet; these two come from
+   * the request body, which the process running the model writes. They are
+   * logged because an operator reading the audit trail needs to know who asked,
+   * and they are two ids rather than a name or any message text.
+   *
+   * Nothing decides anything from them. That is what makes logging an
+   * agent-asserted value acceptable here and would not make it acceptable to
+   * branch on one — see the fields' doc comments in packages/schema.
+   */
+  requestingUser?: string;
+  task?: string;
+  /**
    * The credential a call used, **by name**. A `CredentialName` out of the team
    * sheet — the same string an operator typed into `libero vault set`, which is
    * why it is safe and why it is useful: it is how "which credential did that

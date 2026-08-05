@@ -281,6 +281,11 @@ export function createProxyServer(options: ProxyServerOptions): Server {
         channel: ctx.channel,
         server: call.server,
         tool: call.tool,
+        // Attribution, carried through to the operator's log. Asserted by the
+        // agent and read by no decision above — `decideFromState` has already
+        // run by the time this closure is called, and it never sees them.
+        requestingUser: call.requestingUser,
+        task: call.task,
         outcome,
         ...(reason !== undefined ? { reason } : {})
       });
