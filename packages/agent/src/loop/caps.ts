@@ -16,6 +16,12 @@ export type AbortStop = "cancelled" | "wall_time_cap";
  * Cache reads and cache writes are billed separately from ordinary input
  * tokens and are reported outside them, so a task that reads a large cache
  * would undercount badly against its cap if they were left out.
+ *
+ * These are the same four counts the agent reports to the proxy's meter, and
+ * they are summed unweighted here because this is a local ceiling on work
+ * rather than a budget. What a cached token *costs* is the channel's team
+ * sheet's answer, applied where the budget is — which is why the report sends
+ * four numbers and not this one.
  */
 export function totalTokens(usage: TokenUsage): number {
   return (

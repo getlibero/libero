@@ -21,7 +21,6 @@
 // exactly one enforcement point and it is not this one.
 
 import {
-  ProxyError,
   ToolCallResponse,
   ToolListing,
   refusalMessage,
@@ -29,6 +28,7 @@ import {
 } from "@getlibero/schema";
 import type { ToolCall, ToolDefinition } from "../completion/types.js";
 import type { ToolCallAttribution, ToolExecutor, ToolResult, ToolSource } from "../loop/types.js";
+import { proxyErrorFrom } from "./errors.js";
 import { mapPermittedTools, type MappedTool } from "./tool-names.js";
 import { ProxyClientError, type ProxyTransport } from "./transport.js";
 
@@ -155,21 +155,4 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
       }
     }
   };
-}
-
-/**
- * A non-200 as an error, using the proxy's own message when it sent one.
- *
- * `ProxyError.message` is written by the proxy and documented safe to relay to
- * a Slack channel as-is, so it is the better sentence: "the request body is not
- * a valid tool call" tells an operator more than a status code. When the body
- * is not a `ProxyError` the fallback says only that the request failed —
- * nothing of an unrecognised body is echoed, because an unrecognised body is
- * one this client cannot vouch for.
- */
-function proxyErrorFrom(body: unknown, fallback: string): ProxyClientError {
-  const parsed = ProxyError.safeParse(body);
-  return parsed.success
-    ? new ProxyClientError(`proxy client: ${parsed.data.error.message}`, "proxy_error")
-    : new ProxyClientError(`proxy client: ${fallback}`, "proxy_error");
 }

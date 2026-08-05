@@ -26,10 +26,8 @@ approval and nothing about arguments, so no input schema is published. Real
 schemas arrive with the MCP client pool (#39).
 
 Not here yet, and each belongs to its own issue: per-channel sessions and the
-mutex that serializes them (#65), thread history and attribution (#67), the
-per-channel `[llm]` model override and caps from the team sheet (#65), and the
-spend report that meters tokens (#110 — `daily_tokens` reads zero until it
-lands, so only `daily_tool_calls` bites).
+mutex that serializes them (#65), thread history and attribution (#67), and the
+per-channel `[llm]` model override and caps from the team sheet (#65).
 
 ## Configuration
 
@@ -87,8 +85,23 @@ node apps/server/dist/index.js
 ```
 
 It logs one JSON object per line on stdout: `connecting`, `connected`, then
-`mention`, `task`, and `replied` per answered mention. No line carries a token
-value or any message text — ids only.
+`mention`, `task`, `spend_reported`, and `replied` per answered mention. No line
+carries a token value or any message text — ids only.
+
+## What a turn costs
+
+After each task the process reports the provider's four raw token counts to the
+proxy, on the same client certificate the task's tool calls used, keyed on the
+task id. The counts come out of the provider's HTTP response envelope, never
+from anything the model wrote, and they go over unweighted: what a cached token
+costs against `daily_tokens` is the channel's team sheet's answer, applied where
+the budget is, so the agent sends numbers and never a total.
+
+The task id is the idempotency key, so a retry under it is answered `duplicate`
+rather than charged twice. A meter that refuses the report or cannot be reached
+is logged as `spend_report_failed` with the count it did not learn, and the
+thread still gets its answer — an operator's counter is not worth a user's
+reply.
 
 ## When the proxy cannot be reached
 
@@ -104,6 +117,7 @@ from being ignored, by the people who cannot see the log.
 | No `client-<channel>.pem` for this channel | Names the certificate, and the script that mints one | `tools_unavailable`, `reason: no_client_certificate` |
 | Proxy down, or it refused this certificate | Says the proxy could not be reached | `tools_unavailable`, `reason: connection_reset` or `unreachable` |
 | Shutting down mid-listing | Nothing | none |
+| It refused the spend report, or could not be reached for it | The answer, unchanged | `spend_report_failed`, with `reason` and the count the meter did not learn |
 
 Neither message answers what was asked. A synthesized answer to the question is
 the thing this process will not do when something is broken.
@@ -121,7 +135,9 @@ is #86.
 cancelled task posts nothing: the operator asked for quiet, and an answer
 arriving after the socket closed has nowhere to go. A second signal exits
 immediately — nothing here is durable, so the cost is at most one answer that
-was already cancelled.
+was already cancelled, and one spend report per task in flight. That under-reports
+rather than over-reports, so the budget fails open, and the proxy's own tool-call
+meter is unaffected either way.
 
 If Slack refuses the credentials after startup — a revoked or rotated token —
 the process logs `gateway_dead` and exits non-zero rather than staying up
@@ -133,6 +149,6 @@ brings it back once the environment is fixed.
 - `src/env.ts` — every environment rule, apart from `index.ts` so the failure
   modes are testable without a process.
 - `src/handler.ts` — the seam: a mention in, one agent task, and the mapping
-  from how the task ended to what the channel is told. One proxy tool client per
-  task, pinned to the mention's channel.
+  from how the task ended to what the channel is told. One proxy tool client and
+  one spend client per task, both pinned to the mention's channel.
 - `src/index.ts` — composition and lifecycle, and nothing else.

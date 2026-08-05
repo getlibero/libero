@@ -77,9 +77,14 @@ let closing = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     if (closing) {
-      // A second signal is an operator done waiting. Nothing here is
-      // durable — no file is open and no counter is owed a write — so exiting
-      // costs at most one in-flight answer that was already cancelled.
+      // A second signal is an operator done waiting. Nothing here is durable —
+      // no file is open — so exiting costs at most one in-flight answer that
+      // was already cancelled, and one spend report per task in flight. The
+      // meter under-reports in that case rather than over-reports: the budget
+      // fails open, bounded by the tasks running at that moment, and the loop's
+      // own token cap and the proxy's tool-call meter are what still bite.
+      // Draining in-flight work before exit is a shutdown change, not a
+      // sender one.
       process.exit(1);
     }
     closing = true;
@@ -88,6 +93,10 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     // against the provider with nowhere to post: `stop()` already refuses to
     // post a reply that arrives after it, so those tokens would be spent on
     // answers nobody ever sees.
+    //
+    // Neither call waits for a task already in flight, so the first signal has
+    // the same caveat as the second: a spend report that had not landed when
+    // the process exits is lost, and the meter hears less than was spent.
     tasks.abort();
     void gateway.stop().then(() => {
       process.exit(0);

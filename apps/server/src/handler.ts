@@ -12,10 +12,18 @@
 // is what tells the proxy which channel is calling, so a task cannot reach a
 // channel whose certificate this process does not hold. This process still
 // holds no tool credential — the proxy owns every one of them.
+//
+// What the task cost goes back the same way, on the same certificate, because
+// the proxy's meter cannot count tokens it was not told about: it meters tool
+// calls from calls it served, and only the process that talked to the model
+// knows what a turn spent. A meter that cannot be reached costs an operator a
+// counter, and that is not worth a user's answer — so the report is awaited,
+// its failure is a log line, and the reply goes to the thread either way.
 
 import {
   DEFAULT_AGENT_LOOP_CAPS,
   ProxyClientError,
+  createProxySpendClient,
   createProxyToolClient,
   runAgentTask
 } from "@getlibero/agent";
@@ -23,6 +31,7 @@ import type {
   AgentStopReason,
   AgentTaskResult,
   CompletionClient,
+  ProxySpendClient,
   ProxyTransport
 } from "@getlibero/agent";
 import { createSilentLogger } from "@getlibero/gateway";
@@ -155,6 +164,13 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
       channel: mention.channelId
     });
 
+    // Same channel, same certificate, and pinned the same way: what a task cost
+    // is reported as the channel that spent it, or not at all.
+    const spend = createProxySpendClient({
+      transport: options.transport,
+      channel: mention.channelId
+    });
+
     let result: AgentTaskResult;
     try {
       result = await runAgentTask({
@@ -204,9 +220,10 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
     }
 
     // The one thing the gateway's own `mention`/`replied` pair cannot show: why
-    // a task ended, and what it cost. Worth a line while nothing meters tokens
-    // — no spend report is sent yet (#110), so `daily_tokens` reads zero in the
-    // proxy and this is the only place a token count is visible at all.
+    // a task ended, and what it cost. Kept as its own line, rather than folded
+    // into the report below, because the two answer different questions and
+    // only one of them can fail: this says what the task did, and
+    // `spend_reported` says what the meter was told about it.
     logger.log("info", {
       event: "task",
       channel: mention.channelId,
@@ -217,6 +234,67 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
       turns: result.turns
     });
 
+    await reportSpend(spend, result, mention, logger);
+
     return replyFor(result);
   };
+}
+
+/**
+ * Tell the meter what the task cost, and never let that cost the user an answer.
+ *
+ * **Awaited rather than detached**, and not for tidiness: the process does not
+ * drain in-flight work before exiting, so a detached send is one that is
+ * usually killed — it gives up the ordering and buys nothing. The client
+ * carries its own short deadline, so the worst a proxy that accepts a
+ * connection and then goes quiet can do is delay one thread reply by it.
+ *
+ * **The turn id is the task id.** Minted by the loop, never shown to the model,
+ * and the same id on the `task` line above and on the audit records the proxy
+ * will write for this task's tool calls (#97) — so one grep ties the reply, the
+ * calls, and the spend together. A retry under it is a `duplicate`, which is
+ * the meter saying it already counted the turn rather than an error.
+ *
+ * **A cancelled task still reports.** Tokens were spent, and `replyFor`
+ * returning nothing is Slack etiquette rather than accounting. A task that
+ * spent *nothing* reports nothing: four zeros move no counter, and at shutdown
+ * every open task takes that path at once.
+ *
+ * **No retry.** The report is idempotent, so one would be safe — but the
+ * failures worth retrying are the ones that do not clear in milliseconds, a 400
+ * is a bug in what was sent, and the only retry that survives a restart is a
+ * durable one this process does not have. The log line is the remedy: it says
+ * the meter is running blind, and by how much.
+ */
+async function reportSpend(
+  spend: ProxySpendClient,
+  result: AgentTaskResult,
+  mention: SlackMention,
+  logger: Logger
+): Promise<void> {
+  if (result.totalTokens === 0) return;
+
+  try {
+    const outcome = await spend.report(result.taskId, result.usage);
+    logger.log("info", {
+      event: "spend_reported",
+      channel: mention.channelId,
+      eventId: mention.eventId,
+      task: result.taskId,
+      report: outcome,
+      totalTokens: result.totalTokens
+    });
+  } catch (error) {
+    // Everything, including what is not a `ProxyClientError`. A bug in the
+    // sender must not become a lost reply — that is the whole reason this
+    // function exists rather than the call sitting inline.
+    logger.log("error", {
+      event: "spend_report_failed",
+      channel: mention.channelId,
+      eventId: mention.eventId,
+      task: result.taskId,
+      totalTokens: result.totalTokens,
+      reason: error instanceof ProxyClientError ? error.reason : "unknown"
+    });
+  }
 }

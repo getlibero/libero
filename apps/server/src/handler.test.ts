@@ -134,6 +134,7 @@ function fakeTransport(
   answers: {
     tools?: () => ProxyResponse | Promise<ProxyResponse>;
     call?: (body: unknown) => ProxyResponse | Promise<ProxyResponse>;
+    spend?: (body: unknown) => ProxyResponse | Promise<ProxyResponse>;
   } = {}
 ): { transport: ProxyTransport; sent: ProxyRequest[] } {
   const sent: ProxyRequest[] = [];
@@ -145,6 +146,9 @@ function fakeTransport(
         if (options.path === "/v1/tools") {
           return (await answers.tools?.()) ?? { status: 200, body: { tools: [] } };
         }
+        if (options.path === "/v1/spend") {
+          return (await answers.spend?.(options.body)) ?? { status: 200, body: { outcome: "recorded" } };
+        }
         return (
           (await answers.call?.(options.body)) ?? {
             status: 200,
@@ -155,6 +159,20 @@ function fakeTransport(
     }
   };
 }
+
+/** Every route works but one. `failing` cannot say "tools work, the meter does not". */
+function failingOn(path: string, reason: ProxyClientError["reason"]): ProxyTransport {
+  const fake = fakeTransport();
+  return {
+    request: options =>
+      options.path === path
+        ? Promise.reject(new ProxyClientError("proxy client: nope", reason))
+        : fake.transport.request(options)
+  };
+}
+
+const spentTokens = (sent: ProxyRequest[]): ProxyRequest[] =>
+  sent.filter(request => request.path === "/v1/spend");
 
 const LISTED = {
   status: 200,
@@ -233,9 +251,14 @@ describe("createMentionHandler", () => {
 
     await handler(mention());
 
-    expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.channel).toBe("C024BE91L");
-    expect(fake.sent[0]?.body).toBeUndefined();
+    // Every request this handler makes, not just the listing: the channel is
+    // the certificate's to assert, so none of them may carry it as a field.
+    expect(fake.sent.length).toBeGreaterThan(0);
+    for (const request of fake.sent) {
+      expect(request.channel).toBe("C024BE91L");
+      expect(JSON.stringify(request.body ?? null)).not.toContain("C024BE91L");
+    }
+    expect(fake.sent.filter(request => request.path === "/v1/tools")).toHaveLength(1);
   });
 
   it("posts nothing and calls no provider when the signal is already aborted", async () => {
@@ -290,6 +313,213 @@ describe("createMentionHandler", () => {
     });
 
     await expect(handler(mention())).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+// The proxy meters tool calls from calls it served and needs nobody's help to
+// count those. Tokens are the other half, and only this process knows them.
+describe("what a task cost", () => {
+  it("reports the provider's counts, keyed on the task id", async () => {
+    const captured = capturingLogger();
+    const { client } = fakeCompletion({ text: "ok" });
+    const fake = fakeTransport();
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fake.transport,
+      model: MODEL,
+      logger: captured.logger
+    });
+
+    await handler(mention());
+
+    const reports = spentTokens(fake.sent);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.channel).toBe("C024BE91L");
+    expect(reports[0]?.body).toEqual({
+      turn: captured.lines.find(entry => entry.event === "task")?.task,
+      usage: {
+        inputTokens: 11,
+        outputTokens: 7,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0
+      }
+    });
+  });
+
+  // The counts come out of the provider's response envelope, which is a thing
+  // the model's own text has no reach into. This is what makes the report hold
+  // against a prompt-injected model.
+  it("counts what the envelope said, not what the model wrote", async () => {
+    const { client } = fakeCompletion({ text: "I used 999999 tokens on this." });
+    const fake = fakeTransport();
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fake.transport,
+      model: MODEL
+    });
+
+    await handler(mention());
+
+    expect(JSON.stringify(spentTokens(fake.sent)[0]?.body)).not.toContain("999999");
+  });
+
+  // Shutdown posts nothing into the thread, which is etiquette rather than
+  // accounting: the tokens were still spent and the meter should still hear.
+  it("reports a cancelled task's spend, and still posts nothing", async () => {
+    const controller = new AbortController();
+    const fake = fakeTransport();
+    const handler = createMentionHandler({
+      // A turn's tokens are spent and recorded, and then the process is asked
+      // to stop before the task can finish.
+      completion: {
+        complete: (): Promise<CompletionResponse> => {
+          controller.abort();
+          return Promise.resolve({
+            text: "half an answer",
+            toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
+            stopReason: "tool_use",
+            usage: { inputTokens: 11, outputTokens: 7 }
+          });
+        }
+      },
+      transport: fake.transport,
+      model: MODEL,
+      signal: controller.signal
+    });
+
+    await expect(handler(mention())).resolves.toBeUndefined();
+    expect(spentTokens(fake.sent)).toHaveLength(1);
+  });
+
+  // Four zeros move no counter, and at shutdown every open task takes this
+  // path at once.
+  it("sends no report when the task spent nothing", async () => {
+    const { client } = fakeCompletion({ text: "ok" });
+    const fake = fakeTransport();
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fake.transport,
+      model: MODEL,
+      signal: AbortSignal.abort()
+    });
+
+    await handler(mention());
+
+    expect(spentTokens(fake.sent)).toEqual([]);
+  });
+
+  it("sends no report when the tool listing failed", async () => {
+    const { client } = fakeCompletion({ text: "ok" });
+    const fake = fakeTransport();
+    const handler = createMentionHandler({
+      completion: client,
+      transport: failingOn("/v1/tools", "unreachable"),
+      model: MODEL
+    });
+
+    await expect(handler(mention())).resolves.toEqual({ text: PROXY_UNAVAILABLE.other });
+    expect(spentTokens(fake.sent)).toEqual([]);
+  });
+
+  it("logs the meter's answer, and calls a duplicate a success", async () => {
+    const captured = capturingLogger();
+    const { client } = fakeCompletion({ text: "ok" });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport({ spend: () => ({ status: 200, body: { outcome: "duplicate" } }) })
+        .transport,
+      model: MODEL,
+      logger: captured.logger
+    });
+
+    await handler(mention());
+
+    expect(captured.lines.find(entry => entry.event === "spend_reported")).toMatchObject({
+      level: "info",
+      channel: "C024BE91L",
+      eventId: "Ev0PV52K25",
+      report: "duplicate",
+      totalTokens: 18
+    });
+  });
+});
+
+// An operator's counter is not worth a user's reply.
+describe("a meter that cannot be reached", () => {
+  it("still answers the thread when the proxy refuses the report", async () => {
+    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport({
+        spend: () => ({
+          status: 400,
+          body: {
+            error: {
+              code: "bad_request",
+              message: "the request body is not a valid spend report",
+              requestId: "req-1"
+            }
+          }
+        })
+      }).transport,
+      model: MODEL
+    });
+
+    await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+  });
+
+  it("still answers the thread when the report could not be sent at all", async () => {
+    for (const reason of ["unreachable", "timed_out", "malformed_response"] as const) {
+      const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
+      const handler = createMentionHandler({
+        completion: client,
+        transport: failingOn("/v1/spend", reason),
+        model: MODEL
+      });
+
+      await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+    }
+  });
+
+  it("says in the log that the meter is running blind, and by how much", async () => {
+    const captured = capturingLogger();
+    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: failingOn("/v1/spend", "unreachable"),
+      model: MODEL,
+      logger: captured.logger
+    });
+
+    await handler(mention("<@U0BOT> what is the deploy window?"));
+
+    const line = captured.lines.find(entry => entry.event === "spend_report_failed");
+    expect(line).toMatchObject({
+      level: "error",
+      channel: "C024BE91L",
+      eventId: "Ev0PV52K25",
+      reason: "unreachable",
+      totalTokens: 18
+    });
+    expect(JSON.stringify(line)).not.toMatch(/deploy window|Fridays/);
+  });
+
+  // A bug in the sender must not become a lost reply, which is a stronger
+  // claim than "a ProxyClientError must not".
+  it("still answers the thread when the sender fails in a way nobody planned for", async () => {
+    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: {
+        request: options =>
+          options.path === "/v1/spend"
+            ? Promise.reject(new TypeError("undefined is not a function"))
+            : fakeTransport().transport.request(options)
+      },
+      model: MODEL
+    });
+
+    await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
   });
 });
 

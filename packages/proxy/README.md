@@ -88,10 +88,11 @@ exist — it simply has no provisional meter to reject any more, which is the
 point: the seams that land next arrive before their implementations do, and a
 stand-in meter is the obvious way to test one.
 
-**Nothing sends a token report yet.** `POST /v1/spend` is built and tested over
-real mTLS, but no proxy client exists anywhere in the tree, so in a live
-deployment `daily_tokens` meters at zero and only `daily_tool_calls` bites. The
-sender belongs to whichever issue builds the agent's proxy client.
+**Token reports arrive.** The agent's spend client sends one after each
+completed task (#110), so `daily_tokens` meters for real rather than reading
+zero. The report carries four raw counts and no total: what a cached token costs
+resolves from the channel's team sheet with the rest of policy, at decision
+time, so an operator changes it with a sheet edit rather than an agent release.
 `apps/proxy-server/README.md` documents loading secrets into the vault.
 
 ## Endpoints
