@@ -118,6 +118,25 @@ small the answer is to rotate the file.
 
 The read path — `libero audit`, with query and CSV export — is #98.
 
+### Schema version 2
+
+This build writes schema version 2, and **migrates a version 1 file in place the
+first time it opens one**. The migration rebuilds the table inside one
+transaction: a crash during it leaves the original file untouched and the next
+start tries again. Back up the file first if you would rather not rely on that.
+
+Two consequences worth knowing before you roll:
+
+- **Rolling back to a previous build will not start** against a migrated file.
+  That is the existing behaviour of the version check rather than something new,
+  and it is the right one — a build writing rows a later one cannot read leaves
+  an incident review with a gap it has no way to notice — but until now it was
+  not reachable. Rolling back means restoring the file alongside the binary.
+- Version 2 adds the approval broker's outcomes (`approved`, `denied`,
+  `expired`) and a `ticket` column tying an approval's rows together. Existing
+  rows keep their ids, their order, and every value they had; `ticket` is null
+  on all of them.
+
 A second entrypoint rather than a route, and that is the security argument
 rather than a convenience one. A reset makes a hard limit soft again; the proxy
 has no admin principal, since identity is `CN=channel:<id>` and nothing else; and

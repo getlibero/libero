@@ -31,9 +31,17 @@ credential injection into outbound HTTP calls.
   rather than a sweep, a turn-id table so a retried report cannot double-count,
   and the operator's reset kept in its own module away from the serving path.
 - `audit-db.ts` / `audit-log.ts` — the audit log over `node:sqlite`: one row per
-  decided tool call, and the only statement that touches the audit table is an
-  INSERT — the rest of the module's SQL is the `schema_version` bookkeeping
-  every database here carries.
+  decided tool call, and once the file is open the only statement that touches
+  the audit table is an INSERT — the rest of the module's SQL is the
+  `schema_version` bookkeeping every database here carries, plus the one
+  migration below.
+  The file is at schema version 2, and version 1 files are migrated in place on
+  first open. SQLite cannot widen a CHECK constraint, so the migration rebuilds
+  the table — the repository's first, and the one moment the append-only
+  triggers are deliberately dropped. It runs inside a single transaction that
+  also carries the version stamp, so a crash anywhere in it rolls back to an
+  untouched version 1 file. What made it safe to write at all is that version 2
+  only *widens*: no existing row can fail the new constraint.
   Append-only comes from `BEFORE UPDATE`/`BEFORE DELETE` triggers that
   `RAISE(ABORT)` — SQLite has no roles and no grants, so the write-only
   interface and the file's permissions are defence in depth around those rather

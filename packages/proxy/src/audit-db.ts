@@ -9,11 +9,22 @@
 // statement prepared anywhere else — a route, a writer, an admin helper — is a
 // review failure.
 //
-// The claim to check here is narrower than the budget's and stronger: **the
-// audit table is touched by exactly one statement, an INSERT.** There is no
-// UPDATE and no DELETE anywhere in this module — the only other SQL is the
-// `schema_version` bookkeeping at open — and the table refuses both from any
-// connection.
+// The claim to check here is narrower than the budget's and stronger: **once
+// the file is open, the audit table is touched by exactly one statement, an
+// INSERT.** There is no UPDATE and no DELETE against `tool_call_audit` on the
+// serving path — the only other SQL is the `schema_version` bookkeeping at open
+// — and the table refuses both from any connection.
+//
+// "Once the file is open" is doing real work in that sentence, and #125 is why.
+// Widening the outcome vocabulary meant rebuilding the table, and SQLite cannot
+// alter a CHECK constraint in place, so `migrateV1ToV2` below drops the two
+// triggers, drops the table, and renames a copy over it. That is the one moment
+// the append-only property is deliberately switched off, and it is confined to
+// a single function that runs inside one transaction before `append` has been
+// prepared and before the listener binds. Read the rule as: **the serving path
+// has one statement; the open path may rebuild, once, transactionally, and puts
+// the triggers back.** A DROP or an UPDATE anywhere else in this module is a
+// review failure exactly as it was.
 //
 // One table with a channel column, on the argument ./budget-db.ts makes at
 // length: the line is whose data it is and who reads it. An audit log is
@@ -93,15 +104,37 @@ import type { Logger } from "./log.js";
  * something to work around — the same rule the budget file follows, and here
  * the consequence is worse: a build writing rows a later one cannot read leaves
  * an incident review with a gap it has no way to notice.
+ *
+ * Version 2 widened the outcome vocabulary for the approval broker (#125) and
+ * added the `ticket` column. A file from the past now has exactly one path
+ * forward — see `migrate` at the bottom of this file — and what makes that safe
+ * is that the change is a *widening*: v2 accepts every outcome v1 did, so no
+ * existing row can fail the new constraint and the copy cannot be rejected.
+ * That property is worth checking before adding a version 3; a migration that
+ * can reject a row is a different kind of thing and needs a different answer to
+ * "what happens to the rows that fail".
+ *
+ * A file from the future is still a startup failure, and now so is a file from
+ * a past this build has no migration from.
  */
-export const AUDIT_SCHEMA_VERSION = 1;
+export const AUDIT_SCHEMA_VERSION = 2;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS schema_version (
-  version INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tool_call_audit (
+/**
+ * The table, parameterised on its name.
+ *
+ * One source for the DDL, because `migrateV1ToV2` has to build a table that is
+ * *identical* to the one a fresh file gets and then rename it into place. Two
+ * copies of these columns would agree on the day they were written and drift on
+ * some later one, and the failure would be a database whose shape depends on how
+ * old it is — which is the thing a schema version exists to make impossible.
+ * There is a test that opens a created file and a migrated one and compares what
+ * SQLite says the table is.
+ *
+ * The argument is always a module-private literal. It is never input, and it
+ * cannot be: nothing outside this file can call this.
+ */
+const auditTableDdl = (table: string, ifNotExists: boolean): string => `
+CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
   id               INTEGER PRIMARY KEY,
   at               INTEGER NOT NULL,
   channel          TEXT    NOT NULL,
@@ -112,16 +145,30 @@ CREATE TABLE IF NOT EXISTS tool_call_audit (
   server           TEXT    NOT NULL,
   tool             TEXT    NOT NULL,
   arguments_sha256 TEXT    NOT NULL,
-  outcome          TEXT    NOT NULL CHECK (outcome IN ('ran', 'held', 'refused', 'unavailable')),
+  outcome          TEXT    NOT NULL CHECK (outcome IN
+                     ('ran', 'held', 'refused', 'unavailable', 'approved', 'denied', 'expired')),
   refusal_reason   TEXT,
   result_bytes     INTEGER,
   result_is_error  INTEGER,
-  approver         TEXT
-);
+  approver         TEXT,
+  ticket           TEXT
+)`;
 
+/**
+ * The indexes and the triggers, apart from the table because the migration
+ * creates them *after* the rename — at which point there is no dependent object
+ * for `ALTER TABLE … RENAME TO` to rewrite, and nothing to reason about.
+ */
+const auditIndexDdl = `
 CREATE INDEX IF NOT EXISTS tool_call_audit_channel_at ON tool_call_audit (channel, at);
 CREATE INDEX IF NOT EXISTS tool_call_audit_channel_task ON tool_call_audit (channel, task);
+-- Partial, because the column is null on every row that never met the approval
+-- broker: what this answers is "show me this ticket's lifecycle", which is four
+-- rows across four requests that share nothing else.
+CREATE INDEX IF NOT EXISTS tool_call_audit_ticket ON tool_call_audit (ticket) WHERE ticket IS NOT NULL;
+`;
 
+const auditTriggerDdl = `
 CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_update
 BEFORE UPDATE ON tool_call_audit
 BEGIN
@@ -133,6 +180,23 @@ BEFORE DELETE ON tool_call_audit
 BEGIN
   SELECT RAISE(ABORT, 'the audit log is append-only');
 END;
+`;
+
+/**
+ * What a file must have before `migrate` can look at it, and no more.
+ *
+ * The indexes and the triggers are deliberately *not* here. One of the indexes
+ * names `ticket`, and on a version 1 file that column does not exist yet — so
+ * creating them before the migration would fail on exactly the files the
+ * migration exists for. They are applied after `migrate` instead, where the
+ * column is guaranteed either way.
+ */
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+${auditTableDdl("tool_call_audit", true)};
 `;
 
 export interface AuditDbOptions {
@@ -175,7 +239,13 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
     db.exec("PRAGMA synchronous = FULL");
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec(SCHEMA);
-    checkVersion(db, file);
+    migrate(db, file);
+    // After the migration, never before: one of these names a column that a
+    // version 1 file does not have. `migrate` recreates them itself when it
+    // rebuilds — these two lines are what covers the already-current file, and
+    // both statements are `IF NOT EXISTS`.
+    db.exec(auditIndexDdl);
+    db.exec(auditTriggerDdl);
   } catch (error) {
     db.close();
     throw error;
@@ -188,8 +258,9 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
     append: db.prepare(
       `INSERT INTO tool_call_audit
          (at, channel, requesting_user, task, request_id, call_id, server, tool,
-          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error, approver)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error, approver,
+          ticket)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
   } satisfies Record<string, StatementSync>;
 
@@ -213,7 +284,8 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
         // NULL rather than 0 when the call did not run: a refusal has no result,
         // and 0 would read as a tool that succeeded and said nothing.
         record.resultIsError === undefined ? null : record.resultIsError ? 1 : 0,
-        record.approver ?? null
+        record.approver ?? null,
+        record.ticket ?? null
       );
     },
 
@@ -224,19 +296,100 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
 }
 
 /**
- * Read the version, or claim the file if it has none. As ./budget-db.ts, and
- * the same reasoning: a row we do not recognise means refusing to start.
+ * v1 → v2: `approved`, `denied`, and `expired` join the outcome vocabulary, and
+ * rows gain the ticket that ties an approval's lifecycle together.
+ *
+ * The repository's first migration, so what it establishes matters as much as
+ * what it does. SQLite cannot alter a CHECK constraint in place, so widening one
+ * is create-new / copy / drop / rename — the procedure the SQLite manual gives
+ * for every otherwise-unsupported change.
+ *
+ * **All of it is one transaction**, including the version stamp the caller would
+ * otherwise write afterwards. SQLite's DDL is transactional, so a crash at any
+ * point rolls back to a complete, untouched v1 file and the next open re-runs
+ * the whole thing. Stamping the version outside would leave a window where the
+ * table is v2 and the file says v1, and the invariant worth having is that the
+ * shape and the number commit together.
+ *
+ * **The triggers are dropped explicitly.** `DROP TABLE` removes a table's
+ * triggers with it, and its implicit delete does not fire them, so in principle
+ * neither statement is needed. They are here anyway: the whole append-only
+ * property rests on those two triggers, that claim is a sentence in a manual,
+ * and the cost of not depending on it is two statements. If the claim were
+ * wrong, the drop would abort and the transaction would roll back — the right
+ * failure, and not one to discover on an operator's disk.
+ *
+ * **`id` is copied explicitly.** It is the log's ordering and the cursor the
+ * audit CLI bookmarks; letting SQLite reassign rowids would silently renumber
+ * history.
+ *
+ * **No row can fail the new constraint**, because v2's vocabulary is a strict
+ * superset of v1's. That is what makes this a widening rather than a data
+ * question, and it is the property `AUDIT_SCHEMA_VERSION`'s doc asks a future
+ * migration to check for itself.
+ *
+ * No `PRAGMA foreign_keys` dance — the manual's procedure begins by disabling
+ * them and there is not one in either database here. No `VACUUM`: the rebuild
+ * leaves free pages behind, and reclaiming them means rewriting the whole file
+ * at startup for a log this module has already decided not to optimise for size.
  */
-function checkVersion(db: DatabaseSync, file: string): void {
+function migrateV1ToV2(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(auditTableDdl("tool_call_audit_v2", false));
+    db.exec(`
+      INSERT INTO tool_call_audit_v2
+        (id, at, channel, requesting_user, task, request_id, call_id, server, tool,
+         arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
+         approver, ticket)
+      SELECT
+         id, at, channel, requesting_user, task, request_id, call_id, server, tool,
+         arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
+         approver, NULL
+        FROM tool_call_audit
+       ORDER BY id
+    `);
+    db.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_update");
+    db.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_delete");
+    db.exec("DROP TABLE tool_call_audit");
+    db.exec("ALTER TABLE tool_call_audit_v2 RENAME TO tool_call_audit");
+    db.exec(auditIndexDdl);
+    db.exec(auditTriggerDdl);
+    db.exec("DELETE FROM schema_version");
+    db.exec(`INSERT INTO schema_version (version) VALUES (${AUDIT_SCHEMA_VERSION})`);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Bring the file to the version this build writes, or refuse to start.
+ *
+ * A version we do not recognise still means refusing to start, as ./budget-db.ts
+ * does and for the same reason. What changes is that one version we *do*
+ * recognise now has a way forward.
+ *
+ * **The absent-row case runs the rebuild too**, which is deliberate rather than
+ * lazy. `db.exec(SCHEMA)` and the version stamp are two commits, so a process
+ * that died between them left a file holding a v1 table and no version row —
+ * and stamping that v2 without looking would produce a database that accepts
+ * every write until the first `denied` row and then fails a CHECK nobody
+ * expects. On a file this build just created the rebuild copies zero rows and
+ * costs a handful of DDL statements once, at startup. The alternative is
+ * sniffing the constraint out of `sqlite_master.sql` with a substring test,
+ * which is a clever way to be wrong later.
+ */
+function migrate(db: DatabaseSync, file: string): void {
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
-  if (row === undefined) {
-    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(AUDIT_SCHEMA_VERSION);
+  if (row !== undefined && row.version === AUDIT_SCHEMA_VERSION) return;
+  if (row === undefined || row.version === 1) {
+    migrateV1ToV2(db);
     return;
   }
-  if (row.version !== AUDIT_SCHEMA_VERSION) {
-    throw new Error(
-      `proxy audit: ${file} is schema version ${row.version}, and this build writes ` +
-        `version ${AUDIT_SCHEMA_VERSION}`
-    );
-  }
+  throw new Error(
+    `proxy audit: ${file} is schema version ${row.version}, and this build writes ` +
+      `version ${AUDIT_SCHEMA_VERSION} with no migration from ${row.version}`
+  );
 }

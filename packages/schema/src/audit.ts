@@ -32,10 +32,36 @@ import type { RefusalReason } from "./refusal.js";
  * which is a 501 rather than a `ToolCallResponse` and still a thing that
  * happened.
  *
+ * The last three are the approval broker's, and they are the only outcomes in
+ * this table that no `/v1/tools/call` request produced: `approved` and `denied`
+ * are written by the decision route when a human clicks, and `expired` by
+ * whichever request first observes a ticket that died undecided. A `held` row
+ * therefore has a successor row rather than being amended — the table refuses
+ * UPDATE — and the two are tied together by `ticket` below.
+ *
+ * **There is no sweep and no timer**, so a ticket nobody ever touches leaves its
+ * `held` row and no successor at all. An operator counting `expired` rows is
+ * counting *observed* expiries; the honest query for "held and never resolved"
+ * is a `held` row with no later row for its ticket.
+ *
+ * `approved` is a decision, not an execution. The call it approved runs on a
+ * later request and gets its own `ran` row, which carries the same approver —
+ * so an approval that was never redeemed is visible as an `approved` row with
+ * nothing after it, which is exactly the state an agent that died between the
+ * click and the call leaves behind.
+ *
  * Not a success/failure flag. Whether the tool itself reported an error is
  * `resultIsError` below, and the two are different questions.
  */
-export const AuditOutcome = z.enum(["ran", "held", "refused", "unavailable"]);
+export const AuditOutcome = z.enum([
+  "ran",
+  "held",
+  "refused",
+  "unavailable",
+  "approved",
+  "denied",
+  "expired"
+]);
 
 export type AuditOutcome = z.infer<typeof AuditOutcome>;
 
@@ -89,12 +115,39 @@ export interface AuditRecord {
    */
   readonly resultIsError?: boolean;
   /**
-   * The human who approved a held call, once the approval broker (#37) exists.
+   * The human who decided a held call, as the gateway observed them.
    *
-   * Always absent today, and it cannot be back-filled: the table refuses UPDATE,
-   * so an approval is written when the approved call is recorded or it is never
-   * written at all. The column ships now so the CLI's column set does not churn
-   * one issue after it stabilises.
+   * On the `approved` or `denied` row the decision route writes, and again on
+   * the `ran` row of the call that approval let through. It cannot be
+   * back-filled onto the `held` row — the table refuses UPDATE — which is why a
+   * decision is a new row rather than an amendment to the one it answers.
+   *
+   * **Attribution, and a stronger claim than `requestingUser` — but not
+   * authentication.** The click is read out of a Socket Mode interactive
+   * envelope by gateway code, which is not model output, so a prompt-injected
+   * model cannot forge one. It reaches the proxy through the agent process, over
+   * a route the model has no tool for, so a *compromised agent process* can.
+   * That is the same narrower claim `daily_tokens` makes, for the same reason.
+   *
+   * Nothing authorizes on it. It gates no call and selects no policy; it is
+   * written here so an operator can see who said yes.
    */
   readonly approver?: string;
+  /**
+   * The approval ticket this row belongs to, when the call passed through the
+   * broker: on the `held` row that minted it, on the `approved` or `denied` row
+   * that decided it, on the `expired` row that observed it dead, and on the
+   * `ran` row that spent it.
+   *
+   * The correlation key, and the reason it is a column rather than a join on
+   * something already here: `callId` is model-authored and a retry reuses it, so
+   * it cannot key a lifecycle, and the four rows are four requests with four
+   * different `requestId`s.
+   *
+   * A live ticket id is therefore in this table for as long as the ticket lives.
+   * It is worth nothing without the channel's client certificate — which already
+   * permits every call the sheet allows — and reading this file means being on
+   * the proxy host, where the vault already is.
+   */
+  readonly ticket?: string;
 }
