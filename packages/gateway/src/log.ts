@@ -68,6 +68,12 @@ export interface LogFields {
   totalTokens?: number;
   /** Model turns in a task. Tells a token count that ran long from one that ran wide. */
   turns?: number;
+  /**
+   * The task id every tool call in a task was attributed to. An id the agent
+   * minted, not content, and the one field that will tie this line to the audit
+   * records the proxy writes for the same task (#97).
+   */
+  task?: string;
 }
 
 export interface Logger {

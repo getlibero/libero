@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { CHANNEL_ID_PATTERN, ChannelId } from "./names.js";
 
-// The other names in this module are covered where they are used: ResourceName
-// in tool-call.test.ts, CredentialName and DestinationHost in refusal.test.ts.
-// ChannelId is the one nothing else exercises, and it is the one that decides
-// whether a channel id is safe to use as a path segment.
+// The other names in this module are covered where they are used: ResourceName,
+// RequestingUser, and TaskId in tool-call.test.ts, CredentialName and
+// DestinationHost in refusal.test.ts. ChannelId is the one nothing else
+// exercises, and it is the one that decides whether a channel id is safe to use
+// as a path segment.
 describe("the channel id", () => {
   const valid = ["C0ENGINEERING", "engineering", "eng-ops", "team.core", "C123_456", "a"];
   const invalid = ["", "..", ".", "../../etc", "a/b", "a\\b", ".hidden", "-lead", "C 123", "x".repeat(65)];

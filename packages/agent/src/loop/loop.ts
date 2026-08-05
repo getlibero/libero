@@ -8,9 +8,17 @@
 // client; both arrive as interfaces, which is what keeps the only path from
 // here to a tool a network call to that service.
 
+import { randomUUID } from "node:crypto";
 import type { CompletionResponse, StopReason, ToolCall } from "../completion/types.js";
 import { createCapTracker, type AbortStop, type CapTracker } from "./caps.js";
-import type { AgentStopReason, AgentTaskOptions, AgentTaskResult, ToolExecutor, ToolResult } from "./types.js";
+import type {
+  AgentStopReason,
+  AgentTaskOptions,
+  AgentTaskResult,
+  ToolCallAttribution,
+  ToolExecutor,
+  ToolResult
+} from "./types.js";
 
 /** Tool error text goes to the model and into the stored transcript, so it is
  *  bounded. A tool that returns a megabyte of stack trace should not become a
@@ -40,6 +48,18 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
   const now = options.now ?? Date.now;
   const tracker = createCapTracker(caps, options.signal, now);
 
+  // Minted once, here, before the first turn. Every call this task dispatches
+  // carries it, which is what makes the audit log answer "what did that one
+  // request do" rather than "which calls happened to arrive together". A UUID
+  // satisfies `TaskId`'s alphabet in packages/schema as it stands.
+  //
+  // The model never sees it and never supplies it: it is not in the system
+  // prompt, not in the transcript, and not a tool argument.
+  const attribution: ToolCallAttribution = {
+    requestingUser: options.requestingUser,
+    taskId: options.taskId ?? randomUUID()
+  };
+
   const messages = [...options.messages];
   let text = "";
   let turns = 0;
@@ -48,6 +68,7 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
     const counted = tracker.snapshot();
     return {
       stopReason,
+      taskId: attribution.taskId,
       text,
       messages,
       usage: counted.usage,
@@ -115,7 +136,13 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
     // A tool-use turn with nothing to call would spin forever if fed back.
     if (response.toolCalls.length === 0) return finish("stopped_other");
 
-    const stopped = await dispatchToolCalls(response.toolCalls, toolExecutor, tracker, messages);
+    const stopped = await dispatchToolCalls(
+      response.toolCalls,
+      toolExecutor,
+      attribution,
+      tracker,
+      messages
+    );
     if (stopped !== undefined) return finish(stopped);
   }
 }
@@ -134,6 +161,7 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
 async function dispatchToolCalls(
   calls: ToolCall[],
   executor: ToolExecutor,
+  attribution: ToolCallAttribution,
   tracker: CapTracker,
   messages: AgentTaskResult["messages"]
 ): Promise<DispatchStop | undefined> {
@@ -156,7 +184,7 @@ async function dispatchToolCalls(
 
     let result: ToolResult;
     try {
-      result = await executor.execute(call, tracker.signal);
+      result = await executor.execute(call, attribution, tracker.signal);
     } catch (cause) {
       const aborted = tracker.abortStop();
       if (aborted !== undefined) {

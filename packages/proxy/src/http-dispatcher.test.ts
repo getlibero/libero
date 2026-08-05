@@ -75,7 +75,15 @@ function vaultOf(entries: Record<string, string>): Vault {
 }
 
 function callTo(tool = "list_prs"): ResolvedToolCall {
-  return { id: "toolu_01", server: "github", tool, arguments: { state: "open" }, channel: "C0ENGINEERING" };
+  return {
+    id: "toolu_01",
+    server: "github",
+    tool,
+    arguments: { state: "open" },
+    requestingUser: "U0ASKER",
+    task: "b9d5a2f0-0000-4000-8000-000000000001",
+    channel: "C0ENGINEERING"
+  };
 }
 
 /**
@@ -118,12 +126,17 @@ describe("serving a call", () => {
     expect(received[0]?.authorization).toBe(`Bearer ${SECRET}`);
   });
 
-  it("sends the tool and its arguments, and does not send the channel", async () => {
+  it("sends the tool and its arguments, and no channel or attribution", async () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
     await dispatcher.dispatch(callTo(), serverAt(origin));
 
     expect(JSON.parse(received[0]?.body ?? "{}")).toEqual({ tool: "list_prs", arguments: { state: "open" } });
     expect(received[0]?.body).not.toContain("C0ENGINEERING");
+    // Who asked and which task is ours to audit, not a third party's to learn.
+    // The upstream is somebody else's service and its logs are somebody else's
+    // logs; a Slack user id landing in them is a leak with no upside (#95).
+    expect(received[0]?.body).not.toContain("U0ASKER");
+    expect(received[0]?.body).not.toContain("b9d5a2f0");
   });
 
   it("builds the body from the call and nothing else", () => {

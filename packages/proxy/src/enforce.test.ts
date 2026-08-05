@@ -61,7 +61,15 @@ function spending(tokens: number, toolCalls: number): BudgetSpend {
 const NO_SPEND: BudgetSpend = spending(0, 0);
 
 function callTo(server: string, tool: string): ResolvedToolCall {
-  return { id: "toolu_01", server, tool, arguments: {}, channel: "C0ENGINEERING" };
+  return {
+    id: "toolu_01",
+    server,
+    tool,
+    arguments: {},
+    requestingUser: "U0ASKER",
+    task: "b9d5a2f0-0000-4000-8000-000000000001",
+    channel: "C0ENGINEERING"
+  };
 }
 
 describe("the decision table", () => {
@@ -575,6 +583,54 @@ describe("purity", () => {
       spend: NO_SPEND
     });
     expect(loaded).toEqual(plain);
+  });
+
+  // The rule that keeps `requestingUser` and `task` safe to accept from the
+  // agent at all (#95). The channel is proved by a certificate; these two are
+  // asserted by the process running the model, so a compromised agent writes
+  // whatever it likes in them. That costs nothing only while no decision reads
+  // them, and this is what says so.
+  //
+  // Swept across the whole table rather than one call, because a rule that read
+  // the field would most plausibly be added for one tool — an "admins may skip
+  // approval" shortcut on the held one.
+  it("decides the same whoever the call says asked, and whatever task it claims", () => {
+    const attributions = [
+      { requestingUser: "U0ASKER", task: "b9d5a2f0-0000-4000-8000-000000000001" },
+      // The values an authorization shortcut would be written against.
+      { requestingUser: "admin", task: "b9d5a2f0-0000-4000-8000-000000000002" },
+      { requestingUser: "root", task: "admin" },
+      { requestingUser: "U0OWNER", task: "approved" },
+      // And the same task id reused across callers, and the reverse.
+      { requestingUser: "U0OTHER", task: "b9d5a2f0-0000-4000-8000-000000000001" },
+      { requestingUser: "U0ASKER", task: "b9d5a2f0-0000-4000-8000-000000000003" }
+    ];
+
+    const tools = [
+      ["github", "list_prs"], // allow
+      ["github", "trigger_workflow"], // hold — approval required
+      ["github", "delete_branch"], // allow — explicit `none` beats the heuristic
+      ["github", "drop_stale_refs"], // hold — the destructive-name default
+      ["github", "not_listed"], // refuse — tool_not_allowed
+      ["stripe", "charge"] // refuse — server_not_allowed
+    ] as const;
+
+    // Both the ordinary case and the one where a limit is spent, so a rule
+    // reading these fields to grant an exemption from the *budget* is caught
+    // too, not only one exempting from approval.
+    for (const spend of [NO_SPEND, spending(0, 10)]) {
+      for (const [server, tool] of tools) {
+        const baseline = decide({ sheet, call: callTo(server, tool), spend });
+        for (const attribution of attributions) {
+          const decision = decide({
+            sheet,
+            call: { ...callTo(server, tool), ...attribution },
+            spend
+          });
+          expect(decision).toEqual(baseline);
+        }
+      }
+    }
   });
 });
 

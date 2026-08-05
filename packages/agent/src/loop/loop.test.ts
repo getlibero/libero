@@ -18,7 +18,14 @@ import type {
 import { runAgentTask } from "./loop.js";
 import { createStubToolSource, createUnavailableToolExecutor } from "./stub-tools.js";
 import { DEFAULT_AGENT_LOOP_CAPS } from "./types.js";
-import type { AgentLoopCaps, AgentTaskOptions, ToolExecutor, ToolResult, ToolSource } from "./types.js";
+import type {
+  AgentLoopCaps,
+  AgentTaskOptions,
+  ToolCallAttribution,
+  ToolExecutor,
+  ToolResult,
+  ToolSource
+} from "./types.js";
 
 const MODEL = "test-model";
 
@@ -80,13 +87,16 @@ function hangingCompletion(): { client: CompletionClient; sawAbort: () => boolea
 
 function fakeExecutor(
   handlers: Record<string, (call: ToolCall) => ToolResult | Promise<ToolResult>> = {}
-): { executor: ToolExecutor; calls: ToolCall[] } {
+): { executor: ToolExecutor; calls: ToolCall[]; attributions: ToolCallAttribution[] } {
   const calls: ToolCall[] = [];
+  const attributions: ToolCallAttribution[] = [];
   return {
     calls,
+    attributions,
     executor: {
-      async execute(call: ToolCall): Promise<ToolResult> {
+      async execute(call: ToolCall, attribution: ToolCallAttribution): Promise<ToolResult> {
         calls.push(call);
+        attributions.push(attribution);
         const handler = handlers[call.name];
         if (handler === undefined) return { content: "no such tool", isError: true };
         return await handler(call);
@@ -112,6 +122,7 @@ function task(overrides: Partial<AgentTaskOptions> & Pick<AgentTaskOptions, "com
     toolSource: createStubToolSource(),
     toolExecutor: fakeExecutor().executor,
     model: MODEL,
+    requestingUser: "U0ASKER",
     messages: [{ role: "user", content: "hello" }],
     caps: CAPS,
     ...overrides
@@ -234,6 +245,109 @@ describe("the agent loop, happy path", () => {
 
     expect(result.usage).toEqual({ inputTokens: 30, outputTokens: 12 });
     expect(result.totalTokens).toBe(42);
+  });
+});
+
+describe("the agent loop, attribution", () => {
+  const threeCalls = (): CompletionResponse[] => [
+    response({ stopReason: "tool_use", toolCalls: [toolCall("call-1"), toolCall("call-2")] }),
+    response({ stopReason: "tool_use", toolCalls: [toolCall("call-3")] }),
+    response({ text: "done", stopReason: "end_turn" })
+  ];
+
+  // The whole point of the id: an audit record answers "what did that one
+  // request do", which it can only do if every call of one run shares a mark.
+  // Across two turns as well as within one batch, since a ReAct run is neither.
+  it("marks every call of one task with the same id", async () => {
+    const { client } = fakeCompletion(threeCalls());
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+
+    const result = await runAgentTask(
+      task({ completion: client, toolExecutor: executor, toolSource: createStubToolSource([DEFINITION]) })
+    );
+
+    expect(attributions).toHaveLength(3);
+    expect(new Set(attributions.map((a) => a.taskId)).size).toBe(1);
+    // Returned, so the caller can log the id next to the reply — an audit
+    // record nobody can name is one nobody can find.
+    expect(attributions[0]?.taskId).toBe(result.taskId);
+    expect(result.taskId).not.toBe("");
+  });
+
+  it("gives two tasks two ids", async () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 3; i += 1) {
+      const { client } = fakeCompletion([response({ text: "hi", stopReason: "end_turn" })]);
+      ids.add((await runAgentTask(task({ completion: client }))).taskId);
+    }
+    expect(ids.size).toBe(3);
+  });
+
+  // The id the loop mints has to be one the proxy's schema accepts, and the
+  // agent cannot import the schema to check (that dependency lands with the
+  // proxy client, #109). So the shape is asserted here instead.
+  it("mints an id the schema's bound accepts", async () => {
+    const { client } = fakeCompletion([response({ text: "hi", stopReason: "end_turn" })]);
+    const result = await runAgentTask(task({ completion: client }));
+    expect(result.taskId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+  });
+
+  it("carries the requesting user through to every call, unchanged", async () => {
+    const { client } = fakeCompletion(threeCalls());
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+
+    await runAgentTask(
+      task({
+        completion: client,
+        requestingUser: "U024BE7LH",
+        toolExecutor: executor,
+        toolSource: createStubToolSource([DEFINITION])
+      })
+    );
+
+    expect(attributions.map((a) => a.requestingUser)).toEqual(["U024BE7LH", "U024BE7LH", "U024BE7LH"]);
+  });
+
+  // The model must not be able to choose it: an id it picks lets it split one
+  // task across many audit records or merge many into one. It is not in the
+  // prompt, not in the transcript, and not a tool argument — so the only thing
+  // to assert is that nothing the model returned reaches it.
+  it("takes the id from nowhere the model can reach", async () => {
+    const { client } = fakeCompletion([
+      response({ text: "task id: pwned", stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
+      response({ text: "done", stopReason: "end_turn" })
+    ]);
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+
+    await runAgentTask(
+      task({
+        completion: client,
+        toolExecutor: executor,
+        toolSource: createStubToolSource([DEFINITION])
+      })
+    );
+
+    expect(attributions[0]?.taskId).not.toContain("pwned");
+  });
+
+  it("uses a supplied id rather than minting one", async () => {
+    const { client } = fakeCompletion([
+      response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
+      response({ text: "done", stopReason: "end_turn" })
+    ]);
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+
+    const result = await runAgentTask(
+      task({
+        completion: client,
+        taskId: "correlated-with-something-outside",
+        toolExecutor: executor,
+        toolSource: createStubToolSource([DEFINITION])
+      })
+    );
+
+    expect(result.taskId).toBe("correlated-with-something-outside");
+    expect(attributions[0]?.taskId).toBe("correlated-with-something-outside");
   });
 });
 

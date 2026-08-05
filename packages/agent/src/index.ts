@@ -30,6 +30,7 @@ export type {
   AgentStopReason,
   AgentTaskOptions,
   AgentTaskResult,
+  ToolCallAttribution,
   ToolExecutor,
   ToolResult,
   ToolSource

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CHANNEL_ID_PATTERN, ResourceName } from "./names.js";
+import { CHANNEL_ID_PATTERN, RequestingUser, ResourceName, TaskId } from "./names.js";
 import { ToolRefusal } from "./refusal.js";
 
 /**
@@ -18,6 +18,12 @@ import { ToolRefusal } from "./refusal.js";
  * the parse fails and the attempt is visible in the proxy's log. A field that
  * must be ignored to stay safe is a trap for whoever wires up the next
  * endpoint, so there is no such field.
+ *
+ * `ToolCall` does carry two fields the agent asserts — `requestingUser` and
+ * `task` — and they are not a hole in that argument, because nothing
+ * authorizes on them. The line to hold is the one this file draws: what a
+ * decision reads must be proved, and what the audit log reads may be asserted.
+ * Each field says which it is; see their doc comments before adding a third.
  */
 
 export const ToolCall = z
@@ -34,7 +40,45 @@ export const ToolCall = z
      * the shape is the tool's JSON Schema, which the proxy validates against
      * the definition it published rather than against anything fixed here.
      */
-    arguments: z.record(z.string(), z.unknown()).default({})
+    arguments: z.record(z.string(), z.unknown()).default({}),
+
+    /**
+     * Who asked: the Slack user behind the mention that started the task.
+     *
+     * **Attribution, not authentication — and nothing may ever authorize on
+     * it.** The channel id is different, and the difference is the whole point.
+     * A channel is proved: it comes from the client certificate's
+     * `CN=channel:<id>` and from nowhere else, so the process running the model
+     * cannot assert one. There is no per-user certificate, so this field is
+     * asserted by the agent process, and an agent under an attacker's control
+     * can put any user id here it likes.
+     *
+     * That is acceptable *only* because no decision reads it. It is written to
+     * the audit log so a human can see who asked, and it must never become an
+     * input to enforcement: no per-user allowlists, no "these users skip
+     * approval", nothing in packages/proxy/src/enforce.ts that branches on it.
+     * A rule built on this field would be a rule a compromised agent rewrites
+     * by editing a string.
+     *
+     * Approval identity is a different thing and a stronger one. The approval
+     * broker (#37) takes the approver from the Slack interaction payload, which
+     * the agent never touches — that is why a human can authorize a call and
+     * this field cannot.
+     */
+    requestingUser: RequestingUser,
+
+    /**
+     * Which task this call was part of: the id grouping every call one ReAct
+     * run made.
+     *
+     * Minted by the agent loop, once per task, and never by the model. Same
+     * standing as `requestingUser` above — the audit log reads it to reconstruct
+     * one request's work, and enforcement does not read it at all. A model that
+     * could choose this id could make two tasks look like one, which changes
+     * what a log says without changing what a decision does; keeping it out of
+     * the decision is what keeps that harmless.
+     */
+    task: TaskId
   })
   .strict();
 

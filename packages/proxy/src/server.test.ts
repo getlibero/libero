@@ -140,6 +140,18 @@ function post(path: string, body: unknown, channel = CHANNEL): Promise<Response>
 }
 
 /**
+ * A call body carrying the attribution the agent asserts (#95).
+ *
+ * Required by `ToolCall`, so every body here needs it, and a helper rather than
+ * a literal per site keeps the fields out of the way of what each test is
+ * actually about. That they change no decision is asserted in enforce.test.ts,
+ * which is where the rule lives; here they are only along for the ride.
+ */
+function asked(fields: Record<string, unknown>): Record<string, unknown> {
+  return { requestingUser: "U0ASKER", task: "b9d5a2f0-1c4e-4a7f-9b3d-2e6c8a1f0d55", ...fields };
+}
+
+/**
  * A dispatcher that records what reached it and otherwise does nothing.
  *
  * The instrument for the property this whole issue exists to establish:
@@ -523,7 +535,7 @@ url = "https://example.zendesk.com"
 });
 
 describe("the call-time gate", () => {
-  const CALL = { id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } };
+  const CALL = asked({ id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } });
 
   it("serves an allowed call to the dispatcher", async () => {
     const res = await post("/v1/tools/call", CALL);
@@ -647,16 +659,70 @@ url = "https://api.github.com"
     // The model wrote the arguments, so they are not a thing this process logs.
     expect(logLines.join("")).not.toContain("ghp_secret");
   });
+
+  // The two fields exist to be read back by a human (#95), so the end-to-end
+  // claim is that they survive the wire into what an operator greps — not
+  // merely that the route parses them.
+  it("audits who a call said asked, and which task it claimed", async () => {
+    await post(
+      "/v1/tools/call",
+      asked({ id: "toolu_01", server: "github", tool: "list_prs", requestingUser: "U024BE7LH" })
+    );
+
+    const audit = logLines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(entry => entry.event === "tool_call");
+
+    expect(audit).toMatchObject({
+      outcome: "ran",
+      requestingUser: "U024BE7LH",
+      task: "b9d5a2f0-1c4e-4a7f-9b3d-2e6c8a1f0d55"
+    });
+  });
+
+  // Bounded at the edge, so nothing downstream — a log line today, an audit
+  // row and a CSV export tomorrow (#97, #98) — has to cope with an agent that
+  // decided its user id was a kilobyte of text.
+  it("rejects a call whose attribution is not a short identifier", async () => {
+    for (const bad of ["x".repeat(65), "has space", "U1\nU2", ""]) {
+      const asUser = await post(
+        "/v1/tools/call",
+        asked({ id: "toolu_01", server: "github", tool: "list_prs", requestingUser: bad })
+      );
+      const asTask = await post(
+        "/v1/tools/call",
+        asked({ id: "toolu_01", server: "github", tool: "list_prs", task: bad })
+      );
+
+      expect(asUser.status).toBe(400);
+      expect(asTask.status).toBe(400);
+      expect(ProxyError.parse(asUser.body).error.code).toBe("bad_request");
+    }
+    // Refused before anything upstream was touched, exactly as a malformed
+    // body has always been.
+    expect(dispatcher.seen).toEqual([]);
+  });
+
+  it("rejects a call carrying no attribution at all", async () => {
+    const res = await post("/v1/tools/call", {
+      id: "toolu_01",
+      server: "github",
+      tool: "list_prs"
+    });
+
+    expect(res.status).toBe(400);
+    expect(dispatcher.seen).toEqual([]);
+  });
 });
 
 describe("request bodies", () => {
   it("rejects a body past the cap without buffering it", async () => {
-    const res = await post("/v1/tools/call", {
+    const res = await post("/v1/tools/call", asked({
       id: "toolu_01",
       server: "github",
       tool: "list_prs",
       arguments: { blob: "x".repeat(MAX_BODY_BYTES) }
-    });
+    }));
 
     expect(res.status).toBe(413);
     expect(ProxyError.parse(res.body).error.code).toBe("payload_too_large");
@@ -736,7 +802,7 @@ url = "https://api.github.com"
 `;
 }
 
-const listPrs = (id: string) => ({ id, server: "github", tool: "list_prs" });
+const listPrs = (id: string) => asked({ id, server: "github", tool: "list_prs" });
 
 async function callN(times: number, channel = CHANNEL): Promise<Response[]> {
   const out: Response[] = [];
@@ -785,9 +851,9 @@ describe("the budget gate", () => {
   });
 
   it("never counts a refused or held call", async () => {
-    await post("/v1/tools/call", { id: "1", server: "stripe", tool: "charge" });
-    await post("/v1/tools/call", { id: "2", server: "github", tool: "force_push" });
-    await post("/v1/tools/call", { id: "3", server: "github", tool: "merge_pr" });
+    await post("/v1/tools/call", asked({ id: "1", server: "stripe", tool: "charge" }));
+    await post("/v1/tools/call", asked({ id: "2", server: "github", tool: "force_push" }));
+    await post("/v1/tools/call", asked({ id: "3", server: "github", tool: "merge_pr" }));
 
     expect(await meter.read(CHANNEL)).toMatchObject({ toolCalls: 0 });
     expect(dispatcher.seen).toEqual([]);
@@ -891,7 +957,7 @@ describe("no route can lower a counter", () => {
     await call("/health", clientCert(certs, CHANNEL));
     await call("/v1/whoami", clientCert(certs, CHANNEL));
     await call("/v1/tools", clientCert(certs, CHANNEL));
-    await post("/v1/tools/call", { id: "1", server: "github", tool: "nope" });
+    await post("/v1/tools/call", asked({ id: "1", server: "github", tool: "nope" }));
     await post("/v1/spend", { turn: "t", usage: { inputTokens: -500, outputTokens: 0 } });
     await post("/v1/spend", { turn: "t", usage: { inputTokens: 0, outputTokens: 0 } });
     await post("/v1/spend", { turn: "turn_floor", usage: { inputTokens: 0, outputTokens: 0 } });
@@ -1084,25 +1150,25 @@ describe("no route returns a credential", () => {
       await call("/v1/whoami", cert),
       await call("/v1/tools", cert),
       // Ran, refused, held — the three ways a call is answered.
-      await post("/v1/tools/call", { id: "toolu_01", server: "github", tool: "list_prs" }),
-      await post("/v1/tools/call", { id: "toolu_02", server: "github", tool: "not_listed" }),
-      await post("/v1/tools/call", { id: "toolu_03", server: "not_listed", tool: "list_prs" }),
-      await post("/v1/tools/call", { id: "toolu_04", server: "github", tool: "merge_pr" }),
+      await post("/v1/tools/call", asked({ id: "toolu_01", server: "github", tool: "list_prs" })),
+      await post("/v1/tools/call", asked({ id: "toolu_02", server: "github", tool: "not_listed" })),
+      await post("/v1/tools/call", asked({ id: "toolu_03", server: "not_listed", tool: "list_prs" })),
+      await post("/v1/tools/call", asked({ id: "toolu_04", server: "github", tool: "merge_pr" })),
       // A body the model wrote that does not parse, and one asserting a channel.
-      await post("/v1/tools/call", { id: "toolu_05", server: "github" }),
-      await post("/v1/tools/call", {
+      await post("/v1/tools/call", asked({ id: "toolu_05", server: "github" })),
+      await post("/v1/tools/call", asked({
         id: "toolu_06",
         server: "github",
         tool: "list_prs",
         channel: OTHER_CHANNEL
-      }),
+      })),
       // Arguments carrying something secret-shaped, which must not echo either.
-      await post("/v1/tools/call", {
+      await post("/v1/tools/call", asked({
         id: "toolu_07",
         server: "github",
         tool: "list_prs",
         arguments: { token: VAULT_VALUE }
-      }),
+      })),
       // The error paths: unknown route, wrong method, oversized body.
       await call("/v1/nope", cert),
       await call("/v1/tools", cert, "POST"),
@@ -1111,7 +1177,7 @@ describe("no route returns a credential", () => {
         cert,
         "POST",
         port,
-        bodyOf({ id: "toolu_08", server: "github", tool: "list_prs", arguments: { pad: "x".repeat(MAX_BODY_BYTES) } })
+        bodyOf(asked({ id: "toolu_08", server: "github", tool: "list_prs", arguments: { pad: "x".repeat(MAX_BODY_BYTES) } }))
       )
     ];
 
@@ -1211,7 +1277,7 @@ credential = "github_service_account"
         clientCert(certs, INJECT_CHANNEL),
         "POST",
         injectedPort,
-        JSON.stringify({ id: "toolu_01", server: "github", tool: "list_prs" })
+        JSON.stringify(asked({ id: "toolu_01", server: "github", tool: "list_prs" }))
       );
 
       expect(ToolCallResponse.parse(response.body)).toMatchObject({ outcome: "ran" });
@@ -1229,7 +1295,7 @@ credential = "github_service_account"
         clientCert(certs, INJECT_CHANNEL),
         "POST",
         injectedPort,
-        JSON.stringify({ id: "toolu_02", server: "github", tool: "list_prs" })
+        JSON.stringify(asked({ id: "toolu_02", server: "github", tool: "list_prs" }))
       );
 
       expect(response.status).toBe(200);
@@ -1248,7 +1314,7 @@ credential = "github_service_account"
         clientCert(certs, INJECT_CHANNEL),
         "POST",
         injectedPort,
-        JSON.stringify({ id: "toolu_04", server: "github", tool: "list_prs" })
+        JSON.stringify(asked({ id: "toolu_04", server: "github", tool: "list_prs" }))
       );
 
       const parsed = ToolCallResponse.parse(response.body);
@@ -1270,7 +1336,7 @@ credential = "github_service_account"
         clientCert(certs, INJECT_CHANNEL),
         "POST",
         injectedPort,
-        JSON.stringify({ id: "toolu_02", server: "github", tool: "list_prs" })
+        JSON.stringify(asked({ id: "toolu_02", server: "github", tool: "list_prs" }))
       );
 
       expect(JSON.stringify(response.body)).not.toContain("ghp_");
@@ -1303,7 +1369,7 @@ credential = "absent_credential"
         clientCert(certs, INJECT_CHANNEL),
         "POST",
         injectedPort,
-        JSON.stringify({ id: "toolu_03", server: "github", tool: "list_prs" })
+        JSON.stringify(asked({ id: "toolu_03", server: "github", tool: "list_prs" }))
       );
 
       // A served request, not an error: 200 with the structured refusal.
@@ -1358,7 +1424,7 @@ describe("a permitted call with no upstream", () => {
       clientCert(certs, CHANNEL),
       "POST",
       barePort,
-      JSON.stringify({ id: "toolu_01", server: "github", tool: "list_prs" })
+      JSON.stringify(asked({ id: "toolu_01", server: "github", tool: "list_prs" }))
     );
 
     expect(response.status).toBe(501);
@@ -1395,7 +1461,7 @@ describe("a permitted call with no upstream", () => {
         clientCert(certs, CHANNEL),
         "POST",
         throwingPort,
-        JSON.stringify({ id: "toolu_09", server: "github", tool: "list_prs" })
+        JSON.stringify(asked({ id: "toolu_09", server: "github", tool: "list_prs" }))
       );
 
       expect(response.status).toBe(500);
@@ -1418,7 +1484,7 @@ describe("a permitted call with no upstream", () => {
       clientCert(certs, CHANNEL),
       "POST",
       barePort,
-      JSON.stringify({ id: "toolu_02", server: "github", tool: "not_listed" })
+      JSON.stringify(asked({ id: "toolu_02", server: "github", tool: "not_listed" }))
     );
 
     expect(response.status).toBe(200);

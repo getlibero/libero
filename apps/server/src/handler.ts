@@ -116,6 +116,11 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
       toolSource: createStubToolSource(),
       toolExecutor: createUnavailableToolExecutor(),
       model: options.model,
+      // Attribution for the audit log, not authentication: nothing in the
+      // proxy decides anything from it. The mention's user id as Slack sent it
+      // — display-name resolution is the context assembler's (#67), and a name
+      // is not what an audit record wants anyway.
+      requestingUser: mention.userId,
       system: SYSTEM_PROMPT,
       // The mention text as it arrived, `<@U…>` token and all. Stripping it,
       // resolving display names, and prepending thread history are the context
@@ -135,6 +140,7 @@ export function createMentionHandler(options: HandlerOptions): MentionHandler {
       event: "task",
       channel: mention.channelId,
       eventId: mention.eventId,
+      task: result.taskId,
       stopReason: result.stopReason,
       totalTokens: result.totalTokens,
       turns: result.turns

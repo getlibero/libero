@@ -60,9 +60,15 @@ export interface HttpDispatcherOptions {
 /**
  * The JSON the upstream is POSTed. Provisional — see the file header.
  *
- * The channel is **not** in it. The upstream has no business knowing which
- * Slack channel drove a call, and a field carrying it is a field that ends up
- * in someone else's log.
+ * The channel is **not** in it, and neither is the attribution the agent sent —
+ * `requestingUser` and `task`. The upstream has no business knowing which Slack
+ * channel drove a call or who asked for it, and a field carrying either is a
+ * field that ends up in someone else's log. Both exist so *this* side can write
+ * an audit record; forwarding them would turn an internal record into a
+ * disclosure.
+ *
+ * Named explicitly rather than by spreading the call, so a field added to
+ * `ToolCall` does not reach an upstream by default.
  */
 export function toolRequestBody(call: ResolvedToolCall): unknown {
   return { tool: call.tool, arguments: call.arguments };

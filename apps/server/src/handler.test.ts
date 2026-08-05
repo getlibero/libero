@@ -32,6 +32,7 @@ function result(partial: Partial<AgentTaskResult> = {}): AgentTaskResult {
   const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   return {
     stopReason: "completed",
+    taskId: "b9d5a2f0-0000-4000-8000-000000000001",
     text: "",
     messages: [],
     usage,
