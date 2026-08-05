@@ -81,8 +81,12 @@ export interface AuditWriter {
  * Array order is preserved: it is meaningful to the tool, so two different
  * orders are two different calls.
  *
- * Cannot throw on anything this is given. The input came from `JSON.parse` of a
- * request body, so there are no cycles, no BigInt, and no functions in it.
+ * The input came from `JSON.parse` of a request body, so there are no cycles,
+ * no BigInt, and no functions in it. What that does not bound is depth: a body
+ * under the size cap can still nest deeply enough to overflow the stack here,
+ * and the RangeError fails the audit write, which refuses the call. That is
+ * fail-closed and deliberate — a body shaped to break the audit path gets no
+ * answer, not an unrecorded one.
  */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {

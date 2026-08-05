@@ -1645,6 +1645,7 @@ credential = "github_service_account"
     });
 
     it("refuses by name when the sheet names a credential the vault lacks", async () => {
+      const before = lastAuditId(injectAuditFile);
       writeSheet(
         INJECT_CHANNEL,
         `
@@ -1677,6 +1678,21 @@ credential = "absent_credential"
         refusal: { reason: "credential_unresolved", credential: "absent_credential" }
       });
       expect(upstreamSaw).toEqual([]);
+
+      // The dispatch-time refusal (#51) is decided while serving rather than
+      // by `decideFromState`, and it reaches the log through the `refused`
+      // branch of the dispatch switch — the one branch no other test pins to
+      // a row. One row, the enumerated reason, and no result to size.
+      const rows = auditRows(injectAuditFile, before);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        channel: INJECT_CHANNEL,
+        tool: "list_prs",
+        outcome: "refused",
+        refusal_reason: "credential_unresolved",
+        result_bytes: null,
+        result_is_error: null
+      });
     });
   });
 });

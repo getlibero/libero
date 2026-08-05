@@ -9,9 +9,11 @@
 // statement prepared anywhere else — a route, a writer, an admin helper — is a
 // review failure.
 //
-// The claim to check here is narrower than the budget's and stronger: **this
-// module only ever inserts.** There is no UPDATE and no DELETE in it, and the
-// table refuses both from any connection.
+// The claim to check here is narrower than the budget's and stronger: **the
+// audit table is touched by exactly one statement, an INSERT.** There is no
+// UPDATE and no DELETE anywhere in this module — the only other SQL is the
+// `schema_version` bookkeeping at open — and the table refuses both from any
+// connection.
 //
 // One table with a channel column, on the argument ./budget-db.ts makes at
 // length: the line is whose data it is and who reads it. An audit log is

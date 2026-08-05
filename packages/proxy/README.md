@@ -31,7 +31,9 @@ credential injection into outbound HTTP calls.
   rather than a sweep, a turn-id table so a retried report cannot double-count,
   and the operator's reset kept in its own module away from the serving path.
 - `audit-db.ts` / `audit-log.ts` — the audit log over `node:sqlite`: one row per
-  decided tool call, and the only statement in `audit-db.ts` is an INSERT.
+  decided tool call, and the only statement that touches the audit table is an
+  INSERT — the rest of the module's SQL is the `schema_version` bookkeeping
+  every database here carries.
   Append-only comes from `BEFORE UPDATE`/`BEFORE DELETE` triggers that
   `RAISE(ABORT)` — SQLite has no roles and no grants, so the write-only
   interface and the file's permissions are defence in depth around those rather

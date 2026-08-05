@@ -269,7 +269,7 @@ export function createProxyServer(options: ProxyServerOptions): Server {
    *     the uncomfortable one and is stated rather than hidden: it can fire
    *     after `recordToolCall` below, so a call can be metered and never
    *     audited. Closing that means restructuring where the row is built, and
-   *     it is not done here.
+   *     it is not done here (#124).
    */
   const callTool = async (ctx: RequestContext): Promise<RouteResponse> => {
     // Strict, so a body asserting a channel fails here rather than having the

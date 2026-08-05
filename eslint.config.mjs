@@ -160,5 +160,31 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    // The fourth: the route that *builds* the audit record. The reason the row
+    // carries a hash rather than redacted arguments is that nothing on the
+    // write path holds a credential value — and for this file that was an
+    // import list a reviewer could read, where every peer claim in this config
+    // is a rule CI enforces. Now it is both. `redact` is deliberately not
+    // banned: when argument capture lands (#122) it redacts on this route,
+    // where the secret set for the call is knowable. The vault stays out either
+    // way — values reach a call in ./outbound.ts, inside the dispatcher, and
+    // nowhere upstream of it.
+    files: ["packages/proxy/src/server.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/vault*", "@getlibero/proxy"],
+              message:
+                "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean."
+            }
+          ]
+        }
+      ]
+    }
   }
 );

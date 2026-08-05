@@ -248,7 +248,8 @@ These are load-bearing, not stylistic:
   reading all of them is an operator concern.
 
   The audit log is that layout with a stricter write discipline (#97): one table
-  with a channel column, and the only statement in `audit-db.ts` is an INSERT.
+  with a channel column, and the only statement that touches it is an INSERT
+  (the module's other SQL is `schema_version` bookkeeping at open).
   Append-only is `BEFORE UPDATE`/`BEFORE DELETE` triggers that `RAISE(ABORT)` —
   SQLite has no roles and no grants, so the architecture's "no UPDATE/DELETE
   grants for the service role" cannot be built as written. The write-only
