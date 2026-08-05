@@ -28,11 +28,14 @@ out. Returning `undefined` posts nothing.
 
 ## What does not exist yet
 
-Sessions keyed on `(team_id, channel_id)`, the per-session mutex that stops
-concurrent mentions in one channel from interleaving, display-name attribution,
-the live-updating checklist message, and the FTS message store are the channel
-router's, and are not here. Two mentions dispatch concurrently today, and
-`gateway.test.ts` asserts that so the change shows up when the router lands.
+Sessions, the per-session mutex, display-name attribution, the live-updating
+checklist message, and the FTS message store are the channel router's, and are
+not here. The router landed in `apps/server/src/session/` (#65) and serializes a
+channel's mentions **above** this package: the gateway goes on dispatching
+concurrently, because it acknowledges an inbound event within about three
+seconds or Slack redelivers it, and a mention waiting its turn must not hold
+that acknowledgement. `gateway.test.ts` still asserts the concurrent dispatch
+for that reason.
 
 ## Layout
 

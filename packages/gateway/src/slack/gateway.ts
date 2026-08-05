@@ -5,9 +5,11 @@
 // reply out, socket drops, socket comes back — runnable with no network at all.
 //
 // Concurrency is deliberately absent: two mentions in one channel dispatch
-// concurrently here. Serializing them behind a per-session mutex is the channel
-// router's job, and putting a half-version of it in the adapter would be
-// something the router then has to unpick.
+// concurrently here, and they should go on doing so. Serializing a channel's
+// mentions is the channel router's, above this file — because dispatch also
+// acknowledges the inbound event, and Slack redelivers one that is not
+// acknowledged within about three seconds. A mention waiting its turn behind a
+// slow task must not be holding that acknowledgement.
 
 import { createSilentLogger } from "../log.js";
 import type { Logger } from "../log.js";

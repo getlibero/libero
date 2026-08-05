@@ -28,7 +28,8 @@ export interface LogFields {
    * "reconnecting", "disconnected", "auth_rejected", "stopping". Dispatch:
    * "mention", "replied", "ignored", "handler_failed", "post_failed". Tools:
    * "task", "tools_unavailable". Spend: "spend_reported",
-   * "spend_report_failed".
+   * "spend_report_failed". Sessions: "queued", "session_evicted",
+   * "team_sheet_invalid", "team_sheet_unreadable".
    */
   event: string;
   /** Slack team id. An id, never a token. */
@@ -55,6 +56,24 @@ export interface LogFields {
   delayMs?: number;
   /** How long a handler took, for the one case where slowness is the symptom. */
   durationMs?: number;
+  /**
+   * How long a request waited for another task in the same channel to finish.
+   *
+   * Present only when it waited — an uncontended session logs nothing, because
+   * a zero on every line is not information. It exists because `durationMs`
+   * quietly changed meaning when mentions started queueing: without this field,
+   * a channel backed up behind a slow task is indistinguishable from a slow
+   * model, and the two have different fixes.
+   */
+  queuedMs?: number;
+  /**
+   * The model a task ran on, after the channel's `[llm] model` override.
+   *
+   * A configuration value, never content. It is here because "which model is
+   * this deployment using" stopped having one answer per process the moment
+   * team sheets could name their own.
+   */
+  model?: string;
   /**
    * Why an agent task ended — `completed`, `refusal`, or the cap that stopped
    * it. A code from a closed set, and the field an operator greps when threads

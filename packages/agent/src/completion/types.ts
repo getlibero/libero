@@ -52,7 +52,7 @@ export type CompletionMessage =
   | { role: "tool"; toolCallId: string; content: string; isError?: boolean };
 
 export interface CompletionRequest {
-  /** Model id, passed through verbatim. Per-channel override is wired later. */
+  /** Model id, passed through verbatim. The per-channel override resolves upstream. */
   model: string;
   /** System prompt. Adapters place it wherever the provider expects. */
   system?: string;

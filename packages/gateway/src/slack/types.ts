@@ -5,16 +5,17 @@
 // are one of the paths a secret leaks, and this is the process that holds the
 // app and bot tokens.
 //
-// The adapter answers a mention and nothing else. Sessions keyed on
-// `(team_id, channel_id)`, the per-session mutex, attribution, the live
-// checklist, and the message store are the channel router's job and are not
-// modelled here.
+// The adapter answers a mention and nothing else. Sessions, the per-session
+// mutex, attribution, the live checklist, and the message store are the channel
+// router's job and are not modelled here.
 
 /**
  * A mention the gateway will answer, normalized off the wire.
  *
- * Everything the router will later key on is present, but nothing here is
- * routing: the adapter hands this to one handler and posts what comes back.
+ * Everything the router keys on is present, but nothing here is routing: the
+ * adapter hands this to one handler and posts what comes back. What the router
+ * takes is its own type, and the handler the composing process builds is the
+ * mapping between the two.
  */
 export interface SlackMention {
   teamId: string;

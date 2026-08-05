@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  channelsRootFromEnv,
   completionConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
@@ -48,6 +49,26 @@ describe("modelFromEnv", () => {
 
   it("has no default", () => {
     expect(() => modelFromEnv({})).toThrow(/AGENT_MODEL/);
+  });
+});
+
+describe("channelsRootFromEnv", () => {
+  it("returns the root as given", () => {
+    expect(channelsRootFromEnv({ AGENT_CHANNELS_ROOT: "/data/channels" })).toBe("/data/channels");
+  });
+
+  it("has no default", () => {
+    // Advisory is not a reason to soften this. Unset, every channel silently
+    // runs on the built-in caps with its sheet's `[llm]` block ignored, and
+    // that looks identical to a path that is merely typed wrong.
+    expect(() => channelsRootFromEnv({})).toThrow(/AGENT_CHANNELS_ROOT/);
+  });
+
+  it("reads nothing from disk", () => {
+    // A root that does not exist is a startup that succeeds and a channel whose
+    // sheet falls back — the deployment still answers, and the tool proxy
+    // service still refuses everything it should.
+    expect(channelsRootFromEnv({ AGENT_CHANNELS_ROOT: "/nowhere/at/all" })).toBe("/nowhere/at/all");
   });
 });
 

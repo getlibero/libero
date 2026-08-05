@@ -33,6 +33,12 @@ services:
       # on the provider's schedule and pin a price nobody chose.
       AGENT_PROVIDER: ${AGENT_PROVIDER:-anthropic}   # anthropic | openai-compatible
       AGENT_MODEL: ${AGENT_MODEL:?set AGENT_MODEL in .env — e.g. claude-sonnet-4-6}
+      # The same team sheets the proxy reads, read differently. Here they are
+      # advisory: a channel's `[llm] model` and its four per-task caps, which
+      # the loop applies to its own turns as defence in depth. Nothing the
+      # agent reads from them can widen what a channel may do — the proxy
+      # decides that from its own copy, and its meter is what is authoritative.
+      AGENT_CHANNELS_ROOT: /data/channels
       # LLM provider keys go HERE (completion only) — never tool credentials.
       # Each provider's own conventional variable: the one matching
       # AGENT_PROVIDER is required, the other is ignored. The base URLs are
@@ -44,7 +50,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     volumes:
-      - ../channels:/data/channels
+      # Read-only: the agent reads sheets and writes none. The proxy's mount is
+      # already :ro for the same reason.
+      - ../channels:/data/channels:ro
       # The trust anchor and the channel client certs — not ./certs whole. The
       # server key would let a compromised agent impersonate the proxy, and the
       # CA key would let it mint an identity for any channel.

@@ -57,12 +57,27 @@ system — plain CSS, no TypeScript), and `site/` (getlibero.com).
 `node:https`, `ToolSource` over `GET /v1/tools`, `ToolExecutor` over
 `POST /v1/tools/call`. `apps/server` composes gateway + loop + transport, so
 `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `PROXY_URL`, `PROXY_TLS_CA`,
-`PROXY_CLIENT_CERT_DIR`, `AGENT_PROVIDER`, `AGENT_MODEL`, and the provider key
-are all live and all required — there is no toolless fallback.
-`apps/server/README.md` has the environment contract; the per-channel model
-override and the sheet's `[llm]` caps are not read, and
-`DEFAULT_AGENT_LOOP_CAPS` applies to every channel until the session router
-(#65) resolves a sheet per channel.
+`PROXY_CLIENT_CERT_DIR`, `AGENT_PROVIDER`, `AGENT_MODEL`, `AGENT_CHANNELS_ROOT`,
+and the provider key are all live and all required — there is no toolless
+fallback. `apps/server/README.md` has the environment contract.
+
+**Mentions in one channel queue rather than interleave, and each task runs on
+its channel's sheet.** `apps/server/src/session/` is the channel router (#65):
+one session per `(workspace, channel)`, a mutex per session, and a per-task read
+of `$AGENT_CHANNELS_ROOT/<channel>/channel.toml` resolving `[llm]` to a model
+and the four `AgentLoopCaps`. Sessions are evicted after 30 minutes idle and
+never while busy; there is no cache and no watcher, so an edit lands on the next
+mention.
+
+Two things there are load-bearing. **The router never learns what Slack is** —
+it takes a `TaskRequest`, `handler.ts` is the six lines that build one from a
+`SlackMention`, and an ESLint block on `apps/server/src/session/**` allows only
+`Logger` through from the gateway package. That is what a second front-end
+plugs into, and it is enforced rather than asserted. And **what the sheet
+resolves to here is advisory**: every read failure falls back to
+`DEFAULT_AGENT_LOOP_CAPS` and logs a reason code rather than refusing to run,
+which is only safe because the proxy enforces the same file from its own copy
+and its meter is authoritative. A fallback on this side cannot widen anything.
 
 Two things about that client are load-bearing rather than incidental. **The flat
 name a model calls is decoded to a (server, tool) pair by a map built from the
