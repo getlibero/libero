@@ -77,11 +77,22 @@ published and none is invented. Real schemas arrive with #39.
 (#86), so `docker compose up` fails on a clean checkout. Run either process
 directly in the meantime.
 
-**No spend report is sent, so `daily_tokens` meters at zero.**
-`POST /v1/spend` is built, tested over real mTLS, and idempotent, and nothing
-calls it — that is #110, which now has a transport to send over. Only
-`daily_tool_calls` bites in a live deployment, and `loop/caps.ts:totalTokens`
-is the loop-side cap standing in for it.
+**`daily_tokens` meters for real.** `packages/agent/src/proxy/spend.ts` reports
+each completed task's four raw token counts to `POST /v1/spend` (#110), keyed on
+the task id so a retry is a `duplicate` rather than a double charge. The counts
+are the provider's response envelope's, so the report holds against a
+prompt-injected model and not against a compromised agent process — the narrower
+claim is the true one, as with tool credentials. Weighting stays the proxy's,
+from `[budget] cache_read_weight` and `cache_write_weight`, which is why four
+numbers go over the wire and never a total. A meter that refuses or cannot be
+reached costs a `spend_report_failed` log line and never a user's answer, and
+`loop/caps.ts:totalTokens` stays as defence in depth rather than as a stand-in.
+
+Two gaps are known and deliberate rather than overlooked. Tokens spent before a
+provider failure never reach the meter — `runAgentTask` rejects and the
+accumulated usage goes with it (#115). And a report still in flight when the
+process exits is lost; neither `gateway.stop()` nor the task abort drains one.
+Both under-report, so the budget fails open.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design

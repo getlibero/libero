@@ -11,6 +11,12 @@
 // exists on the far side of. What the two ends agree on is @getlibero/schema,
 // which is what both parse against. The two halves meeting for real is the e2e
 // suite's job (#41).
+//
+// One client is built here rather than faked, and only one: the spend sender,
+// because "a completed task moves the meter" is a claim about a real
+// connection — the report has to arrive as the channel its certificate names,
+// with the channel nowhere in what it sent. Everything else the spend client
+// does is ./spend.test.ts, at the transport seam.
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -20,7 +26,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TLSSocket } from "node:tls";
 import { fileURLToPath } from "node:url";
+import { SpendReport } from "@getlibero/schema";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createProxySpendClient } from "./spend.js";
 import { ProxyClientError, createProxyTransport, type ProxyTransport } from "./transport.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -234,6 +242,70 @@ describe("a proxy that does not answer", () => {
     // Not thrown here: a status is an answer, and which statuses mean what is
     // the tool client's to decide (./tools.ts).
     expect(response.status).toBe(401);
+  });
+});
+
+// The acceptance for #110, as close to it as this side of the boundary gets:
+// real certificates, a real handshake, and the received bytes put through the
+// same schema the proxy parses them with.
+describe("reporting spend over the real connection", () => {
+  const TURN = "b9d5a2f0-1c4e-4a7f-9b3d-2e6c8a1f0d55";
+
+  const spendClientFor = (channel: string): ReturnType<typeof createProxySpendClient> =>
+    createProxySpendClient({ transport: transportTo(certs, port), channel });
+
+  it("reaches the meter as the channel its certificate names", async () => {
+    answer = { status: 200, body: { outcome: "recorded" } };
+
+    const outcome = await spendClientFor(CHANNEL).report(TURN, {
+      inputTokens: 11,
+      outputTokens: 7,
+      cacheReadInputTokens: 4096
+    });
+
+    expect(outcome).toBe("recorded");
+    expect(seen[0]).toMatchObject({ method: "POST", path: "/v1/spend" });
+    expect(seen[0]?.commonName).toBe(`channel:${CHANNEL}`);
+    // The channel identified the connection and appears nowhere in what was
+    // sent — which is what makes the certificate, and not the body, the thing
+    // the meter counts against.
+    expect(seen[0]?.body).not.toContain(CHANNEL);
+
+    const report = SpendReport.parse(JSON.parse(seen[0]?.body ?? ""));
+    expect(report.turn).toBe(TURN);
+    expect(report.usage).toEqual({
+      inputTokens: 11,
+      outputTokens: 7,
+      cacheReadInputTokens: 4096,
+      cacheCreationInputTokens: 0
+    });
+  });
+
+  // A retry is meant to get this. The meter records the turn id, so a second
+  // report under it moves nothing and says so, and the client hands that back
+  // as a result rather than raising it.
+  it("takes a duplicate for the same turn id as the success it is", async () => {
+    const client = spendClientFor(CHANNEL);
+    const usage = { inputTokens: 11, outputTokens: 7 };
+
+    answer = { status: 200, body: { outcome: "recorded" } };
+    await expect(client.report(TURN, usage)).resolves.toBe("recorded");
+
+    answer = { status: 200, body: { outcome: "duplicate" } };
+    await expect(client.report(TURN, usage)).resolves.toBe("duplicate");
+
+    expect(JSON.parse(seen[1]?.body ?? "").turn).toBe(JSON.parse(seen[0]?.body ?? "").turn);
+  });
+
+  it("throws rather than hanging when nothing is listening", async () => {
+    const client = createProxySpendClient({
+      transport: transportTo(certs, port, "https://127.0.0.1:1"),
+      channel: CHANNEL
+    });
+
+    await expect(client.report(TURN, { inputTokens: 11, outputTokens: 7 })).rejects.toMatchObject({
+      reason: "unreachable"
+    });
   });
 });
 

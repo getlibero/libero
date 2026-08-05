@@ -49,3 +49,6 @@ export type {
 
 export { createProxyToolClient } from "./proxy/tools.js";
 export type { ProxyToolClient, ProxyToolClientOptions } from "./proxy/tools.js";
+
+export { createProxySpendClient } from "./proxy/spend.js";
+export type { ProxySpendClient, ProxySpendClientOptions, SpendOutcome } from "./proxy/spend.js";

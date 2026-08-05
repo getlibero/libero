@@ -27,7 +27,8 @@ export interface LogFields {
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
    * "reconnecting", "disconnected", "auth_rejected", "stopping". Dispatch:
    * "mention", "replied", "ignored", "handler_failed", "post_failed". Tools:
-   * "task", "tools_unavailable".
+   * "task", "tools_unavailable". Spend: "spend_reported",
+   * "spend_report_failed".
    */
   event: string;
   /** Slack team id. An id, never a token. */
@@ -62,11 +63,25 @@ export interface LogFields {
   stopReason?: string;
   /**
    * Tokens the provider reported for a task, summed across its turns. A count,
-   * not content. Worth carrying while nothing else meters tokens: no proxy
-   * client sends a spend report yet, so this is the only place the number is
-   * visible.
+   * not content.
+   *
+   * The same number the agent reports to the proxy's meter, and carried on
+   * three lines for three different reasons: on `task` it says what the task
+   * cost, on `spend_reported` it says what the meter was told, and on
+   * `spend_report_failed` it says how much the meter did not learn — which is
+   * the one an operator greps when a channel's budget stops adding up.
    */
   totalTokens?: number;
+  /**
+   * What the proxy's meter made of a spend report: `recorded` or `duplicate`.
+   *
+   * `duplicate` is a success rather than a warning — the turn had already been
+   * counted, which is the right answer to a retry under the same id and the
+   * reason retrying is safe. An outcome code from a closed set, and the same
+   * word the proxy's own logger uses for it, so one grep spans both ends of the
+   * connection.
+   */
+  report?: string;
   /** Model turns in a task. Tells a token count that ran long from one that ran wide. */
   turns?: number;
   /**
