@@ -18,10 +18,14 @@
 // one, and no route may accept a channel from a header, a query parameter, or
 // a body.
 //
-// Two of the routes below take a body, and only one of them makes a decision.
-// `/v1/tools/call` is the gate; `/v1/spend` is a write to the budget meter and
-// nothing else. They deliberately share no handler and no sheet lookup — see
-// ./spend-route.ts, where the asymmetry and what keeps it are written down.
+// Three of the routes below take a body, and only one of them decides whether
+// anything may run. `/v1/tools/call` is the gate. `/v1/spend` is a write to the
+// budget meter and nothing else. `/v1/approvals` records what a human said
+// about a call the gate already held — it authorizes nothing on its own, and
+// the call it concerns still has to come back through the gate and be enforced
+// again. None of the three shares a handler, and only the first resolves a team
+// sheet; see ./spend-route.ts and ./approvals-route.ts, where each states the
+// asymmetry and what keeps it.
 //
 // What is not here yet: the MCP client pool (#39). It sits behind the
 // dispatcher seam, past the point where enforcement has already answered.
@@ -35,21 +39,25 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server, type ServerOptions } from "node:https";
 import type { TLSSocket } from "node:tls";
 import {
+  type AuditOutcome,
   PROXY_ERROR_STATUS,
   type ProxyError,
   type ProxyErrorCode,
   type RefusalReason,
+  type ResolvedToolCall,
   ToolCall,
   type ToolCallResponse,
   type ToolListing,
+  type ToolRefusal,
   type ToolResult,
   resolveToolCall
 } from "@getlibero/schema";
+import { createApprovalStore, type RedeemResult } from "./approvals.js";
 import { type AuditWriter, hashArguments } from "./audit-log.js";
 import { assertServableComposition, type SpendMeter, type ToolDispatcher } from "./dispatch.js";
 import { decideFromState, permittedToolsFromState } from "./enforce.js";
 import { resolveChannel } from "./identity.js";
-import { createJsonLogger, type LogFields, type Logger } from "./log.js";
+import { createJsonLogger, type Logger } from "./log.js";
 import { createSpendRoute } from "./spend-route.js";
 import type { TeamSheetStore } from "./team-sheet-store.js";
 
@@ -217,6 +225,38 @@ function proxyError(
   };
 }
 
+/**
+ * The refusal for a re-submission that was not served.
+ *
+ * Total over the redeem outcomes that are not `redeemed`, so a new state in
+ * ./approvals.ts cannot be added without deciding what a channel is told about
+ * it — the same discipline `refusalMessage` imposes one level down.
+ *
+ * Each names the *submitted* call rather than the ticketed one. The reader is in
+ * the channel that raised both, so a second server/tool pair in the sentence
+ * would add length rather than information.
+ */
+function approvalRefusal(
+  outcome: Exclude<RedeemResult["outcome"], "redeemed">,
+  call: ResolvedToolCall
+): ToolRefusal {
+  const where = { server: call.server, tool: call.tool } as const;
+  switch (outcome) {
+    case "unknown":
+      return { reason: "approval_unknown", ...where };
+    case "pending":
+      return { reason: "approval_pending", ...where };
+    case "denied":
+      return { reason: "approval_denied", ...where };
+    case "spent":
+      return { reason: "approval_spent", ...where };
+    case "mismatch":
+      return { reason: "approval_mismatch", ...where };
+    case "expired":
+      return { reason: "approval_expired", ...where };
+  }
+}
+
 export function createProxyServer(options: ProxyServerOptions): Server {
   // Before anything binds. A proxy that would serve tool calls without
   // metering them does not get built.
@@ -225,6 +265,22 @@ export function createProxyServer(options: ProxyServerOptions): Server {
   const logger = options.logger ?? createJsonLogger();
   const now = options.now ?? (() => Date.now());
   const startedAt = now();
+
+  /**
+   * The approval broker's tickets.
+   *
+   * Built here rather than passed in on `ProxyServerOptions`, and that is
+   * deliberate in both directions. It opens no file, takes no configuration, and
+   * has nothing for a shutdown handler to close, so there is nothing an operator
+   * would configure. And an injectable ticket store is a knob a future
+   * composition could get wrong — handing the decision route something wider
+   * than `ApprovalDecider` is exactly the mistake ./approvals.ts is shaped to
+   * prevent, and it cannot be made from out here if the store is not out here.
+   *
+   * It shares this server's clock, so one process has one notion of when a
+   * ticket dies.
+   */
+  const approvals = createApprovalStore({ now });
 
   /**
    * The tool listing: what this channel may call.
@@ -294,11 +350,44 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       };
     }
 
-    const call = resolveToolCall(parsed.data, ctx.channel);
+    /**
+     * The ticket comes off the call at the edge and travels beside it.
+     *
+     * `ResolvedToolCall` structurally permits a `ticket` — it is `ToolCall &
+     * { channel }` — but no value in flight below carries one, so enforcement
+     * and the dispatcher *provably* never see a ticket rather than merely never
+     * reading one. Which is the stronger version of the rule `EnforcementInput`
+     * states: `decide` is pure, has no clock, and reads no approval state,
+     * because "may this channel call this" and "did a human approve this exact
+     * call" are two questions and neither may stand in for the other.
+     */
+    const { ticket, ...bare } = parsed.data;
+    const call = resolveToolCall(bare, ctx.channel);
+    // Hoisted out of the audit closure below: the mint, the redemption, and the
+    // row all need the same hash, and computing it three times would invite the
+    // three to disagree.
+    const argumentsSha256 = hashArguments(call.arguments);
     const [state, spend] = await Promise.all([
       options.sheets.resolve(ctx.channel),
       options.spend.read(ctx.channel)
     ]);
+    /**
+     * **Enforcement runs for a re-submission exactly as it does for a first
+     * call, and it runs first.**
+     *
+     * A ticket is not a permission and must never act like one. Up to fifteen
+     * minutes pass between a hold and the click that answers it, and in that
+     * window an operator can remove the tool from the allowlist, remove the
+     * server, repoint the upstream, or make the sheet ambiguous — and other
+     * calls can exhaust the budget. A ticket that skipped this would let a
+     * fifteen-minute-old click override an edit made thirty seconds ago, which
+     * is an approval turning into a bypass: the thing the whole feature exists
+     * to prevent.
+     *
+     * So the sheet is the only authority on "may this channel call this", and
+     * the ticket answers the narrower question of whether a human approved this
+     * exact call. The redemption below happens only after this says yes.
+     */
     const decision = decideFromState(state, call, spend);
 
     /**
@@ -329,9 +418,13 @@ export function createProxyServer(options: ProxyServerOptions): Server {
      * write recorded is the one ordering that can lie about this.
      */
     const audit = async (event: {
-      readonly outcome: NonNullable<LogFields["outcome"]>;
+      readonly outcome: AuditOutcome;
       readonly reason?: RefusalReason;
       readonly result?: ToolResult;
+      /** Present on a `ran` row that a human's approval let through. */
+      readonly approver?: string;
+      /** Present on every row for a call that passed through the broker. */
+      readonly ticket?: string;
     }): Promise<void> => {
       try {
         await options.audit.append({
@@ -350,9 +443,11 @@ export function createProxyServer(options: ProxyServerOptions): Server {
           // A hash, never the arguments. Nothing on this path holds a
           // credential value, so nothing on it could redact one — see
           // ./audit-log.ts for why that is the whole argument.
-          argumentsSha256: hashArguments(call.arguments),
+          argumentsSha256,
           outcome: event.outcome,
           ...(event.reason !== undefined ? { refusalReason: event.reason } : {}),
+          ...(event.approver !== undefined ? { approver: event.approver } : {}),
+          ...(event.ticket !== undefined ? { ticket: event.ticket } : {}),
           ...(event.result !== undefined
             ? {
                 // Bytes, not `String.length`, which counts UTF-16 code units:
@@ -384,19 +479,81 @@ export function createProxyServer(options: ProxyServerOptions): Server {
         requestingUser: call.requestingUser,
         task: call.task,
         outcome: event.outcome,
-        ...(event.reason !== undefined ? { reason: event.reason } : {})
+        ...(event.reason !== undefined ? { reason: event.reason } : {}),
+        ...(event.approver !== undefined ? { approver: event.approver } : {}),
+        ...(event.ticket !== undefined ? { ticket: event.ticket } : {})
       });
     };
 
-    if (decision.outcome !== "allow") {
-      const outcome = decision.outcome === "hold" ? "held" : "refused";
+    // A refusal is refused whether or not a ticket came with it, and it is
+    // refused *before* the ticket is touched. That ordering is what stops an
+    // operator's edit during the hold from costing the human a second click:
+    // the approval survives a refusal and can still be redeemed once the sheet
+    // is fixed, inside the window.
+    if (decision.outcome === "refuse") {
       // Awaited before the answer is composed. A fire-and-forget here would
       // look correct and would defeat the whole of the argument above.
-      await audit({ outcome, reason: decision.refusal.reason });
+      await audit({
+        outcome: "refused",
+        reason: decision.refusal.reason,
+        ...(ticket !== undefined ? { ticket } : {})
+      });
       // A refusal is a served request, not an error: 200 with the structured
       // shape. The agent relays it to the channel and carries on.
-      return ok({ outcome, id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
+      return ok({ outcome: "refused", id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
     }
+
+    /**
+     * Who approved this call, for the `ran` row. Set only by a redemption.
+     *
+     * Never taken from the request body — there is no field on `ToolCall` for an
+     * approver and there must not be, because that would be exactly the
+     * "asserted by the agent and read by a decision" combination
+     * `requestingUser`'s doc forbids. It comes from the ticket, which the
+     * decision route wrote from a click the gateway observed.
+     */
+    let approver: string | undefined;
+
+    if (ticket === undefined) {
+      // A first submission. A hold mints a ticket and asks; anything else falls
+      // through to the serve path exactly as it always did.
+      if (decision.outcome === "hold") {
+        const minted = approvals.mint(call, argumentsSha256);
+        await audit({ outcome: "held", reason: decision.refusal.reason, ticket: minted.id });
+        return ok({
+          outcome: "held",
+          id: call.id,
+          refusal: decision.refusal,
+          ticket: { id: minted.id, expiresAt: minted.expiresAt }
+        } satisfies ToolCallResponse);
+      }
+    } else {
+      const redeemed = approvals.redeem(ctx.channel, ticket, call, argumentsSha256);
+      if (redeemed.outcome !== "redeemed") {
+        const refusal = approvalRefusal(redeemed.outcome, call);
+        // An expiry is a terminal fact about a ticket that no other request
+        // will record, so it gets its own outcome — once, whoever observes it
+        // first. Everything else here is an ordinary refusal: a denied ticket
+        // already has its `denied` row, written by the decision route.
+        await audit({
+          outcome: redeemed.outcome === "expired" && redeemed.firstObserved ? "expired" : "refused",
+          reason: refusal.reason,
+          ticket
+        });
+        return ok({ outcome: "refused", id: call.id, refusal } satisfies ToolCallResponse);
+      }
+      approver = redeemed.ticket.approver ?? undefined;
+    }
+
+    // Falling through means one of two things: a first submission the sheet
+    // allows outright, or a re-submission whose ticket was just spent. A third
+    // case is possible and deliberately handled here rather than refused — the
+    // operator set `approval = "none"` during the hold, so the decision is now
+    // `allow` and the call runs on its own merits. The ticket is spent anyway,
+    // because it named this exact call and leaving it live would let a second
+    // re-submission run a second one, and the `ran` row still records the
+    // approver: a human did approve it, and an operator reconstructing the
+    // incident wants to know.
 
     // Counted at the moment the proxy commits to serving, not once the upstream
     // has answered. A crash between here and the reply loses the result, not
@@ -414,19 +571,30 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     const dispatched = await options.dispatcher.dispatch(call, decision.upstream);
     switch (dispatched.outcome) {
       case "ran":
-        await audit({ outcome: "ran", result: dispatched.result });
+        await audit({
+          outcome: "ran",
+          result: dispatched.result,
+          ...(approver !== undefined ? { approver } : {}),
+          ...(ticket !== undefined ? { ticket } : {})
+        });
         return ok({ outcome: "ran", id: call.id, result: dispatched.result } satisfies ToolCallResponse);
       case "refused":
         // Refused while serving rather than before: the vault could not resolve
-        // a credential the sheet names (#51).
-        await audit({ outcome: "refused", reason: dispatched.refusal.reason });
+        // a credential the sheet names (#51). The ticket is on the row because
+        // it was spent — the approval is gone and the call did not run, which
+        // is a thing an operator reading the lifecycle needs to see.
+        await audit({
+          outcome: "refused",
+          reason: dispatched.refusal.reason,
+          ...(ticket !== undefined ? { ticket } : {})
+        });
         return ok({
           outcome: "refused",
           id: call.id,
           refusal: dispatched.refusal
         } satisfies ToolCallResponse);
       case "unavailable":
-        await audit({ outcome: "unavailable" });
+        await audit({ outcome: "unavailable", ...(ticket !== undefined ? { ticket } : {}) });
         return {
           status: PROXY_ERROR_STATUS.not_implemented,
           body: proxyError(

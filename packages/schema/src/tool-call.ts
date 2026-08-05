@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ApprovalTicket } from "./approval.js";
 import { ApprovalTicketId, CHANNEL_ID_PATTERN, RequestingUser, ResourceName, TaskId } from "./names.js";
 import { ToolRefusal } from "./refusal.js";
 
@@ -175,10 +176,14 @@ export type ToolResult = z.infer<typeof ToolResult>;
  *
  * `held` is separate from `refused` on purpose. Both mean the call did not
  * run, but a hold is a question put to a human and a refusal is an answer, and
- * the approval broker (#37) needs to tell them apart without re-deriving the
- * distinction from the refusal reason. Until that broker exists a client that
- * treats a hold as a refusal is behaving correctly — which is why the hold
- * carries the full refusal rather than a bare marker.
+ * the approval broker needs to tell them apart without re-deriving the
+ * distinction from the refusal reason.
+ *
+ * A hold now carries the ticket that makes it answerable, and still carries the
+ * full refusal beside it. That is the degradation rather than the point: a
+ * client that ignores the ticket and relays the hold as an ordinary refusal is
+ * **safe** — it abandons the call, and nothing runs — but it abandons a call a
+ * human could have approved. Waiting on the ticket is what #127 adds.
  *
  * Every variant echoes `id` so a client with several calls in flight can match
  * the answer to the tool-use block that asked for it.
@@ -195,7 +200,17 @@ export const ToolCallResponse = z.discriminatedUnion("outcome", [
     .object({
       outcome: z.literal("held"),
       id: z.string().min(1).max(128),
-      refusal: ToolRefusal
+      refusal: ToolRefusal,
+      /**
+       * What the client renders on the card, and what a re-submission carries
+       * back.
+       *
+       * **Required, not optional.** A held response without a ticket is a hold
+       * nobody can act on, and every deployment mints one — an optional field
+       * here would be a hole for a proxy that forgot to, and the client would
+       * have to handle a case that must not exist.
+       */
+      ticket: ApprovalTicket
     })
     .strict(),
   z
