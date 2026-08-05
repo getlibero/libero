@@ -48,6 +48,20 @@ export interface GatewayOptions {
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
   logger?: Logger;
   backoff?: BackoffPolicy;
+  /**
+   * The gateway died after `start()` resolved, for a reason retrying cannot
+   * fix — a revoked or rotated token, most often.
+   *
+   * `start()` can report that only while it is still pending. Afterwards the
+   * socket is down, the reconnect ladder has stopped, and nothing else in the
+   * process knows: the gateway is not going to answer another mention and will
+   * happily stay up not doing so. What to do about that is the composing app's
+   * call, so it is a callback rather than a policy here — `apps/server` exits
+   * non-zero and lets the restart policy pick the process back up.
+   *
+   * Defaults to doing nothing, which is what this did before the seam existed.
+   */
+  onFatal?: (error: GatewayError) => void;
   /** Injected for tests. Omitted in production. */
   scheduler?: Scheduler;
   /** Jitter source. Injected for tests. */
@@ -69,7 +83,7 @@ function reasonOf(error: unknown): string {
 }
 
 export function createGateway(options: GatewayOptions): SlackGateway {
-  const { source, poster, handler } = options;
+  const { source, poster, handler, onFatal } = options;
   const logger = options.logger ?? createSilentLogger();
   const policy = options.backoff ?? DEFAULT_BACKOFF;
   const schedule = options.scheduler ?? defaultScheduler;
@@ -173,10 +187,11 @@ export function createGateway(options: GatewayOptions): SlackGateway {
     if (connectedAt !== undefined && now() - connectedAt >= policy.resetAfterMs) attempt = 0;
     connectedAt = undefined;
 
-    void reconnect().catch(() => {
+    void reconnect().catch((error: unknown) => {
       // connectWithRetry has already logged auth_rejected and stopped the loop.
-      // Nothing here can surface it further: start() resolved long ago. What a
-      // dead gateway does to the process is the composing app's call (#46).
+      // start() resolved long ago, so this callback is the only way the failure
+      // reaches the process that owns the decision. Default is to do nothing.
+      if (error instanceof GatewayError) onFatal?.(error);
     });
   }
 

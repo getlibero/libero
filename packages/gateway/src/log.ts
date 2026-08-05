@@ -53,6 +53,21 @@ export interface LogFields {
   delayMs?: number;
   /** How long a handler took, for the one case where slowness is the symptom. */
   durationMs?: number;
+  /**
+   * Why an agent task ended — `completed`, `refusal`, or the cap that stopped
+   * it. A code from a closed set, and the field an operator greps when threads
+   * start ending short.
+   */
+  stopReason?: string;
+  /**
+   * Tokens the provider reported for a task, summed across its turns. A count,
+   * not content. Worth carrying while nothing else meters tokens: no proxy
+   * client sends a spend report yet, so this is the only place the number is
+   * visible.
+   */
+  totalTokens?: number;
+  /** Model turns in a task. Tells a token count that ran long from one that ran wide. */
+  turns?: number;
 }
 
 export interface Logger {

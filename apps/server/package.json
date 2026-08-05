@@ -2,7 +2,7 @@
   "name": "@getlibero/server",
   "version": "0.0.1",
   "private": true,
-  "description": "The gateway + agent process: composes @getlibero/gateway and @getlibero/agent, talks to Slack over Socket Mode. Scaffold only — no behavior yet.",
+  "description": "The gateway + agent process: composes @getlibero/gateway and @getlibero/agent, talks to Slack over Socket Mode. Holds no tool credential.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude '**/dist/**' --passWithNoTests"
+    "start": "node dist/index.js",
+    "test": "vitest run --exclude '**/dist/**'"
+  },
+  "dependencies": {
+    "@getlibero/agent": "workspace:*",
+    "@getlibero/gateway": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
   }
 }
