@@ -84,7 +84,8 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
       // fails open, bounded by the tasks running at that moment, and the loop's
       // own token cap and the proxy's tool-call meter are what still bite.
       // Draining in-flight work before exit is a shutdown change, not a
-      // sender one.
+      // sender one — #118, which also has to decide whether a task finishing
+      // during the drain gets to post.
       process.exit(1);
     }
     closing = true;

@@ -145,9 +145,11 @@ is #86.
 cancelled task posts nothing: the operator asked for quiet, and an answer
 arriving after the socket closed has nowhere to go. A second signal exits
 immediately — nothing here is durable, so the cost is at most one answer that
-was already cancelled, and one spend report per task in flight. That under-reports
-rather than over-reports, so the budget fails open, and the proxy's own tool-call
-meter is unaffected either way.
+was already cancelled, and the one turn each in-flight task was reporting.
+That under-reports rather than over-reports, so the budget fails open, and the
+proxy's own tool-call meter is unaffected either way. Draining before exit is
+#118, which also has to settle whether a task finishing during the drain gets
+to post.
 
 If Slack refuses the credentials after startup — a revoked or rotated token —
 the process logs `gateway_dead` and exits non-zero rather than staying up

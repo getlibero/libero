@@ -105,7 +105,10 @@ file has no way to log, so catching would make the failure vanish instead.
 
 One gap remains, deliberate rather than overlooked: a report still in flight
 when the process exits is lost, since neither `gateway.stop()` nor the task
-abort drains one. It under-reports, so the budget fails open.
+abort drains one (#118, parked). At most one turn per task in flight, and it
+under-reports, so the budget fails open. It is a shutdown issue rather than a
+metering one — a drain also decides whether a task finishing during shutdown
+posts its answer, which today it deliberately does not.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
