@@ -118,6 +118,21 @@ small the answer is to rotate the file.
 
 The read path — `libero audit`, with query and CSV export — is #98.
 
+## Pending approvals do not survive a restart
+
+The approval broker's tickets live in memory. There is no environment variable,
+no file, and nothing for the shutdown handler to close — which is the deliberate
+half of the design rather than an omission.
+
+What that means operationally: **restart the proxy and every approval card in
+flight goes stale.** The calls behind them are never served, the person who
+clicks gets a refusal saying the approval is unknown, and the agent raises a
+fresh hold on the next attempt. Nothing is served unapproved either way, which
+is why losing this state is acceptable — it fails in the direction that refuses.
+
+Plan a restart the way you would plan one that drops in-flight requests. If a
+destructive call is waiting on someone, it will need asking again.
+
 ### Schema version 2
 
 This build writes schema version 2, and **migrates a version 1 file in place the
