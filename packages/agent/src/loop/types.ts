@@ -141,6 +141,36 @@ export interface AgentTaskOptions {
   signal?: AbortSignal;
   /** Clock, injected for tests. */
   now?: () => number;
+  /**
+   * What the turn that just finished cost, as the provider reported it.
+   *
+   * Called once per model turn, after the turn is counted against the caps and
+   * before anything is done with what the model said. `turn` is 1 for the first
+   * and increments — the same number `AgentTaskResult.turns` ends on.
+   *
+   * **Per turn rather than per task, because a task is not the unit that gets
+   * paid for.** The caller's meter is what a channel's budget is enforced from,
+   * and a report that only arrives when the task ends means a long task spends
+   * its whole cost before the meter hears about any of it — so a channel over
+   * its cap is refused starting with the *next* task rather than the next tool
+   * call. It also means tokens spent by a task that dies mid-flight are spent
+   * silently: `runAgentTask` rejects when the provider fails non-cancellably,
+   * and everything counted so far goes with the rejection. Reporting as the
+   * turns happen fixes both without this file knowing what a meter is.
+   *
+   * **Awaited.** A detached call would let the next turn start before this one
+   * is recorded, which is the ordering the meter is being told about. The cost
+   * is that a slow hook slows the task, and that is the caller's to bound — see
+   * the deadline the spend client carries.
+   *
+   * **It must not throw.** Nothing here catches it, and a rejection would end
+   * the task: the loop would rethrow, the reply would be lost, and a channel
+   * would go unanswered because a *counter* could not be written. Catching it
+   * here would be worse — this file has no way to log, so the failure would
+   * vanish. A caller that can fail swallows its own failure and says so where
+   * it has a logger.
+   */
+  onTurn?: (usage: TokenUsage, turn: number) => void | Promise<void>;
 }
 
 export interface AgentTaskResult {

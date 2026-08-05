@@ -319,7 +319,7 @@ describe("createMentionHandler", () => {
 // The proxy meters tool calls from calls it served and needs nobody's help to
 // count those. Tokens are the other half, and only this process knows them.
 describe("what a task cost", () => {
-  it("reports the provider's counts, keyed on the task id", async () => {
+  it("reports the provider's counts, keyed on the task id and the turn", async () => {
     const captured = capturingLogger();
     const { client } = fakeCompletion({ text: "ok" });
     const fake = fakeTransport();
@@ -336,7 +336,7 @@ describe("what a task cost", () => {
     expect(reports).toHaveLength(1);
     expect(reports[0]?.channel).toBe("C024BE91L");
     expect(reports[0]?.body).toEqual({
-      turn: captured.lines.find(entry => entry.event === "task")?.task,
+      turn: `${captured.lines.find(entry => entry.event === "task")?.task}.1`,
       usage: {
         inputTokens: 11,
         outputTokens: 7,
@@ -344,6 +344,85 @@ describe("what a task cost", () => {
         cacheCreationInputTokens: 0
       }
     });
+  });
+
+  // Each turn is its own idempotency key, so a retry of one is a duplicate and
+  // the next turn is not.
+  it("reports each turn separately, under the same task", async () => {
+    const captured = capturingLogger();
+    const fake = fakeTransport({ tools: () => LISTED });
+    let turn = 0;
+    const handler = createMentionHandler({
+      completion: {
+        complete: (): Promise<CompletionResponse> => {
+          turn += 1;
+          return Promise.resolve(
+            turn === 1
+              ? {
+                  text: "",
+                  toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
+                  stopReason: "tool_use",
+                  usage: { inputTokens: 10, outputTokens: 5 }
+                }
+              : {
+                  text: "Fridays, 14:00 UTC.",
+                  toolCalls: [],
+                  stopReason: "end_turn",
+                  usage: { inputTokens: 20, outputTokens: 7 }
+                }
+          );
+        }
+      },
+      transport: fake.transport,
+      model: MODEL,
+      logger: captured.logger
+    });
+
+    await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+
+    const task = captured.lines.find(entry => entry.event === "task")?.task;
+    const reports = spentTokens(fake.sent);
+    expect(reports.map(request => (request.body as { turn: string }).turn)).toEqual([
+      `${task}.1`,
+      `${task}.2`
+    ]);
+    // Each turn's own numbers. Summing is the meter's, and a second report
+    // carrying the running total would double-count the first.
+    expect(reports.map(request => (request.body as { usage: { inputTokens: number } }).usage.inputTokens)).toEqual([
+      10, 20
+    ]);
+  });
+
+  // The whole of #115. A task that dies mid-flight has already told the meter
+  // what its finished turns cost, so nothing is lost with the rejection.
+  it("has already reported the turns taken before a provider failure", async () => {
+    const fake = fakeTransport({ tools: () => LISTED });
+    let turn = 0;
+    const handler = createMentionHandler({
+      completion: {
+        complete: (): Promise<CompletionResponse> => {
+          turn += 1;
+          if (turn === 1) {
+            return Promise.resolve({
+              text: "",
+              toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
+              stopReason: "tool_use",
+              usage: { inputTokens: 10, outputTokens: 5 }
+            });
+          }
+          return Promise.reject(new Error("connect ECONNREFUSED"));
+        }
+      },
+      transport: fake.transport,
+      model: MODEL
+    });
+
+    // The provider's own error still reaches the gateway, unwrapped.
+    await expect(handler(mention())).rejects.toThrow(/ECONNREFUSED/);
+
+    const reports = spentTokens(fake.sent);
+    expect(reports).toHaveLength(1);
+    expect((reports[0]?.body as { usage: { inputTokens: number } }).usage.inputTokens).toBe(10);
   });
 
   // The counts come out of the provider's response envelope, which is a thing
@@ -392,7 +471,8 @@ describe("what a task cost", () => {
   });
 
   // Four zeros move no counter, and at shutdown every open task takes this
-  // path at once.
+  // path at once — a pre-aborted task takes no turn, so there is nothing to
+  // report about.
   it("sends no report when the task spent nothing", async () => {
     const { client } = fakeCompletion({ text: "ok" });
     const fake = fakeTransport();
@@ -439,6 +519,7 @@ describe("what a task cost", () => {
       channel: "C024BE91L",
       eventId: "Ev0PV52K25",
       report: "duplicate",
+      turns: 1,
       totalTokens: 18
     });
   });
@@ -504,8 +585,9 @@ describe("a meter that cannot be reached", () => {
     expect(JSON.stringify(line)).not.toMatch(/deploy window|Fridays/);
   });
 
-  // A bug in the sender must not become a lost reply, which is a stronger
-  // claim than "a ProxyClientError must not".
+  // A bug in the sender must not become a lost reply, and since the report is
+  // now sent from inside the loop's `onTurn` that is not a figure of speech:
+  // the loop does not catch, so anything escaping here would end the task.
   it("still answers the thread when the sender fails in a way nobody planned for", async () => {
     const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
     const handler = createMentionHandler({

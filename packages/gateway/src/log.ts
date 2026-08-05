@@ -65,11 +65,12 @@ export interface LogFields {
    * Tokens the provider reported for a task, summed across its turns. A count,
    * not content.
    *
-   * The same number the agent reports to the proxy's meter, and carried on
-   * three lines for three different reasons: on `task` it says what the task
-   * cost, on `spend_reported` it says what the meter was told, and on
-   * `spend_report_failed` it says how much the meter did not learn — which is
-   * the one an operator greps when a channel's budget stops adding up.
+   * Carried on three lines, and it means a *task* on one of them and a *turn*
+   * on the other two. On `task` it is the whole task, summed. On
+   * `spend_reported` and `spend_report_failed` it is the one turn that line is
+   * about, because spend is reported per turn. A task whose reports do not add
+   * up to its `task` line is a meter that missed something, which is the shape
+   * an operator greps for when a channel's budget stops adding up.
    */
   totalTokens?: number;
   /**
@@ -82,7 +83,12 @@ export interface LogFields {
    * connection.
    */
   report?: string;
-  /** Model turns in a task. Tells a token count that ran long from one that ran wide. */
+  /**
+   * Model turns. On `task`, how many the task took — which tells a token count
+   * that ran long from one that ran wide. On the two spend lines, which turn
+   * that report was for, numbered from one, so the reports of a task can be put
+   * back in order and a missing one is visible as a gap.
+   */
   turns?: number;
   /**
    * The task id every tool call in a task was attributed to. An id the agent

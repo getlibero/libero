@@ -77,22 +77,35 @@ published and none is invented. Real schemas arrive with #39.
 (#86), so `docker compose up` fails on a clean checkout. Run either process
 directly in the meantime.
 
-**`daily_tokens` meters for real.** `packages/agent/src/proxy/spend.ts` reports
-each completed task's four raw token counts to `POST /v1/spend` (#110), keyed on
-the task id so a retry is a `duplicate` rather than a double charge. The counts
-are the provider's response envelope's, so the report holds against a
-prompt-injected model and not against a compromised agent process — the narrower
-claim is the true one, as with tool credentials. Weighting stays the proxy's,
-from `[budget] cache_read_weight` and `cache_write_weight`, which is why four
-numbers go over the wire and never a total. A meter that refuses or cannot be
-reached costs a `spend_report_failed` log line and never a user's answer, and
+**`daily_tokens` meters for real, and per turn.**
+`packages/agent/src/proxy/spend.ts` reports four raw token counts to
+`POST /v1/spend` (#110), and the loop's `onTurn` hook fires one after every
+model turn rather than one when the task ends (#115). Per turn is the
+load-bearing part: a task-end report means a long task spends its whole cost
+before the meter hears any of it, so a channel over its cap is refused starting
+with the next mention rather than this task's next tool call — and a task that
+dies mid-flight spends silently, because `runAgentTask` rejects and everything
+counted so far goes with the rejection.
+
+The turn id is `<task>.<n>`, so each turn is its own idempotency key and a retry
+is a `duplicate` rather than a double charge. The counts are the provider's
+response envelope's, so the report holds against a prompt-injected model and not
+against a compromised agent process — the narrower claim is the true one, as
+with tool credentials. Weighting stays the proxy's, from `[budget]
+cache_read_weight` and `cache_write_weight`, which is why four numbers go over
+the wire and never a total. A meter that refuses or cannot be reached costs a
+`spend_report_failed` log line and never a user's answer, and
 `loop/caps.ts:totalTokens` stays as defence in depth rather than as a stand-in.
 
-Two gaps are known and deliberate rather than overlooked. Tokens spent before a
-provider failure never reach the meter — `runAgentTask` rejects and the
-accumulated usage goes with it (#115). And a report still in flight when the
-process exits is lost; neither `gateway.stop()` nor the task abort drains one.
-Both under-report, so the budget fails open.
+**`onTurn` must not throw**, and nothing catches it: the loop awaits it and
+would propagate a rejection, which would end the task and lose a reply because a
+counter could not be written. `apps/server`'s `reportSpend` is total, and the
+contract is argued in `loop/types.ts` rather than defended in `loop.ts` — this
+file has no way to log, so catching would make the failure vanish instead.
+
+One gap remains, deliberate rather than overlooked: a report still in flight
+when the process exits is lost, since neither `gateway.stop()` nor the task
+abort drains one. It under-reports, so the budget fails open.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design

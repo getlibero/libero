@@ -85,23 +85,33 @@ node apps/server/dist/index.js
 ```
 
 It logs one JSON object per line on stdout: `connecting`, `connected`, then
-`mention`, `task`, `spend_reported`, and `replied` per answered mention. No line
-carries a token value or any message text — ids only.
+`mention`, one `spend_reported` per model turn, `task`, and `replied` per
+answered mention. No line carries a token value or any message text — ids only.
 
 ## What a turn costs
 
-After each task the process reports the provider's four raw token counts to the
-proxy, on the same client certificate the task's tool calls used, keyed on the
-task id. The counts come out of the provider's HTTP response envelope, never
-from anything the model wrote, and they go over unweighted: what a cached token
-costs against `daily_tokens` is the channel's team sheet's answer, applied where
-the budget is, so the agent sends numbers and never a total.
+After **each model turn** — not each task — the process reports the provider's
+four raw token counts to the proxy, on the same client certificate the task's
+tool calls used. The counts come out of the provider's HTTP response envelope,
+never from anything the model wrote, and they go over unweighted: what a cached
+token costs against `daily_tokens` is the channel's team sheet's answer, applied
+where the budget is, so the agent sends numbers and never a total.
 
-The task id is the idempotency key, so a retry under it is answered `duplicate`
-rather than charged twice. A meter that refuses the report or cannot be reached
-is logged as `spend_report_failed` with the count it did not learn, and the
-thread still gets its answer — an operator's counter is not worth a user's
-reply.
+Per turn rather than per task, for two reasons. A task-end report means a long
+task spends its whole cost before the meter hears any of it, so a channel
+already over its cap is refused starting with the next mention rather than this
+task's next tool call. And a task that dies mid-flight — the provider fails
+after a few good turns — would spend those turns silently, because the loop
+propagates the failure and the accumulated count goes with it.
+
+The turn id is `<task id>.<n>`, so each turn is its own idempotency key: a retry
+of turn 3 is answered `duplicate` and turn 4 is not. The task id root is minted
+by this process, never shown to the model, and shared with the task's tool
+calls, so one grep spans a task's reply, its calls, and its spend.
+
+A meter that refuses the report or cannot be reached is logged as
+`spend_report_failed` with the count it did not learn, and the thread still gets
+its answer — an operator's counter is not worth a user's reply.
 
 ## When the proxy cannot be reached
 

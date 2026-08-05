@@ -119,6 +119,11 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
 
     turns += 1;
     tracker.recordTurn(response.usage);
+    // Before the transcript grows and before any tool runs: what this turn
+    // cost is settled the moment the provider answered, and the caller's meter
+    // should hear it while the task is still running rather than after. A hook
+    // that throws ends the task — see its contract in ./types.ts.
+    await options.onTurn?.(response.usage, turns);
     if (response.text !== "") text = response.text;
 
     messages.push({

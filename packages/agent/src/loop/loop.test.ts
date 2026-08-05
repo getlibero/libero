@@ -248,6 +248,140 @@ describe("the agent loop, happy path", () => {
   });
 });
 
+// What a turn cost is settled when the provider answers, and the caller's meter
+// should hear it then rather than when the task happens to end.
+describe("telling the caller what each turn cost", () => {
+  it("reports each turn's own usage, numbered from one", async () => {
+    const seen: Array<{ usage: unknown; turn: number }> = [];
+    const { client } = fakeCompletion([
+      response({
+        stopReason: "tool_use",
+        toolCalls: [toolCall("call-1")],
+        usage: { inputTokens: 10, outputTokens: 5 }
+      }),
+      response({
+        text: "done",
+        stopReason: "end_turn",
+        usage: { inputTokens: 20, outputTokens: 7, cacheReadInputTokens: 4096 }
+      })
+    ]);
+
+    await runAgentTask(
+      task({
+        completion: client,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        onTurn: (usage, turn) => {
+          seen.push({ usage, turn });
+        }
+      })
+    );
+
+    // Each turn's own numbers, not the running total: summing is the meter's,
+    // and a caller handed totals could not tell a retry from a new turn.
+    expect(seen).toEqual([
+      { usage: { inputTokens: 10, outputTokens: 5 }, turn: 1 },
+      { usage: { inputTokens: 20, outputTokens: 7, cacheReadInputTokens: 4096 }, turn: 2 }
+    ]);
+  });
+
+  it("is not called when no turn was taken", async () => {
+    const seen: number[] = [];
+    const { client } = fakeCompletion([response({ text: "unreachable" })]);
+
+    const result = await runAgentTask(
+      task({
+        completion: client,
+        signal: AbortSignal.abort(),
+        onTurn: (_usage, turn) => {
+          seen.push(turn);
+        }
+      })
+    );
+
+    expect(result.stopReason).toBe("cancelled");
+    expect(seen).toEqual([]);
+  });
+
+  // The ordering the meter is being told about: turn 2 must not be under way
+  // while turn 1 is still being recorded.
+  it("waits for the hook before taking the next turn", async () => {
+    const order: string[] = [];
+    const { client } = fakeCompletion([
+      () => {
+        order.push("turn-1");
+        return Promise.resolve(
+          response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] })
+        );
+      },
+      () => {
+        order.push("turn-2");
+        return Promise.resolve(response({ text: "done", stopReason: "end_turn" }));
+      }
+    ]);
+
+    await runAgentTask(
+      task({
+        completion: client,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        onTurn: async (_usage, turn) => {
+          await Promise.resolve();
+          order.push(`reported-${turn}`);
+        }
+      })
+    );
+
+    expect(order).toEqual(["turn-1", "reported-1", "turn-2", "reported-2"]);
+  });
+
+  // The whole point of reporting per turn rather than per task. A task that
+  // dies mid-flight has already told the caller what its finished turns cost,
+  // so nothing has to be recovered from the rejection.
+  it("has already reported the turns a task took before the provider failed", async () => {
+    const seen: number[] = [];
+    const failure = new CompletionError("completion request failed", "fake");
+    const { client } = fakeCompletion([
+      response({
+        stopReason: "tool_use",
+        toolCalls: [toolCall("call-1")],
+        usage: { inputTokens: 10, outputTokens: 5 }
+      }),
+      () => Promise.reject(failure)
+    ]);
+
+    await expect(
+      runAgentTask(
+        task({
+          completion: client,
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+          onTurn: (_usage, turn) => {
+            seen.push(turn);
+          }
+        })
+      )
+    ).rejects.toBe(failure);
+
+    expect(seen).toEqual([1]);
+  });
+
+  // Stated as a contract in types.ts rather than defended against here: this
+  // file has no way to log, so catching would make the failure vanish. The
+  // test records the consequence so nobody has to discover it in production.
+  it("ends the task when the hook throws, which is why the contract forbids it", async () => {
+    const { client } = fakeCompletion([response({ text: "done", stopReason: "end_turn" })]);
+
+    await expect(
+      runAgentTask(
+        task({
+          completion: client,
+          onTurn: () => {
+            throw new Error("meter exploded");
+          }
+        })
+      )
+    ).rejects.toThrow("meter exploded");
+  });
+});
+
 describe("the agent loop, attribution", () => {
   const threeCalls = (): CompletionResponse[] => [
     response({ stopReason: "tool_use", toolCalls: [toolCall("call-1"), toolCall("call-2")] }),
