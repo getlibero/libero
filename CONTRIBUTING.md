@@ -40,8 +40,16 @@ Everything is planned in public GitHub issues; there is no separate tracker.
   that belongs to a later phase gets the `parked` label and no milestone, and
   is picked up when its phase opens. "X from a later phase does not exist yet"
   is parked on sight.
+- **The assignee is the in-progress signal.** There is no board and no
+  `status:*` label: an issue with no assignee is free, an assigned issue is
+  being worked on. Maintainers assign themselves before their first commit and
+  unassign if the work stops.
 - Issues labeled `help wanted` or `good first issue` are up for grabs. Comment
-  on a sub-issue before starting it so work is not duplicated.
+  on a sub-issue before starting it and a maintainer will assign it to you —
+  GitHub does not let non-collaborators self-assign, and the comment is what
+  keeps two people from writing the same PR. Say so in the thread if you drop
+  it; we would rather free the issue than leave it looking taken.
+- Open the PR with `Closes #N` in the body, so merging closes the issue.
 
 ## Triage
 

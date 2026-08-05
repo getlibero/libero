@@ -60,6 +60,11 @@ and not blocked; `help wanted` and `good first issue` mark the ones we would mos
 with. A pull request for an untriaged or parked issue may wait until its phase opens, so check
 before writing code.
 
+The assignee is the in-progress signal — there is no board and no `status:*` label, so an issue
+with nobody assigned is free and an assigned one is being worked on. Comment on an issue before
+starting it and a maintainer will assign it to you; GitHub does not let non-collaborators
+self-assign. Open the pull request with `Closes #N` in the body, so merging closes the issue.
+
 ## Development
 
 ```bash
