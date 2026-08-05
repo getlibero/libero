@@ -26,9 +26,23 @@ services:
       # agent presents is what identifies the channel to the proxy, so this
       # directory is the agent's entire authority: no cert, no call.
       PROXY_CLIENT_CERT_DIR: /etc/libero/certs/agent
+      # Which provider to complete against, and which model. Both required,
+      # neither defaulted: the provider is never inferred from whichever key
+      # below happens to be set, because both are declared here and inference
+      # would quietly bill the other account. A default model id would go stale
+      # on the provider's schedule and pin a price nobody chose.
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-anthropic}   # anthropic | openai-compatible
+      AGENT_MODEL: ${AGENT_MODEL:?set AGENT_MODEL in .env — e.g. claude-sonnet-4-6}
       # LLM provider keys go HERE (completion only) — never tool credentials.
+      # Each provider's own conventional variable: the one matching
+      # AGENT_PROVIDER is required, the other is ignored. The base URLs are
+      # optional and are what reach anything other than the provider's own
+      # endpoint — Together, Fireworks, Groq, Ollama, Gemini's compatibility
+      # endpoint, or the litellm sidecar below are all one base URL apart.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     volumes:
       - ../channels:/data/channels
       # The trust anchor and the channel client certs — not ./certs whole. The

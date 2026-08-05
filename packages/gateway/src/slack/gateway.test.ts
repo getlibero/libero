@@ -304,6 +304,61 @@ describe("createGateway", () => {
     expect(lines.some(line => line.event === "auth_rejected")).toBe(true);
   });
 
+  it("reports a token revoked after start, which start() can no longer throw", async () => {
+    // The gap this closes: start() resolved, so its rejection is long spent,
+    // and the ladder stops on a non-retryable failure. Without the callback the
+    // process stays up, healthy to every probe, and never answers again.
+    const clock = manualClock();
+    const slack = createStubSlack({
+      connectFailures: [undefined, new GatewayError("auth_rejected", false)]
+    });
+    const fatal: GatewayError[] = [];
+    const gateway = createGateway({
+      source: slack.source,
+      poster: slack.poster,
+      handler: () => Promise.resolve(undefined),
+      backoff: BACKOFF,
+      scheduler: clock.scheduler,
+      random: () => 1,
+      onFatal: error => fatal.push(error)
+    });
+
+    await gateway.start();
+    slack.drop();
+    await flush();
+    await clock.fire();
+    await flush();
+
+    expect(fatal.map(error => error.reason)).toEqual(["auth_rejected"]);
+    // And no further ladder is left running behind it.
+    expect(clock.pending()).toEqual([]);
+  });
+
+  it("swallows the same failure when no onFatal was given", async () => {
+    // The default is what this did before the seam existed: a composing app
+    // that has no opinion does not get an unhandled rejection.
+    const clock = manualClock();
+    const slack = createStubSlack({
+      connectFailures: [undefined, new GatewayError("auth_rejected", false)]
+    });
+    const gateway = createGateway({
+      source: slack.source,
+      poster: slack.poster,
+      handler: () => Promise.resolve(undefined),
+      backoff: BACKOFF,
+      scheduler: clock.scheduler,
+      random: () => 1
+    });
+
+    await gateway.start();
+    slack.drop();
+    await flush();
+    await expect(clock.fire()).resolves.toBeUndefined();
+    await flush();
+
+    expect(slack.connected()).toBe(false);
+  });
+
   it("reconnects after a drop, and answers again once it is back", async () => {
     const clock = manualClock();
     const slack = createStubSlack();

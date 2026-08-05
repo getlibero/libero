@@ -40,7 +40,18 @@ importers:
         specifier: ^22.20.1
         version: 22.20.1
 
-  apps/server: {}
+  apps/server:
+    dependencies:
+      '@getlibero/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@getlibero/gateway':
+        specifier: workspace:*
+        version: link:../../packages/gateway
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
 
   packages/agent:
     dependencies:

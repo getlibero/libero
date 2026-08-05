@@ -47,24 +47,35 @@ permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
 `packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
 into the thread, and a reconnect ladder the gateway owns rather than the SDK),
-`packages/cli` (placeholder npm release), `design/` (the design system — plain
-CSS, no TypeScript), and `site/` (getlibero.com). `packages/memory` is a README
-stub, `apps/server` is a scaffold, and `e2e/` is empty.
+`apps/server` (the gateway + agent process — env parsing, the mention handler,
+lifecycle), `packages/cli` (placeholder npm release), `design/` (the design
+system — plain CSS, no TypeScript), and `site/` (getlibero.com).
+`packages/memory` is a README stub and `e2e/` is empty.
 
-**Nothing composes the gateway yet.** `packages/gateway` reads no `process.env`
-and nothing constructs it: `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` are declared
-in `deploy/docker-compose.yml` and read by no code, the same way `PROXY_URL` is.
-The issue that wires gateway + agent into `apps/server` is what makes the two
-tokens live. Until then the adapter is exercised by its tests and by a throwaway
-script.
+**The agent answers, and calls no tools.** `apps/server` composes gateway +
+loop, so `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `AGENT_PROVIDER`, `AGENT_MODEL`,
+and the provider key are live. The tool source is `createStubToolSource()` and
+lists nothing — the agent reaches no tool because the client that would is not
+written (see below). `apps/server/README.md` has the environment contract; the
+per-channel model override and the sheet's `[llm]` caps are not read, and
+`DEFAULT_AGENT_LOOP_CAPS` applies to every channel until the session router
+(#65) resolves a sheet per channel.
 
-**Nothing sends a token report yet.** `POST /v1/spend` is built, tested over
-real mTLS, and idempotent — but no proxy client exists in `packages/agent` or
-anywhere else (`PROXY_URL` in `deploy/docker-compose.yml` is read by no code).
-So in a live deployment `daily_tokens` meters at zero and only
-`daily_tool_calls` bites. The sender belongs to whichever issue builds the
-agent's proxy client; when it lands, `packages/agent` gains its first
-`@getlibero/schema` dependency and `loop/caps.ts:totalTokens` can be revisited.
+**Two services, one Dockerfile short of running under compose.**
+`deploy/docker-compose.yml` builds both images from paths that do not exist
+(#86), so `docker compose up` fails on a clean checkout. Run either process
+directly in the meantime.
+
+**No proxy client exists, which is the largest remaining gap and has no issue
+of its own.** Nothing in `packages/agent` or `apps/server` speaks to the proxy:
+`PROXY_URL`, `PROXY_TLS_CA`, and `PROXY_CLIENT_CERT_DIR` in
+`deploy/docker-compose.yml` are read by no code. Three things wait on it — a
+real `ToolSource` (`GET /v1/tools`), a real `ToolExecutor`
+(`POST /v1/tools/call`), and the spend report (`POST /v1/spend`, built, tested
+over real mTLS, and idempotent). So `daily_tokens` meters at zero in a live
+deployment and only `daily_tool_calls` would bite. When it lands,
+`packages/agent` gains its first `@getlibero/schema` dependency and
+`loop/caps.ts:totalTokens` can be revisited.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
