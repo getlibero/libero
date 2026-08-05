@@ -26,7 +26,8 @@ export interface LogFields {
   /**
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
    * "reconnecting", "disconnected", "auth_rejected", "stopping". Dispatch:
-   * "mention", "replied", "ignored", "handler_failed", "post_failed".
+   * "mention", "replied", "ignored", "handler_failed", "post_failed". Tools:
+   * "task", "tools_unavailable".
    */
   event: string;
   /** Slack team id. An id, never a token. */

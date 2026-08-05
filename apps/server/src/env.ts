@@ -7,7 +7,7 @@
 // and a startup error is printed, logged by whatever supervises the container,
 // and pasted into an issue.
 
-import type { CompletionConfig } from "@getlibero/agent";
+import type { CompletionConfig, ProxyTransportOptions } from "@getlibero/agent";
 
 /** The slice of process.env this process reads. */
 export type Env = Record<string, string | undefined>;
@@ -55,6 +55,32 @@ export function slackTokensFromEnv(env: Env): { appToken: string; botToken: stri
  */
 export function modelFromEnv(env: Env): string {
   return requiredEnv(env, "AGENT_MODEL");
+}
+
+/**
+ * How to reach the tool proxy: `PROXY_URL`, `PROXY_TLS_CA`, `PROXY_CLIENT_CERT_DIR`.
+ *
+ * All three required, none defaulted, and this is the variable set that decides
+ * whether the process can call a tool at all. There is no fallback to a
+ * toolless agent when they are unset, on purpose: a deployment missing one of
+ * these is not a deployment that answers without tools, it is a misconfigured
+ * one, and a silent downgrade would be a model that says it cannot do something
+ * it is in fact permitted to do — with nothing in the logs to say why.
+ *
+ * `PROXY_URL` must be https, which `createProxyTransport` checks. Mutual TLS is
+ * the proxy's only authentication, so a plaintext URL is not a weaker
+ * deployment but a broken one.
+ *
+ * Nothing here reads a file. The paths are handed to the transport, which reads
+ * the CA at construction — before the socket opens — so a wrong path is a
+ * startup failure naming it rather than a task that fails in a thread.
+ */
+export function proxyConfigFromEnv(env: Env): ProxyTransportOptions {
+  return {
+    url: requiredEnv(env, "PROXY_URL"),
+    caPath: requiredEnv(env, "PROXY_TLS_CA"),
+    clientCertDir: requiredEnv(env, "PROXY_CLIENT_CERT_DIR")
+  };
 }
 
 /** Every provider `AGENT_PROVIDER` accepts, in the message an operator sees. */

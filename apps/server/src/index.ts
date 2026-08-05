@@ -7,13 +7,18 @@
 // socket, a provider, or a process.
 //
 // This process holds the Slack app and bot tokens and the model provider key.
-// It holds no tool credential and has no way to reach a tool: the only path is
-// a network call to the tool proxy service, which is not wired yet — the agent
-// runs with a stub tool source that lists nothing.
+// It holds no tool credential and has no way to reach a tool except one: a
+// mutual-TLS call to the tool proxy service, which owns every credential and
+// decides every call from the channel's team sheet.
 
-import { createCompletionClient } from "@getlibero/agent";
+import { createCompletionClient, createProxyTransport } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackGateway } from "@getlibero/gateway";
-import { completionConfigFromEnv, modelFromEnv, slackTokensFromEnv } from "./env.js";
+import {
+  completionConfigFromEnv,
+  modelFromEnv,
+  proxyConfigFromEnv,
+  slackTokensFromEnv
+} from "./env.js";
 import { createMentionHandler } from "./handler.js";
 
 const logger = createJsonLogger();
@@ -24,6 +29,10 @@ const logger = createJsonLogger();
 const { appToken, botToken } = slackTokensFromEnv(process.env);
 const model = modelFromEnv(process.env);
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
+// Reads the CA and rejects a non-https PROXY_URL here, before the socket opens.
+// A per-channel client certificate is resolved on first use — one channel with
+// no certificate is that channel's problem, not the process's.
+const transport = createProxyTransport(proxyConfigFromEnv(process.env));
 
 // Aborts every task in flight when the process is asked to stop. The loop
 // reports `cancelled` rather than throwing, and a cancelled task posts nothing.
@@ -32,7 +41,7 @@ const tasks = new AbortController();
 const gateway = createSlackGateway({
   appToken,
   botToken,
-  handler: createMentionHandler({ completion, model, signal: tasks.signal, logger }),
+  handler: createMentionHandler({ completion, transport, model, signal: tasks.signal, logger }),
   logger,
   // The socket died for a reason retrying cannot fix — a revoked or rotated
   // token. Exiting is the honest outcome: the alternative is a process that is

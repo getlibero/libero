@@ -58,6 +58,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.115.0
         version: 0.115.0(zod@4.4.3)
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../schema
       openai:
         specifier: ^7.3.0
         version: 7.3.0(zod@4.4.3)

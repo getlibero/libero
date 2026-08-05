@@ -52,30 +52,36 @@ lifecycle), `packages/cli` (placeholder npm release), `design/` (the design
 system — plain CSS, no TypeScript), and `site/` (getlibero.com).
 `packages/memory` is a README stub and `e2e/` is empty.
 
-**The agent answers, and calls no tools.** `apps/server` composes gateway +
-loop, so `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `AGENT_PROVIDER`, `AGENT_MODEL`,
-and the provider key are live. The tool source is `createStubToolSource()` and
-lists nothing — the agent reaches no tool because the client that would is not
-written (see below). `apps/server/README.md` has the environment contract; the
-per-channel model override and the sheet's `[llm]` caps are not read, and
+**The agent calls tools, through the proxy and only through it.**
+`packages/agent/src/proxy/` is the client (#109): an mTLS transport over
+`node:https`, `ToolSource` over `GET /v1/tools`, `ToolExecutor` over
+`POST /v1/tools/call`. `apps/server` composes gateway + loop + transport, so
+`SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `PROXY_URL`, `PROXY_TLS_CA`,
+`PROXY_CLIENT_CERT_DIR`, `AGENT_PROVIDER`, `AGENT_MODEL`, and the provider key
+are all live and all required — there is no toolless fallback.
+`apps/server/README.md` has the environment contract; the per-channel model
+override and the sheet's `[llm]` caps are not read, and
 `DEFAULT_AGENT_LOOP_CAPS` applies to every channel until the session router
 (#65) resolves a sheet per channel.
+
+Two things about that client are load-bearing rather than incidental. **The flat
+name a model calls is decoded to a (server, tool) pair by a map built from the
+listing, never by parsing the name** — `ResourceName` permits dots and
+underscores, so any separator is ambiguous, and a name the proxy did not publish
+has no pair to become. And **the tool definitions are thin because the manifest
+is thin**: a team sheet knows names and approval, so no input schema is
+published and none is invented. Real schemas arrive with #39.
 
 **Two services, one Dockerfile short of running under compose.**
 `deploy/docker-compose.yml` builds both images from paths that do not exist
 (#86), so `docker compose up` fails on a clean checkout. Run either process
 directly in the meantime.
 
-**No proxy client exists, which is the largest remaining gap and has no issue
-of its own.** Nothing in `packages/agent` or `apps/server` speaks to the proxy:
-`PROXY_URL`, `PROXY_TLS_CA`, and `PROXY_CLIENT_CERT_DIR` in
-`deploy/docker-compose.yml` are read by no code. Three things wait on it — a
-real `ToolSource` (`GET /v1/tools`), a real `ToolExecutor`
-(`POST /v1/tools/call`), and the spend report (`POST /v1/spend`, built, tested
-over real mTLS, and idempotent). So `daily_tokens` meters at zero in a live
-deployment and only `daily_tool_calls` would bite. When it lands,
-`packages/agent` gains its first `@getlibero/schema` dependency and
-`loop/caps.ts:totalTokens` can be revisited.
+**No spend report is sent, so `daily_tokens` meters at zero.**
+`POST /v1/spend` is built, tested over real mTLS, and idempotent, and nothing
+calls it — that is #110, which now has a transport to send over. Only
+`daily_tool_calls` bites in a live deployment, and `loop/caps.ts:totalTokens`
+is the loop-side cap standing in for it.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
@@ -197,9 +203,12 @@ These are load-bearing, not stylistic:
   records, tool calls, approvals, and memory ops. Both services import from it;
   don't redefine those shapes locally. `channels/example/channel.toml` is the
   documented starter sheet and should stay in sync with the zod schema.
-  Today only the team sheet is implemented — `src/team-sheet.ts`, ~60 lines. The
-  rest of that list is where those shapes go when the code needing them lands,
-  not something you can import yet.
+  Built today: the team sheet, the tool call and its response, the tool
+  listing, refusals, the spend report, and the proxy error shape. Both services
+  import them — `packages/agent` since #109, which is what makes "the two ends
+  agree on one definition" true rather than aspirational. Audit records,
+  approvals, and memory ops are still where those shapes go when the code
+  needing them lands, not something you can import yet.
 
 ## Design
 

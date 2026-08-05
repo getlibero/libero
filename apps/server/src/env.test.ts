@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { completionConfigFromEnv, modelFromEnv, requiredEnv, slackTokensFromEnv } from "./env.js";
+import {
+  completionConfigFromEnv,
+  modelFromEnv,
+  proxyConfigFromEnv,
+  requiredEnv,
+  slackTokensFromEnv
+} from "./env.js";
 
 describe("requiredEnv", () => {
   it("returns a set value", () => {
@@ -124,5 +130,45 @@ describe("completionConfigFromEnv", () => {
     expect(() =>
       completionConfigFromEnv({ AGENT_PROVIDER: "nope", ANTHROPIC_API_KEY: "sk-ant-secret" })
     ).not.toThrow(/sk-ant-secret/);
+  });
+});
+
+describe("proxyConfigFromEnv", () => {
+  const PROXY = {
+    PROXY_URL: "https://proxy:8443",
+    PROXY_TLS_CA: "/etc/libero/certs/ca.pem",
+    PROXY_CLIENT_CERT_DIR: "/etc/libero/certs/agent"
+  };
+
+  it("reads the three variables the compose file declares", () => {
+    expect(proxyConfigFromEnv(PROXY)).toEqual({
+      url: "https://proxy:8443",
+      caPath: "/etc/libero/certs/ca.pem",
+      clientCertDir: "/etc/libero/certs/agent"
+    });
+  });
+
+  // No fallback to a toolless agent. A deployment missing one of these is not
+  // one that answers without tools — it is misconfigured, and a silent
+  // downgrade would be a model saying it cannot do what the channel permits,
+  // with nothing in the logs to say why.
+  it("refuses to start when any one of them is missing", () => {
+    for (const name of Object.keys(PROXY)) {
+      const partial = { ...PROXY, [name]: undefined };
+      expect(() => proxyConfigFromEnv(partial)).toThrow(new RegExp(name));
+    }
+    expect(() => proxyConfigFromEnv({})).toThrow(/PROXY_URL/);
+  });
+
+  it("treats an empty value as unset", () => {
+    expect(() => proxyConfigFromEnv({ ...PROXY, PROXY_TLS_CA: "" })).toThrow(/PROXY_TLS_CA/);
+  });
+
+  // Nothing here opens a file or a socket: the transport reads the CA at
+  // construction, which is still before the socket opens.
+  it("reads no file", () => {
+    expect(() =>
+      proxyConfigFromEnv({ ...PROXY, PROXY_TLS_CA: "/nowhere/at/all.pem" })
+    ).not.toThrow();
   });
 });

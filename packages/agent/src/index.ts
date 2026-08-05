@@ -37,3 +37,15 @@ export type {
 } from "./loop/types.js";
 
 export { createStubToolSource, createUnavailableToolExecutor } from "./loop/stub-tools.js";
+
+export { createProxyTransport, ProxyClientError } from "./proxy/transport.js";
+export type {
+  ProxyFailure,
+  ProxyRequest,
+  ProxyResponse,
+  ProxyTransport,
+  ProxyTransportOptions
+} from "./proxy/transport.js";
+
+export { createProxyToolClient } from "./proxy/tools.js";
+export type { ProxyToolClient, ProxyToolClientOptions } from "./proxy/tools.js";

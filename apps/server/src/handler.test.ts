@@ -2,17 +2,21 @@
 // is no Slack here and no model: a mention is a plain object, and what comes
 // back is the text the channel would see.
 
+import { ProxyClientError } from "@getlibero/agent";
 import type {
   AgentStopReason,
   AgentTaskResult,
   CompletionClient,
   CompletionRequest,
   CompletionResponse,
+  ProxyRequest,
+  ProxyResponse,
+  ProxyTransport,
   TokenUsage
 } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger, SlackMention } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
-import { SYSTEM_PROMPT, createMentionHandler, replyFor } from "./handler.js";
+import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createMentionHandler, replyFor } from "./handler.js";
 
 const MODEL = "test-model";
 
@@ -118,17 +122,64 @@ describe("replyFor", () => {
   });
 });
 
+/**
+ * The proxy, faked at the transport seam.
+ *
+ * One level below the tool client, so the client's own mapping — the listing to
+ * definitions, a call to a (server, tool) pair — is exercised here rather than
+ * stubbed past. What is not exercised is TLS, which needs a real handshake and
+ * is tested against a real listener in packages/agent.
+ */
+function fakeTransport(
+  answers: {
+    tools?: () => ProxyResponse | Promise<ProxyResponse>;
+    call?: (body: unknown) => ProxyResponse | Promise<ProxyResponse>;
+  } = {}
+): { transport: ProxyTransport; sent: ProxyRequest[] } {
+  const sent: ProxyRequest[] = [];
+  return {
+    sent,
+    transport: {
+      async request(options: ProxyRequest): Promise<ProxyResponse> {
+        sent.push(options);
+        if (options.path === "/v1/tools") {
+          return (await answers.tools?.()) ?? { status: 200, body: { tools: [] } };
+        }
+        return (
+          (await answers.call?.(options.body)) ?? {
+            status: 200,
+            body: { outcome: "ran", id: "call-1", result: { content: "upstream said so" } }
+          }
+        );
+      }
+    }
+  };
+}
+
+const LISTED = {
+  status: 200,
+  body: { tools: [{ server: "github", tool: "list_prs", approval: "none" }] }
+} as const;
+
 describe("createMentionHandler", () => {
   it("answers a mention with the model's text", async () => {
     const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-    const handler = createMentionHandler({ completion: client, model: MODEL });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport().transport,
+      model: MODEL
+    });
 
     await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
   });
 
   it("sends the mention text, the system prompt, and the configured model", async () => {
     const { client, requests } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({ completion: client, model: MODEL });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport().transport,
+      model: MODEL
+    });
 
     await handler(mention("<@U0BOT> ping"));
 
@@ -140,22 +191,62 @@ describe("createMentionHandler", () => {
     expect(requests[0]?.messages).toEqual([{ role: "user", content: "<@U0BOT> ping" }]);
   });
 
-  it("offers the model no tools", async () => {
-    // The stub tool source lists nothing, and the loop omits the field rather
-    // than sending an empty array. There is no tool executor in this process
-    // that could reach one anyway.
+  it("offers the model exactly what the proxy listed", async () => {
     const { client, requests } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({ completion: client, model: MODEL });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport({ tools: () => LISTED }).transport,
+      model: MODEL
+    });
+
+    await handler(mention());
+
+    expect(requests[0]?.tools).toHaveLength(1);
+    expect(requests[0]?.tools?.[0]?.name).toBe("list_prs");
+  });
+
+  it("offers no tools when the channel permits none", async () => {
+    // An empty listing is a real answer — a channel with no team sheet permits
+    // nothing — and the loop omits the field rather than sending an empty array.
+    const { client, requests } = fakeCompletion({ text: "ok" });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport().transport,
+      model: MODEL
+    });
 
     await handler(mention());
 
     expect(requests[0]?.tools).toBeUndefined();
   });
 
+  // The certificate is the channel identity, and it is chosen from the mention
+  // rather than from anything the model wrote.
+  it("presents the mention's channel to the proxy, and sends no channel in the body", async () => {
+    const { client } = fakeCompletion({ text: "ok" });
+    const fake = fakeTransport({ tools: () => LISTED });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fake.transport,
+      model: MODEL
+    });
+
+    await handler(mention());
+
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.channel).toBe("C024BE91L");
+    expect(fake.sent[0]?.body).toBeUndefined();
+  });
+
   it("posts nothing and calls no provider when the signal is already aborted", async () => {
     const { client, requests } = fakeCompletion({ text: "ok" });
     const aborted = AbortSignal.abort();
-    const handler = createMentionHandler({ completion: client, model: MODEL, signal: aborted });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: fakeTransport().transport,
+      model: MODEL,
+      signal: aborted
+    });
 
     await expect(handler(mention())).resolves.toBeUndefined();
     expect(requests).toHaveLength(0);
@@ -166,6 +257,7 @@ describe("createMentionHandler", () => {
     const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
     const handler = createMentionHandler({
       completion: client,
+      transport: fakeTransport().transport,
       model: MODEL,
       logger: captured.logger
     });
@@ -193,9 +285,89 @@ describe("createMentionHandler", () => {
       completion: {
         complete: () => Promise.reject(new Error("connect ECONNREFUSED"))
       },
+      transport: fakeTransport().transport,
       model: MODEL
     });
 
     await expect(handler(mention())).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+// The departure from the rule above, and why: a channel whose client
+// certificate was never minted will never answer again, which is a first-run
+// configuration mistake rather than an outage. Silence there is
+// indistinguishable from being ignored, by the people who cannot see the log.
+describe("a tool proxy that cannot be reached", () => {
+  const failing = (reason: ProxyClientError["reason"]): ProxyTransport => ({
+    request: () => Promise.reject(new ProxyClientError("proxy client: nope", reason))
+  });
+
+  it("tells the channel when this channel has no client certificate", async () => {
+    const { client, requests } = fakeCompletion({ text: "ok" });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: failing("no_client_certificate"),
+      model: MODEL
+    });
+
+    await expect(handler(mention())).resolves.toEqual({
+      text: PROXY_UNAVAILABLE.no_client_certificate
+    });
+    // No model turn was taken: the listing runs before the first one, so this
+    // costs the operator nothing beyond the failed connection.
+    expect(requests).toHaveLength(0);
+  });
+
+  it("tells the channel when the proxy is unreachable or refused the certificate", async () => {
+    for (const reason of [
+      "unreachable",
+      "tls_rejected",
+      "connection_reset",
+      "timed_out",
+      "malformed_response"
+    ] as const) {
+      const { client } = fakeCompletion({ text: "ok" });
+      const handler = createMentionHandler({
+        completion: client,
+        transport: failing(reason),
+        model: MODEL
+      });
+
+      await expect(handler(mention())).resolves.toEqual({ text: PROXY_UNAVAILABLE.other });
+    }
+  });
+
+  it("logs the reason, and puts no message text in the line", async () => {
+    const captured = capturingLogger();
+    const { client } = fakeCompletion({ text: "ok" });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: failing("unreachable"),
+      model: MODEL,
+      logger: captured.logger
+    });
+
+    await handler(mention("<@U0BOT> what is the deploy window?"));
+
+    expect(captured.lines.find(entry => entry.event === "tools_unavailable")).toMatchObject({
+      level: "error",
+      channel: "C024BE91L",
+      eventId: "Ev0PV52K25",
+      reason: "unreachable"
+    });
+    expect(JSON.stringify(captured.lines)).not.toMatch(/deploy window/);
+  });
+
+  // Shutdown, not a failure. Posting here would put a line into every thread
+  // open at the moment the operator asked for quiet.
+  it("posts nothing when the listing was cancelled", async () => {
+    const { client } = fakeCompletion({ text: "ok" });
+    const handler = createMentionHandler({
+      completion: client,
+      transport: failing("cancelled"),
+      model: MODEL
+    });
+
+    await expect(handler(mention())).resolves.toBeUndefined();
   });
 });
