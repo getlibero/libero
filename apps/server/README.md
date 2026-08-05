@@ -25,9 +25,9 @@ unfiltered. Their descriptions are thin on purpose: a team sheet knows names and
 approval and nothing about arguments, so no input schema is published. Real
 schemas arrive with the MCP client pool (#39).
 
-Not here yet, and each belongs to its own issue: per-channel sessions and the
-mutex that serializes them (#65), thread history and attribution (#67), and the
-per-channel `[llm]` model override and caps from the team sheet (#65).
+Not here yet, and each belongs to its own issue: thread follow-ups without a
+re-mention (#66), thread history and attribution in the prompt (#67), and the
+live checklist (#68).
 
 ## Configuration
 
@@ -44,7 +44,8 @@ the far end of a thread.
 | `PROXY_TLS_CA` | Verifies the proxy's certificate, and nothing else does. |
 | `PROXY_CLIENT_CERT_DIR` | Holds `client-<channel id>.pem` and `.key` per channel. |
 | `AGENT_PROVIDER` | `anthropic` or `openai-compatible`. |
-| `AGENT_MODEL` | Model id, passed to the provider verbatim. |
+| `AGENT_MODEL` | Model id, passed to the provider verbatim. The fallback for a channel whose sheet names none. |
+| `AGENT_CHANNELS_ROOT` | The team sheets: one directory per channel, each with a `channel.toml`. |
 | `ANTHROPIC_API_KEY` | Required when `AGENT_PROVIDER=anthropic`. |
 | `OPENAI_API_KEY` | Required when `AGENT_PROVIDER=openai-compatible`. |
 | `ANTHROPIC_BASE_URL` | Optional. Anthropic's own endpoint when unset. |
@@ -65,6 +66,17 @@ the logs to say why. `PROXY_URL` must be `https`: mutual TLS is the proxy's only
 authentication, so a plaintext URL means no certificate is presented, no channel
 is resolved, and every call is refused.
 
+`AGENT_CHANNELS_ROOT` is required too, and advisory is not a reason to soften
+that. This process reads the same team sheets the proxy does and reads them
+differently: for the proxy they are the authorization source, and here they are
+a model id and four per-task caps the loop applies to its own turns as defence
+in depth. Unset, every channel would silently run on the built-in caps with its
+`[llm]` block ignored and nothing in the log to say so — the same silent
+downgrade the three `PROXY_*` variables refuse, and indistinguishable from a
+path that is merely typed wrong. Nothing is read from the directory at startup:
+a root that does not exist is a channel whose sheet falls back, not a process
+that will not boot.
+
 The Slack app needs Socket Mode enabled, the `app_mentions:read` and
 `chat:write` scopes, and the `app_mention` event subscribed.
 
@@ -81,12 +93,60 @@ PROXY_URL=https://localhost:8443 \
 PROXY_TLS_CA=./deploy/certs/ca.pem \
 PROXY_CLIENT_CERT_DIR=./deploy/certs/agent \
 AGENT_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-… AGENT_MODEL=claude-sonnet-4-6 \
+AGENT_CHANNELS_ROOT=./channels \
 node apps/server/dist/index.js
 ```
 
 It logs one JSON object per line on stdout: `connecting`, `connected`, then
 `mention`, one `spend_reported` per model turn, `task`, and `replied` per
-answered mention. No line carries a token value or any message text — ids only.
+answered mention — plus `queued` when a mention waited on another task in the
+same channel. No line carries a token value or any message text — ids only.
+
+## Sessions
+
+One session per `(workspace, channel)`, created on first mention. A session owns
+a queue, and a channel's mentions run through it one at a time: a second mention
+arriving while the first is still working **queues rather than interleaves**, and
+sees whatever the first left behind. Channels share nothing, so a channel waiting
+on a slow task delays only itself.
+
+The queueing happens below the gateway, not in it. The gateway acknowledges an
+inbound event within about three seconds or Slack redelivers it, so a mention
+waiting its turn must not be holding that acknowledgement — everything below the
+ack queues and nothing above it does. A mention that waited is logged as `queued`
+with a `queuedMs`, which is also what tells a backed-up channel apart from a slow
+model: `replied`'s `durationMs` now includes the wait.
+
+A task's own wall-time cap is unaffected by the wait — the loop starts its clock
+when the task starts — so end-to-end latency is queue plus cap.
+
+Sessions are evicted after 30 minutes idle, and never while they have work
+running or queued, however old. Eviction is lazy: it happens on the path a
+mention takes anyway, so nothing here keeps a timer alive to free memory nobody
+is waiting on. Nothing is durable, so a restart drops every session at no cost.
+
+### The team sheet, as this process reads it
+
+Each task resolves its channel's sheet — `$AGENT_CHANNELS_ROOT/<channel
+id>/channel.toml` — to a model and the four per-task caps, and runs on those.
+`[llm] model` wins over `AGENT_MODEL`; every cap in the schema has a default, so
+a channel whose sheet has no `[llm]` block still gets all four. `max_task_seconds`
+is seconds in the sheet and milliseconds in the loop, which is the one field that
+is a conversion rather than a rename.
+
+The sheet is read once per task, with no cache and no watcher, so an operator's
+edit lands on the next mention. And every failure to read one — missing,
+unreadable, no longer valid TOML, rejected by the schema — falls back to the
+built-in defaults and logs a reason code rather than refusing to run. That is
+safe precisely because **what is resolved here is advisory**: the proxy enforces
+what a channel may do from its own copy of the same file, and its meter is
+authoritative. A fallback here cannot widen anything. The opposite policy would
+put an authorization decision on the wrong side of the boundary and take a whole
+deployment dark the first time a volume was mounted at the wrong path.
+
+The sheet picks a model id, not a provider. `AGENT_PROVIDER` is the process's,
+and a sheet naming a model the configured provider does not serve fails at the
+provider like any other outage.
 
 ## What a turn costs
 
@@ -160,7 +220,18 @@ brings it back once the environment is fixed.
 
 - `src/env.ts` — every environment rule, apart from `index.ts` so the failure
   modes are testable without a process.
-- `src/handler.ts` — the seam: a mention in, one agent task, and the mapping
-  from how the task ended to what the channel is told. One proxy tool client and
-  one spend client per task, both pinned to the mention's channel.
+- `src/handler.ts` — the Slack adapter, and the only file here besides
+  `index.ts` that knows what Slack is. A `SlackMention` becomes a `TaskRequest`
+  and a reply goes back; a second front-end writes its own version of exactly
+  this file.
+- `src/session/types.ts` — what everything below the adapter works in:
+  `SessionKey`, `TaskRequest`, `TaskSettings`. No Slack type appears in it, and
+  an ESLint rule on `src/session/**` is what keeps that true.
+- `src/session/mutex.ts` — one at a time, in arrival order.
+- `src/session/registry.ts` — the sessions, and when they are torn down.
+- `src/session/sheet.ts` — a channel's team sheet to a model and four caps.
+- `src/session/router.ts` — request in, reply out: which session, what it waits
+  for, which sheet the task runs on.
+- `src/session/task.ts` — one agent task. One proxy tool client and one spend
+  client per task, both pinned to the request's channel.
 - `src/index.ts` — composition and lifecycle, and nothing else.

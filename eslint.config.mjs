@@ -39,6 +39,47 @@ export default tseslint.config(
     }
   },
   {
+    // The channel router is transport-neutral, and this is what makes that true
+    // rather than aspirational. It takes a TaskRequest; handler.ts is the six
+    // lines that turn a SlackMention into one, and a second front-end writes its
+    // own version of exactly that file. A module that cannot name a Slack type
+    // cannot quietly start depending on Slack's shape — which is the failure
+    // that would only surface when the second front-end was already being
+    // written, and by then the router would have to be unpicked rather than
+    // reused.
+    //
+    // Directory-scoped rather than file-by-file on purpose. This is a deny rule,
+    // so enumerating filenames would be fail-open: a router file added later
+    // would silently escape it. The glob covers what does not exist yet.
+    //
+    // `Logger` is allowed through because it is a structured logger with nothing
+    // Slack in it — it lives in the gateway package for boundary reasons of its
+    // own (see the header of log.ts), not because it belongs to the socket.
+    // `allowImportNames` rather than `importNames`, so the exception is a list
+    // of what may cross rather than a list of what may not.
+    files: ["apps/server/src/session/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          // Restated, not inherited. `no-restricted-imports` is replaced
+          // wholesale by the last matching block — see the note at the top of
+          // this file — so leaving it out here would drop the agent/proxy ban
+          // for every file under session/.
+          patterns: [PROXY_IMPORT_BAN],
+          paths: [
+            {
+              name: "@getlibero/gateway",
+              allowImportNames: ["Logger", "LogLevel", "LogFields", "createSilentLogger"],
+              message:
+                "The channel router is transport-neutral: it takes TaskRequest, not SlackMention. The Slack adapter is apps/server/src/handler.ts."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     // The claim the gateway's tests rest on is that the dispatch path — inbound
     // envelope, normalization, the handler, the reply, the reconnect loop —
     // runs with no socket and no Slack SDK anywhere in it. That is what makes

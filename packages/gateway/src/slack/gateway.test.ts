@@ -231,9 +231,10 @@ describe("createGateway", () => {
   });
 
   it("dispatches concurrent mentions rather than queueing them", async () => {
-    // Serializing a channel's mentions behind a session mutex is the channel
-    // router's job. Asserting today's behaviour explicitly means that change
-    // shows up as a changed test rather than as a silent one.
+    // Concurrent dispatch is the correct behaviour here, not a placeholder for
+    // it. Dispatch acknowledges the inbound event, and a mention queued behind
+    // a slow task must not hold that acknowledgement — so the channel router
+    // serializes above this file, and this stays asserted.
     const slack = createStubSlack();
     let inFlight = 0;
     let maxInFlight = 0;

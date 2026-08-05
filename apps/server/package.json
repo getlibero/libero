@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@getlibero/agent": "workspace:*",
-    "@getlibero/gateway": "workspace:*"
+    "@getlibero/gateway": "workspace:*",
+    "@getlibero/schema": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.20.1"

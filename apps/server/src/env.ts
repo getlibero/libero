@@ -49,12 +49,39 @@ export function slackTokensFromEnv(env: Env): { appToken: string; botToken: stri
  * provider's schedule and pins a price the operator never chose, and it would
  * be wrong for every channel at once.
  *
- * The per-channel `[llm] model` override in the team sheet resolves upstream of
- * this and does not exist yet — reading a sheet per channel is the session
- * router's job (#65). This is the one model the process answers with.
+ * This is the fallback rather than the answer. A channel whose team sheet names
+ * an `[llm] model` runs on that one — the resolution is in session/sheet.ts —
+ * and this is what a channel that names none, or has no readable sheet at all,
+ * gets. Which is why it stays required: it is the model every unprovisioned
+ * channel in the deployment will use.
  */
 export function modelFromEnv(env: Env): string {
   return requiredEnv(env, "AGENT_MODEL");
+}
+
+/**
+ * Where the per-channel team sheets live: `AGENT_CHANNELS_ROOT`, holding one
+ * directory per channel, each with a `channel.toml`.
+ *
+ * Prefixed as this process's own setting rather than shared with the proxy's,
+ * because the two services mount the same directory and do not read it the same
+ * way. For the tool proxy service it is the authorization source: which tools
+ * exist, which need a human, what the daily budget is. Here it is advisory — a
+ * model id and four per-task caps the loop applies to itself as defence in
+ * depth, while the proxy's meter stays authoritative.
+ *
+ * Required, with no default, and advisory is not a reason to soften that. Unset,
+ * every channel silently runs on the built-in caps and this process's model,
+ * with each sheet's `[llm]` block ignored and nothing in the log to say so —
+ * which is the same silent downgrade the three `PROXY_*` variables refuse, and
+ * it looks identical to a path that is merely typed wrong.
+ *
+ * Nothing here reads the directory. A root that does not exist is a channel
+ * whose sheet cannot be read, which falls back rather than failing: the
+ * deployment still answers, and the proxy still refuses everything it should.
+ */
+export function channelsRootFromEnv(env: Env): string {
+  return requiredEnv(env, "AGENT_CHANNELS_ROOT");
 }
 
 /**

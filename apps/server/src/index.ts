@@ -3,8 +3,13 @@
 // Composition only: read the environment, build the completion client and the
 // handler, connect, stop cleanly. Everything it does lives in
 // @getlibero/gateway and @getlibero/agent — and the environment rules in
-// env.ts, the reply mapping in handler.ts — where they are testable without a
-// socket, a provider, or a process.
+// env.ts, the Slack mapping in handler.ts, the sessions and the loop under
+// session/ — where they are testable without a socket, a provider, or a
+// process.
+//
+// Sessions are in memory and nothing here is durable. A restart drops every
+// session, which costs nothing today: a session holds a queue and a timestamp,
+// and the team sheet is read from disk per task rather than cached into one.
 //
 // This process holds the Slack app and bot tokens and the model provider key.
 // It holds no tool credential and has no way to reach a tool except one: a
@@ -14,12 +19,16 @@
 import { createCompletionClient, createProxyTransport } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackGateway } from "@getlibero/gateway";
 import {
+  channelsRootFromEnv,
   completionConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
   slackTokensFromEnv
 } from "./env.js";
 import { createMentionHandler } from "./handler.js";
+import { createChannelRouter } from "./session/router.js";
+import { createSheetResolver } from "./session/sheet.js";
+import { createTaskRunner } from "./session/task.js";
 
 const logger = createJsonLogger();
 
@@ -28,6 +37,7 @@ const logger = createJsonLogger();
 // a thread, which is the slowest possible way to learn a variable is missing.
 const { appToken, botToken } = slackTokensFromEnv(process.env);
 const model = modelFromEnv(process.env);
+const channelsRoot = channelsRootFromEnv(process.env);
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
 // Reads the CA and rejects a non-https PROXY_URL here, before the socket opens.
 // A per-channel client certificate is resolved on first use — one channel with
@@ -41,7 +51,16 @@ const tasks = new AbortController();
 const gateway = createSlackGateway({
   appToken,
   botToken,
-  handler: createMentionHandler({ completion, transport, model, signal: tasks.signal, logger }),
+  // Slack in, request out, and everything below that mapping is transport
+  // neutral: the router serializes per channel, the resolver reads that
+  // channel's sheet, the runner runs one task on what the sheet said.
+  handler: createMentionHandler(
+    createChannelRouter({
+      sheets: createSheetResolver({ root: channelsRoot, model, logger }),
+      task: createTaskRunner({ completion, transport, signal: tasks.signal, logger }),
+      logger
+    })
+  ),
   logger,
   // The socket died for a reason retrying cannot fix — a revoked or rotated
   // token. Exiting is the honest outcome: the alternative is a process that is

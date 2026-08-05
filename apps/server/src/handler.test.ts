@@ -1,685 +1,101 @@
-// Faked at the CompletionClient seam, the way the loop's own tests are. There
-// is no Slack here and no model: a mention is a plain object, and what comes
-// back is the text the channel would see.
+// The mapping, and nothing else. What the router does with a request is
+// session/router.test.ts; what a task does with settings is session/task.test.ts.
+//
+// It is worth its own tests because it is the seam a second front-end writes
+// its own version of: if the field a request's channel comes from ever drifts,
+// every certificate, every team sheet, and every session key drifts with it.
 
-import { ProxyClientError } from "@getlibero/agent";
-import type {
-  AgentStopReason,
-  AgentTaskResult,
-  CompletionClient,
-  CompletionRequest,
-  CompletionResponse,
-  ProxyRequest,
-  ProxyResponse,
-  ProxyTransport,
-  TokenUsage
-} from "@getlibero/agent";
-import type { LogFields, LogLevel, Logger, SlackMention } from "@getlibero/gateway";
+import type { SlackMention } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
-import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createMentionHandler, replyFor } from "./handler.js";
+import { createMentionHandler } from "./handler.js";
+import type { TaskReply, TaskRequest } from "./session/types.js";
 
-const MODEL = "test-model";
-
-function mention(text = "<@U0BOT> what is the deploy window?"): SlackMention {
+function mention(partial: Partial<SlackMention> = {}): SlackMention {
   return {
     teamId: "T024BE7LD",
     channelId: "C024BE91L",
     userId: "U024BE7LH",
-    text,
+    text: "<@U0BOT> what is the deploy window?",
     ts: "1758000000.000100",
     threadTs: "1758000000.000100",
-    eventId: "Ev0PV52K25"
-  };
-}
-
-function result(partial: Partial<AgentTaskResult> = {}): AgentTaskResult {
-  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
-  return {
-    stopReason: "completed",
-    taskId: "b9d5a2f0-0000-4000-8000-000000000001",
-    text: "",
-    messages: [],
-    usage,
-    totalTokens: 0,
-    toolCalls: 0,
-    turns: 1,
-    elapsedMs: 1,
+    eventId: "Ev0PV52K25",
     ...partial
   };
 }
 
-/** Answers once with the given text and stop reason. */
-function fakeCompletion(partial: Partial<CompletionResponse> = {}): {
-  client: CompletionClient;
-  requests: CompletionRequest[];
+/** Captures what the router was handed, and answers with whatever it was given. */
+function recordingRouter(reply: TaskReply | undefined = { text: "ok" }): {
+  seen: TaskRequest[];
+  route: (request: TaskRequest) => Promise<TaskReply | undefined>;
 } {
-  const requests: CompletionRequest[] = [];
+  const seen: TaskRequest[] = [];
   return {
-    requests,
-    client: {
-      complete(request: CompletionRequest): Promise<CompletionResponse> {
-        requests.push(request);
-        return Promise.resolve({
-          text: "",
-          toolCalls: [],
-          stopReason: "end_turn",
-          usage: { inputTokens: 11, outputTokens: 7 },
-          ...partial
-        });
-      }
+    seen,
+    route: request => {
+      seen.push(request);
+      return Promise.resolve(reply);
     }
   };
 }
-
-function capturingLogger(): { lines: Array<{ level: LogLevel } & LogFields>; logger: Logger } {
-  const lines: Array<{ level: LogLevel } & LogFields> = [];
-  return { lines, logger: { log: (level, fields) => lines.push({ level, ...fields }) } };
-}
-
-describe("replyFor", () => {
-  it("posts the model's text when the task completed", () => {
-    expect(replyFor(result({ text: "Fridays, 14:00 UTC." }))).toEqual({
-      text: "Fridays, 14:00 UTC."
-    });
-  });
-
-  it("posts a refusal as the model worded it, with nothing appended", () => {
-    // A refusal is the model's to word. Annotating it would be this file
-    // second-guessing the answer in front of the channel.
-    expect(replyFor(result({ stopReason: "refusal", text: "I can't help with that." }))).toEqual({
-      text: "I can't help with that."
-    });
-  });
-
-  it.each([
-    ["tool_call_cap", /tool call cap/],
-    ["wall_time_cap", /time limit/],
-    ["token_cap", /token cap/],
-    ["max_tokens", /per-turn output limit/]
-  ] as Array<[AgentStopReason, RegExp]>)("names the limit that ended a %s task", (stopReason, pattern) => {
-    const reply = replyFor(result({ stopReason, text: "Partial answer." }));
-    expect(reply?.text).toMatch(/^Partial answer\./);
-    expect(reply?.text).toMatch(pattern);
-  });
-
-  it("says only the limit when a cap left no text at all", () => {
-    expect(replyFor(result({ stopReason: "wall_time_cap", text: "" }))?.text).toMatch(
-      /time limit/
-    );
-  });
-
-  it("posts something when a completed task produced no text", () => {
-    // Silence is indistinguishable from being ignored, and the person who
-    // wrote the mention has no other way to tell.
-    const reply = replyFor(result({ text: "   " }));
-    expect(reply?.text.trim()).not.toBe("");
-  });
-
-  it("posts nothing when the task was cancelled", () => {
-    // Shutdown. Posting a notice into every open thread is noise at exactly
-    // the moment nobody is watching.
-    expect(replyFor(result({ stopReason: "cancelled", text: "half an answer" }))).toBeUndefined();
-  });
-});
-
-/**
- * The proxy, faked at the transport seam.
- *
- * One level below the tool client, so the client's own mapping — the listing to
- * definitions, a call to a (server, tool) pair — is exercised here rather than
- * stubbed past. What is not exercised is TLS, which needs a real handshake and
- * is tested against a real listener in packages/agent.
- */
-function fakeTransport(
-  answers: {
-    tools?: () => ProxyResponse | Promise<ProxyResponse>;
-    call?: (body: unknown) => ProxyResponse | Promise<ProxyResponse>;
-    spend?: (body: unknown) => ProxyResponse | Promise<ProxyResponse>;
-  } = {}
-): { transport: ProxyTransport; sent: ProxyRequest[] } {
-  const sent: ProxyRequest[] = [];
-  return {
-    sent,
-    transport: {
-      async request(options: ProxyRequest): Promise<ProxyResponse> {
-        sent.push(options);
-        if (options.path === "/v1/tools") {
-          return (await answers.tools?.()) ?? { status: 200, body: { tools: [] } };
-        }
-        if (options.path === "/v1/spend") {
-          return (await answers.spend?.(options.body)) ?? { status: 200, body: { outcome: "recorded" } };
-        }
-        return (
-          (await answers.call?.(options.body)) ?? {
-            status: 200,
-            body: { outcome: "ran", id: "call-1", result: { content: "upstream said so" } }
-          }
-        );
-      }
-    }
-  };
-}
-
-/** Every route works but one. `failing` cannot say "tools work, the meter does not". */
-function failingOn(path: string, reason: ProxyClientError["reason"]): ProxyTransport {
-  const fake = fakeTransport();
-  return {
-    request: options =>
-      options.path === path
-        ? Promise.reject(new ProxyClientError("proxy client: nope", reason))
-        : fake.transport.request(options)
-  };
-}
-
-const spentTokens = (sent: ProxyRequest[]): ProxyRequest[] =>
-  sent.filter(request => request.path === "/v1/spend");
-
-const LISTED = {
-  status: 200,
-  body: { tools: [{ server: "github", tool: "list_prs", approval: "none" }] }
-} as const;
 
 describe("createMentionHandler", () => {
-  it("answers a mention with the model's text", async () => {
-    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport().transport,
-      model: MODEL
-    });
-
-    await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
-  });
-
-  it("sends the mention text, the system prompt, and the configured model", async () => {
-    const { client, requests } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport().transport,
-      model: MODEL
-    });
-
-    await handler(mention("<@U0BOT> ping"));
-
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.model).toBe(MODEL);
-    expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
-    // The `<@U…>` token is left in: stripping it and resolving display names
-    // is the context assembler's job (#67).
-    expect(requests[0]?.messages).toEqual([{ role: "user", content: "<@U0BOT> ping" }]);
-  });
-
-  it("offers the model exactly what the proxy listed", async () => {
-    const { client, requests } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport({ tools: () => LISTED }).transport,
-      model: MODEL
-    });
+  it("maps a mention to a request", async () => {
+    const router = recordingRouter();
+    const handler = createMentionHandler(router.route);
 
     await handler(mention());
 
-    expect(requests[0]?.tools).toHaveLength(1);
-    expect(requests[0]?.tools?.[0]?.name).toBe("list_prs");
-  });
-
-  it("offers no tools when the channel permits none", async () => {
-    // An empty listing is a real answer — a channel with no team sheet permits
-    // nothing — and the loop omits the field rather than sending an empty array.
-    const { client, requests } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport().transport,
-      model: MODEL
-    });
-
-    await handler(mention());
-
-    expect(requests[0]?.tools).toBeUndefined();
-  });
-
-  // The certificate is the channel identity, and it is chosen from the mention
-  // rather than from anything the model wrote.
-  it("presents the mention's channel to the proxy, and sends no channel in the body", async () => {
-    const { client } = fakeCompletion({ text: "ok" });
-    const fake = fakeTransport({ tools: () => LISTED });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fake.transport,
-      model: MODEL
-    });
-
-    await handler(mention());
-
-    // Every request this handler makes, not just the listing: the channel is
-    // the certificate's to assert, so none of them may carry it as a field.
-    expect(fake.sent.length).toBeGreaterThan(0);
-    for (const request of fake.sent) {
-      expect(request.channel).toBe("C024BE91L");
-      expect(JSON.stringify(request.body ?? null)).not.toContain("C024BE91L");
-    }
-    expect(fake.sent.filter(request => request.path === "/v1/tools")).toHaveLength(1);
-  });
-
-  it("posts nothing and calls no provider when the signal is already aborted", async () => {
-    const { client, requests } = fakeCompletion({ text: "ok" });
-    const aborted = AbortSignal.abort();
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport().transport,
-      model: MODEL,
-      signal: aborted
-    });
-
-    await expect(handler(mention())).resolves.toBeUndefined();
-    expect(requests).toHaveLength(0);
-  });
-
-  it("logs how a task ended and what it cost, with no message text in the line", async () => {
-    const captured = capturingLogger();
-    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport().transport,
-      model: MODEL,
-      logger: captured.logger
-    });
-
-    await handler(mention("<@U0BOT> what is the deploy window?"));
-
-    const line = captured.lines.find(entry => entry.event === "task");
-    expect(line).toMatchObject({
-      level: "info",
-      channel: "C024BE91L",
-      eventId: "Ev0PV52K25",
-      stopReason: "completed",
-      totalTokens: 18,
-      turns: 1
-    });
-    // A message belongs to the members of the channel it was posted in, and
-    // stdout is not on that path.
-    expect(JSON.stringify(line)).not.toMatch(/deploy window|Fridays/);
-  });
-
-  it("propagates a provider failure rather than inventing an answer", async () => {
-    // The gateway logs this as handler_failed and posts nothing. An
-    // unreachable provider is an operator problem.
-    const handler = createMentionHandler({
-      completion: {
-        complete: () => Promise.reject(new Error("connect ECONNREFUSED"))
-      },
-      transport: fakeTransport().transport,
-      model: MODEL
-    });
-
-    await expect(handler(mention())).rejects.toThrow(/ECONNREFUSED/);
-  });
-});
-
-// The proxy meters tool calls from calls it served and needs nobody's help to
-// count those. Tokens are the other half, and only this process knows them.
-describe("what a task cost", () => {
-  it("reports the provider's counts, keyed on the task id and the turn", async () => {
-    const captured = capturingLogger();
-    const { client } = fakeCompletion({ text: "ok" });
-    const fake = fakeTransport();
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fake.transport,
-      model: MODEL,
-      logger: captured.logger
-    });
-
-    await handler(mention());
-
-    const reports = spentTokens(fake.sent);
-    expect(reports).toHaveLength(1);
-    expect(reports[0]?.channel).toBe("C024BE91L");
-    expect(reports[0]?.body).toEqual({
-      turn: `${captured.lines.find(entry => entry.event === "task")?.task}.1`,
-      usage: {
-        inputTokens: 11,
-        outputTokens: 7,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0
+    expect(router.seen).toEqual([
+      {
+        // `team_id` is Slack's word; `workspace` is the router's, and this is
+        // the one place the two meet.
+        key: { workspace: "T024BE7LD", channel: "C024BE91L" },
+        requestingUser: "U024BE7LH",
+        text: "<@U0BOT> what is the deploy window?",
+        traceId: "Ev0PV52K25"
       }
-    });
+    ]);
   });
 
-  // Each turn is its own idempotency key, so a retry of one is a duplicate and
-  // the next turn is not.
-  it("reports each turn separately, under the same task", async () => {
-    const captured = capturingLogger();
-    const fake = fakeTransport({ tools: () => LISTED });
-    let turn = 0;
-    const handler = createMentionHandler({
-      completion: {
-        complete: (): Promise<CompletionResponse> => {
-          turn += 1;
-          return Promise.resolve(
-            turn === 1
-              ? {
-                  text: "",
-                  toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
-                  stopReason: "tool_use",
-                  usage: { inputTokens: 10, outputTokens: 5 }
-                }
-              : {
-                  text: "Fridays, 14:00 UTC.",
-                  toolCalls: [],
-                  stopReason: "end_turn",
-                  usage: { inputTokens: 20, outputTokens: 7 }
-                }
-          );
-        }
-      },
-      transport: fake.transport,
-      model: MODEL,
-      logger: captured.logger
-    });
+  it("leaves the mention token in the text", async () => {
+    // Stripping it and resolving display names is the context assembler's (#67).
+    const router = recordingRouter();
+    const handler = createMentionHandler(router.route);
+
+    await handler(mention({ text: "<@U0BOT> ping" }));
+
+    expect(router.seen[0]?.text).toBe("<@U0BOT> ping");
+  });
+
+  it("carries no Slack timestamp into the request", async () => {
+    // `ts` and `thread_ts` are where a reply goes, which is the gateway's
+    // business. A request carries what was asked and by whom, and #66 is what
+    // decides whether the router ever needs to know about a thread.
+    const router = recordingRouter();
+    const handler = createMentionHandler(router.route);
+
+    await handler(mention());
+
+    expect(JSON.stringify(router.seen[0])).not.toContain("1758000000.000100");
+  });
+
+  it("posts the router's reply", async () => {
+    const handler = createMentionHandler(recordingRouter({ text: "Fridays, 14:00 UTC." }).route);
 
     await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
-
-    const task = captured.lines.find(entry => entry.event === "task")?.task;
-    const reports = spentTokens(fake.sent);
-    expect(reports.map(request => (request.body as { turn: string }).turn)).toEqual([
-      `${task}.1`,
-      `${task}.2`
-    ]);
-    // Each turn's own numbers. Summing is the meter's, and a second report
-    // carrying the running total would double-count the first.
-    expect(reports.map(request => (request.body as { usage: { inputTokens: number } }).usage.inputTokens)).toEqual([
-      10, 20
-    ]);
   });
 
-  // The whole of #115. A task that dies mid-flight has already told the meter
-  // what its finished turns cost, so nothing is lost with the rejection.
-  it("has already reported the turns taken before a provider failure", async () => {
-    const fake = fakeTransport({ tools: () => LISTED });
-    let turn = 0;
-    const handler = createMentionHandler({
-      completion: {
-        complete: (): Promise<CompletionResponse> => {
-          turn += 1;
-          if (turn === 1) {
-            return Promise.resolve({
-              text: "",
-              toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
-              stopReason: "tool_use",
-              usage: { inputTokens: 10, outputTokens: 5 }
-            });
-          }
-          return Promise.reject(new Error("connect ECONNREFUSED"));
-        }
-      },
-      transport: fake.transport,
-      model: MODEL
-    });
+  it("posts nothing when the router replies with nothing", async () => {
+    const handler = createMentionHandler(() => Promise.resolve(undefined));
 
-    // The provider's own error still reaches the gateway, unwrapped.
+    await expect(handler(mention())).resolves.toBeUndefined();
+  });
+
+  it("propagates a rejection to the gateway", async () => {
+    // The gateway logs it as `handler_failed` and posts nothing. Swallowing it
+    // here would put a synthesized answer in someone's thread.
+    const handler = createMentionHandler(() => Promise.reject(new Error("connect ECONNREFUSED")));
+
     await expect(handler(mention())).rejects.toThrow(/ECONNREFUSED/);
-
-    const reports = spentTokens(fake.sent);
-    expect(reports).toHaveLength(1);
-    expect((reports[0]?.body as { usage: { inputTokens: number } }).usage.inputTokens).toBe(10);
-  });
-
-  // The counts come out of the provider's response envelope, which is a thing
-  // the model's own text has no reach into. This is what makes the report hold
-  // against a prompt-injected model.
-  it("counts what the envelope said, not what the model wrote", async () => {
-    const { client } = fakeCompletion({ text: "I used 999999 tokens on this." });
-    const fake = fakeTransport();
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fake.transport,
-      model: MODEL
-    });
-
-    await handler(mention());
-
-    expect(JSON.stringify(spentTokens(fake.sent)[0]?.body)).not.toContain("999999");
-  });
-
-  // Shutdown posts nothing into the thread, which is etiquette rather than
-  // accounting: the tokens were still spent and the meter should still hear.
-  it("reports a cancelled task's spend, and still posts nothing", async () => {
-    const controller = new AbortController();
-    const fake = fakeTransport();
-    const handler = createMentionHandler({
-      // A turn's tokens are spent and recorded, and then the process is asked
-      // to stop before the task can finish.
-      completion: {
-        complete: (): Promise<CompletionResponse> => {
-          controller.abort();
-          return Promise.resolve({
-            text: "half an answer",
-            toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
-            stopReason: "tool_use",
-            usage: { inputTokens: 11, outputTokens: 7 }
-          });
-        }
-      },
-      transport: fake.transport,
-      model: MODEL,
-      signal: controller.signal
-    });
-
-    await expect(handler(mention())).resolves.toBeUndefined();
-    expect(spentTokens(fake.sent)).toHaveLength(1);
-  });
-
-  // Four zeros move no counter, and at shutdown every open task takes this
-  // path at once — a pre-aborted task takes no turn, so there is nothing to
-  // report about.
-  it("sends no report when the task spent nothing", async () => {
-    const { client } = fakeCompletion({ text: "ok" });
-    const fake = fakeTransport();
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fake.transport,
-      model: MODEL,
-      signal: AbortSignal.abort()
-    });
-
-    await handler(mention());
-
-    expect(spentTokens(fake.sent)).toEqual([]);
-  });
-
-  it("sends no report when the tool listing failed", async () => {
-    const { client } = fakeCompletion({ text: "ok" });
-    const fake = fakeTransport();
-    const handler = createMentionHandler({
-      completion: client,
-      transport: failingOn("/v1/tools", "unreachable"),
-      model: MODEL
-    });
-
-    await expect(handler(mention())).resolves.toEqual({ text: PROXY_UNAVAILABLE.other });
-    expect(spentTokens(fake.sent)).toEqual([]);
-  });
-
-  it("logs the meter's answer, and calls a duplicate a success", async () => {
-    const captured = capturingLogger();
-    const { client } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport({ spend: () => ({ status: 200, body: { outcome: "duplicate" } }) })
-        .transport,
-      model: MODEL,
-      logger: captured.logger
-    });
-
-    await handler(mention());
-
-    expect(captured.lines.find(entry => entry.event === "spend_reported")).toMatchObject({
-      level: "info",
-      channel: "C024BE91L",
-      eventId: "Ev0PV52K25",
-      report: "duplicate",
-      turns: 1,
-      totalTokens: 18
-    });
-  });
-});
-
-// An operator's counter is not worth a user's reply.
-describe("a meter that cannot be reached", () => {
-  it("still answers the thread when the proxy refuses the report", async () => {
-    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: fakeTransport({
-        spend: () => ({
-          status: 400,
-          body: {
-            error: {
-              code: "bad_request",
-              message: "the request body is not a valid spend report",
-              requestId: "req-1"
-            }
-          }
-        })
-      }).transport,
-      model: MODEL
-    });
-
-    await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
-  });
-
-  it("still answers the thread when the report could not be sent at all", async () => {
-    for (const reason of ["unreachable", "timed_out", "malformed_response"] as const) {
-      const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-      const handler = createMentionHandler({
-        completion: client,
-        transport: failingOn("/v1/spend", reason),
-        model: MODEL
-      });
-
-      await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
-    }
-  });
-
-  it("says in the log that the meter is running blind, and by how much", async () => {
-    const captured = capturingLogger();
-    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: failingOn("/v1/spend", "unreachable"),
-      model: MODEL,
-      logger: captured.logger
-    });
-
-    await handler(mention("<@U0BOT> what is the deploy window?"));
-
-    const line = captured.lines.find(entry => entry.event === "spend_report_failed");
-    expect(line).toMatchObject({
-      level: "error",
-      channel: "C024BE91L",
-      eventId: "Ev0PV52K25",
-      reason: "unreachable",
-      totalTokens: 18
-    });
-    expect(JSON.stringify(line)).not.toMatch(/deploy window|Fridays/);
-  });
-
-  // A bug in the sender must not become a lost reply, and since the report is
-  // now sent from inside the loop's `onTurn` that is not a figure of speech:
-  // the loop does not catch, so anything escaping here would end the task.
-  it("still answers the thread when the sender fails in a way nobody planned for", async () => {
-    const { client } = fakeCompletion({ text: "Fridays, 14:00 UTC." });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: {
-        request: options =>
-          options.path === "/v1/spend"
-            ? Promise.reject(new TypeError("undefined is not a function"))
-            : fakeTransport().transport.request(options)
-      },
-      model: MODEL
-    });
-
-    await expect(handler(mention())).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
-  });
-});
-
-// The departure from the rule above, and why: a channel whose client
-// certificate was never minted will never answer again, which is a first-run
-// configuration mistake rather than an outage. Silence there is
-// indistinguishable from being ignored, by the people who cannot see the log.
-describe("a tool proxy that cannot be reached", () => {
-  const failing = (reason: ProxyClientError["reason"]): ProxyTransport => ({
-    request: () => Promise.reject(new ProxyClientError("proxy client: nope", reason))
-  });
-
-  it("tells the channel when this channel has no client certificate", async () => {
-    const { client, requests } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: failing("no_client_certificate"),
-      model: MODEL
-    });
-
-    await expect(handler(mention())).resolves.toEqual({
-      text: PROXY_UNAVAILABLE.no_client_certificate
-    });
-    // No model turn was taken: the listing runs before the first one, so this
-    // costs the operator nothing beyond the failed connection.
-    expect(requests).toHaveLength(0);
-  });
-
-  it("tells the channel when the proxy is unreachable or refused the certificate", async () => {
-    for (const reason of [
-      "unreachable",
-      "tls_rejected",
-      "connection_reset",
-      "timed_out",
-      "malformed_response"
-    ] as const) {
-      const { client } = fakeCompletion({ text: "ok" });
-      const handler = createMentionHandler({
-        completion: client,
-        transport: failing(reason),
-        model: MODEL
-      });
-
-      await expect(handler(mention())).resolves.toEqual({ text: PROXY_UNAVAILABLE.other });
-    }
-  });
-
-  it("logs the reason, and puts no message text in the line", async () => {
-    const captured = capturingLogger();
-    const { client } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: failing("unreachable"),
-      model: MODEL,
-      logger: captured.logger
-    });
-
-    await handler(mention("<@U0BOT> what is the deploy window?"));
-
-    expect(captured.lines.find(entry => entry.event === "tools_unavailable")).toMatchObject({
-      level: "error",
-      channel: "C024BE91L",
-      eventId: "Ev0PV52K25",
-      reason: "unreachable"
-    });
-    expect(JSON.stringify(captured.lines)).not.toMatch(/deploy window/);
-  });
-
-  // Shutdown, not a failure. Posting here would put a line into every thread
-  // open at the moment the operator asked for quiet.
-  it("posts nothing when the listing was cancelled", async () => {
-    const { client } = fakeCompletion({ text: "ok" });
-    const handler = createMentionHandler({
-      completion: client,
-      transport: failing("cancelled"),
-      model: MODEL
-    });
-
-    await expect(handler(mention())).resolves.toBeUndefined();
   });
 });
