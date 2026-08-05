@@ -53,6 +53,7 @@ import {
   resolveToolCall
 } from "@getlibero/schema";
 import { createApprovalStore, type RedeemResult } from "./approvals.js";
+import { createApprovalsRoute } from "./approvals-route.js";
 import { type AuditWriter, hashArguments } from "./audit-log.js";
 import { assertServableComposition, type SpendMeter, type ToolDispatcher } from "./dispatch.js";
 import { decideFromState, permittedToolsFromState } from "./enforce.js";
@@ -611,6 +612,16 @@ export function createProxyServer(options: ProxyServerOptions): Server {
   // closure holds the write path and not the read one. See ./spend-route.ts.
   const recordSpend = createSpendRoute({ meter: options.spend, logger });
 
+  // Narrowed to `ApprovalDecider`, so the handler can record a click and can
+  // neither mint a ticket nor spend one. Same move, and a sharper reason: see
+  // ./approvals-route.ts.
+  const decideApproval = createApprovalsRoute({
+    approvals,
+    audit: options.audit,
+    logger,
+    now
+  });
+
   const routes = new Map<string, Map<string, Route>>([
     [
       // Behind mutual TLS *and* the channel-identity gate like everything
@@ -646,6 +657,26 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       // above. That is the one thing the two routes must share.
       "/v1/spend",
       new Map<string, Route>([["POST", { handler: recordSpend, body: "json" }]])
+    ],
+    [
+      // A human's answer to a hold.
+      //
+      // The ticket id is in the body rather than the path. `/v1/tools/call`
+      // names its resource the same way, so this is the consistent shape here
+      // rather than the odd one — and it means one strict parse validates the
+      // whole request. A `/v1/approvals/<id>` would need a path-parameter
+      // mechanism the exact-match table above deliberately does not have, and
+      // the id would reach the handler having been through no schema at all.
+      //
+      // Like /v1/spend, this route resolves no team sheet: the sheet is
+      // enforced when the ticket is minted and again when it is redeemed, both
+      // on /v1/tools/call. Unlike /v1/spend, it writes audit rows, because a
+      // decision is a fact about a call that no later request will record.
+      //
+      // The channel comes from the client certificate here as everywhere. That
+      // is what makes a ticket undecidable from any other channel's connection.
+      "/v1/approvals",
+      new Map<string, Route>([["POST", { handler: decideApproval, body: "json" }]])
     ]
   ]);
 
