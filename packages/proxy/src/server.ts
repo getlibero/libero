@@ -38,11 +38,14 @@ import {
   PROXY_ERROR_STATUS,
   type ProxyError,
   type ProxyErrorCode,
+  type RefusalReason,
   ToolCall,
   type ToolCallResponse,
   type ToolListing,
+  type ToolResult,
   resolveToolCall
 } from "@getlibero/schema";
+import { type AuditWriter, hashArguments } from "./audit-log.js";
 import { assertServableComposition, type SpendMeter, type ToolDispatcher } from "./dispatch.js";
 import { decideFromState, permittedToolsFromState } from "./enforce.js";
 import { resolveChannel } from "./identity.js";
@@ -72,6 +75,15 @@ export interface ProxyServerOptions {
    */
   spend: SpendMeter;
   dispatcher: ToolDispatcher;
+  /**
+   * Where every decided call is recorded. Required on the same argument, and
+   * the argument is strongest here: an optional writer defaults to *no audit*,
+   * and a proxy serving calls with no durable record misbehaves in no visible
+   * way at all — there is simply nothing to read after an incident. `logger`
+   * and `now` below are optional because each has a correct default. "Not
+   * audited" is not a correct default for anything.
+   */
+  audit: AuditWriter;
   logger?: Logger;
   /** Clock, injected for tests. */
   now?: () => number;
@@ -243,6 +255,21 @@ export function createProxyServer(options: ProxyServerOptions): Server {
    * unless the answer was `allow`. A refused call must leave no trace upstream,
    * and the way that is true is that the only call to `options.dispatcher`
    * sits inside the `allow` branch.
+   *
+   * Every call this route *decides* leaves an audit row — served, held, refused,
+   * or permitted-with-no-upstream. Three things reach this process and leave
+   * none, each with a log line and none with a row, because none of them has a
+   * decided call to describe:
+   *
+   *   - A body that fails `ToolCall.safeParse` (`tool_call_malformed`). There is
+   *     no server, tool, task or requesting user to record. A row of nulls would
+   *     be worse than the line: it would be counted.
+   *   - A body over `MAX_BODY_BYTES`, rejected before it is parsed.
+   *   - Anything reaching the outer handler's catch (`handler_failed`). This is
+   *     the uncomfortable one and is stated rather than hidden: it can fire
+   *     after `recordToolCall` below, so a call can be metered and never
+   *     audited. Closing that means restructuring where the row is built, and
+   *     it is not done here.
    */
   const callTool = async (ctx: RequestContext): Promise<RouteResponse> => {
     // Strict, so a body asserting a channel fails here rather than having the
@@ -274,26 +301,98 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     ]);
     const decision = decideFromState(state, call, spend);
 
-    const audit = (outcome: NonNullable<LogFields["outcome"]>, reason?: string): void => {
+    /**
+     * Record what happened to this call: a durable row, then the log line.
+     *
+     * **The row is written first, and a failure to write it fails the request.**
+     * Not wrapped in anything that swallows — the throw becomes the handler's
+     * 500 and the call is not answered. That is the same rule the meter is held
+     * to eleven lines below (*a meter that cannot write must not serve*), for a
+     * stronger reason: a proxy that cannot record what it did has its whole
+     * accountability property switched off, and the realistic failures here —
+     * a full disk, a read-only mount, an I/O error — are operator conditions
+     * that should stop this process rather than be ridden through. Swallowing
+     * would make "every call produces a row" true only while nothing is wrong,
+     * which is not what an audit log is for.
+     *
+     * The `ran` row is the uncomfortable one, because by then the upstream has
+     * already acted: a throw there answers 500 for a call that really executed.
+     * Writing the row before dispatch would remove that, and costs the two
+     * fields only the result has; writing two rows would break one-row-per-call
+     * and make every count downstream wrong. What makes the residual small is
+     * that the file is opened at startup before anything binds, so a missing
+     * directory, a read-only mount and a schema from the future are all startup
+     * failures — leaving only "the disk filled between the meter write and this
+     * one", where refusing to serve is the right answer anyway.
+     *
+     * Row first, log line second: a line asserting an outcome that no durable
+     * write recorded is the one ordering that can lie about this.
+     */
+    const audit = async (event: {
+      readonly outcome: NonNullable<LogFields["outcome"]>;
+      readonly reason?: RefusalReason;
+      readonly result?: ToolResult;
+    }): Promise<void> => {
+      try {
+        await options.audit.append({
+          at: now(),
+          channel: ctx.channel,
+          // Attribution, carried through to the operator's record. Asserted by
+          // the agent and read by no decision above — `decideFromState` has
+          // already run by the time this closure is called, and it never sees
+          // them.
+          requestingUser: call.requestingUser,
+          task: call.task,
+          requestId: ctx.requestId,
+          callId: call.id,
+          server: call.server,
+          tool: call.tool,
+          // A hash, never the arguments. Nothing on this path holds a
+          // credential value, so nothing on it could redact one — see
+          // ./audit-log.ts for why that is the whole argument.
+          argumentsSha256: hashArguments(call.arguments),
+          outcome: event.outcome,
+          ...(event.reason !== undefined ? { refusalReason: event.reason } : {}),
+          ...(event.result !== undefined
+            ? {
+                // Bytes, not `String.length`, which counts UTF-16 code units:
+                // this number exists to correlate with the next turn's input
+                // tokens, and tokenizers are byte-shaped.
+                resultBytes: Buffer.byteLength(event.result.content, "utf8"),
+                resultIsError: event.result.isError
+              }
+            : {})
+        });
+      } catch (error) {
+        // The thrown value is not inspected or logged, as at the outer handler:
+        // in this process an exception is a thing that can carry a credential.
+        // Naming the subsystem is what an operator debugging the 500 needs.
+        logger.log("error", {
+          event: "audit_write_failed",
+          requestId: ctx.requestId,
+          channel: ctx.channel
+        });
+        throw error;
+      }
+
       logger.log("info", {
         event: "tool_call",
         requestId: ctx.requestId,
         channel: ctx.channel,
         server: call.server,
         tool: call.tool,
-        // Attribution, carried through to the operator's log. Asserted by the
-        // agent and read by no decision above — `decideFromState` has already
-        // run by the time this closure is called, and it never sees them.
         requestingUser: call.requestingUser,
         task: call.task,
-        outcome,
-        ...(reason !== undefined ? { reason } : {})
+        outcome: event.outcome,
+        ...(event.reason !== undefined ? { reason: event.reason } : {})
       });
     };
 
     if (decision.outcome !== "allow") {
       const outcome = decision.outcome === "hold" ? "held" : "refused";
-      audit(outcome, decision.refusal.reason);
+      // Awaited before the answer is composed. A fire-and-forget here would
+      // look correct and would defeat the whole of the argument above.
+      await audit({ outcome, reason: decision.refusal.reason });
       // A refusal is a served request, not an error: 200 with the structured
       // shape. The agent relays it to the channel and carries on.
       return ok({ outcome, id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
@@ -315,19 +414,19 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     const dispatched = await options.dispatcher.dispatch(call, decision.upstream);
     switch (dispatched.outcome) {
       case "ran":
-        audit("ran");
+        await audit({ outcome: "ran", result: dispatched.result });
         return ok({ outcome: "ran", id: call.id, result: dispatched.result } satisfies ToolCallResponse);
       case "refused":
         // Refused while serving rather than before: the vault could not resolve
         // a credential the sheet names (#51).
-        audit("refused", dispatched.refusal.reason);
+        await audit({ outcome: "refused", reason: dispatched.refusal.reason });
         return ok({
           outcome: "refused",
           id: call.id,
           refusal: dispatched.refusal
         } satisfies ToolCallResponse);
       case "unavailable":
-        audit("unavailable");
+        await audit({ outcome: "unavailable" });
         return {
           status: PROXY_ERROR_STATUS.not_implemented,
           body: proxyError(

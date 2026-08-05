@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
+  auditDbFromEnv,
   budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
@@ -96,6 +97,26 @@ describe("budgetDbFromEnv", () => {
   it("refuses to start without one", () => {
     expect(() => budgetDbFromEnv({})).toThrow(/PROXY_BUDGET_DB/);
     expect(() => budgetDbFromEnv({ PROXY_BUDGET_DB: "" })).toThrow(/PROXY_BUDGET_DB/);
+  });
+});
+
+describe("auditDbFromEnv", () => {
+  it("returns the audit database path", () => {
+    expect(auditDbFromEnv({ PROXY_AUDIT_DB: "/data/audit/audit.db" })).toBe("/data/audit/audit.db");
+  });
+
+  // Nothing misbehaves without it — which is the problem. An audit file under a
+  // path nobody meant is a deployment that looks audited and has nothing to
+  // show at the one moment it is asked.
+  it("refuses to start without one", () => {
+    expect(() => auditDbFromEnv({})).toThrow(/PROXY_AUDIT_DB/);
+    expect(() => auditDbFromEnv({ PROXY_AUDIT_DB: "" })).toThrow(/PROXY_AUDIT_DB/);
+  });
+
+  // The prefix every variable this process reads carries. `AUDIT_DB` sat in the
+  // compose file unread until #97 and is not a name anything answers to.
+  it("does not answer to the unprefixed name compose used to carry", () => {
+    expect(() => auditDbFromEnv({ AUDIT_DB: "/data/audit/audit.db" })).toThrow(/PROXY_AUDIT_DB/);
   });
 });
 

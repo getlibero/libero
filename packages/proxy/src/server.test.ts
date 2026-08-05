@@ -19,6 +19,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProxyError,
@@ -26,6 +27,10 @@ import {
   ToolCallResponse,
   ToolListing
 } from "@getlibero/schema";
+import { openAuditDb } from "./audit-db.js";
+import type { AuditDb } from "./audit-db.js";
+import { createSqliteAuditWriter } from "./audit-log.js";
+import type { AuditWriter } from "./audit-log.js";
 import { resetChannel } from "./budget-admin.js";
 import { openBudgetDb } from "./budget-db.js";
 import type { BudgetDb } from "./budget-db.js";
@@ -87,6 +92,50 @@ let meter: SpendMeter;
 let server: Server;
 let port: number;
 let logLines: string[] = [];
+
+/**
+ * The audit log, real and on a real file, as the meter above is.
+ *
+ * `auditCursor` is the wrinkle the table's own property forces: `beforeEach`
+ * cannot truncate it, because nothing can. Each test records where the log had
+ * got to and reads only what came after — which is itself a demonstration of
+ * what is being tested.
+ */
+let auditDir: string;
+let auditDb: AuditDb;
+let auditFile: string;
+let auditCursor = 0;
+
+/** Rows since the cursor, read the way the audit CLI will: a separate handle. */
+function auditRows(file: string = auditFile, since: number = auditCursor): Record<string, unknown>[] {
+  const raw = new DatabaseSync(file);
+  try {
+    return raw
+      .prepare("SELECT * FROM tool_call_audit WHERE id > ? ORDER BY id")
+      .all(since) as Record<string, unknown>[];
+  } finally {
+    raw.close();
+  }
+}
+
+/**
+ * For a server whose test is about something else entirely. The option is
+ * required, so every composition has to say something; this says "not the
+ * subject of this test" rather than quietly dropping rows in one that is.
+ */
+function discardingAuditWriter(): AuditWriter {
+  return { append: () => {} };
+}
+
+function lastAuditId(file: string = auditFile): number {
+  const raw = new DatabaseSync(file);
+  try {
+    const row = raw.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM tool_call_audit").get() as { id: number };
+    return row.id;
+  } finally {
+    raw.close();
+  }
+}
 
 function mint(out: string, args: string[]): void {
   execFileSync("sh", ["scripts/dev-certs.sh", "--out", out, ...args], {
@@ -225,6 +274,10 @@ beforeAll(() => {
   budgetDb = openBudgetDb({ file: join(budgetDir, "budget.db") });
   meter = createSqliteSpendMeter({ db: budgetDb, now: () => budgetClock });
 
+  auditDir = mkdtempSync(join(tmpdir(), "libero-proxy-audit-"));
+  auditFile = join(auditDir, "audit.db");
+  auditDb = openAuditDb({ file: auditFile });
+
   server = createProxyServer({
     tls: loadTlsOptions({
       cert: join(certs, "proxy", "server.pem"),
@@ -234,6 +287,7 @@ beforeAll(() => {
     sheets,
     spend: meter,
     dispatcher,
+    audit: createSqliteAuditWriter({ db: auditDb }),
     logger: createJsonLogger(line => {
       logLines.push(line);
     })
@@ -261,16 +315,20 @@ beforeEach(() => {
   // of reaching past the API to truncate a table.
   budgetClock += 24 * 60 * 60 * 1000;
   logLines = [];
+  // Not a truncate. Nothing can truncate this table — see `auditCursor`.
+  auditCursor = lastAuditId();
 });
 
 afterAll(() => {
   server.close();
   sheets.close();
   budgetDb.close();
+  auditDb.close();
   rmSync(certs, { recursive: true, force: true });
   rmSync(foreignCerts, { recursive: true, force: true });
   rmSync(channelsRoot, { recursive: true, force: true });
   rmSync(budgetDir, { recursive: true, force: true });
+  rmSync(auditDir, { recursive: true, force: true });
 });
 
 describe("mutual TLS", () => {
@@ -399,6 +457,7 @@ describe("routing", () => {
       sheets,
       spend: meter,
       dispatcher: createUnavailableDispatcher(),
+      audit: discardingAuditWriter(),
       logger: createJsonLogger(line => {
         lines.push(line);
       }),
@@ -715,6 +774,197 @@ url = "https://api.github.com"
   });
 });
 
+// The log line above is what an operator tails. This is what survives the
+// process — and #97's criteria are about the row, not the line.
+describe("the durable audit record", () => {
+  const CALL = asked({ id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } });
+
+  it("writes one row for a served call, with what the proxy observed", async () => {
+    await post(
+      "/v1/tools/call",
+      asked({
+        id: "toolu_served",
+        server: "github",
+        tool: "list_prs",
+        requestingUser: "U024BE7LH",
+        arguments: { state: "open" }
+      })
+    );
+
+    const rows = auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      channel: CHANNEL,
+      requesting_user: "U024BE7LH",
+      task: "b9d5a2f0-1c4e-4a7f-9b3d-2e6c8a1f0d55",
+      call_id: "toolu_served",
+      server: "github",
+      tool: "list_prs",
+      outcome: "ran",
+      refusal_reason: null,
+      // `recordingDispatcher` answers "upstream said so": 16 bytes, measured
+      // rather than asserted by anything the model wrote.
+      result_bytes: 16,
+      result_is_error: 0,
+      approver: null
+    });
+    expect(String(rows[0]?.arguments_sha256)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("writes one row for a refusal, carrying the reason", async () => {
+    await post("/v1/tools/call", { ...CALL, tool: "force_push" });
+
+    const rows = auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      outcome: "refused",
+      refusal_reason: "tool_not_allowed",
+      tool: "force_push",
+      // Never dispatched, so there is no result to size.
+      result_bytes: null,
+      result_is_error: null
+    });
+  });
+
+  it("writes one row for a hold, and tells it from a refusal", async () => {
+    await post("/v1/tools/call", { ...CALL, tool: "merge_pr" });
+
+    const rows = auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      outcome: "held",
+      refusal_reason: "approval_required",
+      tool: "merge_pr",
+      // Reserved for #37. It cannot be back-filled — the table refuses UPDATE —
+      // so an approval is written on the row of the call that runs, or never.
+      approver: null
+    });
+  });
+
+  // A call that ran and a call that was refused must not collapse into one row
+  // or three: "exactly one row per decided call" is what makes any count of
+  // this table mean anything.
+  it("writes exactly one row per call, in order", async () => {
+    await post("/v1/tools/call", { ...CALL, id: "toolu_a" });
+    await post("/v1/tools/call", { ...CALL, id: "toolu_b", tool: "force_push" });
+    await post("/v1/tools/call", { ...CALL, id: "toolu_c" });
+
+    expect(auditRows().map(row => [row.call_id, row.outcome])).toEqual([
+      ["toolu_a", "ran"],
+      ["toolu_b", "refused"],
+      ["toolu_c", "ran"]
+    ]);
+  });
+
+  // Arguments are model-authored, so nothing on the write path could redact
+  // them and nothing on it stores them. The hash is what stands in.
+  it("stores a hash of the arguments and not the arguments", async () => {
+    await post("/v1/tools/call", {
+      ...CALL,
+      id: "toolu_args",
+      arguments: { token: "ghp_secret", note: "sensitive text" }
+    });
+
+    const written = JSON.stringify(auditRows());
+    expect(written).not.toContain("ghp_secret");
+    expect(written).not.toContain("sensitive text");
+    expect(written).not.toContain("token");
+  });
+
+  // The same call twice hashes the same; a different one does not. That is the
+  // whole of what the column is for.
+  it("hashes the same arguments alike and different arguments apart", async () => {
+    await post("/v1/tools/call", { ...CALL, id: "toolu_1", arguments: { a: 1, b: 2 } });
+    await post("/v1/tools/call", { ...CALL, id: "toolu_2", arguments: { b: 2, a: 1 } });
+    await post("/v1/tools/call", { ...CALL, id: "toolu_3", arguments: { a: 9, b: 2 } });
+
+    const [first, second, third] = auditRows().map(row => row.arguments_sha256);
+    expect(first).toBe(second);
+    expect(first).not.toBe(third);
+  });
+
+  it("keeps two channels' rows apart", async () => {
+    writeSheet(OTHER_CHANNEL, SHEET);
+
+    await post("/v1/tools/call", { ...CALL, id: "toolu_mine" });
+    await call(
+      "/v1/tools/call",
+      clientCert(certs, OTHER_CHANNEL),
+      "POST",
+      port,
+      JSON.stringify(asked({ id: "toolu_theirs", server: "github", tool: "list_prs" }))
+    );
+
+    const rows = auditRows();
+    expect(rows.map(row => [row.channel, row.call_id])).toEqual([
+      [CHANNEL, "toolu_mine"],
+      [OTHER_CHANNEL, "toolu_theirs"]
+    ]);
+    // The channel came off the certificate on both, so filtering on it is the
+    // only thing that separates them and it is not something either could assert.
+    expect(rows.filter(row => row.channel === OTHER_CHANNEL)).toHaveLength(1);
+  });
+
+  // A body that never became a call has nothing to attribute a row to, and a
+  // row of nulls would be worse than the log line it already gets: it would be
+  // counted. Stated as a test so the gap is a decision rather than a surprise.
+  it("writes no row for a body that is not a tool call", async () => {
+    await post("/v1/tools/call", { id: "toolu_01", server: "github", tool: "list_prs" });
+
+    expect(auditRows()).toEqual([]);
+    expect(logLines.join("")).toContain("tool_call_malformed");
+  });
+
+  // The rule the route is built on: a proxy that cannot record what it did must
+  // not answer. Refusing one call is the right trade against serving a stream
+  // of them with no record.
+  it("answers 500 and no tool-call response when the row cannot be written", async () => {
+    const lines: string[] = [];
+    const failing = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      spend: meter,
+      dispatcher: recordingDispatcher(),
+      audit: {
+        append: () => {
+          throw new Error("ghp_credential_shaped_value");
+        }
+      },
+      logger: createJsonLogger(line => lines.push(line))
+    });
+    const failingPort = await new Promise<number>(resolve => {
+      failing.listen(0, "127.0.0.1", () => resolve((failing.address() as AddressInfo).port));
+    });
+
+    try {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, CHANNEL),
+        "POST",
+        failingPort,
+        JSON.stringify(CALL)
+      );
+
+      expect(response.status).toBe(500);
+      expect(ProxyError.parse(response.body).error.code).toBe("internal");
+      // Not a served refusal, and not a result. The agent gets no answer.
+      expect(ToolCallResponse.safeParse(response.body).success).toBe(false);
+      // Named, so an operator debugging the 500 is not left with handler_failed
+      // alone — and without the thrown value, which in this process can carry a
+      // credential.
+      expect(lines.join("")).toContain("audit_write_failed");
+      expect(lines.join("")).not.toContain("ghp_");
+    } finally {
+      failing.closeAllConnections();
+      await new Promise<void>(resolve => failing.close(() => resolve()));
+    }
+  });
+});
+
 describe("request bodies", () => {
   it("rejects a body past the cap without buffering it", async () => {
     const res = await post("/v1/tools/call", asked({
@@ -777,7 +1027,8 @@ describe("composing the proxy", () => {
           recordToolCall: () => {},
           recordTokens: () => ({ outcome: "recorded" as const })
         }),
-        dispatcher: recordingDispatcher()
+        dispatcher: recordingDispatcher(),
+        audit: discardingAuditWriter()
       })
     ).toThrow(/needs a real spend meter/);
   });
@@ -1200,11 +1451,18 @@ describe("no route returns a credential", () => {
     let injected: Server;
     let injectedPort: number;
     let injectedLog: string[] = [];
+    let injectAuditDir: string;
+    let injectAuditFile: string;
+    let injectAuditDb: AuditDb;
     /** Built in beforeAll once the mock upstream's port is known. */
     let injectSheet = "";
     const injectLogger = createJsonLogger(line => injectedLog.push(line));
 
     beforeAll(async () => {
+      injectAuditDir = mkdtempSync(join(tmpdir(), "libero-proxy-inject-audit-"));
+      injectAuditFile = join(injectAuditDir, "audit.db");
+      injectAuditDb = openAuditDb({ file: injectAuditFile });
+
       upstream = createHttpServer((req, res) => {
         upstreamSaw.push(req.headers.authorization);
         req.resume();
@@ -1245,6 +1503,11 @@ credential = "github_service_account"
         // outbound line and the server's request line land in one stream, which
         // is what makes "no log line holds the value" worth asserting.
         dispatcher: createHttpDispatcher({ vault, logger: injectLogger }),
+        // A real audit log for the same reason the logger is shared: this is
+        // the one composition where a credential genuinely transits a call, so
+        // it is the only place "no audit row holds the value" can be asserted
+        // against a real one rather than a fixture.
+        audit: createSqliteAuditWriter({ db: injectAuditDb }),
         logger: injectLogger
       });
 
@@ -1261,6 +1524,8 @@ credential = "github_service_account"
       await new Promise<void>(resolve => injected.close(() => resolve()));
       upstream.closeAllConnections();
       await new Promise<void>(resolve => upstream.close(() => resolve()));
+      injectAuditDb.close();
+      rmSync(injectAuditDir, { recursive: true, force: true });
     });
 
     beforeEach(() => {
@@ -1346,6 +1611,39 @@ credential = "github_service_account"
       expect(injectedLog.join("")).toContain("github_service_account");
     });
 
+    // The same criterion carried onto the durable record, which is the one that
+    // outlives the process. Arguments here carry the vault value, so the row's
+    // `arguments_sha256` is what is actually under test: a hash may not be the
+    // value, and the whole-object preimage is why it is not a fingerprint of it.
+    it("writes audit rows that hold no trace of it either", async () => {
+      const before = lastAuditId(injectAuditFile);
+
+      await call(
+        "/v1/tools/call",
+        clientCert(certs, INJECT_CHANNEL),
+        "POST",
+        injectedPort,
+        JSON.stringify(
+          asked({
+            id: "toolu_07",
+            server: "github",
+            tool: "list_prs",
+            arguments: { note: `the token is ${VAULT_VALUE}` }
+          })
+        )
+      );
+
+      const rows = auditRows(injectAuditFile, before);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ outcome: "ran", channel: INJECT_CHANNEL });
+
+      const written = JSON.stringify(rows);
+      expect(written).not.toContain(VAULT_VALUE);
+      expect(written).not.toContain("ghp_");
+      // Not vacuous: the row exists and carries the hash of those arguments.
+      expect(String(rows[0]?.arguments_sha256)).toMatch(/^[0-9a-f]{64}$/);
+    });
+
     it("refuses by name when the sheet names a credential the vault lacks", async () => {
       writeSheet(
         INJECT_CHANNEL,
@@ -1390,8 +1688,18 @@ credential = "absent_credential"
 describe("a permitted call with no upstream", () => {
   let bare: Server;
   let barePort: number;
+  let bareAuditDir: string;
+  let bareAuditFile: string;
+  let bareAuditDb: AuditDb;
 
   beforeAll(async () => {
+    // A real audit log here, not a discarding one: `unavailable` is the fourth
+    // outcome and this is the only place it happens at the wire, so it is the
+    // only place its row can be asserted.
+    bareAuditDir = mkdtempSync(join(tmpdir(), "libero-proxy-bare-audit-"));
+    bareAuditFile = join(bareAuditDir, "audit.db");
+    bareAuditDb = openAuditDb({ file: bareAuditFile });
+
     bare = createProxyServer({
       tls: loadTlsOptions({
         cert: join(certs, "proxy", "server.pem"),
@@ -1403,6 +1711,7 @@ describe("a permitted call with no upstream", () => {
       // its upstream, which `assertServableComposition` permits.
       spend: meter,
       dispatcher: createUnavailableDispatcher(),
+      audit: createSqliteAuditWriter({ db: bareAuditDb }),
       logger: createJsonLogger(() => {})
     });
     await new Promise<void>(resolve => {
@@ -1416,6 +1725,31 @@ describe("a permitted call with no upstream", () => {
   afterAll(async () => {
     bare.closeAllConnections();
     await new Promise<void>(resolve => bare.close(() => resolve()));
+    bareAuditDb.close();
+    rmSync(bareAuditDir, { recursive: true, force: true });
+  });
+
+  it("records the call it could not serve", async () => {
+    await call(
+      "/v1/tools/call",
+      clientCert(certs, CHANNEL),
+      "POST",
+      barePort,
+      JSON.stringify(asked({ id: "toolu_unavailable", server: "github", tool: "list_prs" }))
+    );
+
+    const rows = auditRows(bareAuditFile, 0).filter(row => row.call_id === "toolu_unavailable");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      channel: CHANNEL,
+      server: "github",
+      tool: "list_prs",
+      outcome: "unavailable",
+      // Permitted, so nothing refused it; and never served, so no result.
+      refusal_reason: null,
+      result_bytes: null,
+      result_is_error: null
+    });
   });
 
   it("answers 501, not a refusal", async () => {
@@ -1449,6 +1783,8 @@ describe("a permitted call with no upstream", () => {
           throw new RedactionError("empty_value");
         }
       },
+      // The throw is upstream of the audit call, so there is no row to make.
+      audit: discardingAuditWriter(),
       logger: createJsonLogger(line => lines.push(line))
     });
     const throwingPort = await new Promise<number>(resolve => {

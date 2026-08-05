@@ -27,6 +27,14 @@ export type { SpendMeterOptions } from "./budget-meter.js";
 // nothing in the server. See the header of ./budget-admin.ts.
 export { channelDays, pruneTurnReports, readChannelSpend, resetChannel } from "./budget-admin.js";
 
+// The audit log. Append-only, and required by every composition — see the
+// `audit` field on `ProxyServerOptions`. `AuditDb` can close the file and
+// `AuditWriter` cannot, which is the whole reason both exist.
+export { AUDIT_SCHEMA_VERSION, openAuditDb } from "./audit-db.js";
+export type { AuditDb, AuditDbOptions } from "./audit-db.js";
+export { canonicalJson, createSqliteAuditWriter, hashArguments, openAuditWriter } from "./audit-log.js";
+export type { AuditWriter, AuditWriterOptions } from "./audit-log.js";
+
 export { createHttpDispatcher, toolRequestBody } from "./http-dispatcher.js";
 export type { HttpDispatcherOptions } from "./http-dispatcher.js";
 

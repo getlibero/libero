@@ -132,5 +132,33 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    // The third, and the same mechanism again. The audit writer records what the
+    // route observed, and what the route observed never included a credential
+    // value — that is why the record can hold a hash of the model's arguments
+    // at all. A module that cannot import the vault cannot grow one by accident.
+    //
+    // `redact` is deliberately *not* banned, and the reason is worth stating
+    // rather than leaving to be inferred: arguments are not stored, so nothing
+    // here has anything to redact. If the follow-up issue adds capture, it
+    // redacts on the route while building the record — where the secret set for
+    // that call is knowable — and not in the writer, which is handed a record
+    // that is already safe to persist.
+    files: ["packages/proxy/src/audit-db.ts", "packages/proxy/src/audit-log.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/vault*", "@getlibero/proxy"],
+              message:
+                "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault would be a column that must not exist."
+            }
+          ]
+        }
+      ]
+    }
   }
 );

@@ -235,22 +235,47 @@ These are load-bearing, not stylistic:
   is `x = x + n`, and the server's whole surface on the meter is `read`,
   `recordToolCall`, `recordTokens` — clearing a counter lives in
   `budget-admin.ts`, which the server never imports. Keep all three. Also keep
-  **every SQL string in `packages/proxy` in `src/budget-db.ts`**, so
-  "no statement omits `WHERE channel = ?`" is checkable by reading one file.
+  **every SQL string in `packages/proxy` in the module that opens the database
+  it runs against** — `src/budget-db.ts` and `src/audit-db.ts`, and no others.
+  One module per database, not one per package: the rule exists so
+  "no statement omits `WHERE channel = ?`" is checkable by reading one file, and
+  a second database does not weaken that as long as its statements are all in
+  one file too. A statement prepared anywhere else — a route, a writer, an admin
+  helper — is a review failure.
 
   **Aggregate reads go on the operator path** (`budget-admin.ts`), never on the
   interface the server closes over. Reading one channel is a serving concern;
   reading all of them is an operator concern.
+
+  The audit log is that layout with a stricter write discipline (#97): one table
+  with a channel column, and the only statement in `audit-db.ts` is an INSERT.
+  Append-only is `BEFORE UPDATE`/`BEFORE DELETE` triggers that `RAISE(ABORT)` —
+  SQLite has no roles and no grants, so the architecture's "no UPDATE/DELETE
+  grants for the service role" cannot be built as written. The write-only
+  `AuditWriter` the server closes over and the file's permissions are defence in
+  depth around the triggers, not the mechanism, and the PR that landed it says
+  which is which. There is no retention command and a delete-based one should
+  not be added; rotation is the shape. A failed audit write **refuses the call**
+  rather than serving it unrecorded.
 - **`packages/schema` is the single source of truth** for team sheets, audit
   records, tool calls, approvals, and memory ops. Both services import from it;
   don't redefine those shapes locally. `channels/example/channel.toml` is the
   documented starter sheet and should stay in sync with the zod schema.
   Built today: the team sheet, the tool call and its response, the tool
-  listing, refusals, the spend report, and the proxy error shape. Both services
-  import them — `packages/agent` since #109, which is what makes "the two ends
-  agree on one definition" true rather than aspirational. Audit records,
-  approvals, and memory ops are still where those shapes go when the code
-  needing them lands, not something you can import yet.
+  listing, refusals, the spend report, the proxy error shape, and the audit
+  record. Both services import them — `packages/agent` since #109, which is what
+  makes "the two ends agree on one definition" true rather than aspirational.
+  Approvals and memory ops are still where those shapes go when the code needing
+  them lands, not something you can import yet.
+
+  `src/audit.ts` is the one shape that never crosses the wire: the proxy builds
+  it from its own observation and the CLI reads it back out of SQLite. It is in
+  schema anyway because `packages/cli` is npm-published and `@getlibero/proxy`
+  is private, so #98 opens the file itself and needs the column names from
+  somewhere shared. `AuditRecord` is a **type with no zod object**, for the
+  reason `ResolvedToolCall` has none — a `.parse()` is how a channel gets taken
+  from a request body. `AuditOutcome` does get a zod enum, because #98 parses it
+  off `argv`.
 
 ## Design
 
