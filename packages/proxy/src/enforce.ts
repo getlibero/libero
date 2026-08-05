@@ -69,23 +69,39 @@ export interface EnforcementInput {
 /**
  * The three answers.
  *
- * `hold` carries a refusal rather than a bare marker so that a deployment with
- * no approval broker wired — which is every deployment until #37 lands — can
- * relay it to the channel as an ordinary refusal and be correct. The seam
- * degrades to the safe behaviour instead of to an unhandled case.
+ * `hold` carries a refusal rather than a bare marker so that a client with
+ * nothing to do with an approval can relay it to the channel as an ordinary
+ * refusal and be correct. That was the whole of the story before the approval
+ * broker; it is now the degradation rather than the behaviour, and it still
+ * holds — a client that ignores the ticket abandons the call, which is safe.
  *
- * `allow` carries the sheet entry it matched, and that is a security property
- * rather than a convenience. The dispatcher needs a destination and a
- * credential name, and the only two ways to get them are this field or a second
- * lookup after the fact. A second lookup can disagree with the first — the
- * sheet is watched and reloads on file change, so the entry that authorized the
- * call is not necessarily the entry a later read returns — and the call would
- * then go somewhere the decision never approved. Handing the matched entry
- * forward closes that window by construction: there is nothing to re-resolve.
+ * **`allow` and `hold` both carry the sheet entry they matched**, and that is a
+ * security property rather than a convenience. The dispatcher needs a
+ * destination and a credential name, and the only two ways to get them are this
+ * field or a second lookup after the fact. A second lookup can disagree with the
+ * first — the sheet is watched and reloads on file change, so the entry that
+ * authorized the call is not necessarily the entry a later read returns — and
+ * the call would then go somewhere the decision never approved. Handing the
+ * matched entry forward closes that window by construction: there is nothing to
+ * re-resolve.
+ *
+ * `hold` needs it for the same reason and more urgently. An approved call comes
+ * back as a re-submission and is enforced *again*, and in the ordinary case that
+ * second decision is another `hold` — the tool still requires approval, which is
+ * why there was a ticket. So the hold path is the one the dispatcher runs from
+ * on every approved call, and a decision that answered `hold` with no upstream
+ * would leave a redeemed call with nowhere to go. The alternative, a ticket
+ * carrying a cached upstream, is that second lookup made worse: a whole ticket
+ * lifetime stale rather than milliseconds.
+ *
+ * Enforcement itself knows nothing about tickets. `decide` is pure, has no
+ * clock, and reads no approval state — it answers "may this channel call this",
+ * and whether a human approved this exact call is a different question answered
+ * elsewhere. Neither question is allowed to stand in for the other.
  */
 export type Decision =
   | { readonly outcome: "allow"; readonly upstream: McpServer }
-  | { readonly outcome: "hold"; readonly refusal: ToolRefusal }
+  | { readonly outcome: "hold"; readonly upstream: McpServer; readonly refusal: ToolRefusal }
   | { readonly outcome: "refuse"; readonly refusal: ToolRefusal };
 
 const refuse = (refusal: ToolRefusal): Decision => ({ outcome: "refuse", refusal });
@@ -267,7 +283,11 @@ export function decide(input: EnforcementInput): Decision {
   }
 
   if (resolveApproval(tools, call.tool) === "required") {
-    return { outcome: "hold", refusal: { reason: "approval_required", server: call.server, tool: call.tool } };
+    return {
+      outcome: "hold",
+      upstream,
+      refusal: { reason: "approval_required", server: call.server, tool: call.tool }
+    };
   }
 
   return { outcome: "allow", upstream };
