@@ -43,6 +43,27 @@ describe("the wire tool call", () => {
     expect(ToolCall.safeParse({ ...wire, authorization: "Bearer sk-live-abc" }).success).toBe(false);
   });
 
+  // A first submission carries no ticket, which is every call there was before
+  // the approval broker. Absent rather than null: `exactOptionalPropertyTypes`
+  // makes present-and-undefined a different thing, and the proxy branches on it.
+  it("accepts a call with no ticket, and leaves the field absent", () => {
+    const parsed = ToolCall.parse(wire);
+    expect(parsed.ticket).toBeUndefined();
+    expect("ticket" in parsed).toBe(false);
+  });
+
+  it("carries a ticket on a re-submission", () => {
+    expect(ToolCall.parse({ ...wire, ticket: "tk-7f3a" }).ticket).toBe("tk-7f3a");
+  });
+
+  // Bounded like every other name here. The value is model-reachable, and it
+  // lands in a log line and an audit row.
+  it("rejects a ticket that is not a short identifier", () => {
+    for (const bad of ["", "a".repeat(65), "../../etc", "has space", null]) {
+      expect(ToolCall.safeParse({ ...wire, ticket: bad }).success).toBe(false);
+    }
+  });
+
   it("rejects a missing id, server, or tool", () => {
     expect(ToolCall.safeParse(without("id")).success).toBe(false);
     expect(ToolCall.safeParse(without("server")).success).toBe(false);

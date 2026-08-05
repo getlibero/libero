@@ -55,6 +55,42 @@ export const RefusalReason = z.enum([
   "server_ambiguous",
   /** Permitted, but held for a human. The approval broker takes it from here. */
   "approval_required",
+  /**
+   * The six ways a re-submission can fail to be the call a human approved.
+   *
+   * They stay six rather than collapsing into one, because each sends its reader
+   * somewhere different: wait, ask again, you already used this, a human said no,
+   * and — the one that matters most — the call you re-sent is not the call that
+   * was approved. Collapsing any of them into `approval_unknown` would make a
+   * replay, a restart, and an approve-then-mutate indistinguishable in the log.
+   *
+   * A held call carrying *no* ticket is not in this list and needs no reason: it
+   * is a first submission, so it mints a ticket and is answered
+   * `approval_required` as it always was.
+   */
+  "approval_pending",
+  /**
+   * No such ticket in this channel.
+   *
+   * One answer for three situations — a ticket that never existed, one another
+   * channel holds, and one this process lost to a restart — and with the
+   * proxy's per-channel ticket map they are structurally one rather than
+   * deliberately conflated: the lookup cannot reach another channel's tickets.
+   */
+  "approval_unknown",
+  /** The ticket died before the call came back. Asking again mints a new one. */
+  "approval_expired",
+  /** The ticket was already redeemed. One approval runs one call. */
+  "approval_spent",
+  /** A human declined this call. */
+  "approval_denied",
+  /**
+   * The re-submitted call is not the call the ticket was minted for.
+   *
+   * Approve-then-mutate is the attack the whole re-submission design exists to
+   * stop, so it gets its own reason, its own sentence, and its own audit row.
+   */
+  "approval_mismatch",
   /** The channel's daily meter is spent. Authoritative in the proxy. */
   "budget_exhausted",
   /** Serving the call means reaching a host the egress allowlist omits. */
@@ -102,6 +138,16 @@ export const ToolRefusal = z.discriminatedUnion("reason", [
       tool: ResourceName
     })
     .strict(),
+  // The broker's six. Each carries the call it is about and nothing else — in
+  // particular a mismatch does not carry what the *ticket* was for, because the
+  // reader is in the channel that raised both and a second server/tool pair in
+  // the sentence would add length rather than information.
+  z.object({ reason: z.literal("approval_pending"), server: ResourceName, tool: ResourceName }).strict(),
+  z.object({ reason: z.literal("approval_unknown"), server: ResourceName, tool: ResourceName }).strict(),
+  z.object({ reason: z.literal("approval_expired"), server: ResourceName, tool: ResourceName }).strict(),
+  z.object({ reason: z.literal("approval_spent"), server: ResourceName, tool: ResourceName }).strict(),
+  z.object({ reason: z.literal("approval_denied"), server: ResourceName, tool: ResourceName }).strict(),
+  z.object({ reason: z.literal("approval_mismatch"), server: ResourceName, tool: ResourceName }).strict(),
   z
     .object({
       reason: z.literal("budget_exhausted"),
@@ -146,6 +192,18 @@ export function refusalMessage(refusal: ToolRefusal): string {
       return `This channel's team sheet lists \`${refusal.server}\` more than once, and the entries carrying \`${refusal.tool}\` point at different upstreams. An admin resolves it in the sheet. The call was not made.`;
     case "approval_required":
       return `\`${refusal.server}.${refusal.tool}\` requires approval from a human before it runs. The call is held.`;
+    case "approval_pending":
+      return `The approval for \`${refusal.server}.${refusal.tool}\` has not been decided yet. The call was not made.`;
+    case "approval_unknown":
+      return `This channel has no approval for \`${refusal.server}.${refusal.tool}\`. It may have expired, or the proxy may have restarted. The call was not made.`;
+    case "approval_expired":
+      return `The approval for \`${refusal.server}.${refusal.tool}\` expired before the call was made. Asking again raises a new one.`;
+    case "approval_spent":
+      return `The approval for \`${refusal.server}.${refusal.tool}\` has already been used. One approval runs one call. The call was not made.`;
+    case "approval_denied":
+      return `A human declined \`${refusal.server}.${refusal.tool}\`. The call was not made.`;
+    case "approval_mismatch":
+      return `This approval was not for \`${refusal.server}.${refusal.tool}\` with these arguments. An approval covers one exact call. The call was not made.`;
     case "budget_exhausted":
       return refusal.limit === "daily_tokens"
         ? "This channel has spent its daily token budget. No further calls run until the budget resets."
