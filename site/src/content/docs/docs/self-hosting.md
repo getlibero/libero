@@ -35,6 +35,14 @@ docker compose up            # starts gateway+agent and proxy
 the vault; `docker compose up` starts both services from `deploy/docker-compose.yml`. An optional
 LiteLLM sidecar is included for models without first-class support.
 
+The full environment contract is `.env.example` at the repository root, and most of it is
+required with no default — the Slack tokens, the provider key, `AGENT_PROVIDER` and
+`AGENT_MODEL`, the channels roots for both services, the proxy's TLS material, and the vault,
+budget, and audit paths (compose sets the in-container paths itself; the file says which). A
+missing one is a startup failure that names itself. `PROXY_BUDGET_DB` and `PROXY_AUDIT_DB` get
+their own paragraphs under [operating it](#operating-it) because they are the two where a wrong
+value fails quietly rather than loudly.
+
 Credentials go into the vault from inside the proxy container, so the master key never has to
 exist on the host:
 

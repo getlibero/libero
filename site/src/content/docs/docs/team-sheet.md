@@ -156,6 +156,13 @@ underscore, starting with a letter or digit, up to 64 characters. The same shape
 a name crosses between the agent and the proxy, so a name that validates in a sheet is a name that
 survives a call and a refusal.
 
+Two blocks may share a name — splitting a long tool list across blocks is fine — as long as every
+block carrying a given tool agrees on the upstream. If they point at different upstreams, a call
+to that tool is refused as `server_ambiguous`: a sheet whose blocks contradict each other is a
+structural fault for an admin to resolve, not something the proxy guesses its way past. The
+refusal comes before the budget and before approval, so no human is ever asked to approve a call
+that has nowhere to go.
+
 ### `[[mcp_server.tool]]`
 
 The allowlist. **A tool that is not listed does not exist as far as this channel is concerned** —

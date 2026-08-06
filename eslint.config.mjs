@@ -46,7 +46,15 @@ export default tseslint.config(
     // packages/gateway holds the Slack socket in that same process: it is where
     // an inbound message first arrives, which makes it the most attractive place
     // for a shortcut to the proxy's internals to appear.
-    files: ["packages/agent/**/*.ts", "packages/gateway/**/*.ts", "apps/server/**/*.ts"],
+    //
+    // Every extension, not just *.ts: a stray .mjs helper on the agent side is
+    // still on the agent side, and the CI grep covers the same set — the ban
+    // stays two mechanisms deep for every file kind that can hold an import.
+    files: [
+      "packages/agent/**/*.{ts,mts,cts,js,mjs,cjs}",
+      "packages/gateway/**/*.{ts,mts,cts,js,mjs,cjs}",
+      "apps/server/**/*.{ts,mts,cts,js,mjs,cjs}"
+    ],
     rules: {
       "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN] }]
     }
@@ -70,7 +78,7 @@ export default tseslint.config(
     // own (see the header of log.ts), not because it belongs to the socket.
     // `allowImportNames` rather than `importNames`, so the exception is a list
     // of what may cross rather than a list of what may not.
-    files: ["apps/server/src/session/**/*.ts"],
+    files: ["apps/server/src/session/**/*.{ts,mts,cts,js,mjs,cjs}"],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -102,7 +110,7 @@ export default tseslint.config(
     // is: the risk is not the files as written but a later import somewhere
     // else, which next to the adapters would not look wrong. A module that
     // cannot import @slack/* cannot quietly start needing a socket.
-    files: ["packages/gateway/src/**/*.ts"],
+    files: ["packages/gateway/src/**/*.{ts,mts,cts,js,mjs,cjs}"],
     rules: {
       "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN, SLACK_SDK_BAN] }]
     }
