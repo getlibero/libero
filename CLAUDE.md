@@ -46,7 +46,8 @@ calls, the redaction pass on the way back, and the daily budget meter over
 permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
 `packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
-into the thread, and a reconnect ladder the gateway owns rather than the SDK),
+into the thread, a reconnect ladder the gateway owns rather than the SDK, and
+since #126 an approval card it can render and a click it can decode),
 `apps/server` (the gateway + agent process — env parsing, the mention handler,
 lifecycle), `packages/cli` (placeholder npm release), `design/` (the design
 system — plain CSS, no TypeScript), and `site/` (getlibero.com).
@@ -148,14 +149,33 @@ approver identity holds against a **prompt-injected model** and not against a
 **compromised agent process**, which relays it. Tool credentials survive process
 compromise; approvals survive prompt injection.
 
-**#126 and #127 are not built**, so nothing renders a card and nothing
-re-submits: `packages/agent/src/proxy/tools.ts` still relays a hold to the model
-as an error result, which is safe — it abandons the call — and abandons one a
-human could have approved. Tickets are in memory, so a proxy restart drops
-pending approvals and they degrade to expiry. `audit.db` is at schema version 2
-with the repository's first migration (#125), and its vocabulary now carries
-`approved`, `denied`, and `expired` plus a `ticket` column joining an approval's
-rows.
+**#126 is built and #127 is not, so both ends exist and nothing joins them.**
+`packages/gateway` can draw the card and decode the click — `approval-card.ts`
+renders four states, `decision.ts` normalizes a `block_actions` payload, and
+`CardPoster` posts and edits one. What does not exist is the thing that puts a
+card up for a held call and re-submits the approved one, so
+`packages/agent/src/proxy/tools.ts` still relays a hold to the model as an error
+result: safe, because it abandons the call, and it abandons one a human could
+have approved. Nothing posts a card in production yet.
+
+Three decisions on the gateway side are settled and should not be
+re-litigated. **The gateway holds no clock** — it renders `expired` when told to
+and never on its own, because the deadline belongs to the layer already awaiting
+the decision (#127), and a pending-promise map here would need a timeout, which
+is a lifetime this package is not allowed to grow. **The verdict is never
+parsed**: it travels in the `action_id` and is recovered by a two-entry table
+lookup, the ticket travels in the button's `value`, and a packed id would need a
+separator that `ApprovalTicketId` permits inside itself. And **`response_url` is
+never read** — it is a URL with a secret in it, in a package whose rule is that
+no field of any type holds a token; cards are edited with `chat.update` on the
+bot token. The card's colours are the design system's dark tokens as hex, drawn
+as an attachment's left border, and every state also names itself in text so the
+card is correct with no colour at all.
+
+Tickets are in memory, so a proxy restart drops pending approvals and they
+degrade to expiry. `audit.db` is at schema version 2 with the repository's first
+migration (#125), and its vocabulary now carries `approved`, `denied`, and
+`expired` plus a `ticket` column joining an approval's rows.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design

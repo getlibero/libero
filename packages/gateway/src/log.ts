@@ -29,7 +29,8 @@ export interface LogFields {
    * "mention", "replied", "ignored", "handler_failed", "post_failed". Tools:
    * "task", "tools_unavailable". Spend: "spend_reported",
    * "spend_report_failed". Sessions: "queued", "session_evicted",
-   * "team_sheet_invalid", "team_sheet_unreadable".
+   * "team_sheet_invalid", "team_sheet_unreadable". Approvals: "decision",
+   * "decision_failed", "card_posted", "card_updated", "card_failed".
    */
   event: string;
   /** Slack team id. An id, never a token. */
@@ -42,6 +43,37 @@ export interface LogFields {
   eventId?: string;
   /** The thread a reply went to, as a Slack ts. */
   threadTs?: string;
+  /**
+   * A card message's own ts — the message `chat.update` edits.
+   *
+   * Distinct from `threadTs`, which names the thread the card sits in. Two
+   * different ids: an operator asking which card went stale wants this one and
+   * cannot derive it from the other.
+   */
+  messageTs?: string;
+  /**
+   * An approval ticket id. The join key between a card, a click, and the audit
+   * row the proxy writes for the same decision.
+   *
+   * Safe to log, and the reason is what a ticket is worth: it authorizes one
+   * call, once, in one channel, and spending one needs the channel's client
+   * certificate *and* a byte-for-byte matching call. It is an id in the same
+   * sense a channel id is, and without it a card and its decision cannot be
+   * correlated across the two processes.
+   */
+  ticket?: string;
+  /**
+   * What a human said: `approve` or `deny`. A code from a two-member closed set
+   * (`ApprovalVerdict`), never prose, and the same word the proxy's own log and
+   * the audit row use — so one grep spans both ends.
+   */
+  verdict?: string;
+  /**
+   * Which state a card was rendered in: `awaiting`, `approved`, `denied`, or
+   * `expired`. A code from a closed set, and the state a human would have seen,
+   * so a card that never left amber is greppable without opening Slack.
+   */
+  cardState?: string;
   /** Why something was ignored or failed. A code, not prose, and never an SDK message. */
   reason?: string;
   /**

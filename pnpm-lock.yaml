@@ -72,12 +72,18 @@ importers:
 
   packages/gateway:
     dependencies:
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../schema
       '@slack/logger':
         specifier: ^5.0.0
         version: 5.0.0
       '@slack/socket-mode':
         specifier: ^3.0.0
         version: 3.0.0(undici@7.29.0)
+      '@slack/types':
+        specifier: ^3.0.0
+        version: 3.0.0
       '@slack/web-api':
         specifier: ^8.0.0
         version: 8.0.0

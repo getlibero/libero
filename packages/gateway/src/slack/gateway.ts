@@ -15,13 +15,16 @@ import { createSilentLogger } from "../log.js";
 import type { Logger } from "../log.js";
 import { DEFAULT_BACKOFF, nextDelayMs } from "./backoff.js";
 import type { BackoffPolicy } from "./backoff.js";
+import { toDecision } from "./decision.js";
 import { toMention } from "./mention.js";
 import { GatewayError } from "./types.js";
 import type {
+  DecisionHandler,
   MentionHandler,
   MessagePoster,
   SlackEnvelope,
   SlackGateway,
+  SlackInteractionEnvelope,
   SocketSource
 } from "./types.js";
 
@@ -47,6 +50,15 @@ export interface GatewayOptions {
   source: SocketSource;
   poster: MessagePoster;
   handler: MentionHandler;
+  /**
+   * A human clicked a button on an approval card.
+   *
+   * Optional, because a process that composes no approval broker still receives
+   * clicks the moment the Slack app has interactivity switched on — and still
+   * has to acknowledge them. Absent, a click is acked and dropped with a
+   * reason, which is the only safe way to ignore one.
+   */
+  onDecision?: DecisionHandler;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
   logger?: Logger;
   backoff?: BackoffPolicy;
@@ -85,7 +97,7 @@ function reasonOf(error: unknown): string {
 }
 
 export function createGateway(options: GatewayOptions): SlackGateway {
-  const { source, poster, handler, onFatal } = options;
+  const { source, poster, handler, onDecision, onFatal } = options;
   const logger = options.logger ?? createSilentLogger();
   const policy = options.backoff ?? DEFAULT_BACKOFF;
   const schedule = options.scheduler ?? defaultScheduler;
@@ -106,6 +118,16 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   // Insertion-ordered, bounded: an event id is only useful for as long as a
   // retry could still show up, and an unbounded set in a long-lived process is
   // a leak.
+  //
+  // Decisions get no equivalent, and the asymmetry is deliberate. This set
+  // exists because nothing downstream of a mention is idempotent: a second
+  // delivery runs a second model turn and costs money. A second click costs one
+  // HTTP round trip, and the proxy is already the authority on it — a ticket is
+  // decided once, and a double click, a stale card, or a retry all answer
+  // `already_decided` with the first verdict standing. Two idempotency
+  // mechanisms that can disagree are worse than one that is authoritative.
+  // There is also no honest key to use: an interactive payload carries no
+  // `event_id`.
   const seen = new Set<string>();
 
   function remember(eventId: string): void {
@@ -286,12 +308,82 @@ export function createGateway(options: GatewayOptions): SlackGateway {
     });
   }
 
+  /**
+   * A click in, and nothing out.
+   *
+   * Mirrors `dispatch` deliberately, including the order: the ack comes first
+   * for the same reason, and the decoder's failures are logged rather than
+   * thrown for the same reason. What it does not do is post anything — a
+   * click's visible answer is the card being edited, and the card belongs to
+   * whoever holds the ticket.
+   */
+  async function dispatchInteraction(envelope: SlackInteractionEnvelope): Promise<void> {
+    try {
+      await envelope.ack();
+    } catch (error) {
+      logger.log("warn", { event: "ignored", reason: reasonOf(error) });
+      return;
+    }
+    if (state !== "running") return;
+
+    const result = toDecision(envelope);
+    if ("ignored" in result) {
+      logger.log("info", { event: "ignored", reason: result.ignored });
+      return;
+    }
+    const decision = result.decision;
+
+    // Acked above, so Slack stops retrying, and then dropped: a click nobody
+    // composed a handler for is not an error, but it is worth a line, because
+    // the symptom otherwise is a card that never changes and no explanation.
+    if (onDecision === undefined) {
+      logger.log("info", {
+        event: "ignored",
+        reason: "no_decision_handler",
+        channel: decision.channelId,
+        ticket: decision.ticketId
+      });
+      return;
+    }
+
+    logger.log("info", {
+      event: "decision",
+      team: decision.teamId,
+      channel: decision.channelId,
+      user: decision.approverId,
+      threadTs: decision.threadTs,
+      messageTs: decision.messageTs,
+      ticket: decision.ticketId,
+      verdict: decision.verdict
+    });
+
+    const startedAt = now();
+    try {
+      await onDecision(decision);
+    } catch (error) {
+      // One click is lost and the socket stays up, exactly as a failed handler
+      // loses one mention. Nothing is posted: a card that could not be updated
+      // is the card owner's to word, not the adapter's to invent.
+      logger.log("error", {
+        event: "decision_failed",
+        channel: decision.channelId,
+        ticket: decision.ticketId,
+        durationMs: now() - startedAt,
+        reason: reasonOf(error)
+      });
+    }
+  }
+
   return {
     async start(): Promise<void> {
       if (state !== "idle") throw new GatewayError("connect_failed", false);
       state = "running";
-      // Registered before connecting, so no event can arrive unlistened.
+      // Registered before connecting, so no event can arrive unlistened. The
+      // interaction listener goes on unconditionally, even with no
+      // `onDecision`: an unacknowledged envelope is redelivered, so a gateway
+      // that simply did not subscribe would be retried at forever.
       source.onMention(dispatch);
+      source.onInteraction(dispatchInteraction);
       source.onDrop(handleDrop);
       connecting = true;
       try {
