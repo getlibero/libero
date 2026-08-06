@@ -48,7 +48,15 @@ export type {
 } from "./proxy/transport.js";
 
 export { createProxyToolClient } from "./proxy/tools.js";
-export type { ProxyToolClient, ProxyToolClientOptions } from "./proxy/tools.js";
+export type {
+  HeldCallPrompter,
+  HeldToolCall,
+  ProxyToolClient,
+  ProxyToolClientOptions
+} from "./proxy/tools.js";
 
 export { createProxySpendClient } from "./proxy/spend.js";
 export type { ProxySpendClient, ProxySpendClientOptions, SpendOutcome } from "./proxy/spend.js";
+
+export { createProxyApprovalsClient } from "./proxy/approvals.js";
+export type { ProxyApprovalsClient, ProxyApprovalsClientOptions } from "./proxy/approvals.js";
