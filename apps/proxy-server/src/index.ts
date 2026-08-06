@@ -62,6 +62,11 @@ const budget = openBudgetDb({ file: budgetDbFromEnv(process.env), logger });
 // the route to handle only the disk that fills while it is serving.
 const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(process.env), logger });
 
+// Hoisted out of the composition below because shutdown needs a handle on it.
+// The dispatcher owns the MCP client pool; `createProxyServer` takes the narrow
+// `ToolDispatcher` and never learns there is one.
+const dispatcher = createHttpDispatcher({ vault, logger });
+
 const server = createProxyServer({
   tls: loadTlsOptions({
     cert: requiredEnv(process.env, "PROXY_TLS_CERT"),
@@ -78,7 +83,7 @@ const server = createProxyServer({
   // the tree today, which is exactly why the check is worth keeping — the seams
   // that land next arrive before their implementations do.
   spend: createSqliteSpendMeter({ db: budget, logger }),
-  dispatcher: createHttpDispatcher({ vault, logger }),
+  dispatcher,
   // The writer, not the handle: the serving process appends and cannot close
   // the file it is being audited into. `auditDb` stays here, where shutdown is.
   audit,
@@ -114,6 +119,13 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     // mid-call. Both files close in the callback, after those requests have
     // finished writing to them, and not before.
     server.close(() => {
+      // After the in-flight requests, so a call that was mid-flight kept its
+      // client. Closing is refusing to hand out more of them and dropping the
+      // rest: `2026-07-28` has no session to terminate and no socket this layer
+      // owns, so there is nothing here that can hang. When the legacy handshake
+      // lands it brings sessions, and that close has a `DELETE` to send and a
+      // budget to keep it from holding shutdown open.
+      dispatcher.close();
       budget.close();
       auditDb.close();
       process.exit(0);

@@ -15,7 +15,7 @@ import { ResourceName } from "./names.js";
  * **This is a permission manifest, not a tool catalog.** A team sheet lists
  * names and approval, and nothing else: there is no description and no input
  * schema on a `ToolEntry`, so nothing here can be handed to a model as a tool
- * definition. The MCP client pool (#39) is what fetches real definitions from
+ * definition. #129 is what fetches real definitions from
  * upstream servers and intersects them with this manifest. The thinness is the
  * accurate shape of what a team sheet knows, not an unfinished edge.
  */

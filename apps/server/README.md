@@ -23,7 +23,7 @@ hold is a channel it cannot call as.
 The tools the model is offered are whatever the proxy lists for that channel,
 unfiltered. Their descriptions are thin on purpose: a team sheet knows names and
 approval and nothing about arguments, so no input schema is published. Real
-schemas arrive with the MCP client pool (#39).
+schemas arrive with #129.
 
 Not here yet, and each belongs to its own issue: thread follow-ups without a
 re-mention (#66), thread history and attribution in the prompt (#67), and the

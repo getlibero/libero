@@ -5,8 +5,9 @@ it. See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) for the
 specification.
 
 What is here today: mutual TLS, the rule that decides which channel a request
-belongs to, team-sheet enforcement on the call path, the credential vault, and
-credential injection into outbound HTTP calls.
+belongs to, team-sheet enforcement on the call path, the credential vault,
+credential injection into outbound HTTP calls, and an MCP client that speaks the
+`2026-07-28` revision of the protocol to its upstreams.
 
 - `tls.ts` — server options that refuse a client with no certificate the local
   CA signed. `requestCert` and `rejectUnauthorized` together, TLS 1.3 only.
@@ -80,19 +81,44 @@ credential injection into outbound HTTP calls.
   only exported way to send a credential, and it always scrubs the reply.
 - `redact.ts` — the scanning rules, kept apart from the custody so they can be
   property-tested without a `Secret` or a socket. Replaces every occurrence of a
-  value, in raw, base64 (standard and URL-safe, padded and unpadded), and
-  percent-encoded form, with `[redacted:<name>]`. It closes the "upstream echoes
+  value, in raw, base64 (standard and URL-safe, padded and unpadded),
+  percent-encoded, and JSON-escaped form, with `[redacted:<name>]`. The JSON
+  spellings matter because the MCP client parses what it is handed: an escaped
+  needle that survived the scan is un-escaped on the way to the model (#149). It
+  closes the "upstream echoes
   its own auth header" class and says plainly in its header what no scan can
   close — a value the upstream *transforms* is invisible to any search for it.
   An empty stored value throws rather than shredding the body.
 - `http-dispatcher.ts` — serves an allowed call against an HTTP upstream:
-  resolves the entry's named credential against the vault, then calls out. A
-  credential the vault cannot resolve refuses by name **before any connection
-  is opened**. A transport failure becomes an error result — a tool failing,
-  which the model may recover from — while a redaction failure is rethrown, so
-  it reaches the server's handler catch and answers a constant 500 instead of
-  serving bytes nobody could scrub. The request body it posts is a placeholder;
-  MCP's JSON-RPC framing and the client pool are #39.
+  resolves the entry's named credential against the vault, then hands the call
+  to the client pool. A credential the vault cannot resolve refuses by name
+  **before any connection is opened** — not even a discovery probe. A transport
+  failure becomes an error result — a tool failing, which the model may recover
+  from — while a redaction failure is rethrown, so it reaches the server's
+  handler catch and answers a constant 500 instead of serving bytes nobody could
+  scrub. It also owns the prose a model reads when a call produced no answer,
+  all of it from fixed templates.
+- `mcp-protocol.ts` — the wire format as pure functions: JSON-RPC framing, the
+  `_meta` every request carries, SSE-body extraction, and the mapping from
+  `CallToolResult` to the one string a `ToolResult` holds. No `Secret`, no
+  `fetch`, no I/O. Hand-rolled rather than taken from the SDK, and its header
+  argues why: the SDK's transport owns its own `fetch`, which would move the
+  credential out from under `callUpstream` and turn a one-grep guarantee into a
+  careful-wrapper one.
+- `mcp-client.ts` — one upstream's client. Probes `server/discover` once,
+  fails closed against a server that speaks no version we do, and refuses an
+  `input_required` result rather than answering it — that is an upstream asking
+  the proxy to speak for a channel, with no sheet entry and no click behind it.
+  Retries nothing: `2026-07-28` removed stream resumability, and replaying a
+  `tools/call` is how one write becomes two.
+- `mcp-pool.ts` — one client per upstream, keyed on the `(transport, url,
+  credential)` triple `upstreamKey` defines in `enforce.ts`. Sharing that
+  definition rather than restating it is what stops the pool from merging two
+  blocks enforcement treats as distinct.
+- `mcp-fake-server.ts` — a real `node:http` MCP server for the tests, with the
+  knobs the leak assertions need: both framings, an upstream that echoes its
+  auth header plainly or JSON-escaped, and one that advertises versions we do
+  not speak.
 - `vault.ts` — the credential vault, read side. One AES-256-GCM blob over the
   whole entry set, so the names are encrypted along with the values; a per-write
   HKDF subkey; the header authenticated as AAD. Opened once at startup. A value
@@ -110,9 +136,15 @@ Nothing at runtime but `@getlibero/schema`, which fixes the shape of every
 error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
-Still to come, each with its own issue: the egress allowlist (#73), the MCP
-client pool (#39), and the audit log's read path (#98).
+Still to come, each with its own issue: the egress allowlist (#73), the audit
+log's read path (#98), the legacy MCP handshake for servers older than
+`2026-07-28` (#150), and a bound on tool-result size (#151).
 `http-dispatcher.ts` marks where the egress check slots in.
+
+The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and
+`.github/workflows/mcp-spec-watch.yml` opens an issue when the specification
+publishes a newer one. That workflow fails if it cannot find the constant, so a
+rename is loud rather than a watcher that quietly reports nothing.
 
 **A permitted call is now served.** `apps/proxy-server` composes the real meter
 with `createHttpDispatcher`, so the 501 is gone.
@@ -173,8 +205,8 @@ leaves no trace upstream.
 
 `/v1/tools` is a **permission manifest, not a tool catalog**: a team sheet
 carries names and approval and nothing else, so real tool definitions —
-descriptions and input schemas — arrive with the MCP client pool (#39), which
-intersects the upstream catalogs with this list.
+descriptions and input schemas — arrive with #129, which calls `tools/list`
+through the pool and intersects the upstream catalogs with this list.
 
 A refusal is a served request: HTTP 200 with `{ outcome: "refused" | "held",
 refusal }`. `ProxyError` stays what it was, the shape of a request that could

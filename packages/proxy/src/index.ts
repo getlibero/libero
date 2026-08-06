@@ -35,8 +35,23 @@ export type { AuditDb, AuditDbOptions } from "./audit-db.js";
 export { canonicalJson, createSqliteAuditWriter, hashArguments, openAuditWriter } from "./audit-log.js";
 export type { AuditWriter, AuditWriterOptions } from "./audit-log.js";
 
-export { createHttpDispatcher, toolRequestBody } from "./http-dispatcher.js";
-export type { HttpDispatcherOptions } from "./http-dispatcher.js";
+export { createHttpDispatcher } from "./http-dispatcher.js";
+export type { HttpDispatcher, HttpDispatcherOptions } from "./http-dispatcher.js";
+
+// The MCP client and its pool are deliberately **not** exported, for the reason
+// `credentialHeader` and `injectCredential` are not: a client is a thing that
+// sends a credential-bearing request. The only way to obtain one is through a
+// pool, and the only thing that holds a pool is the dispatcher that resolved
+// the credential against the vault. An exported client — or an exported pool
+// factory — would be a second way to open an authenticated connection to an
+// upstream, outside the one place that knows whether a sheet authorized it, and
+// `server.ts` is careful never to hold such an object. Their tests import them
+// from ./mcp-client.js and ./mcp-pool.js directly.
+//
+// Only the version constants leave ./mcp-protocol.ts. The framing helpers stay
+// private because exporting them is an invitation to hand-assemble a request
+// somewhere that is not the client.
+export { MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "./mcp-protocol.js";
 
 // `credentialHeader` and `injectCredential` are deliberately **not** exported.
 // They take a revealed credential value, and exporting them would make it
@@ -64,7 +79,8 @@ export {
   isDestructiveName,
   permittedTools,
   permittedToolsFromState,
-  resolveApproval
+  resolveApproval,
+  upstreamKey
 } from "./enforce.js";
 export type { BudgetSpend, Decision, EnforcementInput } from "./enforce.js";
 

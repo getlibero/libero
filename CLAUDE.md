@@ -42,8 +42,9 @@ error, approval, and audit shapes), `packages/agent`
 (provider-agnostic completion layer, ReAct loop with per-task caps),
 `packages/proxy` (mTLS listener, per-channel identity, team-sheet enforcement
 on both gates, the credential vault, credential injection into outbound HTTP
-calls, the redaction pass on the way back, the daily budget meter over
-`node:sqlite`, the append-only audit log, and the approval ticket store),
+calls, the redaction pass on the way back, the MCP client and its per-upstream
+pool, the daily budget meter over `node:sqlite`, the append-only audit log, and
+the approval ticket store),
 `apps/proxy-server` (the process composing all of it — a
 permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
@@ -89,7 +90,38 @@ listing, never by parsing the name** — `ResourceName` permits dots and
 underscores, so any separator is ambiguous, and a name the proxy did not publish
 has no pair to become. And **the tool definitions are thin because the manifest
 is thin**: a team sheet knows names and approval, so no input schema is
-published and none is invented. Real schemas arrive with #39.
+published and none is invented. Real schemas arrive with #129.
+
+**The proxy speaks MCP for real, at revision `2026-07-28` (#128).**
+`mcp-protocol.ts` is the wire format as pure functions, `mcp-client.ts` is one
+upstream's client, `mcp-pool.ts` keys one client per `(transport, url,
+credential)` triple — the same `upstreamKey` enforcement compares, exported
+rather than restated so the two cannot drift.
+
+The client is hand-rolled rather than the SDK, and the reason is the custody
+argument rather than dependency count: `StreamableHTTPClientTransport` owns its
+own `fetch`, so the credential would be revealed outside `callUpstream`, and
+"redaction is total because sending is centralised" would become "because we
+wrapped it carefully" in the process holding every credential. The cost — this
+repo owning a moving protocol — is paid by one pinned constant and
+`.github/workflows/mcp-spec-watch.yml`, which files an issue when the spec moves
+past it.
+
+Three behaviours there are decisions rather than mechanics. **A server naming no
+version we speak fails closed** with no `tools/call` sent, rather than being
+spoken to at a version it never agreed to. **An `input_required` result is
+refused** — MRTR replaced server-initiated sampling and elicitation, so an
+upstream can now ask the client to act for a channel from inside an ordinary
+`tools/call`, and answering would spend that channel's model budget on an
+upstream's say-so with no sheet entry and no click. And **nothing is ever
+retried**: `2026-07-28` removed stream resumability, and replaying a
+`tools/call` is how one write becomes two.
+
+A discovery failure relays no upstream bytes, and that is a type rather than a
+convention — `McpOutcome`'s `connect_failed` member has no `detail` field to put
+them in, because a failed handshake is as likely to be answered by an auth
+proxy's error page as by anything MCP. The legacy `initialize` handshake for
+older servers is #150, blocking #130.
 
 **Two services, one Dockerfile short of running under compose.**
 `deploy/docker-compose.yml` builds both images from paths that do not exist
