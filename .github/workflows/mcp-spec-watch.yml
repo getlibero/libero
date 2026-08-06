@@ -17,6 +17,15 @@ on:
     # be a daily way to notice nothing changed.
     - cron: "17 9 * * 1"
   workflow_dispatch:
+    inputs:
+      pretend_pinned:
+        description: >-
+          Run as if the pinned revision were this one, to exercise the path that
+          files an issue. Without it that path only ever runs when the spec has
+          already moved, which is the one moment nobody wants to discover a
+          typo. The constant is still read and still has to be there.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -36,6 +45,7 @@ jobs:
       - name: Compare the pinned revision against the specification
         env:
           GH_TOKEN: ${{ github.token }}
+          PRETEND_PINNED: ${{ inputs.pretend_pinned }}
         run: |
           set -euo pipefail
 
@@ -53,6 +63,14 @@ jobs:
           fi
           echo "pinned: ${pinned}"
 
+          # Applied after the constant is read, never instead of it: a manual
+          # run still fails if the constant went missing, which is the check
+          # worth having on every path.
+          if [ -n "${PRETEND_PINNED:-}" ]; then
+            echo "::notice::Pretending the pinned revision is ${PRETEND_PINNED} (actual: ${pinned})."
+            pinned="${PRETEND_PINNED}"
+          fi
+
           # Release-candidate tags carry an -RC suffix and are filtered out by
           # the date-only pattern: a revision is worth an issue once it ships.
           latest=$(
@@ -61,7 +79,13 @@ jobs:
           )
           echo "latest published: ${latest}"
 
-          if [ "${latest}" = "${pinned}" ] || [ "${latest}" \< "${pinned}" ]; then
+          # Revisions are ISO dates, so newest-first is a plain reverse sort.
+          # Compared this way rather than with `[ "$a" \< "$b" ]`, which is a
+          # bashism: it does the right thing under Actions and silently the
+          # wrong thing anywhere else, including when someone runs these lines
+          # by hand to check them.
+          newest=$(printf '%s\n%s\n' "${pinned}" "${latest}" | sort -r | head -1)
+          if [ "${newest}" = "${pinned}" ]; then
             echo "Up to date."
             exit 0
           fi
