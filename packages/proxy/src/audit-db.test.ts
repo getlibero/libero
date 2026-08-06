@@ -79,8 +79,23 @@ describe("appending", () => {
         refusal_reason: null,
         result_bytes: 12,
         result_is_error: 0,
-        approver: null
+        approver: null,
+        ticket: null
       }
+    ]);
+  });
+
+  // The broker's three, which no /v1/tools/call request produces. Version 1
+  // could not hold any of them — see the migration tests below.
+  it("writes an approval decision with its approver and its ticket", () => {
+    db.append(record({ outcome: "approved", approver: "U0BOSS", ticket: "tk-1" }));
+    db.append(record({ outcome: "denied", approver: "U0BOSS", ticket: "tk-2" }));
+    db.append(record({ outcome: "expired", ticket: "tk-3" }));
+
+    expect(rows(file).map(row => [row.outcome, row.approver, row.ticket])).toEqual([
+      ["approved", "U0BOSS", "tk-1"],
+      ["denied", "U0BOSS", "tk-2"],
+      ["expired", null, "tk-3"]
     ]);
   });
 
@@ -263,3 +278,244 @@ function bumpVersionTo(path: string, version: number): void {
   raw.prepare("UPDATE schema_version SET version = ?").run(version);
   raw.close();
 }
+
+/**
+ * The version 1 schema, verbatim as it shipped.
+ *
+ * **A frozen fixture, not a live statement.** It is a copy of a schema that is
+ * on operators' disks and can never change again, which is why it may sit
+ * outside ./audit-db.ts without bending that module's one-file-for-SQL rule:
+ * nothing runs it against a database the proxy serves from. Its whole job is to
+ * make a real version 1 file for the migration to be tested against, because a
+ * migration tested only against a file the current build wrote is a migration
+ * tested against nothing.
+ */
+const V1_SCHEMA = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_call_audit (
+  id               INTEGER PRIMARY KEY,
+  at               INTEGER NOT NULL,
+  channel          TEXT    NOT NULL,
+  requesting_user  TEXT    NOT NULL,
+  task             TEXT    NOT NULL,
+  request_id       TEXT    NOT NULL,
+  call_id          TEXT    NOT NULL,
+  server           TEXT    NOT NULL,
+  tool             TEXT    NOT NULL,
+  arguments_sha256 TEXT    NOT NULL,
+  outcome          TEXT    NOT NULL CHECK (outcome IN ('ran', 'held', 'refused', 'unavailable')),
+  refusal_reason   TEXT,
+  result_bytes     INTEGER,
+  result_is_error  INTEGER,
+  approver         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_at ON tool_call_audit (channel, at);
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_task ON tool_call_audit (channel, task);
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_update
+BEFORE UPDATE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_delete
+BEFORE DELETE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+`;
+
+/** A version 1 file with `count` rows in it, as the previous build left one. */
+function writeV1File(path: string, count: number): void {
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("PRAGMA journal_mode = WAL");
+    raw.exec(V1_SCHEMA);
+    raw.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+    const insert = raw.prepare(
+      `INSERT INTO tool_call_audit
+         (at, channel, requesting_user, task, request_id, call_id, server, tool,
+          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error, approver)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (let n = 1; n <= count; n += 1) {
+      insert.run(NOON + n, CHANNEL, "U0ALICE", `t-${n}`, `r-${n}`, `toolu_${n}`, "github", "create_issue", "c".repeat(64), "ran", null, 10, 0, null);
+    }
+  } finally {
+    raw.close();
+  }
+}
+
+/** What SQLite says a table is, normalised for the quoting a RENAME leaves. */
+function tableSql(path: string, table: string): string {
+  const raw = new DatabaseSync(path);
+  try {
+    const row = raw.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as
+      | { sql: string }
+      | undefined;
+    return (row?.sql ?? "").replace(/"/g, "").replace(/\s+/g, " ").trim();
+  } finally {
+    raw.close();
+  }
+}
+
+function versionOf(path: string): number | undefined {
+  const raw = new DatabaseSync(path);
+  try {
+    return (raw.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined)?.version;
+  } finally {
+    raw.close();
+  }
+}
+
+describe("migrating a version 1 file", () => {
+  let old: string;
+
+  beforeEach(() => {
+    old = join(dir, "v1.db");
+    writeV1File(old, 3);
+  });
+
+  it("keeps every row, its id, and its order", () => {
+    const before = rows(old);
+    const migrated = openAuditDb({ file: old });
+    try {
+      const after = rows(old);
+      expect(after.map(row => row.id)).toEqual([1, 2, 3]);
+      expect(after.map(row => row.task)).toEqual(before.map(row => row.task));
+      // Every v1 column survives untouched; the new one is null on old rows.
+      expect(after[0]).toEqual({ ...before[0], ticket: null });
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The test that proves the migration was necessary at all rather than being
+  // a schema-version bump with a rebuild bolted on.
+  it("accepts an outcome the old constraint refused, and only afterwards", () => {
+    const raw = new DatabaseSync(old);
+    try {
+      expect(() =>
+        raw.exec(
+          `INSERT INTO tool_call_audit
+             (at, channel, requesting_user, task, request_id, call_id, server, tool,
+              arguments_sha256, outcome)
+           VALUES (${NOON}, '${CHANNEL}', 'U0ALICE', 't-x', 'r-x', 'toolu_x', 'github', 'merge_pr',
+                   '${"d".repeat(64)}', 'denied')`
+        )
+      ).toThrow();
+    } finally {
+      raw.close();
+    }
+
+    const migrated = openAuditDb({ file: old });
+    try {
+      migrated.append(record({ outcome: "denied", approver: "U0BOSS", ticket: "tk-1" }));
+      expect(rows(old).at(-1)).toMatchObject({ outcome: "denied", approver: "U0BOSS", ticket: "tk-1" });
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The most important one in this file. The rebuild is the single moment the
+  // append-only property is deliberately switched off, and a migration that
+  // forgot to put the triggers back would leave a log that silently permits
+  // exactly what the whole table exists to prevent — with every test above
+  // still passing.
+  it("puts the append-only triggers back", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      const raw = new DatabaseSync(old);
+      try {
+        expect(() => raw.exec("UPDATE tool_call_audit SET tool = 'x'")).toThrow(/append-only/);
+        expect(() => raw.exec("DELETE FROM tool_call_audit")).toThrow(/append-only/);
+      } finally {
+        raw.close();
+      }
+      expect(rows(old)).toHaveLength(3);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // Atomicity. Forced by pre-creating the table the migration builds into, so
+  // its very first statement fails and everything after it must not have run.
+  it("leaves the file exactly as it was when the rebuild fails", () => {
+    const before = rows(old);
+    const blocker = new DatabaseSync(old);
+    try {
+      blocker.exec("CREATE TABLE tool_call_audit_v2 (id INTEGER PRIMARY KEY)");
+    } finally {
+      blocker.close();
+    }
+
+    expect(() => openAuditDb({ file: old })).toThrow();
+
+    expect(rows(old)).toEqual(before);
+    expect(versionOf(old)).toBe(1);
+    const raw = new DatabaseSync(old);
+    try {
+      expect(() => raw.exec("DELETE FROM tool_call_audit")).toThrow(/append-only/);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("runs once and is a no-op on every open after it", () => {
+    openAuditDb({ file: old }).close();
+    const sqlAfterFirst = tableSql(old, "tool_call_audit");
+
+    const second = openAuditDb({ file: old });
+    try {
+      expect(tableSql(old, "tool_call_audit")).toBe(sqlAfterFirst);
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(rows(old)).toHaveLength(3);
+      // The scratch table is gone rather than left beside the real one.
+      expect(tableSql(old, "tool_call_audit_v2")).toBe("");
+    } finally {
+      second.close();
+    }
+  });
+
+  // The reason auditTableDdl takes its table name as a parameter. Two copies of
+  // the DDL would agree today and drift later, and the symptom would be a
+  // database whose shape depends on how old it is.
+  it("builds the same table a new file gets", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      const rebuilt = tableSql(old, "tool_call_audit");
+      // Asserted rather than assumed: two empty strings compare equal, and a
+      // typo in either table name would make this pass while comparing nothing.
+      expect(rebuilt).toContain("ticket");
+      expect(rebuilt).toBe(tableSql(file, "tool_call_audit"));
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // A file whose creation died between the table and the version stamp: the
+  // table is v1-shaped and nothing says so. Stamping it current without looking
+  // would pass every test here and fail on the first `denied` row in production.
+  it("rebuilds a file that has a table but no version row", () => {
+    const raw = new DatabaseSync(old);
+    try {
+      raw.exec("DELETE FROM schema_version");
+    } finally {
+      raw.close();
+    }
+
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      migrated.append(record({ outcome: "expired", ticket: "tk-9" }));
+      expect(rows(old).at(-1)).toMatchObject({ outcome: "expired", ticket: "tk-9" });
+    } finally {
+      migrated.close();
+    }
+  });
+});
