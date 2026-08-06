@@ -303,6 +303,38 @@ describe("redeeming", () => {
   });
 });
 
+// The approver arrives agent-asserted on POST /v1/approvals and is written to
+// the ticket and the audit row verbatim. The docs' claim — it holds against a
+// prompt-injected model and not against a compromised agent process — stays
+// narrow only while the value is attribution and never authorization: nothing
+// may branch on it. These pin that. A future change that makes decide or
+// redeem behave differently for some approver strings is a change to the
+// trust model, and it should have to come here and say so.
+describe("the approver is attribution, never authorization", () => {
+  const FORGED = "not a slack id' OR '1'='1 — whatever the agent asserts";
+
+  it("decides and redeems identically whatever the string looks like", () => {
+    const asserted = store.mint(callTo(), HASH);
+    const forged = store.mint(callTo(), HASH);
+
+    const first = store.decide(CHANNEL, asserted.id, "approve", APPROVER);
+    const second = store.decide(CHANNEL, forged.id, "approve", FORGED);
+    expect(second.outcome).toBe(first.outcome);
+
+    expect(store.redeem(CHANNEL, asserted.id, callTo(), HASH).outcome).toBe("redeemed");
+    expect(store.redeem(CHANNEL, forged.id, callTo(), HASH).outcome).toBe("redeemed");
+  });
+
+  it("stores the asserted value verbatim, for the audit row alone", () => {
+    const ticket = store.mint(callTo(), HASH);
+
+    const decided = store.decide(CHANNEL, ticket.id, "approve", FORGED);
+
+    expect(decided.outcome).toBe("recorded");
+    expect(decided.outcome === "recorded" && decided.ticket.approver).toBe(FORGED);
+  });
+});
+
 describe("channel scoping", () => {
   // Not "the guard rejects it" but "the lookup cannot see it" — which is why a
   // foreign ticket and a nonexistent one are genuinely one answer.

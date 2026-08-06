@@ -112,6 +112,11 @@ export interface ApprovalTicketRecord {
   readonly expiresAt: number;
   /** Null until a human decides. Set once; a second decision does not overwrite. */
   verdict: ApprovalVerdict | null;
+  /**
+   * Attribution, never authorization: agent-asserted, stored verbatim for the
+   * audit row, and nothing in this store branches on it. The test suite pins
+   * that — a change that reads this in a decision is a trust-model change.
+   */
   approver: string | null;
   decidedAt: number | null;
   /** Single use. Not deletion from the map — see the header. */
