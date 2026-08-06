@@ -98,4 +98,34 @@ describe("createMentionHandler", () => {
 
     await expect(handler(mention())).rejects.toThrow(/ECONNREFUSED/);
   });
+
+  // The card needs the mention's channel and thread, and this is where they are
+  // captured: on the Slack side of the seam, so what crosses into the router is
+  // a closure. The timestamp test above still passes — a function does not
+  // stringify — which is exactly the invariant: the router carries the ability
+  // to ask, never the Slack facts behind it.
+  it("builds the held-call prompter for the mention's channel and thread", async () => {
+    const router = recordingRouter();
+    const targets: Array<{ channelId: string; threadTs: string }> = [];
+    const prompter = () => Promise.resolve();
+    const handler = createMentionHandler(router.route, target => {
+      targets.push(target);
+      return prompter;
+    });
+
+    await handler(mention({ threadTs: "1758000000.000042" }));
+
+    expect(targets).toEqual([{ channelId: "C024BE91L", threadTs: "1758000000.000042" }]);
+    expect(router.seen[0]?.onHeld).toBe(prompter);
+  });
+
+  it("builds no prompter when no factory was given", async () => {
+    const router = recordingRouter();
+    const handler = createMentionHandler(router.route);
+
+    await handler(mention());
+
+    expect(router.seen[0]?.onHeld).toBeUndefined();
+    expect("onHeld" in (router.seen[0] ?? {})).toBe(false);
+  });
 });

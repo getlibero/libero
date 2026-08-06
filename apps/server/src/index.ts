@@ -16,8 +16,15 @@
 // mutual-TLS call to the tool proxy service, which owns every credential and
 // decides every call from the channel's team sheet.
 
-import { createCompletionClient, createProxyTransport } from "@getlibero/agent";
-import { GatewayError, createJsonLogger, createSlackGateway } from "@getlibero/gateway";
+import {
+  createCompletionClient,
+  createProxyApprovalsClient,
+  createProxyTransport
+} from "@getlibero/agent";
+import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
+import { createDecisionHandler } from "./approvals/decisions.js";
+import { createHeldCallPrompter } from "./approvals/prompter.js";
+import { createApprovalRegistry } from "./approvals/registry.js";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
@@ -45,22 +52,29 @@ const completion = createCompletionClient(completionConfigFromEnv(process.env));
 const transport = createProxyTransport(proxyConfigFromEnv(process.env));
 
 // Aborts every task in flight when the process is asked to stop. The loop
-// reports `cancelled` rather than throwing, and a cancelled task posts nothing.
+// reports `cancelled` rather than throwing, and a cancelled task posts nothing
+// — and a task holding an approval settles its wait and repaints its card on
+// the way out, because the prompter listens on this same signal.
 const tasks = new AbortController();
 
-const gateway = createSlackGateway({
+// The approval broker's client side: one registry of waits at process scope,
+// one decisions client over the same transport every tool call takes. The
+// channel a decision is relayed on comes from the waiting entry, which got it
+// from the mention's certificate-backed session — never from the click.
+const registry = createApprovalRegistry();
+const approvals = createProxyApprovalsClient({ transport });
+
+const surface = createSlackSurface({
   appToken,
   botToken,
-  // Slack in, request out, and everything below that mapping is transport
-  // neutral: the router serializes per channel, the resolver reads that
-  // channel's sheet, the runner runs one task on what the sheet said.
-  handler: createMentionHandler(
-    createChannelRouter({
-      sheets: createSheetResolver({ root: channelsRoot, model, logger }),
-      task: createTaskRunner({ completion, transport, signal: tasks.signal, logger }),
-      logger
-    })
-  ),
+  // The prompter needs the surface's card poster and the surface needs the
+  // handler, so the handler closes over a binding assigned just below. Safe:
+  // nothing dispatches a mention before `start()`, and `handleMention` exists
+  // the moment this module finishes evaluating.
+  handler: mention => handleMention(mention),
+  // A click becomes a settled wait by way of the proxy — see
+  // approvals/decisions.ts for the ordering and what each answer means.
+  onDecision: createDecisionHandler({ registry, approvals, logger }),
   logger,
   // The socket died for a reason retrying cannot fix — a revoked or rotated
   // token. Exiting is the honest outcome: the alternative is a process that is
@@ -72,6 +86,21 @@ const gateway = createSlackGateway({
     process.exit(1);
   }
 });
+const gateway = surface.gateway;
+
+// Slack in, request out, and everything below that mapping is transport
+// neutral: the router serializes per channel, the resolver reads that
+// channel's sheet, the runner runs one task on what the sheet said. The
+// prompter factory rides the same seam the reply does — the mention's channel
+// and thread are captured in handler.ts, and the router sees a closure.
+const handleMention = createMentionHandler(
+  createChannelRouter({
+    sheets: createSheetResolver({ root: channelsRoot, model, logger }),
+    task: createTaskRunner({ completion, transport, signal: tasks.signal, logger }),
+    logger
+  }),
+  createHeldCallPrompter({ cards: surface.cards, registry, logger })
+);
 
 // Rejects on credentials Slack will never accept — which is a startup failure,
 // not something to retry.

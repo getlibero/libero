@@ -19,6 +19,7 @@
 // blocks, attachments, and message ts.
 
 import type { MentionHandler, SlackMention, SlackReply } from "@getlibero/gateway";
+import type { HeldCallPrompterFactory } from "./approvals/prompter.js";
 import type { ChannelRouter } from "./session/router.js";
 
 /**
@@ -29,8 +30,17 @@ import type { ChannelRouter } from "./session/router.js";
  * it, and a mention queued behind a slow task cannot be holding that
  * acknowledgement. Queueing happens under the router, below the acknowledgement
  * and above nothing.
+ *
+ * The prompter factory is applied here, and this is the seam working as
+ * designed: the mention's channel and thread — the two Slack facts an approval
+ * card needs — are captured on this side of the mapping, and what crosses into
+ * the router is a closure. A front-end with no way to ask a human passes no
+ * factory, and a held call degrades to a refusal.
  */
-export function createMentionHandler(route: ChannelRouter): MentionHandler {
+export function createMentionHandler(
+  route: ChannelRouter,
+  prompter?: HeldCallPrompterFactory
+): MentionHandler {
   return async (mention: SlackMention): Promise<SlackReply | undefined> => {
     const reply = await route({
       // `team_id` is Slack's word for the workspace; the router's word is
@@ -40,7 +50,10 @@ export function createMentionHandler(route: ChannelRouter): MentionHandler {
       text: mention.text,
       // Slack's `event_id`, stable across delivery retries, so one grep ties a
       // task's log lines back to the message a person actually sent.
-      traceId: mention.eventId
+      traceId: mention.eventId,
+      ...(prompter !== undefined
+        ? { onHeld: prompter({ channelId: mention.channelId, threadTs: mention.threadTs }) }
+        : {})
     });
 
     return reply === undefined ? undefined : { text: reply.text };

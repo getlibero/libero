@@ -14,7 +14,7 @@
 // the team sheet is keyed on and what the client certificate's `CN=channel:<id>`
 // carries.
 
-import type { AgentLoopCaps } from "@getlibero/agent";
+import type { AgentLoopCaps, HeldCallPrompter } from "@getlibero/agent";
 
 /**
  * Which session a request belongs to.
@@ -58,6 +58,19 @@ export interface TaskRequest {
    * retries, which is what makes a duplicate greppable.
    */
   readonly traceId: string;
+  /**
+   * Asks a human about a held tool call and resolves when the wait is over.
+   *
+   * A closure, not a Slack anything: the front-end that built the request
+   * already decided where the question gets asked — a card in the mention's
+   * thread, today — and the router cannot see how, which is the same seam the
+   * reply crosses in the other direction. The type is the agent package's,
+   * because the tool client is what awaits it; this layer only carries it.
+   *
+   * Absent, a held call is relayed to the model as a refusal — the pre-#127
+   * behaviour, and still the right one for a front-end with no one to ask.
+   */
+  readonly onHeld?: HeldCallPrompter;
 }
 
 /** What goes back to whoever asked. `undefined` from a runner posts nothing. */

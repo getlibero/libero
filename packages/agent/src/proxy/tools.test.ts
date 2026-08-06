@@ -9,7 +9,7 @@ import { ToolCall as WireToolCall } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import type { ToolCall } from "../completion/types.js";
 import type { ToolCallAttribution } from "../loop/types.js";
-import { createProxyToolClient } from "./tools.js";
+import { createProxyToolClient, type HeldCallPrompter, type HeldToolCall } from "./tools.js";
 import { ProxyClientError, type ProxyRequest, type ProxyResponse, type ProxyTransport } from "./transport.js";
 
 const CHANNEL = "C024BE91L";
@@ -60,10 +60,15 @@ const call = (name: string, args: Record<string, unknown> = {}): ToolCall => ({
 
 /** Listed first, the way the loop does it, so the mapping exists. */
 async function ready(
-  answers: Parameters<typeof fakeTransport>[0] = {}
+  answers: Parameters<typeof fakeTransport>[0] = {},
+  onHeld?: HeldCallPrompter
 ): Promise<{ client: ReturnType<typeof createProxyToolClient>; sent: ProxyRequest[] }> {
   const fake = fakeTransport(answers);
-  const client = createProxyToolClient({ transport: fake.transport, channel: CHANNEL });
+  const client = createProxyToolClient({
+    transport: fake.transport,
+    channel: CHANNEL,
+    ...(onHeld !== undefined ? { onHeld } : {})
+  });
   await client.list();
   return { client, sent: fake.sent };
 }
@@ -192,8 +197,10 @@ describe("calling a tool", () => {
 // the model relays it — that is the whole reason `ToolCallResponse` is not a
 // `ProxyError`.
 describe("a call the proxy would not run", () => {
-  // A hold carries the ticket that makes it answerable; a refusal does not. The
-  // client still relays both as error content — waiting on the ticket is #127.
+  // A hold carries the ticket that makes it answerable; a refusal does not.
+  // Without a prompter the client still relays both as error content —
+  // abandoning a call a human could have approved, which is the safe default
+  // for a composition that gave it nothing to ask a human through.
   const answer = (outcome: "refused" | "held", refusal: unknown): ProxyResponse => ({
     status: 200,
     body: {
@@ -214,7 +221,7 @@ describe("a call the proxy would not run", () => {
     expect(result.content).toContain("but not the tool `force_push`");
   });
 
-  it("relays a hold, and says it is held", async () => {
+  it("relays a hold as held when no prompter was given", async () => {
     const { client } = await ready({
       call: () => answer("held", { reason: "approval_required", server: "github", tool: "merge_pr" })
     });
@@ -237,6 +244,190 @@ describe("a call the proxy would not run", () => {
       expect(result.isError).toBe(true);
       expect(result.content.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// The wait, the re-submission, and what the model is finally shown. The
+// prompter is a recorded stub here — the card, the click, and the clock live in
+// apps/server, on the other side of the `HeldCallPrompter` seam.
+describe("a held call with a prompter", () => {
+  const TICKET = { id: "tk-7f3a", expiresAt: Date.UTC(2026, 7, 4, 12, 15) };
+
+  const HELD: ProxyResponse = {
+    status: 200,
+    body: {
+      outcome: "held",
+      id: "call-1",
+      refusal: { reason: "approval_required", server: "github", tool: "merge_pr" },
+      ticket: TICKET
+    }
+  };
+
+  const RAN: ProxyResponse = {
+    status: 200,
+    body: { outcome: "ran", id: "call-1", result: { content: "merged #42" } }
+  };
+
+  const refusedWith = (reason: string): ProxyResponse => ({
+    status: 200,
+    body: {
+      outcome: "refused",
+      id: "call-1",
+      refusal: { reason, server: "github", tool: "merge_pr" }
+    }
+  });
+
+  /** Held on the first submission, `second` on the one carrying the ticket. */
+  const heldThen =
+    (second: ProxyResponse) =>
+    (body: unknown): ProxyResponse =>
+      (body as { ticket?: string }).ticket === undefined ? HELD : second;
+
+  it("hands the prompter the pair, the arguments, the ticket, and the attribution", async () => {
+    const seen: HeldToolCall[] = [];
+    const { client } = await ready({ call: heldThen(RAN) }, async held => {
+      seen.push(held);
+    });
+
+    await client.execute(call("merge_pr", { pr: 42 }), ATTRIBUTION);
+
+    expect(seen).toEqual([
+      {
+        server: "github",
+        tool: "merge_pr",
+        arguments: { pr: 42 },
+        ticket: TICKET,
+        requestingUser: ATTRIBUTION.requestingUser,
+        taskId: ATTRIBUTION.taskId
+      }
+    ]);
+  });
+
+  it("does not re-submit until the prompter resolves", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const { client, sent } = await ready({ call: heldThen(RAN) }, () => gate);
+
+    const pending = client.execute(call("merge_pr", { pr: 42 }), ATTRIBUTION);
+    // The listing and the first submission, and nothing more while the wait is
+    // open — the re-submission is what the wait is for.
+    await Promise.resolve();
+    expect(sent).toHaveLength(2);
+
+    release?.();
+    await expect(pending).resolves.toEqual({ content: "merged #42", isError: false });
+    expect(sent).toHaveLength(3);
+  });
+
+  // Identical is load-bearing: redemption matches server, tool, and the
+  // argument hash, so any drift turns an approval into a mismatch refusal.
+  it("re-submits the identical body plus the ticket", async () => {
+    const { client, sent } = await ready({ call: heldThen(RAN) }, async () => {});
+
+    await client.execute(call("merge_pr", { pr: 42, note: "ship it" }), ATTRIBUTION);
+
+    const first = sent[1]?.body as Record<string, unknown>;
+    const second = sent[2]?.body as Record<string, unknown>;
+    expect(second).toEqual({ ...first, ticket: TICKET.id });
+    expect(WireToolCall.safeParse(second).success).toBe(true);
+  });
+
+  it("returns the real result when the re-submission ran", async () => {
+    const { client } = await ready({ call: heldThen(RAN) }, async () => {});
+
+    await expect(client.execute(call("merge_pr"), ATTRIBUTION)).resolves.toEqual({
+      content: "merged #42",
+      isError: false
+    });
+  });
+
+  // The prompter resolves on a deny and on an expiry too — the re-submission is
+  // the authority, and the proxy answers each with its precise refusal.
+  it("hands the model the denial the proxy wrote", async () => {
+    const { client } = await ready({ call: heldThen(refusedWith("approval_denied")) }, async () => {});
+
+    const result = await client.execute(call("merge_pr"), ATTRIBUTION);
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("A human declined `github.merge_pr`");
+  });
+
+  it("hands the model the expiry the proxy wrote", async () => {
+    const { client } = await ready({ call: heldThen(refusedWith("approval_expired")) }, async () => {});
+
+    const result = await client.execute(call("merge_pr"), ATTRIBUTION);
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("expired before the call was made");
+  });
+
+  // The model sees one tool result either way, and never the ticket id: the
+  // ticket travels in the wire body and the card's button, and a model that
+  // could quote one could social-engineer a human about it.
+  it("never shows the model the ticket id", async () => {
+    for (const second of [RAN, refusedWith("approval_denied"), refusedWith("approval_expired")]) {
+      const { client } = await ready({ call: heldThen(second) }, async () => {});
+      const result = await client.execute(call("merge_pr"), ATTRIBUTION);
+      expect(result.content).not.toContain(TICKET.id);
+    }
+  });
+
+  // A rejection means the wait ended badly rather than well; either way it
+  // ended. The re-submission is still made, and the proxy's answer — not the
+  // prompter's error — is the whole of what the model sees.
+  it("re-submits after a prompter rejection, and none of its text reaches the model", async () => {
+    const { client, sent } = await ready({ call: heldThen(refusedWith("approval_pending")) }, async () => {
+      throw new Error("xoxb-nothing-from-here-may-leak");
+    });
+
+    const result = await client.execute(call("merge_pr"), ATTRIBUTION);
+
+    expect(sent).toHaveLength(3);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("has not been decided yet");
+    expect(result.content).not.toContain("xoxb-nothing-from-here-may-leak");
+  });
+
+  // The wait spends the task's wall clock by design, and the deadline composed
+  // into the signal is what ends it: the prompter settles, the re-submission
+  // carries the aborted signal, and the transport's rejection is what the loop
+  // turns into the task's stop reason. The wait itself decides nothing.
+  it("rejects as cancelled when the signal aborts during the wait", async () => {
+    const aborter = new AbortController();
+    const sent: ProxyRequest[] = [];
+    const transport: ProxyTransport = {
+      async request(options: ProxyRequest): Promise<ProxyResponse> {
+        sent.push(options);
+        if (options.signal?.aborted) {
+          throw new ProxyClientError("proxy client: cancelled", "cancelled");
+        }
+        if (options.path === "/v1/tools") return { status: 200, body: LISTING };
+        return HELD;
+      }
+    };
+    const client = createProxyToolClient({
+      transport,
+      channel: CHANNEL,
+      onHeld: async (_held, signal) => {
+        // The prompter's contract on abort: settle — repaint its card, resolve
+        // — and let the re-submission say what the abort meant. A listener on
+        // an already-aborted signal never fires, so the check comes first.
+        if (signal?.aborted) return;
+        await new Promise<void>(resolve => {
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+    });
+    await client.list();
+
+    const pending = client.execute(call("merge_pr"), ATTRIBUTION, aborter.signal);
+    await Promise.resolve();
+    aborter.abort();
+
+    await expect(pending).rejects.toMatchObject({ reason: "cancelled" });
+    expect(sent).toHaveLength(3);
   });
 });
 

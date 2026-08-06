@@ -173,8 +173,14 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     // One client per task, holding this channel's certificate and no other's.
     // Both halves come from the same object because they share the mapping from
     // the name the model calls to the (server, tool) pair the proxy takes — a
-    // model can only call what this channel's sheet published.
-    const tools = createProxyToolClient({ transport: options.transport, channel });
+    // model can only call what this channel's sheet published. The request's
+    // prompter rides along when the front-end built one: a held call is then
+    // waited out against a human instead of relayed as a refusal.
+    const tools = createProxyToolClient({
+      transport: options.transport,
+      channel,
+      ...(request.onHeld !== undefined ? { onHeld: request.onHeld } : {})
+    });
 
     // Same channel, same certificate, and pinned the same way: what a task cost
     // is reported as the channel that spent it, or not at all.
