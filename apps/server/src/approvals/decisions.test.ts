@@ -1,8 +1,8 @@
 // The click → proxy → settle ordering, with both neighbours faked: a recorded
 // approvals client on one side, a recording settle on the other. The proxy's
-// own behaviour — first verdict stands, per-channel lookup — is
-// packages/proxy's tests; this file is about what this process does with each
-// of the four answers, and about the two drops that never reach the proxy.
+// own behaviour — first verdict stands, per-channel lookup — is tested in the
+// proxy package; this file is about what this process does with each of the
+// four answers, and about the two drops that never reach the proxy.
 
 import type { ProxyApprovalsClient } from "@getlibero/agent";
 import type { ApprovalDecisionResponse } from "@getlibero/schema";
