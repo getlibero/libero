@@ -62,8 +62,9 @@ before writing code.
 
 The assignee is the in-progress signal — there is no board and no `status:*` label, so an issue
 with nobody assigned is free and an assigned one is being worked on. Comment on an issue before
-starting it and a maintainer will assign it to you; GitHub does not let non-collaborators
-self-assign. Open the pull request with `Closes #N` in the body, so merging closes the issue.
+starting it and a maintainer will assign it to you — GitHub only allows assigning users who have
+participated in an issue, so the comment is both the claim and what makes the assignment
+possible. Open the pull request with `Closes #N` in the body, so merging closes the issue.
 
 ## Development
 
@@ -73,8 +74,8 @@ pnpm -r build
 pnpm -r test
 ```
 
-Node 22+, pnpm 9+. The e2e harness — mock Slack plus a mock MCP server — lands in `e2e/` with
-phase 1.
+Node 22.13+ (the budget meter uses the built-in `node:sqlite`, which needs a flag below that),
+pnpm 9+. The e2e harness — mock Slack plus a mock MCP server — lands in `e2e/` with phase 1.
 
 The `packageManager` field pins pnpm 9.15.0. On Node 22–24, `corepack enable` reads that field and
 provisions it. Corepack was removed from Node in v25, so on newer runtimes install the pinned

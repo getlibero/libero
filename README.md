@@ -28,7 +28,7 @@
 
 Libero is a self-hostable, LLM-agnostic AI teammate that lives in Slack channels as a shared agent — one session per channel, not per user — with persistent curated memory, admin-governed tool access, and asynchronous task execution.
 
-Governance first, features second: the agent process never holds a secret, its tool surface is a deterministic per-channel allowlist, dangerous calls require a human click, and everything lands in an append-only audit log.
+Governance first, features second: tool credentials never enter the agent process, its tool surface is a deterministic per-channel allowlist, dangerous calls require a human click, and everything lands in an append-only audit log.
 
 > **Why "libero"?** In football, the libero is the free player — the one who sweeps up behind the team, covering whatever gets through. That's the job here: an AI teammate in your Slack channels that handles the work nobody's on, under rules your admins write. And like the libero in volleyball — the specialist who plays under explicit restrictions, marked by a different jersey — this agent is visibly *not* a user: it acts only as itself, only through an allowlisted tool proxy, with every action audited. Free player, firm rules.
 
@@ -36,9 +36,9 @@ Governance first, features second: the agent process never holds a secret, its t
 
 Pre-release (Phase 1, part-built). Nothing here is ready to deploy yet.
 
-What exists is most of the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, a redaction pass that scrubs echoed secrets out of results, the daily budget meter, the append-only audit log, and the approval broker — so a permitted tool call is now served rather than answered 501. The Slack gateway and the agent loop exist too, and report what each model turn cost, so both halves of the budget bite.
+What exists is most of the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, a redaction pass that scrubs echoed secrets out of results, the daily budget meter, the append-only audit log, and the approval broker — so a permitted tool call is now served rather than answered 501. The Slack gateway and the agent loop exist too, and report what each model turn cost, so both halves of the budget bite. Approvals are joined end to end (#126, #127): a held call raises an amber card in the channel, and an approver's click re-submits the identical call with the ticket — proven against a stub Slack in the acceptance suite.
 
-The gaps that matter. **Approvals are half-built**: the proxy holds a call and mints a ticket, and a human's decision has a route to arrive on, but nothing yet renders the Slack card or re-submits the approved call (#126, #127) — so in practice a held call is still relayed to the model as a refusal. The soft in-thread budget warning is not built, so a hard limit refuses rather than warns. There is no real MCP server behind the dispatcher yet (#39), no memory, and no end-to-end suite attacking any of it (#41) — which is the one that decides whether the security property holds, and it is why none of this is ready to deploy.
+The gaps that matter. There is no real MCP server behind the dispatcher yet (#39), so the served-call path is proven against stubs rather than a real tool. The soft in-thread budget warning is not built, so a hard limit refuses rather than warns. There is no memory, no audit CLI (#98), and no end-to-end suite attacking any of it (#41) — which is the one that decides whether the security property holds, and it is why none of this is ready to deploy.
 
 See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
@@ -57,18 +57,18 @@ docker compose up            # starts gateway+agent and proxy
 
 ```
 packages/schema    zod schemas — single source of truth for team sheets, audit records, tool calls
-packages/gateway   Slack adapter, channel router, checklist + approval-card rendering
-packages/agent     agent loop, context assembler, memory curation, skills
+packages/gateway   Slack adapter — Socket Mode, mention intake, approval-card rendering
+packages/agent     provider-agnostic agent loop + the proxy client
 packages/proxy     credential vault, team-sheet enforcement, HITL broker, budgets, audit
-packages/memory    per-channel SQLite (FTS5 + sqlite-vec), MEMORY.md tooling
-packages/cli       @getlibero/cli — the only npm-published package
-apps/server        composes gateway + agent (service 1)
+packages/memory    stub — per-channel SQLite memory lands here (FTS5 + sqlite-vec)
+packages/cli       @getlibero/cli — the only npm-published package (placeholder release)
+apps/server        composes gateway + agent + the channel router (service 1)
 apps/proxy-server  composes proxy (service 2)
 deploy/            docker-compose + optional LiteLLM sidecar
 channels/example/  documented starter team sheet
 design/            design system — tokens, component CSS, brand SVGs, reference page
 site/              getlibero.com — Astro + Starlight; outside the pnpm workspace
-e2e/               mock Slack + mock MCP harness; the security suite lives here
+e2e/               empty — mock Slack + mock MCP harness and the security suite land here
 ```
 
 **Package boundary rule:** `agent` may never import `proxy`. The only path from agent to tools is the network call. This is enforced by lint + CI, not convention.

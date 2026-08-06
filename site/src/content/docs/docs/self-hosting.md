@@ -8,12 +8,14 @@ This page describes the target deployment. What exists today is phase 1, part-bu
 process starts, speaks mutual TLS, binds every request to a channel, enforces team sheets, holds
 credentials in an encrypted vault, injects them into outbound calls, scrubs them back out of
 results, meters the daily budget, and appends an audit row for every decided call. The Slack
-gateway and the agent loop exist and reach tools through the proxy.
+gateway and the agent loop exist and reach tools through the proxy, and approvals are joined end
+to end: a held call raises an amber card in the channel, and an approver's click re-submits the
+identical call with the ticket.
 
-What is not finished: there is no real MCP server behind the dispatcher yet, and approvals are
-built at both ends but not joined — the proxy holds a call and mints a ticket, and the gateway
-can render the card and read the click, but nothing yet puts a card up for a held call or
-re-submits the approved one, so a held call is still relayed to the model as a refusal. The
+What is not finished: there is no real MCP server behind the dispatcher yet. The two Dockerfiles
+the compose file builds from are not written, so `docker compose up` fails on a clean checkout —
+run the two processes directly in the meantime. `@getlibero/cli` is a placeholder release, so the
+`init` and `audit` commands on this page are target UX rather than something you can run. The
 end-to-end suite that attacks all of this is not written, which is the one that would tell you
 the security property holds. Do not run this against a workspace you care about.
 :::
@@ -51,8 +53,8 @@ key means losing the vault: there is no recovery path and no escrow.
 **A Slack app** with Socket Mode enabled, in a workspace you administer. One app serves every
 channel — see [the Slack app](#the-slack-app) for the scopes and events it needs.
 
-**A model provider.** Anthropic, OpenAI, Google, Groq or Ollama out of the box, set globally and
-overridable per channel in the team sheet.
+**A model provider.** Anthropic natively; OpenAI, Groq, Ollama, and Gemini through their
+OpenAI-compatible endpoints — set globally and overridable per channel in the team sheet.
 
 **Service credentials for the tools you want the agent to reach** — a GitHub service account, for
 example. These go into the vault by name. They are provisioned by an admin and belong to the
@@ -112,9 +114,9 @@ app and read history anywhere the app is installed.
 | --- | --- |
 | `app_mentions:read` | Receiving the mention that starts a task |
 | `chat:write` | Posting replies and approval cards, and editing its own messages — a card goes amber, then green or red, in place |
-| `channels:history` | Storing channel messages for recall and for thread follow-ups |
+| `channels:history` | Channel messages for recall and thread follow-ups — the message store is phase 2 and not built yet |
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
-| `users:read` | Display names, so the model can address the right person |
+| `users:read` | Display names, so the model can address the right person — not wired up yet |
 
 ### Event subscriptions
 
@@ -124,9 +126,10 @@ app and read history anywhere the app is installed.
 | `message.channels` | Messages that are not mentions: thread follow-ups, and the message store |
 | `message.groups` | The same, for private channels |
 
-Message events carry deletions as a subtype rather than as their own event, and the gateway acts
-on them: a message deleted in Slack is deleted from that channel's store, index included. Slack
-retention is respected rather than quietly outlived.
+Message events carry deletions as a subtype rather than as their own event, and the design
+mirrors them: a message deleted in Slack is deleted from that channel's store, index included, so
+Slack retention is respected rather than quietly outlived. Today the adapter ignores subtypes —
+the mirroring lands with the message store, in phase 2.
 
 ### Interactivity
 
@@ -151,6 +154,8 @@ way into another channel's tools.
 
 `scripts/dev-certs.sh` mints the material: a local CA, the proxy's server certificate, and one
 client certificate per directory under `channels/`, each with the subject `CN=channel:<CHANNEL_ID>`.
+The `example` directory is skipped — copy it to a real channel id first, or name channels
+explicitly.
 
 ```bash
 sh scripts/dev-certs.sh                       # every channel under channels/
@@ -176,8 +181,9 @@ files are not.
 
 ## Operating it
 
-`libero audit` queries and exports the append-only audit log — every tool call with its
-requester, its arguments' hash, its result, and its approver if it had one.
+`libero audit` will query and export the append-only audit log — every tool call with its
+requester, its arguments' hash, its result, and its approver if it had one. The command is not
+built yet; until it lands, the log is a SQLite file at `PROXY_AUDIT_DB` you can open directly.
 
 Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
 or an admin resets the channel. (A soft limit that warns before the hard one bites is on the

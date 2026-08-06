@@ -17,7 +17,10 @@ the model's cooperation.
 2. **Deterministic tool allowlist.** The channel's [team sheet](/docs/team-sheet), enforced in the
    proxy. The model's cooperation is never part of the enforcement path.
 3. **Human approval for dangerous calls.** Per-call, recorded with the approver's Slack user id,
-   expiring by default in 15 minutes. Destructive verbs default to approval-required.
+   expiring by default in 15 minutes. Destructive verbs default to approval-required. The click is
+   observed by gateway code rather than produced by the model, so the approver's identity holds
+   against a prompt-injected model and not against a compromised agent process, which relays it —
+   tool credentials survive process compromise; approvals survive prompt injection.
 4. **Budgets.** Token and tool-call metering per channel per day, authoritative in the proxy. The
    tool-call limit is counted by the proxy from calls it serves and holds even under full
    compromise of the agent process; the token limit is counted from what the agent reports, which
