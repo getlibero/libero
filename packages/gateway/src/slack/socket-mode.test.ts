@@ -11,7 +11,7 @@ import { createSilentLogger } from "../log.js";
 import { createSocketModeSource, socketModeOptions } from "./socket-mode.js";
 import type { SocketModeClientLike } from "./socket-mode.js";
 import { GatewayError } from "./types.js";
-import type { SlackEnvelope } from "./types.js";
+import type { SlackEnvelope, SlackInteractionEnvelope } from "./types.js";
 
 interface FakeClient {
   client: SocketModeClientLike;
@@ -159,6 +159,93 @@ describe("createSocketModeSource", () => {
     expect(() =>
       fake.emit("app_mention", { ack: () => Promise.resolve(), event: {}, body: {} })
     ).not.toThrow();
+    await Promise.resolve();
+  });
+
+  it("delivers a click, with everything it carries in the body", async () => {
+    // The SDK splits out an inner `event` only for events_api envelopes, so an
+    // interactive payload arrives as `{ack, body}` and there is nothing else to
+    // hand down. Verified against @slack/socket-mode 3.0.0.
+    let acked = 0;
+    const fake = fakeClient();
+    const adapter = source(fake);
+    const seen: SlackInteractionEnvelope[] = [];
+    adapter.onInteraction(envelope => {
+      seen.push(envelope);
+      return Promise.resolve();
+    });
+    await adapter.connect();
+
+    fake.emit("interactive", {
+      ack: () => {
+        acked += 1;
+        return Promise.resolve();
+      },
+      envelope_id: "env-1",
+      body: { type: "block_actions", actions: [{ action_id: "libero_approval_approve" }] }
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.body).toEqual({
+      type: "block_actions",
+      actions: [{ action_id: "libero_approval_approve" }]
+    });
+    // Same ordering as a mention: the adapter does not ack, the dispatcher does.
+    expect(acked).toBe(0);
+    await seen[0]?.ack();
+    expect(acked).toBe(1);
+  });
+
+  it("keeps a click and a mention on their own listeners", async () => {
+    // The two subscriptions are separate on purpose: a slash command or a view
+    // submission reaches neither, because neither is subscribed to it.
+    const fake = fakeClient();
+    const adapter = source(fake);
+    let mentions = 0;
+    let clicks = 0;
+    adapter.onMention(() => {
+      mentions += 1;
+      return Promise.resolve();
+    });
+    adapter.onInteraction(() => {
+      clicks += 1;
+      return Promise.resolve();
+    });
+    await adapter.connect();
+
+    fake.emit("app_mention", { ack: () => Promise.resolve(), event: {}, body: {} });
+    fake.emit("interactive", { ack: () => Promise.resolve(), body: {} });
+    fake.emit("slash_commands", { ack: () => Promise.resolve(), body: {} });
+
+    expect(mentions).toBe(1);
+    expect(clicks).toBe(1);
+  });
+
+  it("drops an unreadable interactive payload instead of throwing into the SDK", async () => {
+    const fake = fakeClient();
+    const adapter = source(fake);
+    let calls = 0;
+    adapter.onInteraction(() => {
+      calls += 1;
+      return Promise.resolve();
+    });
+    await adapter.connect();
+
+    expect(() => fake.emit("interactive", null)).not.toThrow();
+    expect(() => fake.emit("interactive", "block_actions")).not.toThrow();
+    // No `ack` function means nothing can acknowledge it, so there is nothing
+    // useful to hand down.
+    expect(() => fake.emit("interactive", { body: {} })).not.toThrow();
+    expect(calls).toBe(0);
+  });
+
+  it("does not let an interaction listener's rejection escape into the SDK's emit", async () => {
+    const fake = fakeClient();
+    const adapter = source(fake);
+    adapter.onInteraction(() => Promise.reject(new Error("dispatch blew up")));
+    await adapter.connect();
+
+    expect(() => fake.emit("interactive", { ack: () => Promise.resolve(), body: {} })).not.toThrow();
     await Promise.resolve();
   });
 

@@ -3,12 +3,20 @@ export type { LogFields, Logger, LogLevel } from "./log.js";
 
 export { GatewayError } from "./slack/types.js";
 export type {
+  CardPoster,
+  DecisionHandler,
   GatewayErrorReason,
   MentionHandler,
   MessagePoster,
+  PostedCard,
+  SlackBlock,
+  SlackCard,
+  SlackDecision,
   SlackEnvelope,
   SlackGateway,
+  SlackInteractionEnvelope,
   SlackMention,
+  SlackPoster,
   SlackReply,
   SocketSource
 } from "./slack/types.js";
@@ -16,14 +24,32 @@ export type {
 export { toMention } from "./slack/mention.js";
 export type { IgnoreReason, MentionResult } from "./slack/mention.js";
 
+export { toDecision } from "./slack/decision.js";
+export type { DecisionIgnoreReason, DecisionResult } from "./slack/decision.js";
+
+export {
+  APPROVE_ACTION_ID,
+  DENY_ACTION_ID,
+  actionIdForVerdict,
+  isApprovalActionId,
+  verdictForActionId
+} from "./slack/approval-ids.js";
+
+export { renderApprovalCard } from "./slack/approval-card.js";
+export type {
+  ApprovalCardInput,
+  ApprovalCardState,
+  ApprovalCardStatus
+} from "./slack/approval-card.js";
+
 export { DEFAULT_BACKOFF, nextDelayMs } from "./slack/backoff.js";
 export type { BackoffPolicy } from "./slack/backoff.js";
 
 export { createGateway } from "./slack/gateway.js";
 export type { GatewayOptions, Scheduler } from "./slack/gateway.js";
 
-export { createSlackGateway } from "./slack/factory.js";
-export type { SlackGatewayConfig } from "./slack/factory.js";
+export { createSlackGateway, createSlackSurface } from "./slack/factory.js";
+export type { SlackGatewayConfig, SlackSurface } from "./slack/factory.js";
 
 export { createSocketModeSource } from "./slack/socket-mode.js";
 export type { SocketModeClientLike, SocketSourceOptions } from "./slack/socket-mode.js";
@@ -31,5 +57,10 @@ export type { SocketModeClientLike, SocketSourceOptions } from "./slack/socket-m
 export { createWebApiPoster } from "./slack/web-api.js";
 export type { MessagePosterOptions, WebClientLike } from "./slack/web-api.js";
 
-export { appMentionEnvelope, createStubSlack } from "./slack/stub-slack.js";
-export type { StubMentionFields, StubSlack, StubSlackOptions } from "./slack/stub-slack.js";
+export { appMentionEnvelope, blockActionsEnvelope, createStubSlack } from "./slack/stub-slack.js";
+export type {
+  StubDecisionFields,
+  StubMentionFields,
+  StubSlack,
+  StubSlackOptions
+} from "./slack/stub-slack.js";

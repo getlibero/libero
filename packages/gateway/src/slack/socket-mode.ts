@@ -10,7 +10,7 @@ import { WebAPIPlatformError } from "@slack/web-api";
 import type { Logger } from "../log.js";
 import { createSdkLogger } from "./sdk-logger.js";
 import { GatewayError } from "./types.js";
-import type { SlackEnvelope, SocketSource } from "./types.js";
+import type { SlackEnvelope, SlackInteractionEnvelope, SocketSource } from "./types.js";
 
 /**
  * The client's state events. The SDK's `State` enum is module-private and not
@@ -18,6 +18,17 @@ import type { SlackEnvelope, SocketSource } from "./types.js";
  * @slack/socket-mode 3.0.0, and the one place to re-check on a version bump.
  */
 const DISCONNECTED_EVENT = "disconnected";
+
+/**
+ * The envelope type Slack uses for interactivity — a button click, and also the
+ * shortcuts and view submissions this app does not publish.
+ *
+ * Subscribing to it rather than to `slack_event` keeps slash commands and the
+ * rest out of the dispatch path by subscription rather than by content, which
+ * is the cheaper of the two drops. Verified against @slack/socket-mode 3.0.0,
+ * and the one place to re-check on a version bump, as with `disconnected`.
+ */
+const INTERACTIVE_EVENT = "interactive";
 
 /**
  * How long `close()` waits for the socket to shut down politely.
@@ -112,14 +123,16 @@ export function createSocketModeSource(options: SocketSourceOptions): SocketSour
   const closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
 
   let onMention: ((envelope: SlackEnvelope) => Promise<void>) | undefined;
+  let onInteraction: ((envelope: SlackInteractionEnvelope) => Promise<void>) | undefined;
   let onDrop: (() => void) | undefined;
   /** Set by `close()`, so an intentional disconnect is not read as a drop. */
   let closing = false;
 
-  // `app_mention` is what the SDK emits for an events_api envelope whose inner
-  // event type is app_mention. Subscribing to it rather than to `slack_event`
-  // means interactive and slash-command envelopes never reach the dispatch path
-  // at all — the approval broker will want them, and will register its own.
+  // Two subscriptions, because the SDK hands down two shapes. `app_mention` is
+  // what it emits for an events_api envelope whose inner event type is
+  // app_mention; `interactive` is what it emits for a click. Subscribing to
+  // each by name rather than to `slack_event` means a slash command or a view
+  // submission never reaches a dispatch path at all.
   client.on("app_mention", (...args: unknown[]) => {
     const payload = args[0];
     if (typeof payload !== "object" || payload === null) return;
@@ -137,6 +150,21 @@ export function createSocketModeSource(options: SocketSourceOptions): SocketSour
     // The SDK does not await this listener, so a rejection here would be
     // unhandled. The dispatcher handles its own failures; this is the backstop.
     void onMention?.(envelope).catch(() => {});
+  });
+
+  // No `event` field on this one: the client splits out an inner event only for
+  // events_api envelopes (SocketModeClient.js:341, verified in 3.0.0), so
+  // everything a click carries is in `body`. Hence SlackInteractionEnvelope.
+  client.on(INTERACTIVE_EVENT, (...args: unknown[]) => {
+    const payload = args[0];
+    if (typeof payload !== "object" || payload === null) return;
+    const { ack, body } = payload as { ack?: unknown; body?: unknown };
+    if (typeof ack !== "function") return;
+    const envelope: SlackInteractionEnvelope = {
+      ack: () => (ack as () => Promise<void>)(),
+      body
+    };
+    void onInteraction?.(envelope).catch(() => {});
   });
 
   client.on(DISCONNECTED_EVENT, () => {
@@ -174,6 +202,10 @@ export function createSocketModeSource(options: SocketSourceOptions): SocketSour
 
     onMention(listener: (envelope: SlackEnvelope) => Promise<void>): void {
       onMention = listener;
+    },
+
+    onInteraction(listener: (envelope: SlackInteractionEnvelope) => Promise<void>): void {
+      onInteraction = listener;
     },
 
     onDrop(listener: () => void): void {

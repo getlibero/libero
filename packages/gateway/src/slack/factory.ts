@@ -11,7 +11,13 @@ import type { BackoffPolicy } from "./backoff.js";
 import { createGateway } from "./gateway.js";
 import type { Scheduler } from "./gateway.js";
 import { createSocketModeSource } from "./socket-mode.js";
-import type { GatewayError, MentionHandler, SlackGateway } from "./types.js";
+import type {
+  CardPoster,
+  DecisionHandler,
+  GatewayError,
+  MentionHandler,
+  SlackGateway
+} from "./types.js";
 import { createWebApiPoster } from "./web-api.js";
 
 export interface SlackGatewayConfig {
@@ -20,6 +26,8 @@ export interface SlackGatewayConfig {
   /** Bot token, `xoxb-…`. Posts and reads history; cannot open the socket. */
   botToken: string;
   handler: MentionHandler;
+  /** A human clicked an approval card. See `GatewayOptions.onDecision`. */
+  onDecision?: DecisionHandler;
   /** Defaults to JSON lines on stdout. */
   logger?: Logger;
   backoff?: BackoffPolicy;
@@ -33,17 +41,47 @@ export interface SlackGatewayConfig {
   scheduler?: Scheduler;
 }
 
-export function createSlackGateway(config: SlackGatewayConfig): SlackGateway {
+/**
+ * Everything a composing app needs from Slack: the lifecycle, and the cards.
+ *
+ * The two come from one call because they must share one `WebClient`. The
+ * client handles rate limits per instance, so a second one built on the same
+ * bot token would give the process two independent queues over `chat.*` and
+ * neither would know what the other had spent.
+ */
+export interface SlackSurface {
+  gateway: SlackGateway;
+  /**
+   * Narrowed to the card verbs, deliberately: not `SlackPoster`.
+   *
+   * A composing app that could reach `postThreadReply` here could post a reply
+   * out of band, and then "a handler still running when the gateway stopped
+   * does not get to post" would stop being a property of the dispatcher and
+   * become a habit of every caller. Cards are the exception because a card's
+   * lifetime genuinely outlives the handler that raised it.
+   */
+  cards: CardPoster;
+}
+
+export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
   const logger = config.logger ?? createJsonLogger();
-  return createGateway({
+  const poster = createWebApiPoster({ botToken: config.botToken, logger });
+  const gateway = createGateway({
     source: createSocketModeSource({ appToken: config.appToken, logger }),
-    poster: createWebApiPoster({ botToken: config.botToken, logger }),
+    poster,
     handler: config.handler,
     logger,
     // Spread conditionally: `exactOptionalPropertyTypes` rejects an explicit
     // `undefined` for an optional property.
+    ...(config.onDecision !== undefined ? { onDecision: config.onDecision } : {}),
     ...(config.backoff !== undefined ? { backoff: config.backoff } : {}),
     ...(config.onFatal !== undefined ? { onFatal: config.onFatal } : {}),
     ...(config.scheduler !== undefined ? { scheduler: config.scheduler } : {})
   });
+  return { gateway, cards: poster };
+}
+
+/** The gateway alone, for a process that renders no cards. */
+export function createSlackGateway(config: SlackGatewayConfig): SlackGateway {
+  return createSlackSurface(config).gateway;
 }

@@ -1,0 +1,189 @@
+import type { ApprovalTicket } from "@getlibero/schema";
+import { describe, expect, it } from "vitest";
+import { renderApprovalCard } from "./approval-card.js";
+import type { ApprovalCardStatus } from "./approval-card.js";
+import { APPROVE_ACTION_ID, DENY_ACTION_ID } from "./approval-ids.js";
+import { toDecision } from "./decision.js";
+import { blockActionsEnvelope } from "./stub-slack.js";
+import type { SlackBlock, SlackCard } from "./types.js";
+
+const TICKET: ApprovalTicket = {
+  id: "0f2c9b3e-7a41-4c0d-9d2b-6e1f5a8c3b90",
+  // 2025-06-15T14:25:00.123Z. Milliseconds on purpose — the date token takes
+  // seconds, and the floor is a thing this file asserts.
+  expiresAt: 1_749_998_700_123
+};
+
+const AWAITING: ApprovalCardStatus = { state: "awaiting", ticket: TICKET };
+const APPROVED: ApprovalCardStatus = { state: "approved", approver: "U0HUMAN" };
+const DENIED: ApprovalCardStatus = { state: "denied", approver: "U0HUMAN" };
+const EXPIRED: ApprovalCardStatus = { state: "expired" };
+
+const ALL: ApprovalCardStatus[] = [AWAITING, APPROVED, DENIED, EXPIRED];
+const DECIDED: ApprovalCardStatus[] = [APPROVED, DENIED, EXPIRED];
+
+function card(status: ApprovalCardStatus, overrides: { toolName?: string; arguments?: string } = {}) {
+  return renderApprovalCard({
+    toolName: overrides.toolName ?? "github.pr.merge",
+    ...(overrides.arguments !== undefined ? { arguments: overrides.arguments } : {}),
+    status
+  });
+}
+
+/** Everything a reader would see, as one string. */
+function text(rendered: SlackCard): string {
+  return JSON.stringify(rendered.blocks);
+}
+
+function actions(rendered: SlackCard): SlackBlock | undefined {
+  return rendered.blocks.find(block => block.type === "actions");
+}
+
+/** The buttons on a card, or an empty list. Reading structural JSON needs a cast somewhere. */
+function buttonsOf(rendered: SlackCard): Array<Record<string, unknown>> {
+  const block = actions(rendered);
+  return block === undefined ? [] : (block["elements"] as Array<Record<string, unknown>>);
+}
+
+/** The first section's rendered text. */
+function sectionText(rendered: SlackCard): string {
+  const block = rendered.blocks[0];
+  return (block?.["text"] as { text: string }).text;
+}
+
+describe("renderApprovalCard", () => {
+  it("draws the awaiting state amber, with both buttons carrying the ticket", () => {
+    const rendered = card(AWAITING);
+    const buttons = buttonsOf(rendered);
+
+    expect(rendered.color).toBe("#F5B544");
+    expect(buttons).toHaveLength(2);
+    expect(buttons.map(b => b["action_id"])).toEqual([APPROVE_ACTION_ID, DENY_ACTION_ID]);
+    expect(buttons.map(b => b["value"])).toEqual([TICKET.id, TICKET.id]);
+    expect(buttons.map(b => (b["text"] as { text: string }).text)).toEqual([
+      "Approve once",
+      "Deny"
+    ]);
+    // Slack's own green and red on the buttons, which is the design system's
+    // `lb-btn--primary` / `lb-btn--danger` pairing.
+    expect(buttons.map(b => b["style"])).toEqual(["primary", "danger"]);
+    // A screen reader gets "Approve once" otherwise, which does not say what.
+    expect(buttons[0]?.["accessibility_label"]).toBe("Approve one call to github.pr.merge");
+  });
+
+  it("gives a decided card no buttons at all", () => {
+    // What editing in place buys beyond tidiness: a decided card cannot be
+    // clicked again, and the ticket id is nowhere left in the message.
+    for (const status of DECIDED) {
+      const rendered = card(status);
+      expect(actions(rendered)).toBeUndefined();
+      expect(text(rendered)).not.toContain(TICKET.id);
+    }
+  });
+
+  it("uses the three status colours and no fourth", () => {
+    expect(ALL.map(status => card(status).color)).toEqual([
+      "#F5B544",
+      "#1BA85A",
+      "#FF6B5B",
+      "#FF6B5B"
+    ]);
+    expect(new Set(ALL.map(status => card(status).color)).size).toBe(3);
+  });
+
+  it("says the state in words as well as in colour", () => {
+    // The colour is an attachment's left border: it does not survive a push
+    // notification and a screen reader never sees it. Every state names itself.
+    const expected: Array<[ApprovalCardStatus, string, string]> = [
+      [AWAITING, "APPROVAL REQUIRED", "Awaiting a human"],
+      [APPROVED, "APPROVED", "Approved:"],
+      [DENIED, "DENIED", "Denied:"],
+      [EXPIRED, "EXPIRED", "Expired:"]
+    ];
+
+    for (const [status, label, fallbackWord] of expected) {
+      const rendered = card(status);
+      // Strip the colour: the card must still be readable without it.
+      const colourless: SlackCard = { ...rendered, color: "" };
+      expect(text(colourless)).toContain(`\`${label}\``);
+      expect(rendered.fallback).toContain(fallbackWord);
+      expect(rendered.fallback).toContain("github.pr.merge");
+    }
+  });
+
+  it("carries no emoji, in any state", () => {
+    // `design/README.md`: no exclamation marks, no emoji, no "AI magic".
+    const emoji = /[☀-➿]|[\u{1F000}-\u{1FAFF}]/u;
+    for (const status of ALL) {
+      const rendered = card(status);
+      expect(emoji.test(`${text(rendered)}${rendered.fallback}`)).toBe(false);
+    }
+  });
+
+  it("renders the deadline through Slack's clock, never its own", () => {
+    // Two renders being byte-identical is the assertion: a `Date.now()`
+    // anywhere in the file would make them differ, or would make the seconds
+    // below depend on when the suite ran.
+    expect(card(AWAITING)).toEqual(card(AWAITING));
+    // 1_749_998_700_123 ms floors to 1_749_998_700 s.
+    expect(text(card(AWAITING))).toContain("<!date^1749998700^");
+  });
+
+  it("neutralizes markup in text it did not author", () => {
+    // `arguments` renders tool-call arguments, which a prompt-injected model
+    // wrote, onto the surface a human is about to click a button on. Every one
+    // of `<!channel>`, `<@U…>`, and `<url|text>` is angle-bracket syntax.
+    const rendered = card(AWAITING, {
+      toolName: "a<b&c",
+      arguments: "<!channel> Approved by <@U0BOSS> <https://evil|click here>"
+    });
+    const rendered_text = `${text(rendered)}${rendered.fallback}`;
+
+    expect(rendered_text).not.toContain("<!channel>");
+    expect(rendered_text).not.toContain("<@U0BOSS>");
+    expect(rendered_text).toContain("&lt;!channel&gt;");
+    expect(rendered_text).toContain("a&lt;b&amp;c");
+    // The one angle bracket that is ours: the date token the renderer wrote.
+    expect(rendered_text.match(/<(?!!date\^)/gu)).toBeNull();
+  });
+
+  it("truncates an argument that would blow Slack's section limit", () => {
+    const rendered = card(AWAITING, { arguments: "x".repeat(5000) });
+
+    expect(sectionText(rendered).length).toBeLessThan(3000);
+    expect(sectionText(rendered)).toContain("…");
+  });
+
+  it("emits plain JSON and nothing an SDK type would have smuggled in", () => {
+    for (const status of ALL) {
+      const rendered = card(status);
+      expect(JSON.parse(JSON.stringify(rendered))).toEqual(rendered);
+    }
+  });
+
+  it("draws a card this package can read back", () => {
+    // The contract between the renderer and the decoder, asserted rather than
+    // left as two constants that happen to match: take the card's own button,
+    // put it on the wire, and decode it.
+    const buttons = buttonsOf(card(AWAITING));
+
+    for (const [index, verdict] of (["approve", "deny"] as const).entries()) {
+      const button = buttons[index];
+      expect(button).toBeDefined();
+      const envelope = blockActionsEnvelope({
+        // Straight off the rendered button rather than from a constant, so a
+        // renamed action id fails here rather than in a workspace.
+        verdict,
+        ticketId: String(button?.["value"])
+      });
+      const result = toDecision(envelope);
+
+      expect(result).toEqual({
+        decision: expect.objectContaining({ verdict, ticketId: TICKET.id })
+      });
+      expect(button?.["action_id"]).toBe(
+        verdict === "approve" ? APPROVE_ACTION_ID : DENY_ACTION_ID
+      );
+    }
+  });
+});

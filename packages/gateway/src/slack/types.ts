@@ -5,9 +5,18 @@
 // are one of the paths a secret leaks, and this is the process that holds the
 // app and bot tokens.
 //
-// The adapter answers a mention and nothing else. Sessions, the per-session
-// mutex, attribution, the live checklist, and the message store are the channel
-// router's job and are not modelled here.
+// The adapter answers a mention and reports a click, and nothing else.
+// Sessions, the per-session mutex, attribution, the live checklist, and the
+// message store are the channel router's job and are not modelled here.
+//
+// The one import from the workspace is `@getlibero/schema`, and it is **type
+// only**: `ApprovalVerdict` is the exact wire vocabulary of the thing being
+// decoded, and two definitions of one enum drift silently. Type only because
+// zod must not reach this package at runtime — the gateway validates nothing
+// and must not start. The proxy parses at the boundary that enforces; a second
+// parse here would be a second authority with no power to act on the result.
+
+import type { ApprovalVerdict } from "@getlibero/schema";
 
 /**
  * A mention the gateway will answer, normalized off the wire.
@@ -48,6 +57,49 @@ export interface SlackReply {
 export type MentionHandler = (mention: SlackMention) => Promise<SlackReply | undefined>;
 
 /**
+ * A human's click on an approval card, normalized off the wire.
+ *
+ * The second thing this adapter surfaces, and the one the security property
+ * cares about: the click is read out of a Socket Mode envelope by this code
+ * rather than produced by a model, which is what makes `approverId` hold
+ * against a prompt-injected model. It does not hold against a compromised agent
+ * process, which relays it — see `ApproverId` in `@getlibero/schema`, where the
+ * narrower claim is argued in full. Say *tool credentials* survive process
+ * compromise; approvals survive prompt injection.
+ */
+export interface SlackDecision {
+  teamId: string;
+  channelId: string;
+  /**
+   * The Slack user who clicked. Attribution, never authorization — nothing
+   * downstream gates on it. Display-name lookup is not done here, and does not
+   * need to be: `<@U…>` on the card lets Slack resolve it client-side.
+   */
+  approverId: string;
+  /**
+   * The ticket the card's button carried. Opaque here and deliberately
+   * unvalidated — the gateway decides nothing, and the proxy answers `unknown`
+   * for an id that matches nothing in this channel.
+   */
+  ticketId: string;
+  verdict: ApprovalVerdict;
+  /** The card message's own ts. What `updateCard` edits, and not the thread's. */
+  messageTs: string;
+  /** The thread the card sits in, so anything else can land beside it. */
+  threadTs: string;
+}
+
+/**
+ * A click in, nothing out.
+ *
+ * `Promise<void>` rather than a reply, because a click's visible answer is the
+ * card changing colour — an edit to the message that is already there. A
+ * handler that could return a reply would invite a second message per click,
+ * which is the thing "edit, don't spam" exists to forbid.
+ */
+export type DecisionHandler = (decision: SlackDecision) => Promise<void>;
+
+/**
  * One inbound event as the socket delivered it, still unparsed.
  *
  * `event` and `body` are `unknown` on purpose: `toMention` is the only code that
@@ -67,6 +119,22 @@ export interface SlackEnvelope {
 }
 
 /**
+ * One interactive envelope as the socket delivered it, still unparsed.
+ *
+ * Its own type rather than a `SlackEnvelope`, because the SDK genuinely hands
+ * down a different shape: it splits out an inner `event` only for `events_api`
+ * envelopes, and emits everything else as `{ack, body}` — verified against
+ * @slack/socket-mode 3.0.0, `SocketModeClient.js:341`. Everything a click
+ * carries is in `body`.
+ */
+export interface SlackInteractionEnvelope {
+  /** Acknowledge receipt. Same three-second window a mention has. */
+  ack(): Promise<void>;
+  /** The interactivity payload — a `block_actions` body, or something dropped. */
+  body: unknown;
+}
+
+/**
  * The inbound half of the seam. Implemented over Socket Mode in production and
  * by `createStubSlack` in tests, so the whole dispatch path runs with no socket.
  */
@@ -81,6 +149,14 @@ export interface SocketSource {
   close(): Promise<void>;
   /** Registers the mention listener. Called once, before `connect`. */
   onMention(listener: (envelope: SlackEnvelope) => Promise<void>): void;
+  /**
+   * Registers the interactivity listener. Called once, before `connect`.
+   *
+   * On this interface rather than its own, because there is one socket and one
+   * `connect`/`close` lifecycle: an interaction source that could exist without
+   * the mention source's connection does not exist.
+   */
+  onInteraction(listener: (envelope: SlackInteractionEnvelope) => Promise<void>): void;
   /** The socket dropped for a reason other than `close()`. */
   onDrop(listener: () => void): void;
 }
@@ -91,8 +167,75 @@ export interface SocketSource {
  * on what got posted should not have to script a socket to do it.
  */
 export interface MessagePoster {
+  /**
+   * Posts and returns nothing, and the nothing is load-bearing. A reply is
+   * fire-and-forget text: no `ts` comes back, so nothing above this can hold
+   * one, which is the mechanical reason the channel router never learns what a
+   * Slack timestamp is. A card is the other case — see `CardPoster`.
+   */
   postThreadReply(target: { channelId: string; threadTs: string; text: string }): Promise<void>;
 }
+
+/**
+ * One block of a rendered card, as plain JSON.
+ *
+ * Structural rather than `@slack/types`' `AnyBlock`, because the renderer may
+ * not import a Slack SDK — an ESLint rule keeps `@slack/*` to the three adapter
+ * files. The translation to an SDK type happens once, in `web-api.ts`, which is
+ * the file the rule exempts.
+ */
+export type SlackBlock = { type: string } & Record<string, unknown>;
+
+/** A rendered card: everything one attachment carries. */
+export interface SlackCard {
+  /**
+   * The attachment's left-border colour, as a design-system hex. Status, never
+   * decoration — the renderer is the only thing that picks one.
+   */
+  color: string;
+  /**
+   * The state in words. The only string a client that cannot render blocks
+   * shows, which on a phone is the push notification, so it has to say what
+   * happened rather than name the feature.
+   */
+  fallback: string;
+  blocks: readonly SlackBlock[];
+}
+
+/** Where a posted card is. Two ids, and nothing with a lifetime. */
+export interface PostedCard {
+  channelId: string;
+  /** The card message's own ts. Not the thread's. */
+  messageTs: string;
+}
+
+/**
+ * The card half of the outbound seam.
+ *
+ * Separate from `MessagePoster` because a different consumer holds it: the
+ * gateway posts replies and never a card, since a card's lifetime belongs to
+ * whatever holds the ticket. Both are implemented by one adapter over one
+ * `WebClient`, so the process keeps one rate-limit queue over `chat.*`.
+ */
+export interface CardPoster {
+  /**
+   * Posts a card into a thread and says where it landed.
+   *
+   * Rejects rather than returning a handle it cannot edit: a card whose `ts` is
+   * unreadable can never be updated, and would sit amber forever — the exact
+   * lie the feature exists to avoid.
+   */
+  postCard(target: { channelId: string; threadTs: string; card: SlackCard }): Promise<PostedCard>;
+  /**
+   * Replaces a posted card in place. Takes a whole card rather than a patch,
+   * because `chat.update` replaces the message anyway — so nothing here holds
+   * mutable card state between calls, and a caller cannot render a partial one.
+   */
+  updateCard(target: { channelId: string; messageTs: string; card: SlackCard }): Promise<void>;
+}
+
+/** What the Web API adapter and the stub both are. Consumers take a narrower view. */
+export type SlackPoster = MessagePoster & CardPoster;
 
 /** The adapter's lifecycle, and all of it. */
 export interface SlackGateway {
@@ -117,8 +260,15 @@ export type GatewayErrorReason =
   | "connect_failed"
   /** `chat.postMessage` failed. */
   | "post_failed"
-  /** The envelope was not an answerable mention. See `toMention`. */
-  | "malformed_event";
+  /**
+   * `chat.update` failed, so a card on screen is stale.
+   *
+   * Its own code rather than `post_failed`, because the symptom differs: a
+   * failed post means nothing appeared, and a failed update means something
+   * wrong is still showing — an amber card offering buttons for a call that has
+   * already been decided.
+   */
+  | "update_failed";
 
 export class GatewayError extends Error {
   readonly reason: GatewayErrorReason;

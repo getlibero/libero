@@ -6,15 +6,22 @@
 // every dispatch case to eventemitter3 call shapes — exactly the coupling the
 // seam exists to remove. Keep the two apart.
 
+import type { ApprovalTicket } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import type { LogFields, Logger, LogLevel } from "../log.js";
+import { renderApprovalCard } from "./approval-card.js";
 import { createGateway } from "./gateway.js";
 import type { Scheduler } from "./gateway.js";
-import { appMentionEnvelope, createStubSlack } from "./stub-slack.js";
+import { appMentionEnvelope, blockActionsEnvelope, createStubSlack } from "./stub-slack.js";
 import { GatewayError } from "./types.js";
-import type { MentionHandler, MessagePoster, SlackMention } from "./types.js";
+import type { MentionHandler, MessagePoster, SlackDecision, SlackMention } from "./types.js";
 
 const BACKOFF = { baseMs: 1_000, maxMs: 30_000, resetAfterMs: 60_000 };
+
+const TICKET: ApprovalTicket = {
+  id: "0f2c9b3e-7a41-4c0d-9d2b-6e1f5a8c3b90",
+  expiresAt: 1_749_998_700_123
+};
 
 /** Lets a microtask chain settle without waiting on a real backoff. */
 const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
@@ -497,6 +504,306 @@ describe("createGateway", () => {
     expect(seen).toHaveLength(0);
   });
 
+  describe("approval cards", () => {
+    it("acknowledges a click before running the handler", async () => {
+      // Same three-second window a mention has, and a decision handler is an
+      // HTTP round trip plus a card edit. Acking after it means Slack
+      // redelivers.
+      const order: string[] = [];
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: () => {
+          order.push("handler");
+          return Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await slack.deliverInteraction(
+        blockActionsEnvelope({}, () => {
+          order.push("ack");
+          return Promise.resolve();
+        })
+      );
+
+      expect(order).toEqual(["ack", "handler"]);
+    });
+
+    it("hands the decision down with the approver on it", async () => {
+      const seen: SlackDecision[] = [];
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: decision => {
+          seen.push(decision);
+          return Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await slack.deliverDecision({
+        channelId: "C0OPS",
+        userId: "U0DANA",
+        ticketId: "ticket-abc",
+        verdict: "approve"
+      });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({
+        channelId: "C0OPS",
+        approverId: "U0DANA",
+        ticketId: "ticket-abc",
+        verdict: "approve"
+      });
+    });
+
+    it("acks and logs a malformed click rather than throwing", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      let calls = 0;
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: () => {
+          calls += 1;
+          return Promise.resolve();
+        },
+        logger
+      });
+
+      await gateway.start();
+      let acked = 0;
+      await slack.deliverInteraction({
+        ack: () => {
+          acked += 1;
+          return Promise.resolve();
+        },
+        body: { type: "view_submission" }
+      });
+
+      expect(acked).toBe(1);
+      expect(calls).toBe(0);
+      expect(lines).toContainEqual(
+        expect.objectContaining({ event: "ignored", reason: "not_an_interaction" })
+      );
+    });
+
+    it("loses one click and no more when the handler throws", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const seen: string[] = [];
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: decision => {
+          seen.push(decision.ticketId);
+          return seen.length === 1
+            ? Promise.reject(new Error("card edit blew up"))
+            : Promise.resolve();
+        },
+        logger
+      });
+
+      await gateway.start();
+      await slack.deliverDecision({ ticketId: "ticket-1" });
+      await slack.deliverDecision({ ticketId: "ticket-2" });
+
+      expect(seen).toEqual(["ticket-1", "ticket-2"]);
+      expect(lines).toContainEqual(
+        expect.objectContaining({ event: "decision_failed", ticket: "ticket-1" })
+      );
+      // Nothing was posted: a card that could not be updated is the card
+      // owner's to word, not the adapter's to invent.
+      expect(slack.posted).toHaveLength(0);
+    });
+
+    it("acks a click it has no handler for", async () => {
+      // Interactivity being on is a Slack app setting, not this process's, so a
+      // click can arrive with no broker composed. Unacked, Slack retries it
+      // forever, so it is acked and dropped with a reason.
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        logger
+      });
+
+      await gateway.start();
+      await slack.deliverDecision({ ticketId: "ticket-orphan" });
+
+      expect(slack.acked).toHaveLength(1);
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          event: "ignored",
+          reason: "no_decision_handler",
+          ticket: "ticket-orphan"
+        })
+      );
+    });
+
+    it("acks a click after stopping but does not dispatch it", async () => {
+      const slack = createStubSlack();
+      let calls = 0;
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: () => {
+          calls += 1;
+          return Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await gateway.stop();
+      await slack.deliverDecision();
+
+      expect(slack.acked).toHaveLength(1);
+      expect(calls).toBe(0);
+    });
+
+    it("passes a double click through twice, and that is the intent", async () => {
+      // Mentions are deduped because nothing downstream of one is idempotent.
+      // The proxy is already the authority on a decision: a ticket is decided
+      // once, and a second click answers `already_decided` with the first
+      // verdict standing. Two mechanisms that can disagree are worse than one.
+      const slack = createStubSlack();
+      const seen: string[] = [];
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: decision => {
+          seen.push(decision.verdict);
+          return Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await slack.deliverDecision({ ticketId: "ticket-1" });
+      await slack.deliverDecision({ ticketId: "ticket-1" });
+
+      expect(seen).toEqual(["approve", "approve"]);
+    });
+
+    it("goes amber, then green, by editing one message", async () => {
+      // The issue's third acceptance bullet, end to end against a stub: a card
+      // goes up, a human clicks, and the same message becomes green. Nothing
+      // here holds a timer — the caller drives every transition, which is what
+      // makes the expiry case below reachable without one.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: async decision => {
+          await slack.poster.updateCard({
+            channelId: decision.channelId,
+            messageTs: decision.messageTs,
+            card: renderApprovalCard({
+              toolName: "github.pr.merge",
+              status: { state: "approved", approver: decision.approverId }
+            })
+          });
+        }
+      });
+      await gateway.start();
+
+      const posted = await slack.poster.postCard({
+        channelId: "C0OPS",
+        threadTs: "1717171717.000100",
+        card: renderApprovalCard({
+          toolName: "github.pr.merge",
+          status: { state: "awaiting", ticket: TICKET }
+        })
+      });
+      expect(slack.cards).toHaveLength(1);
+      expect(slack.cardAt(posted.messageTs)?.color).toBe("#F5B544");
+
+      await slack.deliverDecision({
+        channelId: "C0OPS",
+        messageTs: posted.messageTs,
+        ticketId: TICKET.id,
+        verdict: "approve"
+      });
+
+      // Edited, not spammed: one card, one edit, same ts.
+      expect(slack.cards).toHaveLength(1);
+      expect(slack.edits).toHaveLength(1);
+      expect(slack.edits[0]?.messageTs).toBe(posted.messageTs);
+      const showing = slack.cardAt(posted.messageTs);
+      expect(showing?.color).toBe("#1BA85A");
+      // And the buttons are gone, so it cannot be clicked again.
+      expect(showing?.blocks.some(block => block.type === "actions")).toBe(false);
+    });
+
+    it("goes red on a deny, and red again on an expiry the caller drives", async () => {
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onDecision: async decision => {
+          await slack.poster.updateCard({
+            channelId: decision.channelId,
+            messageTs: decision.messageTs,
+            card: renderApprovalCard({
+              toolName: "github.pr.merge",
+              status: { state: "denied", approver: decision.approverId }
+            })
+          });
+        }
+      });
+      await gateway.start();
+
+      const denied = await slack.poster.postCard({
+        channelId: "C0OPS",
+        threadTs: "1717171717.000100",
+        card: renderApprovalCard({
+          toolName: "github.pr.merge",
+          status: { state: "awaiting", ticket: TICKET }
+        })
+      });
+      await slack.deliverDecision({
+        channelId: "C0OPS",
+        messageTs: denied.messageTs,
+        verdict: "deny"
+      });
+
+      expect(slack.cardAt(denied.messageTs)?.color).toBe("#FF6B5B");
+
+      // Expiry is the same edit with no click behind it. The deadline belongs to
+      // whoever holds the ticket; this package renders the state on request and
+      // never notices a clock passing.
+      const stale = await slack.poster.postCard({
+        channelId: "C0OPS",
+        threadTs: "1717171717.000100",
+        card: renderApprovalCard({
+          toolName: "github.deploy",
+          status: { state: "awaiting", ticket: TICKET }
+        })
+      });
+      await slack.poster.updateCard({
+        channelId: "C0OPS",
+        messageTs: stale.messageTs,
+        card: renderApprovalCard({ toolName: "github.deploy", status: { state: "expired" } })
+      });
+
+      const expired = slack.cardAt(stale.messageTs);
+      expect(expired?.color).toBe("#FF6B5B");
+      expect(expired?.blocks.some(block => block.type === "actions")).toBe(false);
+    });
+  });
+
   it("never writes message text to a log line", async () => {
     // The gateway is where a team's words arrive. Ids identify a thread; what
     // was said belongs to the channel's members and is not an operator's to
@@ -520,5 +827,55 @@ describe("createGateway", () => {
     // And it did log the mention — the assertion above is not passing because
     // nothing was written.
     expect(lines.some(line => line.event === "replied")).toBe(true);
+  });
+
+  it("never writes a card's contents to a log line either", async () => {
+    // The same rule, on the surface that grew a second kind of content: a card
+    // renders tool-call arguments, which are the model's words about a team's
+    // data. A decision line carries ids and a verdict, and no card text.
+    const secret = "prod-db-password-hunter2";
+    const slack = createStubSlack();
+    const { logger, lines } = captureLogger();
+    const gateway = createGateway({
+      source: slack.source,
+      poster: slack.poster,
+      handler: () => Promise.resolve(undefined),
+      onDecision: async decision => {
+        await slack.poster.updateCard({
+          channelId: decision.channelId,
+          messageTs: decision.messageTs,
+          card: renderApprovalCard({
+            toolName: "github.pr.merge",
+            arguments: secret,
+            status: { state: "approved", approver: decision.approverId }
+          })
+        });
+      },
+      logger
+    });
+    await gateway.start();
+
+    const posted = await slack.poster.postCard({
+      channelId: "C0OPS",
+      threadTs: "1717171717.000100",
+      card: renderApprovalCard({
+        toolName: "github.pr.merge",
+        arguments: secret,
+        status: { state: "awaiting", ticket: TICKET }
+      })
+    });
+    await slack.deliverDecision({
+      channelId: "C0OPS",
+      messageTs: posted.messageTs,
+      ticketId: TICKET.id
+    });
+
+    const emitted = JSON.stringify(lines);
+    expect(emitted).not.toContain("hunter2");
+    expect(emitted).not.toContain(secret);
+    // And the decision was logged, with the ids that make it correlatable.
+    expect(lines).toContainEqual(
+      expect.objectContaining({ event: "decision", ticket: TICKET.id, verdict: "approve" })
+    );
   });
 });
