@@ -321,6 +321,21 @@ describe("when the call fails", () => {
       detail: "slow down"
     });
   });
+
+  // The one relay `parseRpcResponse` never bounds, bounded where it is born:
+  // an endpoint answering its error in megabytes should not spend the
+  // channel's tokens saying so.
+  it("truncates a non-2xx body rather than relaying a wall of text", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/call" ? { status: 500, raw: "x".repeat(100_000) } : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    const outcome = await client.callTool("list_prs", {});
+
+    expect(outcome).toMatchObject({ outcome: "call_failed", failure: "http_error", status: 500 });
+    expect(outcome.outcome === "call_failed" && (outcome.detail?.length ?? 0)).toBeLessThan(400);
+  });
 });
 
 describe("an upstream asking for more input", () => {

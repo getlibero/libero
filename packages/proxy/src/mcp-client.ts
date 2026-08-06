@@ -29,6 +29,7 @@ import {
   isInputRequired,
   negotiatedVersion,
   parseRpcResponse,
+  relayedDetail,
   requestHeaders,
   toolResultText,
   toolsCallRequest
@@ -192,8 +193,15 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       if (response.status < 200 || response.status >= 300) {
         // The body is safe to relay: `callUpstream` already scrubbed it, and a
         // tool endpoint's error text is often the only thing that tells the
-        // model what it did wrong.
-        return { outcome: "call_failed", failure: "http_error", status: response.status, detail: response.body };
+        // model what it did wrong. Bounded, though: it is upstream-authored
+        // text like every other relay here, and an endpoint answering its
+        // error in megabytes should not spend the channel's tokens saying so.
+        return {
+          outcome: "call_failed",
+          failure: "http_error",
+          status: response.status,
+          detail: relayedDetail(response.body)
+        };
       }
 
       const parsed = parseRpcResponse(response.headers["content-type"], response.body, id);

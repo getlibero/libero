@@ -282,6 +282,20 @@ function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}…`;
 }
 
+/**
+ * Bound an upstream-authored error body before it becomes a failure detail.
+ *
+ * `parseRpcResponse` caps a JSON-RPC error's `message`, but a non-2xx body
+ * never reaches it, so the caller relaying that body applies the same cap
+ * through this. The first few hundred characters are where an endpoint says
+ * what went wrong; everything past them is a wall of text spending the
+ * channel's tokens on the way to the model. Exported for the client, not for
+ * `index.ts` — like the framing helpers, it leaves this module and no further.
+ */
+export function relayedDetail(text: string): string {
+  return truncate(text, MAX_RELAYED_MESSAGE);
+}
+
 /** Base64 decodes to three bytes per four characters, less the padding. */
 function base64Bytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
