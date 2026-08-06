@@ -220,6 +220,29 @@ describe("JSON string escaping", () => {
     }
   });
 
+  // Go's `encoding/json` escapes `&`, `<`, and `>` as `\u00xx` by default, on
+  // top of the escapes every encoder writes — and GitHub's MCP server is Go,
+  // so this is the spelling the flagship upstream actually produces.
+  it("scrubs a value as Go's HTML-safe encoder spells it", () => {
+    const value = 'key&<"live">';
+    const goSpelling = 'key\\u0026\\u003c\\"live\\"\\u003e';
+
+    const out = redactSecrets(`{"echo":"${goSpelling}"}`, [{ name: "c", value }]);
+
+    expect(out).toBe('{"echo":"[redacted:c]"}');
+    expect((JSON.parse(out) as { echo: string }).echo).not.toContain("live");
+  });
+
+  // PHP's `json_encode` escapes `/` as `\/` by default, and `/` is a character
+  // real secrets contain — anything base64-flavoured, for a start.
+  it("scrubs a value as PHP's encoder spells it, slashes escaped", () => {
+    const value = "gh/section/token";
+
+    const out = redactSecrets('{"echo":"gh\\/section\\/token"}', [{ name: "c", value }]);
+
+    expect(out).toBe('{"echo":"[redacted:c]"}');
+  });
+
   // The regression that motivates all of the above: reproduce what the MCP
   // client does to a response body, and check the value is not reconstructed.
   it("leaves nothing a JSON parse can turn back into the value", () => {

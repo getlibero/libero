@@ -79,6 +79,23 @@ function upperHexEscapes(text: string): string {
 }
 
 /**
+ * Go's `encoding/json` in its default HTML-safe mode: `&`, `<`, `>`, U+2028,
+ * and U+2029 become `\uXXXX` escapes on top of what every JSON encoder writes.
+ *
+ * Applied to the already-JSON-escaped spelling, not the raw value, because
+ * that is where Go applies it too — a quote in the value is `\"` first, and
+ * the HTML escapes land on the characters that remain literal.
+ */
+function htmlSafeEscapes(jsonEscaped: string): string {
+  return jsonEscaped
+    .replaceAll("&", "\\u0026")
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+/**
  * Every spelling of a value worth searching for.
  *
  * The issue's "cheap encodings", enumerated rather than gestured at:
@@ -97,7 +114,13 @@ function upperHexEscapes(text: string): string {
  *   produces (`\"`, `\\`, and `\uXXXX` for control characters), and the
  *   paranoid form where every character is spelled `\uXXXX`. Some encoders
  *   escape far more than they have to; both ends of that range are cheap to
- *   generate and neither is guessable from the other.
+ *   generate and neither is guessable from the other;
+ * - the two defaults that sit between those ends, because they are defaults
+ *   rather than options: Go's `encoding/json` HTML-safe mode, which also
+ *   spells `&`, `<`, `>`, U+2028, and U+2029 as `\uXXXX` — GitHub's MCP
+ *   server is Go, so this is the spelling the flagship upstream actually
+ *   writes — and PHP's `json_encode`, which also spells `/` as `\/`, and `/`
+ *   is a character real secrets contain.
  *
  * **Why the JSON forms are not optional.** A caller that hands the body
  * straight to the agent leaks an escaped value in escaped form, which is bad
@@ -123,6 +146,8 @@ export function encodingsOf(value: string): string[] {
   // Slice off the quotes `JSON.stringify` wraps the string in: the needle is
   // the escaped body, which appears inside an upstream's own quoting.
   const jsonEscaped = JSON.stringify(value).slice(1, -1);
+  const htmlSafe = htmlSafeEscapes(jsonEscaped);
+  const slashEscaped = jsonEscaped.replaceAll("/", "\\/");
   const fullyEscaped = Array.from(
     { length: value.length },
     (_, i) => `\\u${value.charCodeAt(i).toString(16).padStart(4, "0")}`
@@ -140,6 +165,10 @@ export function encodingsOf(value: string): string[] {
     percent.replace(/%[0-9A-F]{2}/g, match => match.toLowerCase()),
     jsonEscaped,
     upperHexEscapes(jsonEscaped),
+    htmlSafe,
+    upperHexEscapes(htmlSafe),
+    slashEscaped,
+    upperHexEscapes(slashEscaped),
     fullyEscaped,
     upperHexEscapes(fullyEscaped)
   ];
