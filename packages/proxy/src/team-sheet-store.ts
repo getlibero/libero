@@ -21,6 +21,15 @@
 // The stat also cannot see a rewrite that lands within the same millisecond at
 // the same size, which is rare but not impossible for a scripted edit. The
 // watcher covers that. Neither is complete; together they are.
+//
+// What that pairing does not say, and what #137 was, is that the watcher also
+// reads at the worst possible moment. It fires partway through a write that is
+// not atomic — a shell redirect truncates before it writes — so its read lands
+// when the file is least likely to be whole. The read itself corrects itself:
+// the fingerprint it caches is the one it stat'ed, so the settled file looks
+// different and is read again. What does not correct itself is handing that
+// answer to a caller who arrived after the write landed. So resolve() shares a
+// read only while it has not yet looked at the file.
 
 import { type FSWatcher, watch } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -71,6 +80,12 @@ interface Entry {
   fingerprint: Fingerprint | null;
   /** Deduplicates concurrent resolves of the same channel onto one read. */
   inFlight: Promise<SheetState> | null;
+  /**
+   * Whether `inFlight` has taken the stat its answer will describe. Until it
+   * has, a caller arriving now is answered by a look that is still to come and
+   * may share it. After it has, that caller needs its own.
+   */
+  inFlightStated: boolean;
   watcher: FSWatcher | null;
 }
 
@@ -116,16 +131,32 @@ export class TeamSheetStore {
    *
    * Re-reads when the file has changed since the cached copy, so a valid edit
    * is picked up without a restart and without waiting for a watch event.
+   *
+   * Concurrent callers still share one read, but only one that has not yet
+   * looked at the file, so an answer is never older than the question.
    */
   async resolve(channel: string): Promise<SheetState> {
     const file = this.path(channel);
     const entry = this.#entry(channel);
-    if (entry.inFlight !== null) return entry.inFlight;
 
-    const work = this.#refresh(channel, file, entry).finally(() => {
-      entry.inFlight = null;
+    // A read that has not stat'ed yet will stat after this call, so its answer
+    // is an answer to this call and sharing it is free. A read that has
+    // already stat'ed describes the file as it was before this caller arrived;
+    // passing that on is how a resolve came back describing a sheet that had
+    // already been replaced (#137). The watcher makes that ordering routine
+    // rather than exotic: it fires partway through a non-atomic write, so its
+    // read is in flight at exactly the moment a caller is likely to ask.
+    const running = entry.inFlight;
+    if (running !== null && !entry.inFlightStated) return running;
+
+    const work = this.#queued(running, channel, file, entry).finally(() => {
+      if (entry.inFlight === work) {
+        entry.inFlight = null;
+        entry.inFlightStated = false;
+      }
     });
     entry.inFlight = work;
+    entry.inFlightStated = false;
     return work;
   }
 
@@ -142,14 +173,45 @@ export class TeamSheetStore {
   #entry(channel: string): Entry {
     let entry = this.#entries.get(channel);
     if (entry === undefined) {
-      entry = { state: { status: "absent" }, fingerprint: null, inFlight: null, watcher: null };
+      entry = {
+        state: { status: "absent" },
+        fingerprint: null,
+        inFlight: null,
+        inFlightStated: false,
+        watcher: null
+      };
       this.#entries.set(channel, entry);
     }
     return entry;
   }
 
+  /**
+   * Refreshes on one channel run one at a time. They write the cached state
+   * and the fingerprint it is keyed to, and two in flight would interleave
+   * those writes and leave the pair describing two different reads.
+   *
+   * This queues at most one deep however many callers arrive. A refresh that
+   * is waiting here has not stat'ed, so everyone turning up behind it shares
+   * it rather than adding another — which is the same rule that lets
+   * simultaneous callers share a read in the first place.
+   */
+  async #queued(
+    running: Promise<SheetState> | null,
+    channel: string,
+    file: string,
+    entry: Entry
+  ): Promise<SheetState> {
+    // Whatever it answered belongs to its own caller, including a failure.
+    // This refresh is about to look for itself either way.
+    if (running !== null) await running.catch(() => undefined);
+    return this.#refresh(channel, file, entry);
+  }
+
   async #refresh(channel: string, file: string, entry: Entry): Promise<SheetState> {
     const fingerprint = await this.#fingerprint(file);
+    // From here the answer describes the file as of the stat above, so it has
+    // stopped being an answer to a caller who has not arrived yet.
+    entry.inFlightStated = true;
 
     if (fingerprint === null) {
       // Gone. Deletion takes effect immediately and is not treated like an
