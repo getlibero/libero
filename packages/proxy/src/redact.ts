@@ -10,7 +10,10 @@
 // upstream that *transforms* the value is invisible here: a hash of it, a
 // substring, a re-chunked base64 of a blob that merely contains it, an
 // encryption of it, or the same secret spelled with different capitalisation
-// than it was stored in. Searching for a value only finds the value. Redaction
+// than it was stored in. A *partially* escaped mixture evades for the same
+// reason — `encodingsOf` generates whole spellings, so a body escaping only the
+// three characters an encoder felt strongly about is a spelling nothing in the
+// list matches. Searching for a value only finds the value. Redaction
 // is therefore a backstop for a careless upstream, not a boundary — the
 // boundary is that the agent process never holds a credential in the first
 // place, which is what `vault.ts` and the mTLS split are for. Anyone tempted to
@@ -66,6 +69,16 @@ export interface SecretValue {
 }
 
 /**
+ * Uppercase the hex of every `\uXXXX` escape, leaving everything else alone.
+ *
+ * The `u` stays lowercase — `\U0041` is not an escape in JSON, so uppercasing
+ * the whole sequence would produce a needle that matches nothing.
+ */
+function upperHexEscapes(text: string): string {
+  return text.replace(/\\u[0-9a-f]{4}/g, match => `\\u${match.slice(2).toUpperCase()}`);
+}
+
+/**
  * Every spelling of a value worth searching for.
  *
  * The issue's "cheap encodings", enumerated rather than gestured at:
@@ -79,7 +92,24 @@ export interface SecretValue {
  * - percent-encoding, in both hex cases, for a value reflected back inside a
  *   query string. `encodeURIComponent` emits uppercase hex; plenty of servers
  *   emit lowercase, and a case-insensitive scan over the whole body would be
- *   wrong for the raw form, so the two are listed as separate needles instead.
+ *   wrong for the raw form, so the two are listed as separate needles instead;
+ * - JSON string escaping, in both hex cases — the minimal form an encoder
+ *   produces (`\"`, `\\`, and `\uXXXX` for control characters), and the
+ *   paranoid form where every character is spelled `\uXXXX`. Some encoders
+ *   escape far more than they have to; both ends of that range are cheap to
+ *   generate and neither is guessable from the other.
+ *
+ * **Why the JSON forms are not optional.** A caller that hands the body
+ * straight to the agent leaks an escaped value in escaped form, which is bad
+ * but self-limiting. A caller that `JSON.parse`s the body and re-emits a field
+ * from it — which is what the MCP client does — *un-escapes* it, so a needle
+ * that missed the escaped spelling delivers the plain credential. The scan has
+ * to cover the spelling on the wire, not the spelling after parsing, because
+ * by then this function has already run.
+ *
+ * The fully-escaped form iterates UTF-16 code units rather than code points, so
+ * an astral character yields the surrogate pair a JSON encoder would actually
+ * write (`😀`) rather than the `ὠ0` that is not an escape.
  *
  * Duplicates are expected and harmless — a value with no percent-escapable
  * characters encodes to itself — and are removed so the replace pass does not
@@ -90,6 +120,13 @@ export function encodingsOf(value: string): string[] {
   const base64 = raw.toString("base64");
   const base64url = raw.toString("base64url");
   const percent = encodeURIComponent(value);
+  // Slice off the quotes `JSON.stringify` wraps the string in: the needle is
+  // the escaped body, which appears inside an upstream's own quoting.
+  const jsonEscaped = JSON.stringify(value).slice(1, -1);
+  const fullyEscaped = Array.from(
+    { length: value.length },
+    (_, i) => `\\u${value.charCodeAt(i).toString(16).padStart(4, "0")}`
+  ).join("");
 
   const candidates = [
     value,
@@ -100,7 +137,11 @@ export function encodingsOf(value: string): string[] {
     percent,
     // Lowercase only the escape sequences, not the whole string: the
     // surrounding characters are the value and must not be case-folded.
-    percent.replace(/%[0-9A-F]{2}/g, match => match.toLowerCase())
+    percent.replace(/%[0-9A-F]{2}/g, match => match.toLowerCase()),
+    jsonEscaped,
+    upperHexEscapes(jsonEscaped),
+    fullyEscaped,
+    upperHexEscapes(fullyEscaped)
   ];
 
   // Longest first. A padded base64 string contains its unpadded form, so
