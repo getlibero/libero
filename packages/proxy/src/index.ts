@@ -68,6 +68,27 @@ export {
 } from "./enforce.js";
 export type { BudgetSpend, Decision, EnforcementInput } from "./enforce.js";
 
+// The approval broker's ticket store. `createApprovalsRoute` is deliberately
+// **not** exported, as `createSpendRoute` is not: both are composed inside
+// `createProxyServer`, and a composition root that could build its own would be
+// one that could hand it a wider store than `ApprovalDecider`.
+export {
+  APPROVAL_TTL_MS,
+  MAX_TICKETS_PER_CHANNEL,
+  TICKET_RETENTION_MS,
+  createApprovalStore
+} from "./approvals.js";
+export type {
+  ApprovalDecider,
+  ApprovalMinter,
+  ApprovalRedeemer,
+  ApprovalStore,
+  ApprovalStoreOptions,
+  ApprovalTicketRecord,
+  DecideResult,
+  RedeemResult
+} from "./approvals.js";
+
 export { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 export type { SheetState, TeamSheetStoreOptions } from "./team-sheet-store.js";
 

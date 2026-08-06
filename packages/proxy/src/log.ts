@@ -16,6 +16,8 @@
 // One JSON object per line on stdout — the shape a container log collector
 // wants, and greppable without a parser.
 
+import type { AuditOutcome } from "@getlibero/schema";
+
 export type LogLevel = "info" | "warn" | "error";
 
 export interface LogFields {
@@ -89,10 +91,15 @@ export interface LogFields {
    */
   destination?: string;
   /**
-   * What the proxy did with a tool call. The wire vocabulary, so a log line and
-   * the response the client got say the same word.
+   * What the proxy did with a tool call, or what it did with a decision about
+   * one. The audit log's vocabulary, of which the first four are also the
+   * wire's, so a log line and the response a client got say the same word.
+   *
+   * Written as the schema's type rather than repeated here, which makes the two
+   * agreeing a compile error rather than a review question — ./server.ts types
+   * its audit closure on the same union and passes the value to both.
    */
-  outcome?: "ran" | "held" | "refused" | "unavailable";
+  outcome?: AuditOutcome;
   /** Which team-sheet state a request resolved against. */
   sheet?: "active" | "absent" | "unusable";
   /** How many tools a listing returned. A count, not the list. */
@@ -109,6 +116,33 @@ export interface LogFields {
    * response envelope; nothing about it is a secret.
    */
   tokens?: number;
+  /**
+   * An approval ticket id.
+   *
+   * This file's rule is that no field may hold a credential value or a hash of
+   * one, so this one owes an argument. A ticket is **not** a credential: it is a
+   * capability the proxy minted, and it is worth nothing on its own. Spending
+   * one needs the channel's client certificate — which already permits every
+   * call the sheet allows — and a call matching the approved one byte for byte,
+   * and it stops working the moment it is used or fifteen minutes pass.
+   *
+   * What logging it buys is the join. A hold, a decision, and the call that ran
+   * are three requests with three different request ids, and the ticket is the
+   * only thing they share. The audit row carries the same id, and that file is
+   * the more sensitive of the two.
+   */
+  ticket?: string;
+  /** Who decided a held call. Attribution; see `ApproverId` in packages/schema. */
+  approver?: string;
+  /** Which way a human decided. */
+  decision?: "approve" | "deny";
+  /**
+   * What the broker did with a decision. Not a `reason`, for the same shape of
+   * argument `report` above makes: `already_decided` is a double click and
+   * `unknown` is a ticket that expired out of memory, and neither is a failure
+   * of the request that reported it.
+   */
+  approval?: "recorded" | "already_decided" | "expired" | "unknown";
 }
 
 export interface Logger {

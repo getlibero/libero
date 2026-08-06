@@ -6,11 +6,15 @@ description: The target deployment — two containers, one team sheet per channe
 :::caution[Not deployable yet]
 This page describes the target deployment. What exists today is phase 1, part-built: the proxy
 process starts, speaks mutual TLS, binds every request to a channel, enforces team sheets, holds
-credentials in an encrypted vault, injects them into outbound calls, and scrubs them back out of
-results. But the process still composes a placeholder dispatcher, so a permitted call answers 501
-rather than reaching an upstream — and approvals, budgets, the audit log, and the gateway do not
-exist. Do not run this against a workspace you care about: the parts that make it safe are not
-all built.
+credentials in an encrypted vault, injects them into outbound calls, scrubs them back out of
+results, meters the daily budget, and appends an audit row for every decided call. The Slack
+gateway and the agent loop exist and reach tools through the proxy.
+
+What is not finished: there is no real MCP server behind the dispatcher yet, and approvals are
+only half-built — the proxy holds a call and mints a ticket, but nothing renders the Slack card
+or re-submits the approved call, so a held call is relayed to the model as a refusal. The
+end-to-end suite that attacks all of this is not written, which is the one that would tell you
+the security property holds. Do not run this against a workspace you care about.
 :::
 
 ## The shape of a deployment

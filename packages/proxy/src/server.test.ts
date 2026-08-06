@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProxyError,
   type ResolvedToolCall,
@@ -835,10 +835,12 @@ describe("the durable audit record", () => {
       outcome: "held",
       refusal_reason: "approval_required",
       tool: "merge_pr",
-      // Reserved for #37. It cannot be back-filled — the table refuses UPDATE —
-      // so an approval is written on the row of the call that runs, or never.
+      // Not on this row. It cannot be back-filled — the table refuses UPDATE —
+      // so the approver is written on the decision's own row and again on the
+      // row of the call that ran. This row carries the ticket that joins them.
       approver: null
     });
+    expect(auditRows().at(-1)?.ticket).toEqual(expect.any(String));
   });
 
   // A call that ran and a call that was refused must not collapse into one row
@@ -1843,6 +1845,429 @@ describe("a permitted call with no upstream", () => {
     expect(ToolCallResponse.parse(response.body)).toMatchObject({
       outcome: "refused",
       refusal: { reason: "tool_not_allowed" }
+    });
+  });
+});
+
+/**
+ * The approval broker, end to end over real mutual TLS.
+ *
+ * Its own server, because expiry is the one thing here that needs a clock and
+ * the shared server above injects none. Everything else is shared — the same
+ * certificates, the same sheets, the same recording dispatcher — so a call that
+ * reaches the dispatcher here is a call that really got past enforcement.
+ *
+ * `SHEET` already carries `merge_pr` at `approval = "required"`, which is what
+ * every test below holds on.
+ */
+describe("the approval broker", () => {
+  let broker: Server;
+  let brokerPort: number;
+  let brokerAuditDir: string;
+  let brokerAuditFile: string;
+  let brokerAuditDb: AuditDb;
+  let brokerClock: number;
+
+  const HELD_CALL = asked({ id: "toolu_hold", server: "github", tool: "merge_pr", arguments: { pr: 42 } });
+
+  beforeAll(async () => {
+    brokerAuditDir = mkdtempSync(join(tmpdir(), "libero-proxy-approval-audit-"));
+    brokerAuditFile = join(brokerAuditDir, "audit.db");
+    brokerAuditDb = openAuditDb({ file: brokerAuditFile });
+
+    broker = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      spend: meter,
+      dispatcher,
+      audit: createSqliteAuditWriter({ db: brokerAuditDb }),
+      logger: createJsonLogger(() => {}),
+      // The whole reason this block has its own server: a test crosses a
+      // fifteen-minute deadline without waiting fifteen minutes.
+      now: () => brokerClock
+    });
+    await new Promise<void>(resolve => {
+      broker.listen(0, "127.0.0.1", () => {
+        brokerPort = (broker.address() as AddressInfo).port;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    broker.closeAllConnections();
+    await new Promise<void>(resolve => broker.close(() => resolve()));
+    brokerAuditDb.close();
+    rmSync(brokerAuditDir, { recursive: true, force: true });
+  });
+
+  let cursor = 0;
+
+  beforeEach(() => {
+    brokerClock = Date.UTC(2026, 7, 4, 12, 0, 0);
+    cursor = lastAuditId(brokerAuditFile);
+    dispatcher.seen.length = 0;
+  });
+
+  const send = (path: string, body: unknown, channel = CHANNEL): Promise<Response> =>
+    call(path, clientCert(certs, channel), "POST", brokerPort, JSON.stringify(body));
+
+  const rows = (): Record<string, unknown>[] => auditRows(brokerAuditFile, cursor);
+
+  /** Hold a call and hand back the ticket the proxy minted for it. */
+  async function hold(body: unknown = HELD_CALL): Promise<{ id: string; expiresAt: number }> {
+    const response = await send("/v1/tools/call", body);
+    expect(response.status).toBe(200);
+    return (response.body as { ticket: { id: string; expiresAt: number } }).ticket;
+  }
+
+  const decide = (
+    id: string,
+    decision: "approve" | "deny",
+    channel = CHANNEL,
+    approver = "U0BOSS"
+  ): Promise<Response> => send("/v1/approvals", { ticket: id, decision, approver }, channel);
+
+  describe("holding", () => {
+    it("hands back a ticket and a deadline, and records the hold against it", async () => {
+      const ticket = await hold();
+
+      expect(ticket.id).toEqual(expect.any(String));
+      expect(ticket.expiresAt).toBe(brokerClock + 900_000);
+      expect(rows().at(-1)).toMatchObject({
+        outcome: "held",
+        refusal_reason: "approval_required",
+        ticket: ticket.id,
+        approver: null
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+    });
+
+    // A call arriving with no ticket is a first submission whatever else is
+    // true of it, so it holds again rather than running. Two holds, two
+    // tickets: the second does not inherit the first's decision.
+    it("holds a second time rather than running, when the call comes back bare", async () => {
+      const first = await hold();
+      await decide(first.id, "approve");
+
+      const second = await hold();
+
+      expect(second.id).not.toBe(first.id);
+      expect(dispatcher.seen).toHaveLength(0);
+    });
+  });
+
+  describe("the approved path", () => {
+    it("serves the approved call and records who approved it", async () => {
+      const ticket = await hold();
+      const decision = await decide(ticket.id, "approve");
+      expect(decision.body).toEqual({ outcome: "recorded", ticket: ticket.id, decision: "approve" });
+
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(served.body).toMatchObject({ outcome: "ran", id: "toolu_hold" });
+      expect(dispatcher.seen.map(c => c.tool)).toEqual(["merge_pr"]);
+      expect(rows().map(row => [row.outcome, row.approver, row.ticket])).toEqual([
+        ["held", null, ticket.id],
+        ["approved", "U0BOSS", ticket.id],
+        ["ran", "U0BOSS", ticket.id]
+      ]);
+    });
+
+    // Reaching the dispatcher is what opens a connection and resolves a
+    // credential, so this is the assertion that a ticket is not a thing an
+    // upstream ever sees.
+    it("sends no ticket upstream", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+      await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(dispatcher.seen).toHaveLength(1);
+      expect(dispatcher.seen[0] && "ticket" in dispatcher.seen[0]).toBe(false);
+    });
+
+    it("meters the call the approval let through", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+      const before = (await meter.read(CHANNEL)).toolCalls;
+
+      await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect((await meter.read(CHANNEL)).toolCalls).toBe(before + 1);
+    });
+  });
+
+  describe("a re-submission that is not the approved call", () => {
+    it("refuses one carrying a ticket it never minted", async () => {
+      await hold();
+
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: "tk-never-minted" });
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_unknown" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+    });
+
+    it("refuses one whose ticket no human has decided", async () => {
+      const ticket = await hold();
+
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_pending" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+    });
+
+    it("refuses one a human declined, and records the deny with its approver", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "deny");
+
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_denied" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+      expect(rows().map(row => [row.outcome, row.approver, row.refusal_reason])).toEqual([
+        ["held", null, "approval_required"],
+        ["denied", "U0BOSS", "approval_denied"],
+        ["refused", null, "approval_denied"]
+      ]);
+    });
+
+    it("refuses the second run of a single-use ticket", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+      await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      const again = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(again.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_spent" }
+      });
+      expect(dispatcher.seen).toHaveLength(1);
+    });
+
+    // Approve-then-mutate. The attack the whole re-submission design exists to
+    // stop, so it is asserted on the reason *and* on the dispatcher.
+    it("refuses one whose arguments changed after approval", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+
+      const served = await send("/v1/tools/call", {
+        ...HELD_CALL,
+        arguments: { pr: 9999 },
+        ticket: ticket.id
+      });
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_mismatch" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+      // And the approval survives it: a bad re-submission does not destroy a
+      // decision a human gave.
+      const good = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(good.body).toMatchObject({ outcome: "ran" });
+    });
+
+    it("refuses one pointed at a different tool", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+
+      const served = await send("/v1/tools/call", {
+        ...HELD_CALL,
+        tool: "list_prs",
+        ticket: ticket.id
+      });
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_mismatch" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+    });
+  });
+
+  describe("the deadline", () => {
+    it("refuses a re-submission after it, and records the expiry once", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+      brokerClock = ticket.expiresAt;
+
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      const again = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_expired" }
+      });
+      expect(again.body).toMatchObject({ refusal: { reason: "approval_expired" } });
+      expect(dispatcher.seen).toHaveLength(0);
+
+      // One `expired` row for the ticket however many times it is presented,
+      // and no approver on it: the approval was too late to mean anything.
+      const expired = rows().filter(row => row.outcome === "expired");
+      expect(expired).toHaveLength(1);
+      expect(expired[0]).toMatchObject({ ticket: ticket.id, approver: null });
+    });
+
+    it("refuses a decision that arrives after it", async () => {
+      const ticket = await hold();
+      brokerClock = ticket.expiresAt;
+
+      const decision = await decide(ticket.id, "approve");
+
+      expect(decision.body).toEqual({ outcome: "expired", ticket: ticket.id });
+      expect(rows().filter(row => row.outcome === "approved")).toHaveLength(0);
+    });
+  });
+
+  describe("one channel cannot decide another's ticket", () => {
+    // The acceptance criterion, and the second half is what makes it a real
+    // test: after the foreign attempt fails, the ticket is still decidable by
+    // the channel that owns it, and the call still runs.
+    it("refuses the decision and leaves the ticket decidable by its own channel", async () => {
+      const ticket = await hold();
+
+      const foreign = await decide(ticket.id, "approve", OTHER_CHANNEL);
+
+      // Indistinguishable from a ticket that never existed. The lookup never
+      // reaches another channel's tickets, so there is nothing to leak.
+      expect(foreign.body).toEqual({ outcome: "unknown", ticket: ticket.id });
+      expect(rows().filter(row => row.outcome === "approved")).toHaveLength(0);
+
+      const mine = await decide(ticket.id, "approve");
+      expect(mine.body).toMatchObject({ outcome: "recorded" });
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(served.body).toMatchObject({ outcome: "ran" });
+    });
+
+    it("refuses a re-submission of another channel's ticket", async () => {
+      // The other channel gets the *same* sheet on purpose. Without it this
+      // would refuse on the sheet before the ticket was ever consulted, and
+      // would pass whether or not tickets were scoped at all. With it,
+      // enforcement says yes for both channels and the only thing left that can
+      // refuse is that the ticket belongs to someone else.
+      writeSheet(OTHER_CHANNEL, SHEET);
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id }, OTHER_CHANNEL);
+
+      expect(served.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "approval_unknown" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+
+      // And it is still spendable by the channel that owns it.
+      const mine = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(mine.body).toMatchObject({ outcome: "ran" });
+    });
+  });
+
+  describe("the sheet still governs a redeemed call", () => {
+    afterEach(() => {
+      writeSheet(CHANNEL, SHEET);
+    });
+
+    /**
+     * The most important test in this issue.
+     *
+     * A ticket is not a permission. Fifteen minutes pass between the hold and
+     * the click, and an operator's edit inside that window has to win — else an
+     * approval is a bypass, which is the thing the feature exists to prevent.
+     *
+     * The second half matters as much: the refusal does not burn the approval,
+     * so fixing the sheet inside the window does not cost the human a second
+     * click.
+     */
+    it("refuses a redemption the sheet no longer allows, without spending the ticket", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+
+      writeSheet(CHANNEL, SHEET.replace('  [[mcp_server.tool]]\n  name = "merge_pr"\n  approval = "required"\n', ""));
+      const refused = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(refused.body).toMatchObject({
+        outcome: "refused",
+        refusal: { reason: "tool_not_allowed" }
+      });
+      expect(dispatcher.seen).toHaveLength(0);
+
+      writeSheet(CHANNEL, SHEET);
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(served.body).toMatchObject({ outcome: "ran" });
+    });
+
+    // The operator turned approval off during the hold, so the call runs on its
+    // own merits — and the ticket is spent anyway, because it named this exact
+    // call and leaving it live would let a second re-submission run a second.
+    it("spends the ticket even when the sheet stopped requiring approval", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve");
+
+      writeSheet(CHANNEL, SHEET.replace('  name = "merge_pr"\n  approval = "required"', '  name = "merge_pr"\n  approval = "none"'));
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(served.body).toMatchObject({ outcome: "ran" });
+
+      const again = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(again.body).toMatchObject({ refusal: { reason: "approval_spent" } });
+      expect(dispatcher.seen).toHaveLength(1);
+    });
+  });
+
+  describe("the decision route", () => {
+    it("keeps the first verdict when a second click disagrees", async () => {
+      const ticket = await hold();
+      await decide(ticket.id, "approve", CHANNEL, "U0FIRST");
+
+      const second = await decide(ticket.id, "deny", CHANNEL, "U0SECOND");
+
+      expect(second.body).toEqual({
+        outcome: "already_decided",
+        ticket: ticket.id,
+        decision: "approve"
+      });
+      expect(rows().filter(row => row.outcome === "denied")).toHaveLength(0);
+      const served = await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+      expect(served.body).toMatchObject({ outcome: "ran" });
+    });
+
+    it("refuses a body that names a channel", async () => {
+      const ticket = await hold();
+
+      const response = await send("/v1/approvals", {
+        ticket: ticket.id,
+        decision: "approve",
+        approver: "U0BOSS",
+        channel: OTHER_CHANNEL
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it("answers 405 to a GET", async () => {
+      const response = await call("/v1/approvals", clientCert(certs, CHANNEL), "GET", brokerPort);
+
+      expect(response.status).toBe(405);
+    });
+
+    it("needs a certificate like every other route", async () => {
+      await expect(
+        call("/v1/approvals", undefined, "POST", brokerPort, JSON.stringify({}))
+      ).rejects.toThrow();
     });
   });
 });

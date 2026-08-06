@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { CHANNEL_ID_PATTERN, RequestingUser, ResourceName, TaskId } from "./names.js";
+import { ApprovalTicket } from "./approval.js";
+import { ApprovalTicketId, CHANNEL_ID_PATTERN, RequestingUser, ResourceName, TaskId } from "./names.js";
 import { ToolRefusal } from "./refusal.js";
 
 /**
@@ -60,10 +61,12 @@ export const ToolCall = z
      * A rule built on this field would be a rule a compromised agent rewrites
      * by editing a string.
      *
-     * Approval identity is a different thing and a stronger one. The approval
-     * broker (#37) takes the approver from the Slack interaction payload, which
-     * the agent never touches — that is why a human can authorize a call and
-     * this field cannot.
+     * Approval identity is a different thing and a stronger one. The broker
+     * takes the approver from a Slack interaction payload, which gateway code
+     * observes rather than the model producing it — so it holds against a
+     * prompt-injected model, where this field does not. It is still relayed by
+     * the agent process, so it does not hold against a compromised one; see
+     * `ApproverId`. Stronger, and not unconditional.
      */
     requestingUser: RequestingUser,
 
@@ -78,7 +81,27 @@ export const ToolCall = z
      * what a log says without changing what a decision does; keeping it out of
      * the decision is what keeps that harmless.
      */
-    task: TaskId
+    task: TaskId,
+
+    /**
+     * The approval ticket this call is a re-submission of, when it is one.
+     *
+     * Optional, and **explicitly declared** — this object is `.strict()`, and a
+     * field that had to be tolerated rather than designed is exactly the trap
+     * that strictness exists to remove. Absent on a first submission, which is
+     * the only kind of call there was before the approval broker.
+     *
+     * Unlike the two fields above, a decision **does** read this one, so the
+     * rule they state — what a decision reads must be proved — has to hold for
+     * it. It does, in a way neither of them could: the ticket proves nothing by
+     * itself. It is matched against a record the proxy minted from its own
+     * observation of the held call, in the channel the certificate named,
+     * single-use, and expiring; and the team sheet is enforced again at
+     * redemption, so redeeming one never widens what this channel may call. All
+     * it can answer is "a human approved this exact call", and a compromised
+     * agent inventing a value here gets a refusal, not a call.
+     */
+    ticket: ApprovalTicketId.optional()
   })
   .strict();
 
@@ -153,10 +176,14 @@ export type ToolResult = z.infer<typeof ToolResult>;
  *
  * `held` is separate from `refused` on purpose. Both mean the call did not
  * run, but a hold is a question put to a human and a refusal is an answer, and
- * the approval broker (#37) needs to tell them apart without re-deriving the
- * distinction from the refusal reason. Until that broker exists a client that
- * treats a hold as a refusal is behaving correctly — which is why the hold
- * carries the full refusal rather than a bare marker.
+ * the approval broker needs to tell them apart without re-deriving the
+ * distinction from the refusal reason.
+ *
+ * A hold now carries the ticket that makes it answerable, and still carries the
+ * full refusal beside it. That is the degradation rather than the point: a
+ * client that ignores the ticket and relays the hold as an ordinary refusal is
+ * **safe** — it abandons the call, and nothing runs — but it abandons a call a
+ * human could have approved. Waiting on the ticket is what #127 adds.
  *
  * Every variant echoes `id` so a client with several calls in flight can match
  * the answer to the tool-use block that asked for it.
@@ -173,7 +200,17 @@ export const ToolCallResponse = z.discriminatedUnion("outcome", [
     .object({
       outcome: z.literal("held"),
       id: z.string().min(1).max(128),
-      refusal: ToolRefusal
+      refusal: ToolRefusal,
+      /**
+       * What the client renders on the card, and what a re-submission carries
+       * back.
+       *
+       * **Required, not optional.** A held response without a ticket is a hold
+       * nobody can act on, and every deployment mints one — an optional field
+       * here would be a hole for a proxy that forgot to, and the client would
+       * have to handle a case that must not exist.
+       */
+      ticket: ApprovalTicket
     })
     .strict(),
   z

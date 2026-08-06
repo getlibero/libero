@@ -125,6 +125,38 @@ under-reports, so the budget fails open. It is a shutdown issue rather than a
 metering one — a drain also decides whether a task finishing during shutdown
 posts its answer, which today it deliberately does not.
 
+**A held call now mints a ticket, and only the proxy half exists.**
+`packages/proxy/src/approvals.ts` is the ticket store and `approvals-route.ts`
+is `POST /v1/approvals` (#125). The shapes are in `packages/schema/src/approval.ts`.
+A ticket authorizes one call — one server, one tool, one argument hash — once,
+in one channel, for fifteen minutes, and an approved call runs by
+**re-submission**: the client re-sends the call carrying the ticket and the
+proxy serves it only on a byte-for-byte match.
+
+Two things there are load-bearing. **A ticket is not a permission**: the sheet
+is enforced when it is minted and again at redemption, from the live sheet, so
+an operator's edit during the hold beats a click that preceded it and an
+approval can never widen what a channel may call. A sheet refusal deliberately
+does not spend the ticket. And **channel scoping is the map's shape** — tickets
+are keyed by channel then id, so a lookup cannot reach another channel's, which
+is why a foreign ticket and a nonexistent one are one answer rather than two
+made to look alike.
+
+The trust claim is the `daily_tokens` one again, and the docs say it that way:
+the click is observed by gateway code rather than produced by a model, so
+approver identity holds against a **prompt-injected model** and not against a
+**compromised agent process**, which relays it. Tool credentials survive process
+compromise; approvals survive prompt injection.
+
+**#126 and #127 are not built**, so nothing renders a card and nothing
+re-submits: `packages/agent/src/proxy/tools.ts` still relays a hold to the model
+as an error result, which is safe — it abandons the call — and abandons one a
+human could have approved. Tickets are in memory, so a proxy restart drops
+pending approvals and they degrade to expiry. `audit.db` is at schema version 2
+with the repository's first migration (#125), and its vocabulary now carries
+`approved`, `denied`, and `expired` plus a `ticket` column joining an approval's
+rows.
+
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
 of record, not a description of what exists. `docs/ARCHITECTURE.md` and
@@ -263,11 +295,11 @@ These are load-bearing, not stylistic:
   don't redefine those shapes locally. `channels/example/channel.toml` is the
   documented starter sheet and should stay in sync with the zod schema.
   Built today: the team sheet, the tool call and its response, the tool
-  listing, refusals, the spend report, the proxy error shape, and the audit
-  record. Both services import them — `packages/agent` since #109, which is what
-  makes "the two ends agree on one definition" true rather than aspirational.
-  Approvals and memory ops are still where those shapes go when the code needing
-  them lands, not something you can import yet.
+  listing, refusals, the spend report, the proxy error shape, the audit
+  record, and the approval ticket and decision. Both services import them —
+  `packages/agent` since #109, which is what makes "the two ends agree on one
+  definition" true rather than aspirational. Memory ops are still where that
+  shape goes when the code needing it lands, not something you can import yet.
 
   `src/audit.ts` is the one shape that never crosses the wire: the proxy builds
   it from its own observation and the CLI reads it back out of SQLite. It is in

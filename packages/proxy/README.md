@@ -26,6 +26,17 @@ credential injection into outbound HTTP calls.
   tokens — so the report route can be handed the last of those and nothing
   else. A dispatcher is handed the team-sheet entry enforcement matched, not the
   sheet — the entry that authorized a call is the entry the call goes to.
+- `approvals.ts` / `approvals-route.ts` — the HITL broker: the ticket store and
+  the route a human's click arrives on. Tickets are in memory, keyed by channel
+  and then by id so a lookup structurally cannot reach another channel's — which
+  is why a foreign ticket and one that never existed are genuinely the same
+  answer. A spent or expired ticket is kept rather than deleted, so "you already
+  used this" does not collapse into "there is no such thing"; a mismatched
+  re-submission does not spend one, so a bad retry cannot destroy a human's
+  decision. The route is the second with no sheet on it, and the first other
+  than `/v1/tools/call` that writes an audit row — because a decision is a fact
+  about a call made by a request that is not one, so the row is written there or
+  never.
 - `budget-db.ts` / `budget-meter.ts` / `budget-admin.ts` — the daily meter over
   `node:sqlite`: counters keyed `(channel, UTC day)` so rollover is a key change
   rather than a sweep, a turn-id table so a retried report cannot double-count,
@@ -100,7 +111,7 @@ error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
 Still to come, each with its own issue: the egress allowlist (#73), the MCP
-client pool (#39), the approval broker, and the audit log's read path (#98).
+client pool (#39), and the audit log's read path (#98).
 `http-dispatcher.ts` marks where the egress check slots in.
 
 **A permitted call is now served.** `apps/proxy-server` composes the real meter
@@ -133,6 +144,25 @@ anonymous surface.
 | `GET /v1/tools` | what this channel may call | `{ tools: [{ server, tool, approval }] }` |
 | `POST /v1/tools/call` | one tool call | `ToolCall` in, `ToolCallResponse` out |
 | `POST /v1/spend` | what a turn cost | `SpendReport` in, `{ outcome }` out; no decision is made on it |
+| `POST /v1/approvals` | a human's decision on a held call | `ApprovalDecision` in, `ApprovalDecisionResponse` out; the ticket id is in the body |
+
+**Approvals.** A tool marked `approval = "required"` is held rather than refused:
+the proxy mints a ticket, and the `held` response carries its id and its
+deadline. A human's click comes back on `/v1/approvals`, and the approved call
+runs by **re-submission** — the same call again, carrying the ticket, served
+only if the server, the tool, and the argument hash all match. One ticket, one
+call, one channel, fifteen minutes. Tickets are in memory, so a restart drops
+pending ones and they degrade to expiry; nothing is served unapproved either
+way.
+
+Two things about that route are worth reading as claims rather than as
+description. It **resolves no team sheet** — the sheet is enforced when the
+ticket is minted and again when it is redeemed, both on `/v1/tools/call`, so an
+approval can never widen what a channel may call and an operator's edit during
+the hold beats a click that preceded it. And it **cannot mint or redeem** a
+ticket: it closes over `ApprovalDecider`, so a route that could manufacture an
+approval for a call of its choosing does not exist. Both are enforced by the
+import bans in `eslint.config.mjs`, not just asserted here.
 
 Two gates, deliberately. `/v1/tools` keeps an unlisted tool out of the model's
 context; `/v1/tools/call` is what actually enforces, and it holds on its own —

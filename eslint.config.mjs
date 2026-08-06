@@ -186,5 +186,43 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    // The fifth: the approval broker. Two claims, both readable as an import
+    // list and now both enforced.
+    //
+    // **It decides nothing about permission.** The team sheet is enforced when
+    // a ticket is minted and again when it is redeemed, both on /v1/tools/call.
+    // A third read here could authorize nothing — this code serves no call —
+    // and could withhold nothing, because the redemption check would catch it
+    // anyway. What it would do is put an enforcement decision on a path with no
+    // call to decide about, which is where the next mistake goes.
+    //
+    // **It serves nothing.** An approval is not a capability to run something:
+    // it answers "a human approved this exact call" and hands that back to the
+    // route, which still has to get past enforcement and the meter. A module
+    // here that could reach the dispatcher or the vault could turn a click into
+    // a call on its own, and the whole design is that it cannot.
+    files: ["packages/proxy/src/approvals.ts", "packages/proxy/src/approvals-route.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "**/team-sheet-store*",
+                "**/enforce*",
+                "**/dispatch*",
+                "**/vault*",
+                "@getlibero/proxy"
+              ],
+              message:
+                "The approval broker decides no permission and serves no call. The sheet is enforced on /v1/tools/call, at mint and again at redemption; a ticket only says a human approved one exact call."
+            }
+          ]
+        }
+      ]
+    }
   }
 );

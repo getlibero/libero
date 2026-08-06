@@ -192,9 +192,16 @@ describe("calling a tool", () => {
 // the model relays it — that is the whole reason `ToolCallResponse` is not a
 // `ProxyError`.
 describe("a call the proxy would not run", () => {
+  // A hold carries the ticket that makes it answerable; a refusal does not. The
+  // client still relays both as error content — waiting on the ticket is #127.
   const answer = (outcome: "refused" | "held", refusal: unknown): ProxyResponse => ({
     status: 200,
-    body: { outcome, id: "call-1", refusal }
+    body: {
+      outcome,
+      id: "call-1",
+      refusal,
+      ...(outcome === "held" ? { ticket: { id: "tk-7f3a", expiresAt: Date.UTC(2026, 7, 4, 12, 15) } } : {})
+    }
   });
 
   it("relays a refusal as error content rather than throwing", async () => {

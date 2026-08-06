@@ -10,6 +10,12 @@ const samples: Record<RefusalReason, ToolRefusal> = {
   tool_not_allowed: { reason: "tool_not_allowed", server: "github", tool: "delete_repo" },
   server_ambiguous: { reason: "server_ambiguous", server: "github", tool: "list_prs" },
   approval_required: { reason: "approval_required", server: "github", tool: "trigger_workflow" },
+  approval_pending: { reason: "approval_pending", server: "github", tool: "trigger_workflow" },
+  approval_unknown: { reason: "approval_unknown", server: "github", tool: "trigger_workflow" },
+  approval_expired: { reason: "approval_expired", server: "github", tool: "trigger_workflow" },
+  approval_spent: { reason: "approval_spent", server: "github", tool: "trigger_workflow" },
+  approval_denied: { reason: "approval_denied", server: "github", tool: "merge_pr" },
+  approval_mismatch: { reason: "approval_mismatch", server: "github", tool: "merge_pr" },
   budget_exhausted: { reason: "budget_exhausted", limit: "daily_tool_calls" },
   egress_denied: { reason: "egress_denied", destination: "api.example.net" },
   credential_unresolved: { reason: "credential_unresolved", credential: "github_service_account" }

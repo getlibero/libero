@@ -89,6 +89,42 @@ export const RequestingUser = identifier();
 export const TaskId = identifier();
 
 /**
+ * An approval ticket, as it travels between the proxy, the agent, and the card.
+ *
+ * Minted by the proxy and opaque to everything else — a bearer capability, not
+ * an identity and not a permission. Constrained to this alphabet rather than to
+ * a UUID because the mint's format is the proxy's business (it is `randomUUID`
+ * today), and pinning it in a wire schema would make changing it a schema
+ * change. The bound is here for the reason every bound in this file is: it lands
+ * in a log line and an audit row.
+ *
+ * **A ticket proves nothing on its own, and that is why it may be carried on a
+ * model-authored request.** Spending one needs the channel's client certificate,
+ * which already permits every call the sheet allows, *and* a call matching the
+ * one a human approved byte for byte. What it answers is "a human approved this
+ * exact call" — a question no field an agent asserts could answer by asserting
+ * an answer to it.
+ */
+export const ApprovalTicketId = identifier();
+
+/**
+ * The human who decided a held call, as the gateway observed them.
+ *
+ * **Attribution, and a stronger claim than `RequestingUser` — but not
+ * authentication.** The click is read out of a Socket Mode interactive envelope
+ * by gateway code, which is not model output, so a prompt-injected model cannot
+ * forge one. It reaches the proxy through the agent process, over a route the
+ * model has no tool for, so a *compromised agent process* can. That is the same
+ * narrower claim `daily_tokens` makes, for the same reason, and the alternative
+ * — the proxy reading Slack itself — is rejected in the architecture because it
+ * makes the proxy the gateway.
+ *
+ * Nothing authorizes on it. It gates no call and selects no policy; it is
+ * written to the audit row so an operator can see who said yes.
+ */
+export const ApproverId = identifier();
+
+/**
  * A channel id — the one name here that is not a name at all but a principal.
  *
  * Load-bearing rather than hygiene. The id becomes a directory name

@@ -43,6 +43,27 @@ describe("the wire tool call", () => {
     expect(ToolCall.safeParse({ ...wire, authorization: "Bearer sk-live-abc" }).success).toBe(false);
   });
 
+  // A first submission carries no ticket, which is every call there was before
+  // the approval broker. Absent rather than null: `exactOptionalPropertyTypes`
+  // makes present-and-undefined a different thing, and the proxy branches on it.
+  it("accepts a call with no ticket, and leaves the field absent", () => {
+    const parsed = ToolCall.parse(wire);
+    expect(parsed.ticket).toBeUndefined();
+    expect("ticket" in parsed).toBe(false);
+  });
+
+  it("carries a ticket on a re-submission", () => {
+    expect(ToolCall.parse({ ...wire, ticket: "tk-7f3a" }).ticket).toBe("tk-7f3a");
+  });
+
+  // Bounded like every other name here. The value is model-reachable, and it
+  // lands in a log line and an audit row.
+  it("rejects a ticket that is not a short identifier", () => {
+    for (const bad of ["", "a".repeat(65), "../../etc", "has space", null]) {
+      expect(ToolCall.safeParse({ ...wire, ticket: bad }).success).toBe(false);
+    }
+  });
+
   it("rejects a missing id, server, or tool", () => {
     expect(ToolCall.safeParse(without("id")).success).toBe(false);
     expect(ToolCall.safeParse(without("server")).success).toBe(false);
@@ -132,28 +153,48 @@ describe("resolving a call to a channel", () => {
 
 describe("the proxy's answer to a call", () => {
   const refusal = { reason: "tool_not_allowed", server: "github", tool: "force_push" } as const;
+  const ticket = { id: "tk-7f3a", expiresAt: Date.UTC(2026, 7, 4, 12, 15, 0) } as const;
 
   it("parses each of the three outcomes", () => {
     expect(
       ToolCallResponse.parse({ outcome: "ran", id: "toolu_01", result: { content: "ok" } })
     ).toEqual({ outcome: "ran", id: "toolu_01", result: { content: "ok", isError: false } });
 
-    for (const outcome of ["held", "refused"] as const) {
-      expect(ToolCallResponse.parse({ outcome, id: "toolu_01", refusal })).toEqual({
-        outcome,
-        id: "toolu_01",
-        refusal
-      });
-    }
+    expect(ToolCallResponse.parse({ outcome: "held", id: "toolu_01", refusal, ticket })).toEqual({
+      outcome: "held",
+      id: "toolu_01",
+      refusal,
+      ticket
+    });
+
+    expect(ToolCallResponse.parse({ outcome: "refused", id: "toolu_01", refusal })).toEqual({
+      outcome: "refused",
+      id: "toolu_01",
+      refusal
+    });
   });
 
   // Held and refused both mean the call did not run, and they are still two
   // answers: a hold is a question put to a human, and the approval broker has
   // to tell them apart without re-deriving it from the refusal reason.
   it("keeps held and refused distinct", () => {
-    const held = ToolCallResponse.parse({ outcome: "held", id: "toolu_01", refusal });
+    const held = ToolCallResponse.parse({ outcome: "held", id: "toolu_01", refusal, ticket });
     const refused = ToolCallResponse.parse({ outcome: "refused", id: "toolu_01", refusal });
     expect(held.outcome).not.toBe(refused.outcome);
+  });
+
+  // A hold nobody can act on is not a hold. Every deployment mints a ticket, so
+  // the field is required rather than optional and a proxy that forgot one
+  // fails here instead of handing the client a case that must not exist.
+  it("refuses a hold with no ticket on it", () => {
+    expect(ToolCallResponse.safeParse({ outcome: "held", id: "toolu_01", refusal }).success).toBe(false);
+  });
+
+  // The deadline is the proxy's, and a refusal is not a place to put one.
+  it("keeps the ticket off the refused variant", () => {
+    expect(
+      ToolCallResponse.safeParse({ outcome: "refused", id: "toolu_01", refusal, ticket }).success
+    ).toBe(false);
   });
 
   it("rejects a variant carrying the other's payload", () => {

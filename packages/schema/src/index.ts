@@ -7,4 +7,5 @@ export * from "./tool-call.js";
 export * from "./tool-listing.js";
 export * from "./refusal.js";
 export * from "./spend-report.js";
+export * from "./approval.js";
 export * from "./audit.js";

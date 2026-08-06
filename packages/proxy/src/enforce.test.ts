@@ -293,6 +293,37 @@ describe("which upstream an allow names", () => {
     });
   });
 
+  // A hold carries one too, and it has to: an approved call comes back as a
+  // re-submission, is enforced again, and in the ordinary case that second
+  // decision is another hold — so the hold path is what the dispatcher runs
+  // from on every approved call. A hold with no upstream would leave a redeemed
+  // call with nowhere to go.
+  it("carries the same entry on a hold that it would on an allow", () => {
+    const held = decide({ sheet, call: callTo("github", "trigger_workflow"), spend: NO_SPEND });
+    const allowed = decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND });
+
+    expect(held.outcome).toBe("hold");
+    expect(held.outcome === "hold" && held.upstream).toEqual(allowed.outcome === "allow" && allowed.upstream);
+    expect(held.outcome === "hold" && held.upstream.url).toBe(UPSTREAM);
+  });
+
+  // The ordering at the top of `decide` is unchanged by that: a sheet whose
+  // blocks contradict each other is refused before approval is ever consulted,
+  // so no human is asked to approve a call that has nowhere to go.
+  it("refuses an ambiguous sheet rather than holding it with an upstream", () => {
+    const ambiguous = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://a:3001", tool: [{ name: "deploy_app" }] },
+        { name: "github", transport: "http", url: "http://b:3001", tool: [{ name: "deploy_app" }] }
+      ]
+    });
+    const decision = decide({ sheet: ambiguous, call: callTo("github", "deploy_app"), spend: NO_SPEND });
+
+    expect(decision.outcome).toBe("refuse");
+    expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("server_ambiguous");
+  });
+
   // The bypass this closes: block A lists the tool, block B shares the name and
   // points somewhere else. The call must go to A, which authorized it.
   it("picks the block that lists the tool, not the first block with the name", () => {
