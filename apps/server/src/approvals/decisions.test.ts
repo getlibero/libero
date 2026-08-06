@@ -143,10 +143,11 @@ describe("a click that never reaches the proxy", () => {
   });
 
   // The card sits in the channel whose certificate minted the ticket; a click
-  // observed anywhere else did not come from that card. The registry's lookup
-  // is scoped by the click's channel, so a foreign click and a ticket that
-  // never existed are one answer — the proxy's shape, for the proxy's reason.
-  it("drops a click from another channel, without asking the proxy", async () => {
+  // observed anywhere else did not come from that card. The drop is identical
+  // to an unknown ticket — nothing relayed, nothing settled — but the log line
+  // says channel_mismatch at warn, because a click naming a real wait in the
+  // wrong channel is an operator's signal rather than a stale card's noise.
+  it("drops a click from another channel, without asking the proxy, and flags it", async () => {
     const { registry, settled } = waiting();
     const { approvals, asked } = fakeApprovals(() => ({ outcome: "unknown", ticket: TICKET }));
     const { logger, lines } = capturingLogger();
@@ -158,7 +159,13 @@ describe("a click that never reaches the proxy", () => {
     expect(asked).toEqual([]);
     expect(settled).toEqual([]);
     expect(lines).toContainEqual(
-      expect.objectContaining({ event: "approval_ignored", reason: "unknown_ticket" })
+      expect.objectContaining({
+        level: "warn",
+        event: "approval_ignored",
+        reason: "channel_mismatch",
+        channel: "C99OTHER1",
+        ticket: TICKET
+      })
     );
   });
 

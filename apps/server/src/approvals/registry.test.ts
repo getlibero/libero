@@ -63,3 +63,36 @@ describe("the approval registry", () => {
     expect(registry.get(CHANNEL, "tk-2")).toBe(kept);
   });
 });
+
+// The boolean exists for one log line: channel_mismatch instead of
+// unknown_ticket when a click names a real wait in the wrong channel. It never
+// hands back an entry, so nothing found through it can be settled.
+describe("heldElsewhere", () => {
+  it("is true for a ticket held under a different channel", () => {
+    const registry = createApprovalRegistry();
+    registry.register(CHANNEL, "tk-1", entry());
+
+    expect(registry.heldElsewhere("C99OTHER1", "tk-1")).toBe(true);
+  });
+
+  it("is false for a ticket held under the asking channel itself", () => {
+    const registry = createApprovalRegistry();
+    registry.register(CHANNEL, "tk-1", entry());
+
+    expect(registry.heldElsewhere(CHANNEL, "tk-1")).toBe(false);
+  });
+
+  it("is false for a ticket held nowhere", () => {
+    const registry = createApprovalRegistry();
+
+    expect(registry.heldElsewhere(CHANNEL, "tk-never")).toBe(false);
+  });
+
+  it("goes false again once the wait settles", () => {
+    const registry = createApprovalRegistry();
+    registry.register(CHANNEL, "tk-1", entry());
+    registry.remove(CHANNEL, "tk-1");
+
+    expect(registry.heldElsewhere("C99OTHER1", "tk-1")).toBe(false);
+  });
+});
