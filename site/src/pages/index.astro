@@ -31,7 +31,7 @@ const enforced = [
   {
     label: 'Isolation',
     title: 'One database file per channel',
-    body: 'Channel state — history, curated memory, skills — is a SQLite file scoped to that channel. The file-per-channel layout is the isolation boundary, so there is no schema or query that can join across channels by accident.',
+    body: 'Channel content — the history, memory, and skills that land in later phases — gets a SQLite file scoped to that channel. The file-per-channel layout is the isolation boundary, so there is no schema or query that can join across channels by accident.',
   },
 ];
 

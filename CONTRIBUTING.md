@@ -16,9 +16,10 @@ A Contributor License Agreement (Apache-style) is required from your first PR; a
 
 ## Ground rules that CI enforces
 
-- **`packages/agent` may never import `packages/proxy`.** The only path from agent to tools is the network call. An ESLint `no-restricted-imports` rule and a CI check enforce this; PRs that route around it will not merge regardless of how convenient it is.
-- **MIT/Apache-2.0 dependencies only** in the core. The license gate fails the build on copyleft.
+- **`packages/agent` may never import `packages/proxy`.** The only path from agent to tools is the network call. An ESLint `no-restricted-imports` rule and a grep-level CI job enforce this; PRs that route around either will not merge regardless of how convenient it is.
+- **MIT/Apache-2.0 dependencies only** in the core. The license gate fails the build on copyleft. Per [GOVERNANCE.md](GOVERNANCE.md), AGPL/SSPL and commercially-licensed packages are excluded; the latter are allowed only as optional, user-installed adapters.
 - **`packages/proxy` requires CODEOWNERS review.** The proxy is the security boundary; changes there get extra scrutiny by design.
+- **Privileged workflows must not check out code.** Any `pull_request_target` workflow containing an `actions/checkout` step fails CI.
 - TypeScript strict, lint, and tests must pass.
 
 ## What we most need
