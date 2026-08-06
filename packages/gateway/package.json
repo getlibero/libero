@@ -2,7 +2,7 @@
   "name": "@getlibero/gateway",
   "version": "0.0.1",
   "private": true,
-  "description": "Slack gateway for Libero: Socket Mode adapter, channel router, message store.",
+  "description": "Slack gateway for Libero: Socket Mode adapter, mention intake, approval cards.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

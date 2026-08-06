@@ -21,12 +21,12 @@ const enforced = [
   {
     label: 'Budgets',
     title: 'Spend is metered where it cannot be argued with',
-    body: 'Tokens and tool calls, per channel per day. The agent loop caps itself too, but the proxy’s meter is the authoritative one. A soft limit warns in-thread; a hard limit stops the loop until an admin resets it or the day rolls over.',
+    body: 'Tokens and tool calls, per channel per day. The agent loop caps itself too, but the proxy’s meter is the authoritative one. A hard limit stops the loop until an admin resets it or the day rolls over; a soft warning before it bites is on the roadmap.',
   },
   {
     label: 'Audit',
     title: 'Every call, appended and never rewritten',
-    body: 'Timestamp, channel, requesting user, task id, tool, server, argument hash, result status, tokens, and the approver if there was one. Append-only SQLite with no UPDATE or DELETE grant for the service role. Query and export it with libero audit.',
+    body: 'Timestamp, channel, requesting user, task id, tool, server, argument hash, outcome, result size, and the approver if there was one. Append-only SQLite: triggers abort any UPDATE or DELETE. A query-and-export command is on the roadmap.',
   },
   {
     label: 'Isolation',
@@ -57,8 +57,8 @@ const phases = [
 
     <p class="hero__sub">
       Libero runs <strong>one shared session per channel</strong> — not one per user. It holds no
-      credentials, calls only the tools that channel&rsquo;s team sheet allows, and stops for a human
-      click before anything destructive. Self-hosted, MIT, model-agnostic.
+      tool credentials, calls only the tools that channel&rsquo;s team sheet allows, and stops for a
+      human click before anything destructive. Self-hosted, MIT, model-agnostic.
     </p>
 
     <div class="hero__actions">
@@ -105,7 +105,7 @@ const phases = [
           <div class="lb-row"><span class="lb-row__name">channel router · (team, channel) → session</span></div>
           <div class="lb-row"><span class="lb-row__name">agent loop · bring your own model</span></div>
           <div class="lb-row">
-            <span class="lb-row__name">credentials</span>
+            <span class="lb-row__name">tool credentials</span>
             <span class="pill-neutral">none</span>
           </div>
         </div>
@@ -177,11 +177,14 @@ const phases = [
 
       <div>
         <div class="sample-title">
-          <span class="lb-label lb-label--tight">channels/engineering/channel.toml</span>
+          <span class="lb-label lb-label--tight">channels/C024BE91L/channel.toml</span>
           <span class="lb-pill lb-pill--allowed"><span class="lb-dot"></span>valid</span>
         </div>
         <pre class="sample sample--titled"><code><i># Nothing here is a secret. Credentials are names,</i>
 <i># resolved only inside the proxy's vault.</i>
+
+<b>[channel]</b>
+name = <span>"engineering"</span>
 
 <b>[budget]</b>
 daily_tokens     = 2_000_000
@@ -189,6 +192,8 @@ daily_tool_calls = 400
 
 <b>[[mcp_server]]</b>
 name       = <span>"github"</span>
+transport  = <span>"http"</span>
+url        = <span>"http://mcp-github:3001"</span>
 credential = <span>"github_service_account"</span>
 
   <i># Tools not listed here do not exist</i>

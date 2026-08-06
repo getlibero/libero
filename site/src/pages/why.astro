@@ -42,9 +42,11 @@ import { SITE } from '../consts';
         thing that crosses is a tool call and its result.
       </p>
       <p>
-        Compromise the agent process completely and you get no credentials, only the tool surface
-        that channel&rsquo;s team sheet already allowed, and a log entry for every attempt. That is
-        the whole design. Everything else is a consequence of it.
+        Compromise the agent process completely and you get no tool credentials, only the tool
+        surface that channel&rsquo;s team sheet already allowed, and a log entry for every attempt.
+        The Slack tokens and the model key live in that process — the gateway cannot hold the
+        socket without them — and neither reaches anything a team sheet governs. That is the whole
+        design. Everything else is a consequence of it.
       </p>
       <p>
         The rule is enforced in the code too: <code>packages/agent</code> may never import

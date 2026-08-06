@@ -76,8 +76,9 @@ total tokens, and one turn's output. The agent loop enforces them, and a task th
 and says which. They bound a single runaway task — the per-day spend limit is `[budget]` below,
 metered in the proxy. Every cap has a default, so a channel with no `[llm]` block is still capped.
 
-Libero is model-agnostic — Anthropic, OpenAI, Google, Groq and Ollama are supported directly, and
-the optional LiteLLM sidecar covers everything else behind an OpenAI-compatible endpoint.
+Libero is model-agnostic — Anthropic is supported natively; OpenAI, Groq, Ollama, and Gemini
+work through their OpenAI-compatible endpoints, and the optional LiteLLM sidecar covers everything
+else behind one.
 
 ### `[budget]`
 
@@ -131,6 +132,9 @@ It takes effect on the next call, with no restart:
 docker compose run --rm proxy node dist/budget.js reset C024BE91L
 docker compose run --rm proxy node dist/budget.js show  C024BE91L
 ```
+
+(Until the images build — see [self-hosting](/docs/self-hosting) — run the same entrypoint
+directly: `pnpm budget` in `apps/proxy-server`.)
 
 A soft limit that warns in-thread before the hard one bites is on the roadmap and is not built:
 today the hard limit is the only one, and it refuses rather than warns.

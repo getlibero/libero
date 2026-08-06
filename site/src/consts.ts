@@ -29,7 +29,7 @@ export const SITE = {
    * not length-bound.
    */
   description:
-    'A self-hosted AI teammate for Slack channels. Credentials never enter the agent process, and every tool call is checked against a per-channel allowlist.',
+    'A self-hosted AI teammate for Slack channels. Tool credentials never enter the agent process, and every call is checked against a per-channel allowlist.',
   /** Alt text for /og.png, which is the social card for every page on both surfaces. */
   ogImageAlt:
     'Libero — the open-source AI teammate for Slack. Self-hosted, credential-isolated, every tool call audited.',

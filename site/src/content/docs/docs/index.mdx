@@ -17,10 +17,12 @@ model self-restraint.
 <Aside type="caution" title="Phase 1, part-built">
 Nothing here is deployable yet. The specification is ahead of the implementation on purpose —
 treat these pages as the design of record, not a description of running software. What exists
-today is the credential half of the proxy: mutual TLS, per-channel identity, team-sheet
-enforcement, the vault, credential injection, and redaction. Approvals, budgets, the audit log,
-the gateway, and memory do not. The [roadmap](/docs/roadmap) says what lands when, and
-[self-hosting](/docs/self-hosting) says what a deployment does today.
+today is most of the governed core: the proxy's mutual TLS, per-channel identity, team-sheet
+enforcement, the vault, credential injection, redaction, the budget meter, the append-only audit
+log, and the approval broker with its Slack card — plus the gateway and the agent loop. There is
+no real MCP server behind the dispatcher yet, no memory, and no end-to-end suite attacking any of
+it. The [roadmap](/docs/roadmap) says what lands when, and [self-hosting](/docs/self-hosting)
+says what a deployment does today.
 </Aside>
 
 ## The shape of it

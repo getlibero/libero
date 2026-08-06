@@ -5,7 +5,8 @@ import { z } from "zod";
 /**
  * The team sheet — the per-channel manifest declaring which tools exist,
  * which credentials (by name only) they use, what needs human approval,
- * and how much the channel may spend. See docs/ARCHITECTURE.md ("The team sheet").
+ * and how much the channel may spend. See the architecture doc,
+ * site/src/content/docs/docs/architecture.md ("The team sheet").
  *
  * This schema is the single source of truth: the proxy validates sheets
  * against it on file change, and invalid sheets are rejected loudly while

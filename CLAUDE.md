@@ -36,13 +36,15 @@ them; `node_modules` stays excluded (#107).
 
 ## Current state
 
-Early phase 1. `packages/schema` (zod team-sheet schema, tool call, spend
-report, refusal, listing, and proxy error shapes), `packages/agent`
+Early phase 1. `packages/schema` (zod team-sheet schema, shared name
+primitives, egress patterns, tool call, spend report, refusal, listing, proxy
+error, approval, and audit shapes), `packages/agent`
 (provider-agnostic completion layer, ReAct loop with per-task caps),
 `packages/proxy` (mTLS listener, per-channel identity, team-sheet enforcement
 on both gates, the credential vault, credential injection into outbound HTTP
-calls, the redaction pass on the way back, and the daily budget meter over
-`node:sqlite`), `apps/proxy-server` (the process composing all of it — a
+calls, the redaction pass on the way back, the daily budget meter over
+`node:sqlite`, the append-only audit log, and the approval ticket store),
+`apps/proxy-server` (the process composing all of it — a
 permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
 `packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
@@ -71,9 +73,10 @@ never while busy; there is no cache and no watcher, so an edit lands on the next
 mention.
 
 Two things there are load-bearing. **The router never learns what Slack is** —
-it takes a `TaskRequest`, `handler.ts` is the six lines that build one from a
-`SlackMention`, and an ESLint block on `apps/server/src/session/**` allows only
-`Logger` through from the gateway package. That is what a second front-end
+it takes a `TaskRequest`, `handler.ts` is the short mapping that builds one
+from a `SlackMention`, and an ESLint block on `apps/server/src/session/**`
+allows only logging names (`Logger` and friends) through from the gateway
+package. That is what a second front-end
 plugs into, and it is enforced rather than asserted. And **what the sheet
 resolves to here is advisory**: every read failure falls back to
 `DEFAULT_AGENT_LOOP_CAPS` and logs a reason code rather than refusing to run,
@@ -301,7 +304,7 @@ These are load-bearing, not stylistic:
   **The line is whose data it is and who reads it, not how much of it there
   is.** Content belongs to a channel's members and is read on their behalf, so a
   cross-channel join is one channel's members seeing another's conversation.
-  Operator-facing tables — the budget meter, and the audit log when it lands —
+  Operator-facing tables — the budget meter and the audit log —
   are read by the operator, and cross-channel aggregation there is a feature
   rather than a hazard: a team asking how a workspace is tracking against its
   caps needs exactly the query the per-file layout would forbid.
@@ -417,7 +420,9 @@ optional properties reject explicit `undefined`.
 
 ## Repository rules CI enforces
 
-- **License gate:** MIT/Apache-2.0-class dependencies only in core. Per
+- **License gate:** MIT/Apache-2.0-class dependencies only in core — the
+  actual allowlist is the `ALLOWED` string in `scripts/license-check.sh` (ten
+  permissive licences). Per
   `GOVERNANCE.md`, AGPL/SSPL and commercially-licensed packages (including the
   Anthropic Claude Agent SDK) are excluded; the latter is allowed only as an
   optional, user-installed adapter.
@@ -426,9 +431,10 @@ optional properties reject explicit `undefined`.
   job fails any `pull_request_target` workflow containing an
   `actions/checkout` step. Third-party actions in those workflows are pinned to
   a SHA, not a tag.
-- **CODEOWNERS review** covers `packages/proxy`, `packages/schema`, and
-  `.github/` (currently inert — the teams don't exist yet; see the note in
-  `.github/CODEOWNERS`).
+- **CODEOWNERS review** covers `packages/proxy`, `packages/schema`,
+  `apps/proxy-server`, `.github/`, `.claude/`, `SECURITY.md`, and
+  `GOVERNANCE.md` (currently inert — the teams don't exist yet; see the note
+  in `.github/CODEOWNERS`).
 - **CLA** required from the first external PR, checked by a bot.
 
 ## Release

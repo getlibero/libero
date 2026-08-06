@@ -23,7 +23,7 @@ A Contributor License Agreement (Apache-style) is required from your first PR; a
 
 ## What we most need
 
-The roadmap is phase-gated (see [the roadmap](https://getlibero.com/docs/roadmap), sourced from `site/src/content/docs/docs/roadmap.md`), and the priority is the governed core: vault, team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that attacks them. Fun features that outpace the proxy will be politely parked.
+The roadmap is phase-gated (see [the roadmap](https://getlibero.com/docs/roadmap), sourced from `site/src/content/docs/docs/roadmap.md`), and the priority is the governed core: vault, team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that attacks them. Features that outpace the proxy will be politely parked.
 
 ## How work is planned
 
