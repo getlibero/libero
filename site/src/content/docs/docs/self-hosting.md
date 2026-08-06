@@ -11,8 +11,9 @@ results, meters the daily budget, and appends an audit row for every decided cal
 gateway and the agent loop exist and reach tools through the proxy.
 
 What is not finished: there is no real MCP server behind the dispatcher yet, and approvals are
-only half-built — the proxy holds a call and mints a ticket, but nothing renders the Slack card
-or re-submits the approved call, so a held call is relayed to the model as a refusal. The
+built at both ends but not joined — the proxy holds a call and mints a ticket, and the gateway
+can render the card and read the click, but nothing yet puts a card up for a held call or
+re-submits the approved one, so a held call is still relayed to the model as a refusal. The
 end-to-end suite that attacks all of this is not written, which is the one that would tell you
 the security property holds. Do not run this against a workspace you care about.
 :::
@@ -110,7 +111,7 @@ app and read history anywhere the app is installed.
 | Scope | What needs it |
 | --- | --- |
 | `app_mentions:read` | Receiving the mention that starts a task |
-| `chat:write` | Posting replies, and editing its own messages for the live checklist |
+| `chat:write` | Posting replies and approval cards, and editing its own messages — a card goes amber, then green or red, in place |
 | `channels:history` | Storing channel messages for recall and for thread follow-ups |
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
 | `users:read` | Display names, so the model can address the right person |
@@ -129,9 +130,10 @@ retention is respected rather than quietly outlived.
 
 ### Interactivity
 
-Turn it on. Approve / Request changes cards are Slack interactions, and the approver's identity
+Turn it on. Approve once / Deny cards are Slack interactions, and the approver's identity
 arrives in the interaction payload — the one identity in the system Slack vouches for rather than
-the agent asserting it. No extra scope, and no Request URL.
+the agent asserting it. No extra scope, and no Request URL. Left off, a click never reaches the
+socket, so a card would go up and stay amber.
 
 ### Use a scratch workspace first
 

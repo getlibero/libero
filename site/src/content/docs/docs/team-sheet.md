@@ -158,7 +158,7 @@ The allowlist. **A tool that is not listed does not exist as far as this channel
 it is not in the tool definitions the agent fetches at session start, and a call to it is refused
 in the proxy regardless.
 
-`approval = "required"` holds the call and renders an Approve / Request changes card in the
+`approval = "required"` holds the call and renders an Approve once / Deny card in the
 thread. Approvals are per-call, recorded with the approver's Slack user id, and expire after 15
 minutes by default. Destructive verbs — delete, drop, transfer, deploy — default to
 approval-required unless the sheet explicitly opts out.

@@ -16,7 +16,7 @@ const enforced = [
   {
     label: 'Approvals',
     title: 'A human clicks before anything destructive',
-    body: 'Tools marked approval = "required" are held in the proxy while an Approve / Request changes card renders in the thread. Approvals are per-call, recorded with the approver’s Slack user id, and expire in 15 minutes. Destructive verbs — delete, drop, transfer, deploy — default to required.',
+    body: 'Tools marked approval = "required" are held in the proxy while an Approve once / Deny card renders in the thread. Approvals are per-call, recorded with the approver’s Slack user id, and expire in 15 minutes. Destructive verbs — delete, drop, transfer, deploy — default to required.',
   },
   {
     label: 'Budgets',
@@ -271,8 +271,8 @@ enabled = false  <i># off by default, always</i></code></pre>
           {/* Spans, not buttons: this is a picture of the approval card, and a
               real button here would be a control that does nothing. */}
           <div class="lb-cluster lb-gap-10" aria-hidden="true">
-            <span class="lb-btn lb-btn--primary lb-btn--sm">Approve</span>
-            <span class="lb-btn lb-btn--secondary lb-btn--sm">Request changes</span>
+            <span class="lb-btn lb-btn--primary lb-btn--sm">Approve once</span>
+            <span class="lb-btn lb-btn--danger lb-btn--sm">Deny</span>
           </div>
           <span class="lb-meta">Illustration — not a live agent.</span>
         </div>
