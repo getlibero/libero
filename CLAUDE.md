@@ -149,14 +149,39 @@ approver identity holds against a **prompt-injected model** and not against a
 **compromised agent process**, which relays it. Tool credentials survive process
 compromise; approvals survive prompt injection.
 
-**#126 is built and #127 is not, so both ends exist and nothing joins them.**
-`packages/gateway` can draw the card and decode the click — `approval-card.ts`
-renders four states, `decision.ts` normalizes a `block_actions` payload, and
-`CardPoster` posts and edits one. What does not exist is the thing that puts a
-card up for a held call and re-submits the approved one, so
-`packages/agent/src/proxy/tools.ts` still relays a hold to the model as an error
-result: safe, because it abandons the call, and it abandons one a human could
-have approved. Nothing posts a card in production yet.
+**#127 joined the two ends: a held call now raises a card and a click runs
+it.** `packages/agent/src/proxy/tools.ts` takes an optional `HeldCallPrompter`;
+with one, a hold is waited out and the identical call re-submitted with the
+ticket — **on every wait outcome**, approve, deny, expiry, even a prompter
+failure, because the proxy answers a re-submission with either the result or
+the precise refusal (`approval_denied`, `approval_expired`,
+`approval_pending`, …) and is the authority on what the call became. One code
+path, and the proxy gets to observe expiries for the audit log. The model sees
+one tool result either way and never the ticket id. Without a prompter — any
+front-end with no one to ask — a hold degrades to the old refusal-shaped
+result.
+
+`apps/server/src/approvals/` is the client half of the broker: `registry.ts`
+(pending waits, process-scoped map, task-scoped entries), `prompter.ts` (posts
+the amber card, repaints it terminal, resolves the wait), and `decisions.ts`
+(click → `POST /v1/approvals` → settle with what the proxy said, never with
+what was clicked; unknown-ticket and wrong-channel clicks are dropped before
+the proxy is asked). The mention's channel and thread are captured in
+`handler.ts`, so what crosses into the router is a closure typed by the agent
+package — the session ESLint block is untouched. `held-call.test.ts` is the
+acceptance suite, against stub Slack and a manual clock.
+
+Two behaviours there are settled, not incidental. **The task closes its own
+card**: every exit — click, ticket deadline, wall-cap abort, shutdown —
+repaints the card to a terminal state before the wait resolves, so a card
+never outlives its wait; a repaint that fails fails safe, because a stale
+amber card's clicks find no registry entry and the proxy answers from its own
+ticket state regardless. And **the hold spends the task's wall clock by
+design**, which under default caps (5-minute wall clock, 15-minute ticket)
+means the wall cap usually beats the ticket's deadline: the card goes red, the
+task ends on `wall_time_cap`, and an operator who wants longer holds sizes the
+channel's `[llm]` caps for it in the sheet. The wait's deadline is the wire's
+`expiresAt` on the proxy's clock — skew is relayed, not corrected.
 
 Three decisions on the gateway side are settled and should not be
 re-litigated. **The gateway holds no clock** — it renders `expired` when told to
