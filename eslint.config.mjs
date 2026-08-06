@@ -7,8 +7,21 @@ import tseslint from "typescript-eslint";
 // matches a file, not merged into what an earlier one set. Two blocks both
 // naming packages/gateway would silently drop the first one's patterns, so the
 // shared pattern is a constant and every block that needs it says so.
+// The patterns match the import *specifier*, not the resolved path, so the
+// bare-name forms alone would miss a relative deep import into the proxy's
+// build output ("../../proxy/dist/vault.js") — which tsc does not stop either,
+// because a .d.ts in another package's dist is not subject to rootDir. The
+// dist globs close that hole; the CI boundary-check grep covers the same
+// spelling with a `\.\./proxy` pattern.
 const PROXY_IMPORT_BAN = {
-  group: ["@getlibero/proxy", "@getlibero/proxy/*", "**/packages/proxy/*"],
+  group: [
+    "@getlibero/proxy",
+    "@getlibero/proxy/*",
+    "**/packages/proxy/*",
+    "**/packages/proxy/**",
+    "**/proxy/dist/*",
+    "**/proxy/dist/**"
+  ],
   message:
     "SECURITY BOUNDARY: the agent may not import the proxy. Tools are reached only via the proxy's HTTP API."
 };
@@ -181,6 +194,39 @@ export default tseslint.config(
               group: ["**/vault*", "@getlibero/proxy"],
               message:
                 "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean."
+            },
+            {
+              // The serving surface on the meter is read/recordToolCall/
+              // recordTokens and nothing else. Clearing a counter and reading
+              // across channels are operator paths, reached by the budget CLI
+              // in apps/proxy-server and never by the server — this was the one
+              // documented module boundary held by review alone.
+              group: ["**/budget-admin*"],
+              message:
+                "The server never imports budget-admin: resets and aggregate reads are operator commands on the budget CLI, not anything the serving process can reach."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    // The other end of the budget-admin boundary: the barrel re-exports the
+    // operator functions for the budget CLI, so the composition root could
+    // reach them by name without ever naming budget-admin. The serving process
+    // closes over read/recordToolCall/recordTokens; the CLI (budget-cli.ts,
+    // its own bin) is the importer these exports exist for.
+    files: ["apps/proxy-server/src/index.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@getlibero/proxy",
+              importNames: ["resetChannel", "readChannelSpend", "channelDays", "pruneTurnReports"],
+              message:
+                "Operator paths on the meter stay off the serving process. They belong to the budget CLI (budget-cli.ts), reached as its own entrypoint."
             }
           ]
         }

@@ -51,7 +51,7 @@ function waiting(channel = CHANNEL): {
 } {
   const registry = createApprovalRegistry();
   const settled: ApprovalSettlement[] = [];
-  registry.register(TICKET, { channel, settle: outcome => settled.push(outcome) });
+  registry.register(channel, TICKET, { settle: outcome => settled.push(outcome) });
   return { registry, settled };
 }
 
@@ -143,7 +143,9 @@ describe("a click that never reaches the proxy", () => {
   });
 
   // The card sits in the channel whose certificate minted the ticket; a click
-  // observed anywhere else did not come from that card.
+  // observed anywhere else did not come from that card. The registry's lookup
+  // is scoped by the click's channel, so a foreign click and a ticket that
+  // never existed are one answer — the proxy's shape, for the proxy's reason.
   it("drops a click from another channel, without asking the proxy", async () => {
     const { registry, settled } = waiting();
     const { approvals, asked } = fakeApprovals(() => ({ outcome: "unknown", ticket: TICKET }));
@@ -156,13 +158,13 @@ describe("a click that never reaches the proxy", () => {
     expect(asked).toEqual([]);
     expect(settled).toEqual([]);
     expect(lines).toContainEqual(
-      expect.objectContaining({ event: "approval_ignored", reason: "channel_mismatch" })
+      expect.objectContaining({ event: "approval_ignored", reason: "unknown_ticket" })
     );
   });
 
   it("drops a click that lost the race with settlement, as an unknown ticket", async () => {
     const { registry, settled } = waiting();
-    registry.remove(TICKET);
+    registry.remove(CHANNEL, TICKET);
     const { approvals, asked } = fakeApprovals(() => ({ outcome: "unknown", ticket: TICKET }));
 
     await createDecisionHandler({ registry, approvals })(decision());
@@ -187,6 +189,6 @@ describe("a relay the proxy did not take", () => {
     );
 
     expect(settled).toEqual([]);
-    expect(registry.get(TICKET)).toBeDefined();
+    expect(registry.get(CHANNEL, TICKET)).toBeDefined();
   });
 });

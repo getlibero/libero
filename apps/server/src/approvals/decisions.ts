@@ -37,13 +37,20 @@ export function createDecisionHandler(options: DecisionHandlerOptions): Decision
   const logger = options.logger ?? createSilentLogger();
 
   return async decision => {
-    const entry = registry.get(decision.ticketId);
+    // The lookup is scoped by the click's channel, so a click from any other
+    // channel finds nothing — the card sits in the channel whose certificate
+    // minted the ticket, and the registry's shape is what makes that check
+    // unforgettable rather than a comparison after the fetch. Dropped before
+    // the proxy is asked to decide anything on the wrong channel's behalf;
+    // the broker would scope the lookup by certificate anyway.
+    const entry = registry.get(decision.channelId, decision.ticketId);
     if (entry === undefined) {
       // Nobody is waiting: a stale card after a restart, a click that lost a
-      // race with settlement, or an id that never existed. Entries live and
-      // die with their tasks, so these are one case, and none of them is
-      // relayed — the proxy's expiry bounds what an orphaned ticket can
-      // become without this process's help.
+      // race with settlement, an id that never existed, or a click observed
+      // in a channel the ticket does not belong to. Entries live and die with
+      // their tasks, so these are one case, and none of them is relayed — the
+      // proxy's expiry bounds what an orphaned ticket can become without this
+      // process's help.
       logger.log("info", {
         event: "approval_ignored",
         reason: "unknown_ticket",
@@ -53,22 +60,7 @@ export function createDecisionHandler(options: DecisionHandlerOptions): Decision
       return;
     }
 
-    if (decision.channelId !== entry.channel) {
-      // The card sits in the channel whose certificate minted the ticket, so
-      // a click from anywhere else did not come from that card. Dropped here,
-      // before the proxy is asked to decide anything on the wrong channel's
-      // behalf — the broker would scope the lookup by certificate anyway;
-      // this keeps the wrong question from being asked at all.
-      logger.log("warn", {
-        event: "approval_ignored",
-        reason: "channel_mismatch",
-        channel: decision.channelId,
-        ticket: decision.ticketId
-      });
-      return;
-    }
-
-    const answer = await approvals.decide(entry.channel, {
+    const answer = await approvals.decide(decision.channelId, {
       ticket: decision.ticketId,
       decision: decision.verdict,
       approver: decision.approverId
@@ -103,7 +95,7 @@ export function createDecisionHandler(options: DecisionHandlerOptions): Decision
         // says what happened.
         logger.log("warn", {
           event: "approval_unknown",
-          channel: entry.channel,
+          channel: decision.channelId,
           ticket: decision.ticketId
         });
         entry.settle({ state: "expired" });

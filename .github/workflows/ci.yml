@@ -36,12 +36,16 @@ jobs:
     # Belt-and-suspenders alongside the ESLint rule: grep-level check that
     # nothing on the agent side of the boundary — packages/agent, packages/gateway,
     # or the apps/server process that composes both — references the proxy package.
+    # The `\.\./proxy` pattern catches a relative deep import into the proxy's
+    # build output ("../../proxy/dist/…"), which names neither the package nor
+    # its source path; the .js/.mjs/.cjs includes catch a file ESLint's *.ts
+    # blocks would not parse.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Enforce agent/proxy boundary
         run: |
-          if grep -rn --include='*.ts' -e '@getlibero/proxy' -e 'packages/proxy' packages/agent/ packages/gateway/ apps/server/; then
+          if grep -rn --include='*.ts' --include='*.mts' --include='*.cts' --include='*.js' --include='*.mjs' --include='*.cjs' -e '@getlibero/proxy' -e 'packages/proxy' -e '\.\./proxy' packages/agent/ packages/gateway/ apps/server/; then
             echo '::error::the agent side references the proxy. The only path from agent to tools is the network call.'
             exit 1
           fi

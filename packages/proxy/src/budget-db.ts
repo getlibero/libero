@@ -251,6 +251,10 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
     clearSpend: db.prepare(`DELETE FROM channel_spend WHERE channel = ? AND day = ?`),
     clearTurns: db.prepare(`DELETE FROM turn_report WHERE channel = ? AND day = ?`),
     days: db.prepare(`SELECT day FROM channel_spend WHERE channel = ? ORDER BY day`),
+    // The one statement in this file with no `WHERE channel = ?`, on purpose:
+    // it expires retry-dedupe rows by age alone and never touches
+    // channel_spend, so no channel's counters can move through it. Anything
+    // new that crosses channels belongs on the operator path, not here.
     prune: db.prepare(`DELETE FROM turn_report WHERE at < ?`)
   } satisfies Record<string, StatementSync>;
 
