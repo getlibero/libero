@@ -705,3 +705,67 @@ describe("a tool proxy that cannot be reached", () => {
     await expect(runner(taskRequest(), SETTINGS)).resolves.toBeUndefined();
   });
 });
+
+// The seam carrying the prompter: the request's closure reaches the tool
+// client, the wait happens inside the tool call, and the re-submission carries
+// the ticket. What the prompter does — the card, the click — is
+// ../approvals/prompter.test.ts; this is the task layer passing it through.
+describe("a held call in a task", () => {
+  it("waits on the request's prompter, then re-submits with the ticket", async () => {
+    const prompted: string[] = [];
+    const fake = fakeTransport({
+      tools: () => ({
+        status: 200,
+        body: { tools: [{ server: "github", tool: "merge_pr", approval: "required" }] }
+      }),
+      call: body =>
+        (body as { ticket?: string }).ticket === undefined
+          ? {
+              status: 200,
+              body: {
+                outcome: "held",
+                id: "call-1",
+                refusal: { reason: "approval_required", server: "github", tool: "merge_pr" },
+                ticket: { id: "tk-7f3a", expiresAt: Date.UTC(2026, 7, 4, 12, 15) }
+              }
+            }
+          : { status: 200, body: { outcome: "ran", id: "call-1", result: { content: "merged #42" } } }
+    });
+    let turn = 0;
+    const runner = createTaskRunner({
+      completion: {
+        complete: (request): Promise<CompletionResponse> => {
+          turn += 1;
+          if (turn === 1) {
+            return Promise.resolve({
+              text: "",
+              toolCalls: [{ id: "call-1", name: "merge_pr", arguments: { pr: 42 } }],
+              stopReason: "tool_use",
+              usage: { inputTokens: 10, outputTokens: 5 }
+            });
+          }
+          // The model's second turn sees the tool's real result, not the hold.
+          expect(JSON.stringify(request.messages)).toContain("merged #42");
+          return Promise.resolve({
+            text: "Merged.",
+            toolCalls: [],
+            stopReason: "end_turn",
+            usage: { inputTokens: 20, outputTokens: 7 }
+          });
+        }
+      },
+      transport: fake.transport
+    });
+
+    const reply = await runner(
+      { ...taskRequest(), onHeld: held => (prompted.push(held.ticket.id), Promise.resolve()) },
+      SETTINGS
+    );
+
+    expect(reply).toEqual({ text: "Merged." });
+    expect(prompted).toEqual(["tk-7f3a"]);
+    const calls = fake.sent.filter(request => request.path === "/v1/tools/call");
+    expect(calls).toHaveLength(2);
+    expect((calls[1]?.body as { ticket?: string }).ticket).toBe("tk-7f3a");
+  });
+});

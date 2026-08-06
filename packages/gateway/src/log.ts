@@ -30,7 +30,8 @@ export interface LogFields {
    * "task", "tools_unavailable". Spend: "spend_reported",
    * "spend_report_failed". Sessions: "queued", "session_evicted",
    * "team_sheet_invalid", "team_sheet_unreadable". Approvals: "decision",
-   * "decision_failed", "card_posted", "card_updated", "card_failed".
+   * "decision_failed", "card_posted", "card_updated", "card_failed",
+   * "approval_ignored", "approval_unknown".
    */
   event: string;
   /** Slack team id. An id, never a token. */
