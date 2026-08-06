@@ -179,6 +179,10 @@ describe("picking up edits without a restart", () => {
     expect(after.status).toBe("active");
     if (after.status !== "active") return;
     expect(after.sheet.mcp_server[0]?.tool.map(t => t.name)).toEqual(["list_prs", "merge_pr"]);
+    // Names the other way this can fail. When it flaked on CI (#137) the
+    // answer was the previous sheet retained behind a read of a half-written
+    // file, which is the stale flag's whole job to say.
+    expect(after.stale).toBe(false);
   });
 
   it("sees a sheet that appears after the channel was first asked about", async () => {
