@@ -45,18 +45,29 @@ export function createDecisionHandler(options: DecisionHandlerOptions): Decision
     // the broker would scope the lookup by certificate anyway.
     const entry = registry.get(decision.channelId, decision.ticketId);
     if (entry === undefined) {
-      // Nobody is waiting: a stale card after a restart, a click that lost a
-      // race with settlement, an id that never existed, or a click observed
-      // in a channel the ticket does not belong to. Entries live and die with
-      // their tasks, so these are one case, and none of them is relayed — the
-      // proxy's expiry bounds what an orphaned ticket can become without this
-      // process's help.
-      logger.log("info", {
-        event: "approval_ignored",
-        reason: "unknown_ticket",
-        channel: decision.channelId,
-        ticket: decision.ticketId
-      });
+      // Nobody is waiting under this channel, and the drop is the same either
+      // way — nothing is relayed, nothing settles, and the clicker sees no
+      // difference. The log line is not the same: a wait held under another
+      // channel means a misdirected or forged click, which is an operator's
+      // signal at warn, where a stale card after a restart, a click that lost
+      // a race with settlement, or an id that never existed is expected noise
+      // at info. `heldElsewhere` answers a boolean precisely so this branch
+      // can choose a word without being handed an entry it must not settle.
+      if (registry.heldElsewhere(decision.channelId, decision.ticketId)) {
+        logger.log("warn", {
+          event: "approval_ignored",
+          reason: "channel_mismatch",
+          channel: decision.channelId,
+          ticket: decision.ticketId
+        });
+      } else {
+        logger.log("info", {
+          event: "approval_ignored",
+          reason: "unknown_ticket",
+          channel: decision.channelId,
+          ticket: decision.ticketId
+        });
+      }
       return;
     }
 

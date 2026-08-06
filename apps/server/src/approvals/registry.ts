@@ -19,6 +19,14 @@
 // scopes by certificate regardless; this keeps the wrong question from being
 // askable in this process too.
 //
+// `heldElsewhere` is the one deliberate squint past that shape, and it is
+// log-vocabulary, not reach: it answers a boolean so the decision path can
+// write `channel_mismatch` instead of `unknown_ticket` for a click that names
+// a real wait in the wrong channel — a misdirected or forged click is an
+// operator's signal, not a stale card's noise. It cannot return an entry, so
+// nothing found through it can be settled, and the clicker sees no difference
+// either way; the distinction exists only in the log line.
+//
 // This file knows nothing about Slack, cards, or the proxy. It is a map with
 // names, and the names are the point: `settle` is the only verb a decision has
 // here, and what settling *does* — repaint a card, resolve a wait — belongs to
@@ -44,6 +52,12 @@ export interface ApprovalRegistry {
   register(channel: string, ticketId: string, entry: PendingApproval): void;
   get(channel: string, ticketId: string): PendingApproval | undefined;
   remove(channel: string, ticketId: string): void;
+  /**
+   * Whether this ticket is being waited on under some *other* channel — see
+   * the header for why this is a boolean and never an entry. False when the
+   * ticket is held under `channel` itself: that click is not misdirected.
+   */
+  heldElsewhere(channel: string, ticketId: string): boolean;
 }
 
 export function createApprovalRegistry(): ApprovalRegistry {
@@ -66,6 +80,12 @@ export function createApprovalRegistry(): ApprovalRegistry {
       if (pending === undefined) return;
       pending.delete(ticketId);
       if (pending.size === 0) byChannel.delete(channel);
+    },
+    heldElsewhere(channel: string, ticketId: string): boolean {
+      for (const [held, pending] of byChannel) {
+        if (held !== channel && pending.has(ticketId)) return true;
+      }
+      return false;
     }
   };
 }
