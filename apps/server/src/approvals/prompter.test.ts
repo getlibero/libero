@@ -88,7 +88,7 @@ describe("the amber card", () => {
     // The ticket travels in the button's value — that is what a click carries back.
     expect(rendered).toContain("tk-7f3a");
 
-    registry.get("tk-7f3a")?.settle({ state: "expired" });
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "expired" });
     await wait;
   });
 
@@ -101,7 +101,7 @@ describe("the amber card", () => {
     const blocks = JSON.stringify(slack.cards[0]?.card.blocks);
     expect(blocks).not.toContain("{}");
 
-    registry.get("tk-7f3a")?.settle({ state: "expired" });
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "expired" });
     await wait;
   });
 
@@ -114,7 +114,7 @@ describe("the amber card", () => {
     const onHeld = createHeldCallPrompter({
       cards: {
         postCard: target => {
-          registeredAtPost = registry.get("tk-7f3a") !== undefined;
+          registeredAtPost = registry.get(CHANNEL, "tk-7f3a") !== undefined;
           return slack.poster.postCard(target);
         },
         updateCard: target => slack.poster.updateCard(target)
@@ -128,10 +128,10 @@ describe("the amber card", () => {
     await flush();
     expect(registeredAtPost).toBe(true);
 
-    registry.get("tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
     await wait;
 
-    expect(registry.get("tk-7f3a")).toBeUndefined();
+    expect(registry.get(CHANNEL, "tk-7f3a")).toBeUndefined();
   });
 });
 
@@ -141,7 +141,7 @@ describe("how the wait ends", () => {
 
     const wait = onHeld(HELD);
     await flush();
-    registry.get("tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
     await wait;
 
     const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
@@ -154,7 +154,7 @@ describe("how the wait ends", () => {
 
     const wait = onHeld(HELD);
     await flush();
-    registry.get("tk-7f3a")?.settle({ state: "denied", approver: "U0G9QF9C6" });
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "denied", approver: "U0G9QF9C6" });
     await wait;
 
     const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
@@ -174,7 +174,7 @@ describe("how the wait ends", () => {
 
     const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
     expect(card?.color).toBe("#FF6B5B");
-    expect(registry.get("tk-7f3a")).toBeUndefined();
+    expect(registry.get(CHANNEL, "tk-7f3a")).toBeUndefined();
   });
 
   // The task closes its own card: the wall cap and shutdown both arrive here
@@ -207,7 +207,7 @@ describe("how the wait ends", () => {
     await onHeld(HELD, aborter.signal);
 
     expect(slack.cards).toHaveLength(0);
-    expect(registry.get("tk-7f3a")).toBeUndefined();
+    expect(registry.get(CHANNEL, "tk-7f3a")).toBeUndefined();
   });
 
   it("settles once: a second settlement neither repaints nor re-resolves", async () => {
@@ -215,7 +215,7 @@ describe("how the wait ends", () => {
 
     const wait = onHeld(HELD);
     await flush();
-    const entry = registry.get("tk-7f3a");
+    const entry = registry.get(CHANNEL, "tk-7f3a");
     entry?.settle({ state: "approved", approver: "U0G9QF9C6" });
     entry?.settle({ state: "denied", approver: "U9IMPOSTER" });
     await wait;
@@ -244,7 +244,7 @@ describe("a card Slack would not take", () => {
 
     await onHeld(HELD);
 
-    expect(registry.get("tk-7f3a")).toBeUndefined();
+    expect(registry.get(CHANNEL, "tk-7f3a")).toBeUndefined();
     expect(clock.pending()).toEqual([]);
     expect(lines).toContainEqual(
       expect.objectContaining({ event: "card_failed", cardState: "awaiting" })
@@ -268,7 +268,7 @@ describe("a card Slack would not take", () => {
 
     const wait = onHeld(HELD);
     await flush();
-    registry.get("tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
 
     await wait;
 

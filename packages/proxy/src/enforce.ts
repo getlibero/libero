@@ -316,8 +316,9 @@ export function permittedTools(sheet: TeamSheet): PermittedTool[] {
       // reason `serversNamed` does: a tool named `constructor` must not find
       // something on `Object.prototype`. The Set is keyed on a separator that
       // cannot occur in a ResourceName, so `a.b` + `c` and `a` + `b.c` stay
-      // distinct.
-      const key = `${server.name} ${entry.name}`;
+      // distinct. Spelled as the escape, not a raw NUL byte — a raw byte makes
+      // grep treat the whole file as binary and silently drop it from reviews.
+      const key = `${server.name}\u0000${entry.name}`;
       if (seen.has(key)) continue;
       seen.add(key);
 

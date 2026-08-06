@@ -106,7 +106,7 @@ export function createHeldCallPrompter(options: HeldCallPrompterOptions): HeldCa
           settled = outcome;
           cancelDeadline();
           signal?.removeEventListener("abort", onAbort);
-          registry.remove(ticketId);
+          registry.remove(target.channelId, ticketId);
           finish();
         };
 
@@ -159,7 +159,7 @@ export function createHeldCallPrompter(options: HeldCallPrompterOptions): HeldCa
         // Registered before the card exists: the click that ends this wait can
         // only follow the card, but its dispatch races the post's own response,
         // and a decision must find its entry.
-        registry.register(ticketId, { channel: target.channelId, settle });
+        registry.register(target.channelId, ticketId, { settle });
         const cancelDeadline = schedule(Math.max(0, held.ticket.expiresAt - now()), () => {
           settle({ state: "expired" });
         });
