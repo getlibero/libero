@@ -31,13 +31,18 @@ function secretOf(value: string): Secret {
 }
 
 /** A `fetch` that records what it was called with and answers 200. */
-function recordingFetch(body = "{}", status = 200) {
+function recordingFetch(body = "{}", status = 200, responseHeaders?: Record<string, string>) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
-    return new Response(body, { status });
+    return new Response(body, { status, ...(responseHeaders ? { headers: responseHeaders } : {}) });
   });
   return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
+}
+
+/** The headers a recorded call actually put on the wire. */
+function sentHeaders(calls: { init: RequestInit }[]): Record<string, string> {
+  return (calls[0]?.init.headers ?? {}) as Record<string, string>;
 }
 
 describe("injecting the credential", () => {
@@ -86,7 +91,140 @@ describe("the outbound call", () => {
       secret: undefined,
       fetch
     });
-    expect(response).toEqual({ status: 200, body: '{"prs":[]}' });
+    expect(response).toMatchObject({ status: 200, body: '{"prs":[]}' });
+  });
+
+  it("carries the caller's extra headers", async () => {
+    const { calls, fetch } = recordingFetch();
+    await callUpstream({
+      url: "http://u:1",
+      body: {},
+      headers: { "mcp-method": "tools/call", "mcp-name": "list_prs" },
+      scheme: "bearer",
+      secret: undefined,
+      fetch
+    });
+    expect(sentHeaders(calls)).toMatchObject({
+      "mcp-method": "tools/call",
+      "mcp-name": "list_prs",
+      "content-type": "application/json"
+    });
+  });
+
+  // Undici sends both spellings of a name it is given twice, and the upstream
+  // picks. Lowercasing here means the caller's map has one entry per header.
+  it("lowercases the caller's header names", async () => {
+    const { calls, fetch } = recordingFetch();
+    await callUpstream({
+      url: "http://u:1",
+      body: {},
+      headers: { "MCP-Method": "tools/call" },
+      scheme: "bearer",
+      secret: undefined,
+      fetch
+    });
+    const headers = sentHeaders(calls);
+    expect(headers["mcp-method"]).toBe("tools/call");
+    expect("MCP-Method" in headers).toBe(false);
+  });
+
+  // The credential is attached last and `authorization` is stripped from the
+  // caller's map, so there is no way to send one except through `secret` — which
+  // is also the path that scrubs the reply.
+  it("will not let a caller header forge or displace the credential", async () => {
+    const { calls, fetch } = recordingFetch();
+    await callUpstream({
+      url: "http://u:1",
+      body: {},
+      headers: { authorization: "Bearer forged", Authorization: "Bearer also-forged" },
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      fetch
+    });
+    expect(sentHeaders(calls).authorization).toBe(`Bearer ${VALUE}`);
+  });
+
+  it("sends no credential at all when a caller header is the only one offered", async () => {
+    const { calls, fetch } = recordingFetch();
+    await callUpstream({
+      url: "http://u:1",
+      body: {},
+      headers: { authorization: "Bearer forged" },
+      scheme: "bearer",
+      secret: undefined,
+      fetch
+    });
+    expect("authorization" in sentHeaders(calls)).toBe(false);
+  });
+
+  it("returns the allowlisted response headers and nothing else", async () => {
+    const { fetch } = recordingFetch("{}", 200, {
+      "content-type": "text/event-stream",
+      "x-debug-echo": "something the caller may not read"
+    });
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      fetch
+    });
+    expect(response.headers).toEqual({ "content-type": "text/event-stream" });
+  });
+
+  // A response header is an echo surface like any other. Scrubbing the body
+  // while handing back a header holding the value would be a hole in the same
+  // guarantee, one field over.
+  it("redacts the credential out of a response header", async () => {
+    const { fetch } = recordingFetch("{}", 200, { "content-type": `application/json; echo=${VALUE}` });
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "github_token",
+      fetch
+    });
+    expect(response.headers["content-type"]).toBe("application/json; echo=[redacted:github_token]");
+    expect(response.headers["content-type"]).not.toContain(VALUE);
+  });
+
+  // A bodiless 202 is the shape an MCP server answers a notification with, and
+  // it carries no content-type. Absent rather than empty, so a caller can tell
+  // "the upstream said nothing" from "the upstream said the empty string".
+  it("omits a header the upstream did not send", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 202 })) as unknown as typeof globalThis.fetch;
+    const response = await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    expect(response.headers["content-type"]).toBeUndefined();
+    expect("content-type" in response.headers).toBe(false);
+  });
+
+  // An event stream spends most of a call's life in the body read, so the
+  // timeout usually fires there rather than on the headers. Reporting that as
+  // `unreachable` would tell an operator the upstream was down when it was slow.
+  it("reports a body-read abort as a timeout, not as unreachable", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("data: par"));
+              controller.error(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+            }
+          })
+        )
+    ) as unknown as typeof globalThis.fetch;
+
+    const thrown = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      fetch
+    }).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(UpstreamError);
+    expect((thrown as UpstreamError).failure).toBe("timed_out");
   });
 
   // A 404 from a tool is a result the model should see, not a transport
@@ -95,7 +233,7 @@ describe("the outbound call", () => {
     const { fetch } = recordingFetch("no such repo", 404);
     await expect(
       callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch })
-    ).resolves.toEqual({ status: 404, body: "no such repo" });
+    ).resolves.toMatchObject({ status: 404, body: "no such repo" });
   });
 
   it("applies a timeout even when the caller names none", async () => {

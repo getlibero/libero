@@ -43,7 +43,7 @@ cache_write_weight = 1.25
 [[mcp_server]]
 name       = "github"
 transport  = "http"
-url        = "http://mcp-github:3001"
+url        = "http://mcp-github:3001/mcp"
 credential = "github_service_account"       # name only; value lives in the vault
 
   # Tools not listed here do not exist as far as this channel is concerned.

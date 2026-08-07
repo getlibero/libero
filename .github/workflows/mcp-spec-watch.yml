@@ -1,0 +1,127 @@
+name: MCP spec watch
+
+# The proxy speaks MCP with a hand-rolled client rather than the vendored SDK,
+# for the reasons in packages/proxy/src/mcp-protocol.ts. The cost of that choice
+# is that a published revision is a code change here rather than a version bump,
+# and a cost nobody is reminded of is a cost that gets forgotten: #128 was
+# written against a revision that went stale twice before it was started.
+#
+# So this watches the specification repository's revision tags and opens an
+# issue when one appears past the pinned constant. It does not attempt to judge
+# whether the revision matters — reading the changelog is the work, and this
+# exists to make sure someone does it.
+
+on:
+  schedule:
+    # Weekly. Revisions arrive a few times a year, so a daily check would only
+    # be a daily way to notice nothing changed.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      pretend_pinned:
+        description: >-
+          Run as if the pinned revision were this one, to exercise the path that
+          files an issue. Without it that path only ever runs when the spec has
+          already moved, which is the one moment nobody wants to discover a
+          typo. The constant is still read and still has to be there.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      # Safe to check out: `workflow-guard` in ci.yml forbids this only in
+      # `pull_request_target` workflows, which run with a write token against
+      # code from a fork. This runs on a schedule against the base repo.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare the pinned revision against the specification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRETEND_PINNED: ${{ inputs.pretend_pinned }}
+        run: |
+          set -euo pipefail
+
+          pinned=$(
+            grep -oE 'MCP_PROTOCOL_VERSION = "[0-9]{4}-[0-9]{2}-[0-9]{2}"' \
+              packages/proxy/src/mcp-protocol.ts | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'
+          ) || true
+
+          # A rename that loses the constant must fail loudly rather than leave
+          # a watcher that silently reports "up to date" forever. The same trick
+          # site/src/lib/design-tokens.mjs uses on the design tokens.
+          if [ -z "${pinned}" ]; then
+            echo "::error file=packages/proxy/src/mcp-protocol.ts::MCP_PROTOCOL_VERSION could not be read. This watcher parses that constant; if it was renamed or reformatted, update this workflow with it."
+            exit 1
+          fi
+          echo "pinned: ${pinned}"
+
+          # Applied after the constant is read, never instead of it: a manual
+          # run still fails if the constant went missing, which is the check
+          # worth having on every path.
+          if [ -n "${PRETEND_PINNED:-}" ]; then
+            echo "::notice::Pretending the pinned revision is ${PRETEND_PINNED} (actual: ${pinned})."
+            pinned="${PRETEND_PINNED}"
+          fi
+
+          # Release-candidate tags carry an -RC suffix and are filtered out by
+          # the date-only pattern: a revision is worth an issue once it ships.
+          latest=$(
+            gh api repos/modelcontextprotocol/modelcontextprotocol/tags --paginate --jq '.[].name' \
+              | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -r | head -1
+          )
+          echo "latest published: ${latest}"
+
+          # Revisions are ISO dates, so newest-first is a plain reverse sort.
+          # Compared this way rather than with `[ "$a" \< "$b" ]`, which is a
+          # bashism: it does the right thing under Actions and silently the
+          # wrong thing anywhere else, including when someone runs these lines
+          # by hand to check them.
+          newest=$(printf '%s\n%s\n' "${pinned}" "${latest}" | sort -r | head -1)
+          if [ "${newest}" = "${pinned}" ]; then
+            echo "Up to date."
+            exit 0
+          fi
+
+          title="MCP spec: revision ${latest} published"
+
+          # Idempotent: the schedule fires weekly until someone acts on it, and
+          # a fresh issue every Monday is how a queue stops being read.
+          if [ -n "$(gh issue list --state open --search "${title} in:title" --json number --jq '.[].number')" ]; then
+            echo "Already tracked."
+            exit 0
+          fi
+
+          gh issue create \
+            --title "${title}" \
+            --label area:proxy \
+            --label security \
+            --body "$(cat <<EOF
+          \`packages/proxy/src/mcp-protocol.ts\` pins \`MCP_PROTOCOL_VERSION = "${pinned}"\`. The
+          specification has published \`${latest}\`.
+
+          Changelog: https://modelcontextprotocol.io/specification/${latest}/changelog
+
+          This issue is a prompt to read it, not a claim that anything is broken. The
+          questions worth answering, in the order they usually bite:
+
+          - Does the streamable HTTP transport change — required headers, framing, or how
+            a response is terminated? That lands in \`outbound.ts\` and \`mcp-client.ts\`.
+          - Does \`tools/call\` or \`CallToolResult\` change shape? That lands in
+            \`toolResultText\`.
+          - Does anything new let an upstream ask the client to act on a channel's behalf,
+            the way \`input_required\` does? That is a refusal decision before it is an
+            implementation one.
+          - Do the servers we actually talk to speak it yet? A revision this proxy speaks
+            and no upstream implements is not an upgrade.
+
+          Filed by \`.github/workflows/mcp-spec-watch.yml\`.
+          EOF
+          )"

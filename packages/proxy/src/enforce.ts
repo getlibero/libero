@@ -159,9 +159,33 @@ function serversCarrying(servers: readonly McpServer[], tool: string): McpServer
   return servers.filter(server => server.tool.some(entry => entry.name === tool));
 }
 
+/**
+ * The identity of an upstream: same destination, same authentication.
+ * Everything dispatch reads, as one string.
+ *
+ * This exists so the client pool and enforcement cannot drift. The pool keys
+ * one client per upstream, and "one upstream" has to mean exactly what
+ * `selectUpstream` means by it — otherwise the pool could merge two blocks
+ * enforcement considers distinct, and a call authorized against one would be
+ * sent on a connection built for the other. Restating the comparison in the
+ * pool would be a rule written down twice; `sameUpstream` is defined in terms
+ * of this instead, so there is one definition and a test that they agree.
+ *
+ * `JSON.stringify` of an array rather than joining on a delimiter: a URL may
+ * legally contain any character a delimiter could be, and a key collision here
+ * is two different upstreams sharing one credentialed client. The array form
+ * is injective without needing an escape rule.
+ *
+ * The `credential` is a name, never a value (`CredentialName` in the schema),
+ * so a key is safe to hold in a map and safe to log.
+ */
+export function upstreamKey(server: McpServer): string {
+  return JSON.stringify([server.transport, server.url ?? null, server.credential ?? null]);
+}
+
 /** Same destination, same authentication. Everything dispatch reads. */
 function sameUpstream(a: McpServer, b: McpServer): boolean {
-  return a.transport === b.transport && a.url === b.url && a.credential === b.credential;
+  return upstreamKey(a) === upstreamKey(b);
 }
 
 /**

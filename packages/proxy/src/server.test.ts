@@ -12,7 +12,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { request } from "node:https";
 import type { Server } from "node:https";
 import type { AddressInfo } from "node:net";
@@ -41,7 +40,8 @@ import {
   markProvisional,
   type ToolDispatcher
 } from "./dispatch.js";
-import { createHttpDispatcher } from "./http-dispatcher.js";
+import { type HttpDispatcher, createHttpDispatcher } from "./http-dispatcher.js";
+import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import { createJsonLogger } from "./log.js";
 import { RedactionError } from "./redact.js";
 import { MAX_BODY_BYTES, createProxyServer } from "./server.js";
@@ -1448,9 +1448,18 @@ describe("no route returns a credential", () => {
   // reach a tool call. Same vault, same value, but now a real dispatcher and a
   // real upstream at the far end of a real socket, behind the real mTLS proxy.
   describe("with credential injection wired end to end", () => {
-    let upstream: HttpServer;
-    let upstreamSaw: (string | undefined)[] = [];
+    let upstream: FakeMcpServer;
+    /**
+     * The Authorization header of every request the upstream received.
+     *
+     * Read off the fake rather than accumulated separately, because one tool
+     * call is no longer one request: the first call on an upstream discovers
+     * before it calls. What has to hold is that *every* request carried the
+     * credential, which is a stronger claim than the old "exactly one did".
+     */
+    const authsSeen = (): (string | undefined)[] => upstream.received.map(seen => seen.authorization);
     let injected: Server;
+    let injectDispatcher: HttpDispatcher;
     let injectedPort: number;
     let injectedLog: string[] = [];
     let injectAuditDir: string;
@@ -1465,18 +1474,10 @@ describe("no route returns a credential", () => {
       injectAuditFile = join(injectAuditDir, "audit.db");
       injectAuditDb = openAuditDb({ file: injectAuditFile });
 
-      upstream = createHttpServer((req, res) => {
-        upstreamSaw.push(req.headers.authorization);
-        req.resume();
-        req.on("end", () => {
-          res.writeHead(200, { "content-type": "application/json" });
-          // Echoes its own Authorization header back, which is the leak class
-          // the redaction pass closes and the worst realistic upstream.
-          res.end(JSON.stringify({ prs: [], sawAuth: req.headers.authorization }));
-        });
-      });
-      await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
-      const upstreamPort = (upstream.address() as AddressInfo).port;
+      // A real MCP server, echoing its own Authorization header into the tool
+      // result — the leak class the redaction pass closes, and the worst
+      // realistic upstream.
+      upstream = await startFakeMcpServer({ echoHeaders: "text" });
       injectSheet = `
 [channel]
 name = "injected"
@@ -1484,7 +1485,7 @@ name = "injected"
 [[mcp_server]]
 name = "github"
 transport = "http"
-url = "http://127.0.0.1:${upstreamPort}"
+url = "${upstream.url}"
 credential = "github_service_account"
 
   [[mcp_server.tool]]
@@ -1504,7 +1505,7 @@ credential = "github_service_account"
         // The same logger to both, as a deployment would: the dispatcher's
         // outbound line and the server's request line land in one stream, which
         // is what makes "no log line holds the value" worth asserting.
-        dispatcher: createHttpDispatcher({ vault, logger: injectLogger }),
+        dispatcher: (injectDispatcher = createHttpDispatcher({ vault, logger: injectLogger })),
         // A real audit log for the same reason the logger is shared: this is
         // the one composition where a credential genuinely transits a call, so
         // it is the only place "no audit row holds the value" can be asserted
@@ -1524,8 +1525,8 @@ credential = "github_service_account"
     afterAll(async () => {
       injected.closeAllConnections();
       await new Promise<void>(resolve => injected.close(() => resolve()));
-      upstream.closeAllConnections();
-      await new Promise<void>(resolve => upstream.close(() => resolve()));
+      injectDispatcher.close();
+      await upstream.close();
       injectAuditDb.close();
       rmSync(injectAuditDir, { recursive: true, force: true });
     });
@@ -1534,7 +1535,7 @@ credential = "github_service_account"
       // After the outer beforeEach, which wipes the channels root to restore
       // the shared sheet — so this channel's has to be rewritten each time.
       writeSheet(INJECT_CHANNEL, injectSheet);
-      upstreamSaw = [];
+      upstream.received.length = 0;
       injectedLog = [];
     });
 
@@ -1548,7 +1549,8 @@ credential = "github_service_account"
       );
 
       expect(ToolCallResponse.parse(response.body)).toMatchObject({ outcome: "ran" });
-      expect(upstreamSaw).toEqual([`Bearer ${VAULT_VALUE}`]);
+      expect(authsSeen()).not.toHaveLength(0);
+      for (const seen of authsSeen()) expect(seen).toBe(`Bearer ${VAULT_VALUE}`);
     });
 
     // The composition `apps/proxy-server` now ships: a real meter, a real
@@ -1588,7 +1590,8 @@ credential = "github_service_account"
       expect(parsed.outcome).toBe("ran");
       const content = parsed.outcome === "ran" ? parsed.result.content : "";
       // The upstream really did receive it, so the assertion below is not vacuous.
-      expect(upstreamSaw).toEqual([`Bearer ${VAULT_VALUE}`]);
+      expect(authsSeen()).not.toHaveLength(0);
+      for (const seen of authsSeen()) expect(seen).toBe(`Bearer ${VAULT_VALUE}`);
       expect(content).toContain("[redacted:github_service_account]");
       expect(content).not.toContain(VAULT_VALUE);
       expect(JSON.stringify(response.body)).not.toContain("ghp_");
@@ -1679,7 +1682,7 @@ credential = "absent_credential"
         outcome: "refused",
         refusal: { reason: "credential_unresolved", credential: "absent_credential" }
       });
-      expect(upstreamSaw).toEqual([]);
+      expect(authsSeen()).toEqual([]);
 
       // The dispatch-time refusal (#51) is decided while serving rather than
       // by `decideFromState`, and it reaches the log through the `refused`

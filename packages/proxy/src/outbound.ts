@@ -125,11 +125,36 @@ export class UpstreamError extends Error {
   }
 }
 
+/**
+ * The response headers a caller may read.
+ *
+ * An allowlist rather than a passthrough. Every header returned is a surface an
+ * upstream can echo into — a debug proxy reflecting `Authorization` into a
+ * response header is not exotic — so the set is small enough to read, and every
+ * member goes through the same redaction pass as the body. Adding one is a
+ * decision, not a convenience.
+ *
+ * `content-type` is here because the MCP client has to know whether a body is
+ * JSON or an event stream before it can frame it, and guessing from the bytes
+ * is how a parser gets confused deliberately.
+ */
+const READABLE_RESPONSE_HEADERS = ["content-type"] as const;
+
 export interface UpstreamRequest {
   /** Absolute URL of the upstream. Comes from the team sheet, never the model. */
   readonly url: string;
   /** JSON-serializable. The caller owns the shape; see ./http-dispatcher.ts. */
   readonly body: unknown;
+  /**
+   * Extra request headers, lowercase-named. Merged over the defaults and *under*
+   * the credential, so nothing here can displace or forge the authorization
+   * header — and `authorization` itself is dropped from this map before the
+   * merge. The only way to authenticate an outbound call is `scheme` + `secret`,
+   * because that is the path that also redacts the reply; a second way to set
+   * the header would be a second way to send a credential without scrubbing
+   * what comes back.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
   readonly scheme: AuthScheme;
   /** Resolved from the vault by the caller. `undefined` for an unauthenticated upstream. */
   readonly secret: Secret | undefined;
@@ -148,6 +173,29 @@ export interface UpstreamRequest {
 export interface UpstreamResponse {
   readonly status: number;
   readonly body: string;
+  /**
+   * The allowlisted response headers, lowercased and redacted. A header the
+   * upstream did not send is absent rather than empty.
+   */
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/**
+ * Caller headers, lowercased, with `authorization` removed.
+ *
+ * Lowercased because two spellings of one name in a plain object become two
+ * headers on the wire in undici, and an upstream reading the first one gets to
+ * choose which. The credential is attached after this runs, so a caller cannot
+ * reach the authorization header by any spelling of it.
+ */
+function safeRequestHeaders(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    const lowered = name.toLowerCase();
+    if (lowered === "authorization") continue;
+    out[lowered] = value;
+  }
+  return out;
 }
 
 /**
@@ -173,8 +221,15 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
   // needle list for the response coming back. Both uses are inside this
   // function, so there is still exactly one place a value leaves the vault.
   const value = request.secret?.reveal();
+  // Defaults, then the caller's, then the credential. That order is the point:
+  // the credential is attached last, so no caller header can displace it, and
+  // `safeRequestHeaders` has already dropped any attempt to set it directly.
   const headers = injectCredential(
-    { "content-type": "application/json", accept: "application/json" },
+    {
+      "content-type": "application/json",
+      accept: "application/json",
+      ...safeRequestHeaders(request.headers)
+    },
     request.scheme,
     value
   );
@@ -226,10 +281,14 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
   let body: string;
   try {
     body = await response.text();
-  } catch {
+  } catch (error) {
     // The response began and then failed mid-stream. Still a transport
-    // failure, and still nothing from the error is kept.
-    throw new UpstreamError("unreachable");
+    // failure, and still nothing from the error is kept beyond whether it was
+    // the abort — which matters here rather than only above, because an event
+    // stream spends most of a call's life in this read, so the timeout usually
+    // fires during the body rather than during the headers.
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new UpstreamError(timedOut ? "timed_out" : "unreachable");
   }
 
   // Before the body goes anywhere. Not at the caller's discretion and not
@@ -241,12 +300,19 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
   // unwinds past the dispatcher to the server's handler catch, which answers a
   // constant 500 without inspecting the thrown value, so a redaction that could
   // not be performed produces no response rather than an unscrubbed one.
-  const redacted =
-    value === undefined
-      ? body
-      : redactSecrets(body, [{ name: request.credentialName ?? "credential", value }]);
+  const secrets = value === undefined ? [] : [{ name: request.credentialName ?? "credential", value }];
+  const scrub = (text: string): string => (secrets.length === 0 ? text : redactSecrets(text, secrets));
 
-  return { status: response.status, body: redacted };
+  // The allowlisted headers are selected here rather than returned wholesale,
+  // and scrubbed with the same needles as the body. Both happen before the one
+  // return, so neither can leave without passing through the same pass.
+  const responseHeaders: Record<string, string> = {};
+  for (const name of READABLE_RESPONSE_HEADERS) {
+    const header = response.headers.get(name);
+    if (header !== null) responseHeaders[name] = scrub(header);
+  }
+
+  return { status: response.status, body: scrub(body), headers: responseHeaders };
 }
 
 /**

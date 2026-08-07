@@ -8,7 +8,8 @@ import {
   isDestructiveName,
   permittedTools,
   permittedToolsFromState,
-  resolveApproval
+  resolveApproval,
+  upstreamKey
 } from "./enforce.js";
 
 /** Parsed through the real schema, so no test asserts against a shape a sheet could not have. */
@@ -740,5 +741,105 @@ describe("the tool listing", () => {
     expect(permittedToolsFromState({ status: "active", sheet, stale: true })).toEqual(
       permittedTools(sheet)
     );
+  });
+});
+
+describe("the upstream key", () => {
+  // The client pool keys one client per upstream, and "one upstream" has to
+  // mean what enforcement means by it. `sameUpstream` is module-private, so the
+  // agreement is asserted through the behaviour it drives: two blocks carrying
+  // one tool are ambiguous exactly when their keys differ.
+  const carriers = (left: object, right: object): TeamSheet =>
+    sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", tool: [{ name: "get_issue" }], ...left },
+        { name: "github", tool: [{ name: "get_issue" }], ...right }
+      ]
+    });
+
+  it.each([
+    [
+      "identical blocks",
+      { transport: "http", url: UPSTREAM, credential: "c" },
+      { transport: "http", url: UPSTREAM, credential: "c" }
+    ],
+    [
+      "a differing url",
+      { transport: "http", url: "http://a:3001" },
+      { transport: "http", url: "http://b:3001" }
+    ],
+    [
+      "a differing credential",
+      { transport: "http", url: UPSTREAM, credential: "cred_a" },
+      { transport: "http", url: UPSTREAM, credential: "cred_b" }
+    ],
+    [
+      "one block with a credential and one without",
+      { transport: "http", url: UPSTREAM, credential: "cred_a" },
+      { transport: "http", url: UPSTREAM }
+    ],
+    ["a differing transport", { transport: "http", url: UPSTREAM }, { transport: "stdio" }]
+  ])("agrees with enforcement about %s", (_label, left, right) => {
+    const sheetWith = carriers(left, right);
+    const [a, b] = sheetWith.mcp_server;
+    if (a === undefined || b === undefined) throw new Error("fixture lost a block");
+
+    const decision = decide({
+      sheet: sheetWith,
+      call: callTo("github", "get_issue"),
+      spend: NO_SPEND
+    });
+    const ambiguous = decision.outcome !== "allow" && decision.refusal.reason === "server_ambiguous";
+
+    expect(upstreamKey(a) === upstreamKey(b)).toBe(!ambiguous);
+  });
+
+  // The case `decide` cannot reach — two blocks under different server names
+  // never contend for one call — and the whole point of the pool: two channels
+  // naming one destination and one credential share a client. They already
+  // share the credential, which is the identity the upstream sees.
+  it("is equal for blocks that differ only in name and tool list", () => {
+    const a = sheetOf({
+      ...BASE,
+      mcp_server: [{ name: "github", transport: "http", url: UPSTREAM, credential: "c", tool: [{ name: "list_prs" }] }]
+    }).mcp_server[0];
+    const b = sheetOf({
+      ...BASE,
+      mcp_server: [{ name: "gh", transport: "http", url: UPSTREAM, credential: "c", tool: [{ name: "get_issue" }] }]
+    }).mcp_server[0];
+    if (a === undefined || b === undefined) throw new Error("fixture lost a block");
+
+    expect(upstreamKey(a)).toBe(upstreamKey(b));
+  });
+
+  // A delimiter join would spell both of these the same way, and a collision
+  // here is two upstreams sharing one credentialed client.
+  it("distinguishes no credential from a credential named `null`", () => {
+    const withNone = sheetOf({
+      ...BASE,
+      mcp_server: [{ name: "github", transport: "http", url: UPSTREAM, tool: [{ name: "list_prs" }] }]
+    }).mcp_server[0];
+    const withNull = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: UPSTREAM, credential: "null", tool: [{ name: "list_prs" }] }
+      ]
+    }).mcp_server[0];
+    if (withNone === undefined || withNull === undefined) throw new Error("fixture lost a block");
+
+    expect(upstreamKey(withNone)).not.toBe(upstreamKey(withNull));
+  });
+
+  it("carries the credential name and never a value", () => {
+    const block = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: UPSTREAM, credential: "github_token", tool: [{ name: "list_prs" }] }
+      ]
+    }).mcp_server[0];
+    if (block === undefined) throw new Error("fixture lost a block");
+
+    expect(upstreamKey(block)).toContain("github_token");
   });
 });

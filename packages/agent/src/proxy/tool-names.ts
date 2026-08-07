@@ -94,7 +94,7 @@ function chooseName(entry: PermittedTool, taken: ReadonlySet<string>): string {
  * the tool is what validates them.
  *
  * Real descriptions and real input schemas come from the upstream servers
- * themselves, through the MCP client pool (#39), intersected with this
+ * themselves, through the proxy's MCP client pool (#129), intersected with this
  * manifest. Until then a model is told what it may call and not what the
  * arguments are, which is worth being explicit about rather than papering over.
  */

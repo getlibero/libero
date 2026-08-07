@@ -105,7 +105,7 @@ describe("what the model is told a tool is", () => {
 
   // A team sheet knows names and approval. Publishing an input schema would be
   // this process inventing a contract with a server it has never spoken to —
-  // real schemas arrive with the MCP client pool (#39).
+  // real schemas arrive with #129.
   it("publishes an open object schema, because the sheet describes no arguments", () => {
     const [definition] = mapPermittedTools([listed("github", "list_prs")]).definitions;
     expect(definition?.inputSchema).toEqual({

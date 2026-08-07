@@ -27,12 +27,12 @@
 // sheet; see ./spend-route.ts and ./approvals-route.ts, where each states the
 // asymmetry and what keeps it.
 //
-// What is not here yet: the MCP client pool (#39). It sits behind the
-// dispatcher seam, past the point where enforcement has already answered.
-// Credential injection is built — ./http-dispatcher.ts resolves a credential
-// and ./outbound.ts attaches it — but no route reaches the vault even so: a
-// credential is resolved by whatever serves an allowed call, and this file
-// hands that a decision rather than a secret.
+// The MCP client pool sits behind the dispatcher seam, past the point where
+// enforcement has already answered. Credential injection is built —
+// ./http-dispatcher.ts resolves a credential and ./outbound.ts attaches it —
+// but no route reaches the vault even so: a credential is resolved by whatever
+// serves an allowed call, and this file hands that a decision rather than a
+// secret.
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
