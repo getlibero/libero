@@ -773,7 +773,7 @@ export type SchemaRejection = "not_an_object" | "not_type_object" | "too_large";
  */
 export function boundedToolInputSchema(
   value: unknown
-): { readonly ok: true; readonly schema: Record<string, unknown> } | { readonly ok: false; readonly reason: SchemaRejection } {
+): { readonly ok: true; readonly schema: ToolInputSchema } | { readonly ok: false; readonly reason: SchemaRejection } {
   if (!isRecord(value)) return { ok: false, reason: "not_an_object" };
   if (!ToolInputSchema.safeParse(value).success) return { ok: false, reason: "not_type_object" };
 
@@ -785,5 +785,8 @@ export function boundedToolInputSchema(
   }
   if (bytes > MAX_TOOL_SCHEMA_BYTES) return { ok: false, reason: "too_large" };
 
-  return { ok: true, schema: value };
+  // The value that arrived, asserted rather than reparsed. `safeParse` has just
+  // established the one thing the type claims, and taking zod's output instead
+  // would make "passed through unmodified" false — zod builds a new object.
+  return { ok: true, schema: value as ToolInputSchema };
 }

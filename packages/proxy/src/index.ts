@@ -3,6 +3,7 @@ export type { ProxyServerOptions, RequestContext, RouteHandler, RouteResponse } 
 
 export {
   assertServableComposition,
+  createUnavailableCatalog,
   createUnavailableDispatcher,
   markProvisional
 } from "./dispatch.js";
@@ -13,7 +14,9 @@ export type {
   SpendRecord,
   TokenRecorder,
   ToolCallRecorder,
-  ToolDispatcher
+  ToolCatalog,
+  ToolDispatcher,
+  UpstreamToolDescription
 } from "./dispatch.js";
 
 // The budget meter. Real, and required by any composition that also has a real
@@ -48,6 +51,14 @@ export type { HttpDispatcher, HttpDispatcherOptions } from "./http-dispatcher.js
 // `server.ts` is careful never to hold such an object. Their tests import them
 // from ./mcp-client.js and ./mcp-pool.js directly.
 //
+// `ToolCatalog` does not weaken that. It is a method on the object the
+// dispatcher factory built — still the only thing holding a `Vault` and a pool
+// — rather than a second way to obtain a client, and the interface has no
+// method that opens anything. `createMcpCatalog` is not exported either, for
+// the same reason `createSpendRoute` is not: it takes a lease on a client, and
+// a composition root that could build its own would be one that could hand it
+// something wider.
+//
 // Only the version constants leave ./mcp-protocol.ts. The framing helpers stay
 // private because exporting them is an invitation to hand-assemble a request
 // somewhere that is not the client.
@@ -77,12 +88,14 @@ export {
   decide,
   decideFromState,
   isDestructiveName,
+  permittedToolSources,
+  permittedToolSourcesFromState,
   permittedTools,
   permittedToolsFromState,
   resolveApproval,
   upstreamKey
 } from "./enforce.js";
-export type { BudgetSpend, Decision, EnforcementInput } from "./enforce.js";
+export type { BudgetSpend, Decision, EnforcementInput, PermittedToolSource } from "./enforce.js";
 
 // The approval broker's ticket store. `createApprovalsRoute` is deliberately
 // **not** exported, as `createSpendRoute` is not: both are composed inside

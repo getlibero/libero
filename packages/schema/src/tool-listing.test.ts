@@ -27,13 +27,41 @@ describe("the tool listing", () => {
     expect(PermittedTool.safeParse({ ...entry, tool: "" }).success).toBe(false);
   });
 
-  it("rejects any field a description or a credential could ride in", () => {
-    // There is no description or input schema here on purpose: a team sheet
-    // does not carry either, so a field for one would only ever be filled by
-    // something that is not the sheet. See the note in tool-listing.ts.
-    for (const extra of [{ description: "..." }, { inputSchema: {} }, { credential: "gh_token" }]) {
-      expect(PermittedTool.safeParse({ ...entry, ...extra }).success).toBe(false);
+  it("carries what the upstream said about the tool", () => {
+    const described = {
+      ...entry,
+      description: "Lists open pull requests.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" } } }
+    };
+    expect(PermittedTool.parse(described)).toEqual(described);
+  });
+
+  it("treats both describing fields as optional, because an upstream may not answer", () => {
+    // Absence is a state rather than a gap: a server that is down degrades to
+    // the entry the sheet wrote, and the listing is not the enforcement.
+    expect(PermittedTool.parse(entry)).toEqual(entry);
+    expect(PermittedTool.safeParse({ ...entry, description: "x" }).success).toBe(true);
+    expect(PermittedTool.safeParse({ ...entry, inputSchema: { type: "object" } }).success).toBe(true);
+  });
+
+  it("bounds the description and refuses a schema no provider would take", () => {
+    // The proxy truncates to this number before it publishes one, so a
+    // description over it means the two ends have drifted rather than that an
+    // upstream is chatty. Same constant, imported by both.
+    expect(PermittedTool.safeParse({ ...entry, description: "x".repeat(1024) }).success).toBe(true);
+    expect(PermittedTool.safeParse({ ...entry, description: "x".repeat(1025) }).success).toBe(false);
+    expect(PermittedTool.safeParse({ ...entry, description: "" }).success).toBe(false);
+
+    for (const inputSchema of [{ type: "string" }, {}, [], "x"]) {
+      expect(PermittedTool.safeParse({ ...entry, inputSchema }).success).toBe(false);
     }
+  });
+
+  it("rejects any field a credential or a cursor could ride in", () => {
+    // A description and a schema are the only two fields an upstream fills.
+    // Everything else here is the sheet's, and paging is the proxy's: the wire
+    // listing is complete by the time it is sent.
+    expect(PermittedTool.safeParse({ ...entry, credential: "gh_token" }).success).toBe(false);
     expect(ToolListing.safeParse({ tools: [], nextCursor: "x" }).success).toBe(false);
   });
 });

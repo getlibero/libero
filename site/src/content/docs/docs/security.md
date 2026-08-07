@@ -84,6 +84,31 @@ Related, and also not built yet: a leaked client key cannot be revoked without r
 channel, because the replacement certificate carries the same subject as the leaked one. Pinning a
 channel's key in its team sheet is the intended fix.
 
+### An MCP server the sheet names is trusted to describe its own tools
+
+The proxy asks each server a team sheet names what its tools take, and publishes those
+descriptions and input schemas to the model — so a tool's description is text a third party wrote,
+and it reaches the model's context on every turn of every task in that channel. This is the
+tool-poisoning surface, and it is accepted rather than mitigated.
+
+There is no rule here that reads a description looking for instructions, because a rule that read
+one would be a rule the upstream can phrase around — see below. What the proxy does instead is
+bound the exposure and keep it out of the decisions that matter:
+
+- **A description cannot widen a permission.** The team sheet decides which tools are listed and
+  which are held for a human; the upstream fills two optional fields on rows the sheet already
+  produced. A server naming a tool the sheet does not name has nothing to attach itself to, and the
+  call-time gate re-reads the sheet regardless of what any listing said.
+- **A description cannot fabricate an approval.** "This call is held for approval from a human"
+  comes from the manifest, always, and is never displaced by what a server wrote.
+- **The bytes are bounded**: descriptions truncate, schemas are dropped unless they are a JSON
+  object of the shape a provider will accept, and there are caps on how many tools and pages one
+  server may contribute.
+
+Those caps limit how much a hostile server can spend of a channel's context. They are not a
+mitigation for what it says there. **What accepts that exposure is the act of naming the server in
+the team sheet**, which is an operator's decision and should be made the way any dependency is.
+
 ## What "not a mitigation" means here
 
 Anything phrased as "instruct the model not to…" is not a mitigation and will not be accepted as

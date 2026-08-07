@@ -17,6 +17,14 @@
 // transport — http against stdio — and that is still exactly what the guard
 // below does.
 //
+// **It now answers two questions for two routes**: what an allowed call
+// produced, and what an upstream says its tools are. The second lives in
+// ./mcp-catalog.ts and reaches a client through a *lease* this file hands it —
+// the transport guard and the vault lookup stay here, so the paragraph above
+// stays true word for word and there is still one module to audit for
+// credential resolution. The catalog holds no vault and no secret, and the
+// listing route holds neither a pool nor a method that runs anything.
+//
 // What this does not do, deliberately: it does not check the egress allowlist.
 // `[egress]` governs destinations the sheet does not pin, and this call's
 // destination is the `[[mcp_server]]` url that authorized the tool — see the
@@ -26,8 +34,9 @@
 // certain of catching it echoed back.
 
 import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
-import type { Dispatch, ToolDispatcher } from "./dispatch.js";
+import type { Dispatch, ToolCatalog, ToolDispatcher } from "./dispatch.js";
 import { createSilentLogger, type Logger } from "./log.js";
+import { type ClientLease, createMcpCatalog } from "./mcp-catalog.js";
 import type { McpFailure, McpOutcome } from "./mcp-client.js";
 import { type McpPool, createMcpPool } from "./mcp-pool.js";
 import { type AuthScheme, UpstreamError, destinationHost } from "./outbound.js";
@@ -53,21 +62,31 @@ export interface HttpDispatcherOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
   readonly logger?: Logger;
+  /**
+   * The catalog cache's clock, for tests.
+   *
+   * A second clock in this process, and worth one sentence: this one decides
+   * when to ask an upstream again. It is not a security deadline, which is why
+   * approval tickets deliberately share the *server's* clock and this does not.
+   */
+  readonly now?: () => number;
 }
 
 /**
- * A dispatcher that owns its client pool.
+ * A dispatcher that owns its client pool, and the catalog that leases from it.
  *
- * `ToolDispatcher` itself is unchanged and stays the narrow seam
- * `createProxyServer` takes. An optional `close?()` on the interface would put
- * an optional-chained call in the composition root and imply every dispatcher
- * owns connections; a wider concrete return type gives the one composition root
- * that builds this a `close()` it can call without asking whether it exists.
+ * `ToolDispatcher` and `ToolCatalog` are both unchanged and both stay the
+ * narrow seams `createProxyServer` takes; this is the concrete type the one
+ * composition root that builds it sees. Same move `close()` already made: an
+ * optional `close?()` on the interface would put an optional-chained call in
+ * the composition root and imply every dispatcher owns connections, and a
+ * `describe` on `ToolDispatcher` would put listing traffic on the seam whose
+ * whole property is that a refused call leaves no trace on it.
  */
-export interface HttpDispatcher extends ToolDispatcher {
+export interface HttpDispatcher extends ToolDispatcher, ToolCatalog {
   /**
-   * Terminates every legacy session and drops every client. Idempotent,
-   * bounded, and never rejects.
+   * Terminates every legacy session, drops every client, and forgets every
+   * cached catalog. Idempotent, bounded, and never rejects.
    */
   close(): Promise<void>;
 }
@@ -132,12 +151,54 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
   });
 
+  /**
+   * A client for this upstream, or the reason there is none.
+   *
+   * The dispatch path's first two guards, lifted so the catalog can share them
+   * without learning what a `Vault` is. It carries none of `dispatch`'s
+   * call-shaped log fields — there is no call — and it logs nothing itself: the
+   * caller has the one `catalog_unavailable` event, and putting a second line
+   * here would report every thin listing twice.
+   */
+  const lease = (upstream: McpServer): ClientLease => {
+    if (upstream.transport !== "http") return { ok: false, reason: "unsupported_transport" };
+
+    let secret;
+    if (upstream.credential !== undefined) {
+      const lookup = options.vault.lookup(upstream.credential);
+      // The same fail-before-connecting shape `dispatch` has: an upstream whose
+      // credential is missing never learns a listing was attempted, not even
+      // through a discovery probe.
+      if (lookup.status === "missing") {
+        return { ok: false, reason: "credential_unresolved", credential: upstream.credential };
+      }
+      secret = lookup.secret;
+    }
+
+    const client = pool.acquire(upstream, secret);
+    return client === null ? { ok: false, reason: "shutting_down" } : { ok: true, client };
+  };
+
+  const catalog = createMcpCatalog({
+    lease,
+    logger,
+    ...(options.now !== undefined ? { now: options.now } : {})
+  });
+
   return {
     // Logged after the await rather than before it, so the line means the
     // sessions are gone rather than that they were asked to go.
     async close() {
+      // Before the first await, matching the pool's rule that it hands out
+      // nothing from the instant closing begins: an entry surviving a close
+      // would describe tools against a client that no longer exists.
+      catalog.clear();
       await pool.close();
       logger.log("info", { event: "mcp_pool_closed" });
+    },
+
+    describe(upstream, wanted) {
+      return catalog.describe(upstream, wanted);
     },
 
     async dispatch(call: ResolvedToolCall, upstream: McpServer): Promise<Dispatch> {

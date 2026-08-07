@@ -214,10 +214,53 @@ and removed from the sheet since, is refused either way. The decision runs
 before a credential is resolved or a connection is opened, so a refused call
 leaves no trace upstream.
 
-`/v1/tools` is a **permission manifest, not a tool catalog**: a team sheet
-carries names and approval and nothing else, so real tool definitions —
-descriptions and input schemas — arrive with #129, which calls `tools/list`
-through the pool and intersects the upstream catalogs with this list.
+`/v1/tools` carries real tool definitions. It asks each upstream the sheet names
+for its `tools/list` through the pool, keeps the entries the sheet named, and
+publishes an optional `description` and `inputSchema` beside the approval. **The
+sheet decides what is listed; the upstream only describes** — the merge iterates
+the sheet's entries and looks each up by name, so a server naming a tool the
+sheet does not has no row to attach itself to.
+
+Every way of not getting an answer degrades to the entry as the sheet wrote it,
+and logs one `catalog_unavailable` line with a closed `reason`:
+
+| condition | reason |
+| --- | --- |
+| `transport = "stdio"` | `unsupported_transport` |
+| credential not in the vault | `credential_unresolved` (by name) |
+| pool closing | `shutting_down` |
+| blocks disagree about the upstream | `server_ambiguous` |
+| handshake or listing failed | the `McpFailure`, plus a `status` |
+| answer was not a `tools/list` | `protocol_error` |
+| 5s budget or 5-page walk ran out | `budget_exhausted` / `truncated` |
+
+That is safe because a listing is not the enforcement: a missing schema costs
+the model accuracy, never the channel a permission. The one thing that does not
+degrade is a `RedactionError` — this proxy unable to guarantee its own boundary
+rather than an upstream failing — which answers 500, because degrading would
+serve a cheerful thin listing to a channel whose every call is about to fail the
+same way.
+
+An upstream's answer is bounded before it reaches a model: descriptions truncate
+at 1024 characters, schemas are dropped past 8KB or if they are not a JSON
+object saying `type: "object"`, at most 100 tools per upstream carry one, and
+the walk follows at most 5 pages. The shape rule is the load-bearing one —
+`packages/agent` casts a schema straight into the provider's tool definition, so
+one upstream publishing `{"type":"string"}` would fail every turn for every
+channel whose sheet names it. **The caps bound the blast radius; they are not a
+mitigation for tool poisoning.** Nothing here reads a description, because a
+rule that did would be a rule the upstream phrases around. What accepts the
+exposure is the team sheet naming the server.
+
+Answers are cached per `(upstream, wanted tools)` for five minutes, thirty
+seconds on a failure or a partial walk, and single-flighted — so a client
+polling the route does not become credentialed load on someone else's server.
+
+`createListingRoute` closes over `ToolCatalog`, whose only method describes. The
+dispatcher — the seam that runs something — is not in scope, and
+`eslint.config.mjs` bans the vault, the pool, the client, the dispatcher
+implementation, and the outbound sender in that file. One object fills both
+seams, because it is still the only thing holding a vault and a client pool.
 
 A refusal is a served request: HTTP 200 with `{ outcome: "refused" | "held",
 refusal }`. `ProxyError` stays what it was, the shape of a request that could

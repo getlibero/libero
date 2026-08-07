@@ -1,20 +1,30 @@
-// What happens to a call that enforcement allowed.
+// What happens past the decision.
 //
-// Two seams, both for work that is not built. They are here rather than inside
-// the route because the route's job ends at the decision: everything past the
-// decision is credentials, connections, and accounting, none of which this
-// issue owns.
+// Three seams now: the spend meter, the dispatcher that serves an allowed call,
+// and the catalog that asks an upstream what it offers. They are here rather
+// than inside the routes because a route's job ends at the decision, and
+// everything past it is credentials, connections, and accounting — none of
+// which a route owns.
 //
-// Both are required options on the server rather than defaulted ones. A
+// All three are required options on the server rather than defaulted ones. A
 // deployment that silently meters zero spend because someone left an option
 // out is exactly the failure worth designing away, and a default is how that
 // happens — the omission has to be a type error, not a quiet allow.
+//
+// The catalog is a separate interface from the dispatcher even though one
+// object implements both, for the reason `SpendMeter` is split into three
+// below: the listing route closes over `ToolCatalog` and nothing wider, so a
+// route that asks an upstream what it offers has no method that runs anything.
+// One interface with both would also break what the server's tests assert
+// against a recording dispatcher — that a refused or held call leaves no trace
+// there — by putting listing traffic on the same seam.
 
 import type { BudgetSpend } from "./enforce.js";
 import type {
   McpServer,
   ResolvedToolCall,
   TokenUsageReport,
+  ToolInputSchema,
   ToolRefusal,
   ToolResult
 } from "@getlibero/schema";
@@ -153,6 +163,68 @@ export interface ToolDispatcher {
  */
 export function createUnavailableDispatcher(): Provisional<ToolDispatcher> {
   return markProvisional({ dispatch: () => ({ outcome: "unavailable" }) as Dispatch });
+}
+
+/**
+ * What an upstream said about one of its tools, after the proxy bounded it.
+ *
+ * Both fields optional and both absent when the upstream could not be asked or
+ * said nothing publishable. Nothing here identifies the tool: the map this
+ * arrives in is keyed by name, and a name inside the value would be a second
+ * copy that could disagree with the key.
+ */
+export interface UpstreamToolDescription {
+  readonly description?: string;
+  /**
+   * Typed as the schema's shape rather than a bare record, because the bound
+   * that produced it has already established the one thing that shape claims.
+   * Carrying it in the type is what lets the listing route put this on the wire
+   * without a second check nobody would keep in step with the first.
+   */
+  readonly inputSchema?: ToolInputSchema;
+}
+
+/**
+ * Asks an upstream what it offers, so a listing can carry real tool definitions.
+ *
+ * The seam ./mcp-catalog.ts fills, held by the same object that fills
+ * `ToolDispatcher` — the only thing in this package holding a `Vault` and a
+ * client pool at once. Two interfaces rather than one method added to the
+ * dispatcher, for the reason in this file's header.
+ *
+ * **Never rejects for an upstream failure.** Down, slow, ambiguous, speaking a
+ * transport this proxy cannot reach, answering bytes that are not MCP: every
+ * one of those is an empty map and a log line, because the listing is not the
+ * enforcement and a tool with no schema is still a tool the sheet permits. The
+ * one thing that does propagate is a `RedactionError`, which is not an upstream
+ * failure but this proxy unable to guarantee its own boundary.
+ *
+ * `wanted` is the tool names the sheet named, and it is a **bound rather than
+ * the intersection**. The intersection is done by the caller, which iterates
+ * the sheet — so a catalog naming a tool the sheet does not cannot add one.
+ * What `wanted` buys is that an upstream cannot hide a sheet's tool behind two
+ * hundred decoys and run the caller out of its own caps.
+ */
+export interface ToolCatalog {
+  describe(
+    upstream: McpServer,
+    wanted: readonly string[]
+  ): Promise<ReadonlyMap<string, UpstreamToolDescription>>;
+}
+
+/**
+ * A catalog with nothing behind it: every tool stays as the sheet wrote it.
+ *
+ * **Deliberately absent from `assertServableComposition`.** A catalog cannot
+ * serve a call and cannot spend a budget, so pairing a provisional one with a
+ * real dispatcher is not the silent failure that check exists for — it is a
+ * proxy publishing thin listings, which is a first-class state this design
+ * already has a name and a fallback for. The omission is decided, not missed.
+ */
+export function createUnavailableCatalog(): Provisional<ToolCatalog> {
+  return markProvisional({
+    describe: async () => new Map<string, UpstreamToolDescription>()
+  });
 }
 
 /**

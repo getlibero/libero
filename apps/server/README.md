@@ -21,9 +21,21 @@ from nothing in the request. A channel whose certificate this process does not
 hold is a channel it cannot call as.
 
 The tools the model is offered are whatever the proxy lists for that channel,
-unfiltered. Their descriptions are thin on purpose: a team sheet knows names and
-approval and nothing about arguments, so no input schema is published. Real
-schemas arrive with #129.
+unfiltered. Each carries the description and input schema the upstream server
+published, which the proxy fetched and intersected with the sheet — this process
+never asks a server anything and never filters what it was given. A tool the
+proxy could not describe, because its upstream was down or slow or the sheet
+contradicts itself, arrives with an open object schema and a sentence saying the
+arguments are not described. That costs the model accuracy and costs the channel
+nothing: the sheet still decides what may be called, and the proxy still
+enforces it at call time.
+
+Descriptions and schemas are written by third-party servers and enter the
+model's context on every turn. Nothing here reads or annotates them — a rule
+that read a description would be a rule the upstream phrases around. The proxy
+bounds their size; what accepts the exposure is the team sheet naming the
+server. The one thing an upstream cannot describe is approval, so "this call is
+held for approval from a human" always comes from the manifest.
 
 Not here yet, and each belongs to its own issue: thread follow-ups without a
 re-mention (#66), thread history and attribution in the prompt (#67), and the

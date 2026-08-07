@@ -33,6 +33,13 @@
 // but no route reaches the vault even so: a credential is resolved by whatever
 // serves an allowed call, and this file hands that a decision rather than a
 // secret.
+//
+// One route now holds an interface that *asks* an upstream a question — the
+// listing, through `ToolCatalog` — and that is not the same thing as holding
+// the pool. `ToolCatalog` has no method that runs anything, and the object
+// behind it resolved the credential in the module that holds the vault. This
+// file still holds neither a vault nor a pool, and ./listing-route.ts states
+// what it cannot reach and has an ESLint block saying so.
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -47,7 +54,6 @@ import {
   type ResolvedToolCall,
   ToolCall,
   type ToolCallResponse,
-  type ToolListing,
   type ToolRefusal,
   type ToolResult,
   resolveToolCall
@@ -55,9 +61,15 @@ import {
 import { createApprovalStore, type RedeemResult } from "./approvals.js";
 import { createApprovalsRoute } from "./approvals-route.js";
 import { type AuditWriter, hashArguments } from "./audit-log.js";
-import { assertServableComposition, type SpendMeter, type ToolDispatcher } from "./dispatch.js";
-import { decideFromState, permittedToolsFromState } from "./enforce.js";
+import {
+  assertServableComposition,
+  type SpendMeter,
+  type ToolCatalog,
+  type ToolDispatcher
+} from "./dispatch.js";
+import { decideFromState } from "./enforce.js";
 import { resolveChannel } from "./identity.js";
+import { createListingRoute } from "./listing-route.js";
 import { createJsonLogger, type Logger } from "./log.js";
 import { createSpendRoute } from "./spend-route.js";
 import type { TeamSheetStore } from "./team-sheet-store.js";
@@ -84,6 +96,16 @@ export interface ProxyServerOptions {
    */
   spend: SpendMeter;
   dispatcher: ToolDispatcher;
+  /**
+   * Asks each upstream what its tools take, so a listing carries real
+   * definitions. Required on the same argument as the two above, and it is
+   * about legibility rather than safety: a catalog can widen nothing, but an
+   * optional one defaults to thin listings forever, and a deployment that left
+   * it out would look exactly like one whose upstreams are all slow. The
+   * omission should be a type error. `createUnavailableCatalog()` is the
+   * deliberate way to say "publish thin".
+   */
+  catalog: ToolCatalog;
   /**
    * Where every decided call is recorded. Required on the same argument, and
    * the argument is strongest here: an optional writer defaults to *no audit*,
@@ -284,25 +306,22 @@ export function createProxyServer(options: ProxyServerOptions): Server {
   const approvals = createApprovalStore({ now });
 
   /**
-   * The tool listing: what this channel may call.
+   * The tool listing: what this channel may call, and what those tools take.
    *
    * Not the enforcement — the call-time gate below is, and it holds on its own
    * against a tool that was never listed or was listed and has since been
    * removed. This keeps an unlisted tool out of the model's context, which is
    * worth doing and is not the same thing.
+   *
+   * Its own module since it began asking upstreams, so the claim about what it
+   * cannot reach is a file an ESLint block can name. See ./listing-route.ts.
    */
-  const listTools = async (ctx: RequestContext): Promise<RouteResponse> => {
-    const state = await options.sheets.resolve(ctx.channel);
-    const tools = permittedToolsFromState(state);
-    logger.log("info", {
-      event: "tools_listed",
-      requestId: ctx.requestId,
-      channel: ctx.channel,
-      sheet: state.status,
-      count: tools.length
-    });
-    return ok({ tools } satisfies ToolListing);
-  };
+  const listTools = createListingRoute({
+    sheets: options.sheets,
+    catalog: options.catalog,
+    logger,
+    ok
+  });
 
   /**
    * The call-time gate. Order in here is the security property.
