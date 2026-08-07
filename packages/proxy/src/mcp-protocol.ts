@@ -29,6 +29,13 @@
 // `WireContext` or an `McpDialect` wherever the two disagree, so which protocol
 // a request is written in is a value rather than a mode this module remembers —
 // it remembers nothing.
+//
+// The one import is `@getlibero/schema`, for two bounds the agent's parser
+// enforces from the other end. Shared rather than restated: a proxy truncating
+// a description at one number against a schema rejecting at another turns every
+// chatty upstream into a parse failure that ends a task.
+
+import { MAX_TOOL_DESCRIPTION, ToolInputSchema } from "@getlibero/schema";
 
 /**
  * The revision this client speaks.
@@ -125,6 +132,18 @@ const MAX_RELAYED_MESSAGE = 300;
 const MAX_LABEL = 64;
 const MAX_URI = 200;
 
+/**
+ * How large an upstream's input schema may be before this proxy declines to
+ * publish it.
+ *
+ * Bigger than any hand-written schema and small enough that a hundred of them
+ * are not a context window. The companion cap on descriptions lives in
+ * `@getlibero/schema`, because the agent's parser needs the same number; this
+ * one does not cross the wire, because the shape rule already means an
+ * oversized schema is simply absent rather than truncated.
+ */
+const MAX_TOOL_SCHEMA_BYTES = 8192;
+
 export interface JsonRpcRequest {
   readonly jsonrpc: "2.0";
   readonly id: number;
@@ -218,6 +237,36 @@ export function toolsCallRequest(
     params: {
       name: tool,
       arguments: args,
+      ...(dialect === "stateless" ? { _meta: requestMeta() } : {})
+    }
+  };
+}
+
+/**
+ * The `tools/list` request: one page of an upstream's catalog.
+ *
+ * The same `_meta` discipline as `toolsCallRequest`, for the same reason —
+ * present on the stateless dialect, absent on the legacy one, because the three
+ * `io.modelcontextprotocol/*` keys are `2026-07-28` inventions carrying what
+ * `initialize` has already told a legacy server.
+ *
+ * `cursor` is omitted rather than sent as `null` when there is none. The spec
+ * treats an absent cursor as "the first page" and an explicit one as a position
+ * the server issued, so a `null` here would be this client inventing a third
+ * state.
+ *
+ * Nothing about the channel travels in it, because there is nothing to send: a
+ * catalog is the same for every channel that can reach the server, and which
+ * tools a channel may *call* is a question this proxy answers from the team
+ * sheet rather than one it asks an upstream.
+ */
+export function toolsListRequest(id: number, dialect: McpDialect, cursor?: string): JsonRpcRequest {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method: "tools/list",
+    params: {
+      ...(cursor !== undefined ? { cursor } : {}),
       ...(dialect === "stateless" ? { _meta: requestMeta() } : {})
     }
   };
@@ -634,4 +683,107 @@ export function toolResultText(result: Record<string, unknown>): { content: stri
   }
 
   return { content: joined, isError };
+}
+
+/**
+ * One tool as an upstream described it, before any of it is believed.
+ *
+ * `description` and `inputSchema` are `unknown` rather than typed, and that is
+ * the point: the only field this module vouches for is `name`, because a name
+ * is what a page of a catalog is indexed by. The two describing fields go
+ * through `boundedToolDescription` and `boundedToolInputSchema` before anything
+ * publishes them, and keeping them `unknown` here means a caller cannot skip
+ * that by accident.
+ */
+export interface UpstreamToolEntry {
+  readonly name: string;
+  readonly description: unknown;
+  readonly inputSchema: unknown;
+}
+
+/**
+ * One page of a `tools/list` result, or `null` when the shape is not one at all.
+ *
+ * **An unreadable entry is skipped; an unreadable page is refused.** That is the
+ * opposite of `toolResultText`, which fails a whole result on one bad block, and
+ * the difference is what the two are for. A partial tool *answer* misleads —
+ * the model reads it as everything the tool said. A partial *catalog* does not:
+ * every tool it omits falls back to the entry the team sheet already produced,
+ * which is a defined state with a defined meaning. Refusing the page over one
+ * malformed entry would cost every other tool on it its schema.
+ *
+ * `nextCursor` is `null` unless the server sent a non-empty string. An empty
+ * one is the spec's own end-of-pagination signal read the safe way: a cursor
+ * this client cannot distinguish from the one it just used is a loop.
+ */
+export function parseToolsList(
+  result: Record<string, unknown>
+): { tools: UpstreamToolEntry[]; nextCursor: string | null } | null {
+  const listed = result["tools"];
+  if (!Array.isArray(listed)) return null;
+
+  const tools: UpstreamToolEntry[] = [];
+  for (const entry of listed) {
+    if (!isRecord(entry)) continue;
+    const name = entry["name"];
+    if (typeof name !== "string" || name === "") continue;
+    tools.push({ name, description: entry["description"], inputSchema: entry["inputSchema"] });
+  }
+
+  const cursor = result["nextCursor"];
+  return { tools, nextCursor: typeof cursor === "string" && cursor !== "" ? cursor : null };
+}
+
+/**
+ * An upstream's description, bounded to what may enter a model's context.
+ *
+ * Truncated rather than dropped, because a cut-off sentence still tells the
+ * model more about `create_issue` than silence does — the opposite call from
+ * the schema below, which cannot be shortened and stay valid. `undefined` for
+ * anything that is not a non-empty string, so the absence the caller sees means
+ * one thing rather than three.
+ */
+export function boundedToolDescription(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : truncate(trimmed, MAX_TOOL_DESCRIPTION);
+}
+
+/** Why an upstream's input schema will not be published. */
+export type SchemaRejection = "not_an_object" | "not_type_object" | "too_large";
+
+/**
+ * An upstream's input schema, or the reason it will not be published.
+ *
+ * **Returns the value it was given, not zod's output.** The shape rule is a
+ * gate, never a rewrite: what reaches the provider is the bytes the upstream
+ * wrote, so "passed through unmodified" is a fact about this function rather
+ * than a claim about it.
+ *
+ * All-or-nothing, unlike a description. A schema cannot be shortened and stay a
+ * schema, and half of one is worse than none — the model would form arguments
+ * against a contract nobody holds. Its absence is a defined state: the agent
+ * falls back to the open object it published before any of this existed.
+ *
+ * The `JSON.stringify` is wrapped because a self-referential or BigInt-bearing
+ * value throws rather than returning a string, and a schema this proxy cannot
+ * even measure is one it will not relay. `too_large` is the honest answer to
+ * both — the caller does nothing different for either, and inventing a fourth
+ * reason would be a distinction with no consequence.
+ */
+export function boundedToolInputSchema(
+  value: unknown
+): { readonly ok: true; readonly schema: Record<string, unknown> } | { readonly ok: false; readonly reason: SchemaRejection } {
+  if (!isRecord(value)) return { ok: false, reason: "not_an_object" };
+  if (!ToolInputSchema.safeParse(value).success) return { ok: false, reason: "not_type_object" };
+
+  let bytes: number;
+  try {
+    bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return { ok: false, reason: "too_large" };
+  }
+  if (bytes > MAX_TOOL_SCHEMA_BYTES) return { ok: false, reason: "too_large" };
+
+  return { ok: true, schema: value };
 }

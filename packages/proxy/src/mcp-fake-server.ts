@@ -59,6 +59,13 @@ export interface FakeReply {
   readonly hang?: boolean;
 }
 
+/** One tool as this fake publishes it from `tools/list`. */
+export interface FakeCatalogTool {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema?: Record<string, unknown>;
+}
+
 export interface FakeMcpServerOptions {
   /** How a reply is framed. Both are spec-legal and the client must read both. */
   framing: "json" | "sse";
@@ -103,6 +110,18 @@ export interface FakeMcpServerOptions {
   echoAuthAsSessionId: boolean;
   /** Record a request with this JSON-RPC method and never answer it. */
   hangOn: string | null;
+  /** What `tools/list` publishes. Two well-formed tools by default. */
+  catalog: readonly FakeCatalogTool[];
+  /**
+   * How many tools one `tools/list` page carries, or `null` for all of them.
+   *
+   * Real pagination rather than a canned `nextCursor`: the cursor is an offset
+   * this server issued and reads back, so a client that mishandles one asks for
+   * the wrong page rather than getting the same one twice. The hostile
+   * shapes — a cursor that never advances, a catalog that is not an array —
+   * go through `respond`, which is what that hook is for.
+   */
+  pageSize: number | null;
 }
 
 export interface FakeMcpServer {
@@ -135,7 +154,20 @@ const DEFAULTS: FakeMcpServerOptions = {
   sessions: true,
   legacyVersion: LEGACY_PROTOCOL_VERSION,
   echoAuthAsSessionId: false,
-  hangOn: null
+  hangOn: null,
+  catalog: [
+    {
+      name: "list_prs",
+      description: "Lists open pull requests.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] }
+    },
+    {
+      name: "merge_pr",
+      description: "Merges a pull request.",
+      inputSchema: { type: "object", properties: { number: { type: "integer" } }, required: ["number"] }
+    }
+  ],
+  pageSize: null
 };
 
 /** Spell every character as `\uXXXX`, the way an over-eager encoder would. */
@@ -231,6 +263,23 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
           jsonrpc: "2.0",
           id,
           result: { resultType: "complete", supportedVersions: [...fake.options.supportedVersions], capabilities: {} }
+        }
+      };
+    }
+
+    if (request.rpc?.method === "tools/list") {
+      const catalog = fake.options.catalog;
+      const raw = request.rpc.params?.["cursor"];
+      // A cursor this server did not issue starts at the beginning, which is
+      // what a server that has forgotten its pagination state does.
+      const start = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : 0;
+      const end = fake.options.pageSize === null ? catalog.length : Math.min(catalog.length, start + fake.options.pageSize);
+      const page = catalog.slice(start, end);
+      return {
+        message: {
+          jsonrpc: "2.0",
+          id,
+          result: { tools: page, ...(end < catalog.length ? { nextCursor: String(end) } : {}) }
         }
       };
     }

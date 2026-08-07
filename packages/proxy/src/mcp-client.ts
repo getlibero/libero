@@ -33,11 +33,19 @@
 // `2026-07-28` also removed `Last-Event-ID` resumability, and re-issuing a
 // `tools/call` is the replay that turns one write into two. At most one
 // re-initialize happens per call, and the structure below is what bounds it.
+//
+// **`tools/list` rides the same ladder and the same session, in its own
+// function.** It is a read, so the paragraph above binds it more loosely — but
+// it is written as a sibling of `attempt` rather than folded into it, because
+// the argument against replaying a write is the argument that function's
+// docblock makes, and a listing living inside it is how that argument comes to
+// be softened by a later edit.
 
 import type { ToolResult } from "@getlibero/schema";
 import {
   MCP_PROTOCOL_VERSION,
   type McpDialect,
+  type UpstreamToolEntry,
   type WireContext,
   acceptedProtocolVersion,
   discoverRequest,
@@ -47,12 +55,14 @@ import {
   isInputRequired,
   negotiatedVersion,
   parseRpcResponse,
+  parseToolsList,
   readSessionId,
   relayedDetail,
   requestHeaders,
   sessionTerminationHeaders,
   toolResultText,
-  toolsCallRequest
+  toolsCallRequest,
+  toolsListRequest
 } from "./mcp-protocol.js";
 import {
   type AuthScheme,
@@ -104,8 +114,46 @@ export type McpOutcome =
       readonly detail?: string;
     };
 
+/**
+ * What a client did with one page of a `tools/list`.
+ *
+ * **Neither failure member carries a `detail`, and this is a stricter rule than
+ * `McpOutcome`'s.** There, a failing `tools/call` relays a bounded error body
+ * because it is often the only thing telling the model what it did wrong. A
+ * failing listing produces no model-facing text at all — the tool falls back to
+ * the entry the team sheet already produced — so a detail here could only ever
+ * be logged, which is upstream bytes written down by the process that holds
+ * every credential for no one's benefit. There is no field to fill in.
+ *
+ * `status` and `code` stay, because a number chosen from the protocol is not
+ * upstream-authored text, and an operator asking why a catalog is thin needs
+ * one of them.
+ */
+export type McpListOutcome =
+  | {
+      readonly outcome: "listed";
+      readonly tools: readonly UpstreamToolEntry[];
+      readonly nextCursor: string | null;
+    }
+  | { readonly outcome: "connect_failed"; readonly failure: McpFailure }
+  | {
+      readonly outcome: "call_failed";
+      readonly failure: McpFailure;
+      readonly status?: number;
+      readonly code?: number;
+    };
+
 export interface McpClient {
   callTool(tool: string, args: Readonly<Record<string, unknown>>): Promise<McpOutcome>;
+  /**
+   * One page of this server's catalog, from `cursor` or from the beginning.
+   *
+   * `timeoutMs` is per call rather than the client's configured default,
+   * because the caller walking the pages is the one holding a budget for the
+   * whole walk. Both arguments are required and explicitly nullable: a default
+   * is how a call site comes to spend thirty seconds it did not mean to.
+   */
+  listTools(cursor: string | undefined, timeoutMs: number | undefined): Promise<McpListOutcome>;
   /**
    * Which protocol this client settled on, or `undefined` before the ladder has
    * run and after a handshake that failed. Read by the dispatcher for its log
@@ -166,10 +214,16 @@ type Probe =
   | { readonly kind: "answered_error" }
   | { readonly kind: "failed"; readonly failure: McpFailure };
 
-/** One `tools/call` attempt, and whether the session it used has since gone. */
-type Attempt =
-  | { readonly kind: "answered"; readonly outcome: McpOutcome }
-  | { readonly kind: "session_lost"; readonly generation: number; readonly outcome: McpOutcome };
+/**
+ * One attempt at a request, and whether the session it used has since gone.
+ *
+ * Generic over the outcome so a call and a listing describe a session loss the
+ * same way. The two requests still have their own functions — this is the
+ * bookkeeping they share, not the logic.
+ */
+type Attempt<Outcome> =
+  | { readonly kind: "answered"; readonly outcome: Outcome }
+  | { readonly kind: "session_lost"; readonly generation: number; readonly outcome: Outcome };
 
 export function createMcpClient(options: McpClientOptions): McpClient {
   let nextId = 1;
@@ -400,7 +454,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     at: Mode,
     tool: string,
     args: Readonly<Record<string, unknown>>
-  ): Promise<Attempt> => {
+  ): Promise<Attempt<McpOutcome>> => {
     const id = nextId++;
     const dialect: McpDialect = at.kind === "stateless" ? "stateless" : "legacy";
     let response: UpstreamResponse;
@@ -470,6 +524,73 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     return { kind: "answered", outcome: { outcome: "called", result: mapped } };
   };
 
+  /**
+   * One `tools/list` page, at the protocol this client settled on.
+   *
+   * A sibling of `attempt` rather than a branch inside it. What the two share —
+   * `send`, `wireOf`, `ensureOpen`, `reopenSession`, and the session-loss shape
+   * — they share by calling the same things; what they do not share is the
+   * argument about replaying a write, which belongs to one of them alone.
+   *
+   * No `input_required` branch: a listing is not a round trip an upstream can
+   * ask this proxy to continue, and a result shaped like one has no `tools`
+   * array, so it is already a protocol error by the line below.
+   */
+  const attemptList = async (
+    at: Mode,
+    cursor: string | undefined,
+    timeoutMs: number | undefined
+  ): Promise<Attempt<McpListOutcome>> => {
+    const id = nextId++;
+    const dialect: McpDialect = at.kind === "stateless" ? "stateless" : "legacy";
+    let response: UpstreamResponse;
+    try {
+      response = await send({
+        headers: requestHeaders(wireOf(at), "tools/list"),
+        body: toolsListRequest(id, dialect, cursor),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {})
+      });
+    } catch (error) {
+      if (!(error instanceof UpstreamError)) throw error;
+      return { kind: "answered", outcome: { outcome: "call_failed", failure: error.failure } };
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      // The status and nothing else. `attempt` relays a bounded body here
+      // because a model reads it; nobody reads this one.
+      const outcome: McpListOutcome = {
+        outcome: "call_failed",
+        failure: "http_error",
+        status: response.status
+      };
+      // The same signal, and safe here for one more reason than it is there:
+      // the 404 precedes dispatch, *and* a listing is a read, so a replay has
+      // no write to double.
+      if (response.status === 404 && at.kind === "legacy_session") {
+        return { kind: "session_lost", generation: at.generation, outcome };
+      }
+      return { kind: "answered", outcome };
+    }
+
+    const parsed = parseRpcResponse(response.headers["content-type"], response.body, id);
+    if (parsed.kind === "malformed") {
+      return { kind: "answered", outcome: { outcome: "call_failed", failure: "protocol_error" } };
+    }
+    if (parsed.kind === "error") {
+      return { kind: "answered", outcome: { outcome: "call_failed", failure: "rpc_error", code: parsed.code } };
+    }
+
+    const page = parseToolsList(parsed.result);
+    if (page === null) {
+      return { kind: "answered", outcome: { outcome: "call_failed", failure: "protocol_error" } };
+    }
+
+    return {
+      kind: "answered",
+      outcome: { outcome: "listed", tools: page.tools, nextCursor: page.nextCursor }
+    };
+  };
+
   return {
     get protocol() {
       return mode === undefined ? undefined : mode.kind === "stateless" ? "stateless" : "legacy";
@@ -490,6 +611,21 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       // branch that can lead back. A server that has forgotten every session
       // answers the model with the plain 404 the second attempt produced.
       return (await attempt(reopened.mode, tool, args)).outcome;
+    },
+
+    async listTools(cursor, timeoutMs) {
+      const ready = await ensureOpen();
+      if (!ready.ok) return { outcome: "connect_failed", failure: ready.failure };
+
+      const first = await attemptList(ready.mode, cursor, timeoutMs);
+      if (first.kind === "answered") return first.outcome;
+
+      const reopened = await reopenSession(first.generation);
+      if (!reopened.ok) return { outcome: "call_failed", failure: reopened.failure };
+
+      // The same one-shot budget as `callTool`, spent the same way and for the
+      // same reason: two statements, no counter, and no branch that leads back.
+      return (await attemptList(reopened.mode, cursor, timeoutMs)).outcome;
     },
 
     /**
