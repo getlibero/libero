@@ -82,6 +82,28 @@ describe("the outbound call", () => {
     expect(calls[0]?.init.method).toBe("POST");
   });
 
+  // The verb decides whether a body is written, rather than whether `body`
+  // happens to be set: `JSON.stringify(undefined)` is `undefined`, so keying
+  // off the value would send a bodiless POST silently instead of not compiling.
+  it("sends a DELETE with no body and no content type", async () => {
+    const { calls, fetch } = recordingFetch();
+    await callUpstream({
+      url: "http://u:1",
+      method: "DELETE",
+      headers: { "mcp-session-id": "session-1" },
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      fetch
+    });
+
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect("body" in (calls[0]?.init ?? {})).toBe(false);
+    expect("content-type" in sentHeaders(calls)).toBe(false);
+    // Still credentialed, and still through the one function that redacts.
+    expect(sentHeaders(calls).authorization).toBe(`Bearer ${VALUE}`);
+    expect(sentHeaders(calls)["mcp-session-id"]).toBe("session-1");
+  });
+
   it("returns the upstream's status and body", async () => {
     const { fetch } = recordingFetch('{"prs":[]}', 200);
     const response = await callUpstream({
@@ -305,6 +327,17 @@ describe("a redirecting upstream", () => {
     ).rejects.toMatchObject({ name: "UpstreamError", failure: "redirected" });
   });
 
+  // The claim the `"POST" | "DELETE"` union makes: both members take the
+  // identical path, so a redirect is refused on either. Cheaper to assert than
+  // to argue in a comment, and it is what stops a second verb quietly acquiring
+  // a second set of rules on the one function that holds a credential.
+  it.each(["POST", "DELETE"] as const)("refuses a redirect on a %s alike", async method => {
+    const { fetch } = recordingFetch("", 307);
+    await expect(
+      callUpstream({ url: "http://u:1", method, body: {}, scheme: "bearer", secret: secretOf(VALUE), fetch })
+    ).rejects.toMatchObject({ name: "UpstreamError", failure: "redirected" });
+  });
+
   // 304 is not a redirect, and the proxy sends nothing conditional that could
   // provoke one. Swept in with the others it would turn a cacheable answer into
   // a transport failure.
@@ -395,6 +428,49 @@ describe("the secret does not come back", () => {
     });
 
     expect(response.body).not.toContain(encode(VALUE));
+    expect(response.body).toContain("[redacted:c]");
+  });
+
+  // The argument for admitting `mcp-session-id` to the readable allowlist: the
+  // legacy handshake has nowhere else to learn a session, and every member of
+  // that list goes through the same needles as the body before the one return.
+  // So a server that answers with the credential as its session id hands back a
+  // marker, and the marker is what the client would go on to replay.
+  it("scrubs the session header with the same needles as the body", async () => {
+    const fetch = (async () =>
+      new Response("{}", {
+        headers: { "content-type": "application/json", "mcp-session-id": VALUE }
+      })) as unknown as typeof globalThis.fetch;
+
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "github_token",
+      fetch
+    });
+
+    expect(response.headers["mcp-session-id"]).toBe("[redacted:github_token]");
+    expect(JSON.stringify(response)).not.toContain(VALUE);
+  });
+
+  // A DELETE's response is discarded by its one caller, but it must not be able
+  // to leave here unscrubbed — the guarantee is the function's, not the
+  // caller's.
+  it("redacts a DELETE's response exactly as it does a POST's", async () => {
+    const fetch = (async () => new Response(`echo ${VALUE}`)) as unknown as typeof globalThis.fetch;
+
+    const response = await callUpstream({
+      url: "http://u:1",
+      method: "DELETE",
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "c",
+      fetch
+    });
+
+    expect(response.body).not.toContain(VALUE);
     expect(response.body).toContain("[redacted:c]");
   });
 

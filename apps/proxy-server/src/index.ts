@@ -100,7 +100,9 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     if (closing) {
       // A second signal is an operator done waiting. Without this, one hung
       // keep-alive socket holds the process open until something sends
-      // SIGKILL.
+      // SIGKILL. It now also covers a session-termination `DELETE` to an
+      // upstream that black-holes packets — which the termination budget below
+      // already bounds, so this stays the path nobody should need.
       //
       // The budget and audit databases are left unclosed here, and that is safe
       // rather than overlooked: both commit with `synchronous = FULL`, so every
@@ -120,15 +122,21 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     // finished writing to them, and not before.
     server.close(() => {
       // After the in-flight requests, so a call that was mid-flight kept its
-      // client. Closing is refusing to hand out more of them and dropping the
-      // rest: `2026-07-28` has no session to terminate and no socket this layer
-      // owns, so there is nothing here that can hang. When the legacy handshake
-      // lands it brings sessions, and that close has a `DELETE` to send and a
-      // budget to keep it from holding shutdown open.
-      dispatcher.close();
-      budget.close();
-      auditDb.close();
-      process.exit(0);
+      // client. Closing refuses to hand out more of them, and sends one
+      // session-termination `DELETE` per legacy upstream — concurrently, each
+      // capped at the proxy's own short termination budget, so the whole pass
+      // costs one timeout rather than one per upstream. A stateless upstream
+      // has nothing to terminate and adds nothing to it.
+      //
+      // `.finally` rather than `.then`: the two databases close and the process
+      // exits whatever the terminations did. `void` marks the floating promise
+      // as deliberate — this callback is not async, and making it async would
+      // produce the same floating promise with more to read.
+      void dispatcher.close().finally(() => {
+        budget.close();
+        auditDb.close();
+        process.exit(0);
+      });
     });
   });
 }

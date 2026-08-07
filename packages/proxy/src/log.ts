@@ -17,6 +17,9 @@
 // wants, and greppable without a parser.
 
 import type { AuditOutcome } from "@getlibero/schema";
+// A type-only edge to a module that imports nothing at all, so no cycle and no
+// dependency — the same reason `AuditOutcome` comes from the schema above.
+import type { McpDialect } from "./mcp-protocol.js";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -90,6 +93,23 @@ export interface LogFields {
    * as hosts too, so this is the string an operator compares against.
    */
   destination?: string;
+  /**
+   * Which MCP protocol a call was served over.
+   *
+   * Two values, which is what earns it the field: while the client spoke one
+   * revision the value was a constant, and a field with one value tells an
+   * operator nothing. Now it answers the question an operator actually asks
+   * when an upstream misbehaves — did the proxy fall back? — and a fleet-wide
+   * count of `legacy` is how the fallback's eventual removal gets scheduled.
+   *
+   * Not the negotiated revision string. That is the upstream's business and
+   * would make this a cardinality problem; this is the proxy's own branch, and
+   * the branch has two arms.
+   *
+   * Written as ./mcp-protocol.ts's type rather than repeated here, for the
+   * reason `outcome` below is written as the schema's.
+   */
+  protocol?: McpDialect;
   /**
    * What the proxy did with a tool call, or what it did with a decision about
    * one. The audit log's vocabulary, of which the first four are also the
