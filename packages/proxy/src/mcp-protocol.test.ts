@@ -1,16 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  LEGACY_PROTOCOL_VERSION,
+  LEGACY_PROTOCOL_VERSIONS,
   MCP_PROTOCOL_VERSION,
+  STATELESS_PROTOCOL_VERSIONS,
   SUPPORTED_PROTOCOL_VERSIONS,
+  acceptedProtocolVersion,
   discoverRequest,
   eventStreamPayloads,
+  initializeHeaders,
+  initializeRequest,
+  initializedNotification,
   isInputRequired,
   negotiatedVersion,
   parseRpcResponse,
+  readSessionId,
   requestHeaders,
+  sessionTerminationHeaders,
   toolResultText,
   toolsCallRequest
 } from "./mcp-protocol.js";
+
+/** The wire context a stateless request goes out on. */
+const STATELESS = { dialect: "stateless", version: MCP_PROTOCOL_VERSION } as const;
 
 describe("the request shapes", () => {
   it("frames a discover request", () => {
@@ -22,7 +34,7 @@ describe("the request shapes", () => {
   });
 
   it("frames a tools/call with the name and the arguments", () => {
-    const request = toolsCallRequest(7, "list_prs", { repo: "libero" });
+    const request = toolsCallRequest(7, "list_prs", { repo: "libero" }, "stateless");
     expect(request).toMatchObject({
       jsonrpc: "2.0",
       id: 7,
@@ -31,13 +43,44 @@ describe("the request shapes", () => {
     });
   });
 
+  // The `io.modelcontextprotocol/*` keys are that revision's own invention. A
+  // legacy server has been told the version and the capabilities by
+  // `initialize`, and repeating them here would announce a revision it never
+  // agreed to in a field the transport also carries in a header.
+  it("carries no _meta on the legacy dialect", () => {
+    const request = toolsCallRequest(7, "list_prs", { repo: "libero" }, "legacy");
+    expect("_meta" in request.params).toBe(false);
+    expect(request.params).toMatchObject({ name: "list_prs", arguments: { repo: "libero" } });
+  });
+
+  it("proposes a revision the server can actually accept", () => {
+    // Not the pinned constant: this request exists only because
+    // `server/discover` failed, so proposing the revision that removed
+    // `initialize` is a proposal the server cannot take.
+    expect(initializeRequest(3)).toMatchObject({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "initialize",
+      params: { protocolVersion: LEGACY_PROTOCOL_VERSION, capabilities: {} }
+    });
+    expect(initializeRequest(3).params["protocolVersion"]).not.toBe(MCP_PROTOCOL_VERSION);
+  });
+
+  // The absence *is* the notification: a message with an id is a request, and a
+  // server would owe it a response the client never reads.
+  it("frames the acknowledgement as a notification, with no id", () => {
+    const notification = initializedNotification();
+    expect("id" in notification).toBe(false);
+    expect(notification).toMatchObject({ jsonrpc: "2.0", method: "notifications/initialized" });
+  });
+
   // The acceptance criterion, at the level where it is decidable: whatever a
   // caller knows about the channel, the asker, and the task, none of it has a
   // parameter to travel in. `_meta.clientInfo` is the one field on the wire
   // that looks like it should carry a caller identity, so it is checked by
   // name rather than only by the sweep below.
   it("names the product in clientInfo and nothing about the caller", () => {
-    for (const request of [discoverRequest(1), toolsCallRequest(2, "list_prs", {})]) {
+    for (const request of [discoverRequest(1), toolsCallRequest(2, "list_prs", {}, "stateless")]) {
       const meta = (request.params as { _meta: Record<string, unknown> })._meta;
       expect(meta["io.modelcontextprotocol/clientInfo"]).toEqual({
         name: "libero-proxy",
@@ -48,10 +91,16 @@ describe("the request shapes", () => {
     }
   });
 
+  // The handshake is on this sweep too: `initialize` takes a `clientInfo`, so
+  // it is the second field on the wire where a caller identity would look like
+  // it belonged.
   it("carries no attribution anywhere in a serialized request", () => {
     const serialized = JSON.stringify([
       discoverRequest(1),
-      toolsCallRequest(2, "list_prs", { repo: "libero" })
+      toolsCallRequest(2, "list_prs", { repo: "libero" }, "stateless"),
+      toolsCallRequest(3, "list_prs", { repo: "libero" }, "legacy"),
+      initializeRequest(4),
+      initializedNotification()
     ]);
     for (const leak of ["C0ENGINEERING", "U0ASKER", "b9d5a2f0", "channel", "requestingUser", "task"]) {
       expect(serialized).not.toContain(leak);
@@ -59,7 +108,7 @@ describe("the request shapes", () => {
   });
 
   it("declares both framings it must accept, and matches the header to the _meta version", () => {
-    const headers = requestHeaders("tools/call", "list_prs");
+    const headers = requestHeaders(STATELESS, "tools/call", "list_prs");
     expect(headers.accept).toBe("application/json, text/event-stream");
     expect(headers["mcp-method"]).toBe("tools/call");
     expect(headers["mcp-name"]).toBe("list_prs");
@@ -68,7 +117,63 @@ describe("the request shapes", () => {
   });
 
   it("omits Mcp-Name for a request that has no name to give", () => {
-    expect("mcp-name" in requestHeaders("server/discover")).toBe(false);
+    expect("mcp-name" in requestHeaders(STATELESS, "server/discover")).toBe(false);
+  });
+
+  // `Mcp-Method` and `Mcp-Name` are `2026-07-28` transport headers; the version
+  // is the *negotiated* one, because a server that receives one it did not
+  // agree to MUST answer 400 — which would be every request.
+  it("sends the legacy dialect its own headers and its own version", () => {
+    const headers = requestHeaders(
+      { dialect: "legacy", version: "2025-06-18", sessionId: "session-1" },
+      "tools/call",
+      "list_prs"
+    );
+    expect(headers["mcp-protocol-version"]).toBe("2025-06-18");
+    expect(headers["mcp-session-id"]).toBe("session-1");
+    expect("mcp-method" in headers).toBe(false);
+    expect("mcp-name" in headers).toBe(false);
+  });
+
+  it("carries no session header when the server assigned none", () => {
+    const headers = requestHeaders({ dialect: "legacy", version: "2025-06-18" }, "tools/call", "list_prs");
+    expect("mcp-session-id" in headers).toBe(false);
+  });
+
+  // There is no negotiated revision yet — that is what the request is for — and
+  // naming one the server has not agreed to is exactly what it must 400.
+  it("names no protocol version on the request that has none to name", () => {
+    expect("mcp-protocol-version" in initializeHeaders()).toBe(false);
+    expect(initializeHeaders().accept).toBe("application/json, text/event-stream");
+  });
+
+  it("terminates a session with the session and the version it was negotiated at", () => {
+    expect(sessionTerminationHeaders("session-1", "2025-11-25")).toEqual({
+      "mcp-session-id": "session-1",
+      "mcp-protocol-version": "2025-11-25"
+    });
+  });
+});
+
+describe("the protocol revisions", () => {
+  it("speaks the stateless revision and the three legacy ones, newest first", () => {
+    expect(SUPPORTED_PROTOCOL_VERSIONS).toEqual(["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]);
+  });
+
+  // Pinned with its reason, so the exclusion survives someone "completing" the
+  // list: `2024-11-05` is the deprecated two-endpoint HTTP+SSE transport, where
+  // the POST target is named by the server at call time. An `[[mcp_server]]`
+  // block holds one url, and a destination the upstream chooses is the shape
+  // ./outbound.ts refuses a redirect for.
+  it("does not speak the revision whose transport is a second transport", () => {
+    expect(SUPPORTED_PROTOCOL_VERSIONS).not.toContain("2024-11-05");
+  });
+
+  it("partitions into the two halves the client branches on", () => {
+    expect([...STATELESS_PROTOCOL_VERSIONS, ...LEGACY_PROTOCOL_VERSIONS]).toEqual(SUPPORTED_PROTOCOL_VERSIONS);
+    for (const version of LEGACY_PROTOCOL_VERSIONS) {
+      expect(STATELESS_PROTOCOL_VERSIONS).not.toContain(version);
+    }
   });
 });
 
@@ -208,6 +313,69 @@ describe("version negotiation", () => {
   it("only ever returns a version this client speaks", () => {
     const picked = negotiatedVersion({ supportedVersions: ["2026-07-28", "2099-01-01"] });
     expect(picked === null || SUPPORTED_PROTOCOL_VERSIONS.includes(picked)).toBe(true);
+  });
+
+  // The guard on the constant split. This function is the *sessionless* path,
+  // so agreeing to a legacy revision here would mean sending a `tools/call`
+  // carrying no session to a server that requires one — which it is entitled to
+  // answer wrongly rather than reject. The legacy revisions are reachable only
+  // through `initialize`, which is where a session comes from.
+  it("never negotiates a revision the sessionless path cannot hold up", () => {
+    for (const version of LEGACY_PROTOCOL_VERSIONS) {
+      expect(negotiatedVersion({ supportedVersions: [version] })).toBeNull();
+    }
+  });
+});
+
+describe("the version a legacy server named", () => {
+  it("accepts each revision the handshake can speak", () => {
+    for (const version of LEGACY_PROTOCOL_VERSIONS) {
+      expect(acceptedProtocolVersion({ protocolVersion: version })).toBe(version);
+    }
+  });
+
+  // A server answering `initialize` with the revision that removed `initialize`
+  // has contradicted itself, and this client cannot tell which half it meant.
+  it("rejects the revision that has no handshake", () => {
+    expect(acceptedProtocolVersion({ protocolVersion: MCP_PROTOCOL_VERSION })).toBeNull();
+  });
+
+  it("rejects a version this client does not speak, and a reply that names none", () => {
+    expect(acceptedProtocolVersion({ protocolVersion: "2024-11-05" })).toBeNull();
+    expect(acceptedProtocolVersion({ protocolVersion: 3 })).toBeNull();
+    expect(acceptedProtocolVersion({})).toBeNull();
+  });
+});
+
+describe("the session id", () => {
+  it("keeps one the server is entitled to assign", () => {
+    expect(readSessionId("session-1")).toBe("session-1");
+    expect(readSessionId("1868a90c-9f2e-4b71-8c3d-0e5a1f6d2c47")).toBe("1868a90c-9f2e-4b71-8c3d-0e5a1f6d2c47");
+  });
+
+  // The value is upstream-authored and its only use is being written back into
+  // an outbound request header, on the one path that also carries a credential.
+  // A CR or LF in it is request smuggling; the spec's own rule — visible ASCII,
+  // 0x21 to 0x7E — is the character set, so nothing here is invented.
+  it.each([
+    ["nothing at all", undefined],
+    ["an empty string", ""],
+    ["a header injection", "a\r\nX-Injected: 1"],
+    ["a bare newline", "a\nb"],
+    ["an embedded space", "a b"],
+    ["a non-ASCII character", "café"],
+    ["a NUL", "a\u0000b"],
+    ["a DEL", "a\u007Fb"],
+    ["more than a header may hold", "s".repeat(513)]
+  ])("replays none for %s", (_label, header) => {
+    expect(readSessionId(header)).toBeNull();
+  });
+
+  it("treats an unusable id as a server that assigned none", () => {
+    // Not an error: the handshake still succeeded, and a legacy server that
+    // assigns no session is an ordinary one rather than a broken one.
+    expect(readSessionId("a b")).toBeNull();
+    expect(readSessionId(undefined)).toBeNull();
   });
 });
 

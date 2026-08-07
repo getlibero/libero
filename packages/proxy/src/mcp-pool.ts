@@ -12,6 +12,11 @@
 // upstream" has to be enforcement's, or the pool could merge two blocks
 // enforcement treats as distinct and send a call authorized against one over a
 // client built for the other.
+//
+// Closing is asynchronous because a legacy client may hold a session, and
+// ending one is a request. Every termination runs concurrently under a short
+// budget of its own, so a wedged upstream costs shutdown one timeout rather
+// than one per upstream — see `SESSION_TERMINATION_TIMEOUT_MS`.
 
 import type { McpServer } from "@getlibero/schema";
 import { upstreamKey } from "./enforce.js";
@@ -31,8 +36,17 @@ export interface McpPool {
    */
   acquire(upstream: HttpUpstream, secret: Secret | undefined): McpClient | null;
   readonly size: number;
-  /** Drops every client. Never rejects. */
-  close(): void;
+  /**
+   * Terminates any legacy session and drops every client. Never rejects.
+   *
+   * Bounded twice over: each `DELETE` carries `SESSION_TERMINATION_TIMEOUT_MS`,
+   * and they run together rather than in sequence, so a pool of thirty
+   * upstreams costs one timeout and not thirty. `Promise.allSettled` is the
+   * structural half of "never rejects" — the client already swallows its own
+   * failures, and this is what keeps the promise true if a later edit stops
+   * swallowing one.
+   */
+  close(): Promise<void>;
 }
 
 export interface McpPoolOptions {
@@ -73,14 +87,21 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
       return clients.size;
     },
 
-    // Nothing to hang up. `2026-07-28` has no session to terminate and no
-    // socket this layer owns — undici's keep-alive is beneath us — so closing
-    // is refusing to hand out more clients and letting the rest go. When #150
-    // adds the legacy handshake it also adds sessions, and *that* close has a
-    // `DELETE` to send and a shutdown budget to respect.
-    close() {
+    // A stateless client has nothing to hang up — `2026-07-28` has no session
+    // to terminate and no socket this layer owns, since undici's keep-alive is
+    // beneath us. A legacy client with a session does: one `DELETE` naming it,
+    // which is the courtesy the spec asks for.
+    //
+    // **The state changes before the first await, not after it.** `acquire`
+    // must refuse and `size` must read zero from the instant `close()` is
+    // entered rather than from when its terminations resolve — a caller that
+    // does not await this still gets a pool that hands out nothing.
+    async close() {
+      if (closed) return;
       closed = true;
+      const open = [...clients.values()];
       clients.clear();
+      await Promise.allSettled(open.map(client => client.close()));
     }
   };
 }

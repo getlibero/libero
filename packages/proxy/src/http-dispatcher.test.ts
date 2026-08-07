@@ -240,9 +240,12 @@ describe("an upstream that does not answer", () => {
     expect(lines.join("")).not.toContain(SECRET);
   });
 
-  // A discovery failure relays nothing of what came back. The type has no
+  // A handshake failure relays nothing of what came back. The type has no
   // `detail` to put it in, and this is the test that says so from outside.
-  it("relays no upstream bytes when discovery is what failed", async () => {
+  // This fake answers 502 to both rungs of the ladder, so what the model is
+  // told is that the server speaks nothing we do — which is the true statement
+  // about a server that refused the probe and then refused the handshake.
+  it("relays no upstream bytes when the handshake is what failed", async () => {
     fake = await startFakeMcpServer();
     fake.respond = () => ({ status: 502, raw: `<html>edge proxy rejected Bearer ${SECRET}</html>` });
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
@@ -250,8 +253,9 @@ describe("an upstream that does not answer", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
     const content = result.outcome === "ran" ? result.result.content : "";
 
-    expect(content).toBe("The tool server could not be reached: http_error. The call was not made.");
+    expect(content).toBe("The tool server does not speak a version of MCP this proxy supports. The call was not made.");
     expect(content).not.toContain("edge proxy");
+    expect(content).not.toContain("502");
     expect(content).not.toContain(SECRET);
   });
 });
@@ -315,6 +319,41 @@ describe("what the proxy writes down", () => {
 
     expect(lines.join("")).not.toContain(SECRET);
   });
+
+  // The field earns its place now that there are two values: it answers the
+  // question an operator asks when an upstream misbehaves — did the proxy fall
+  // back? — and a fleet-wide count of `legacy` is how this fallback's eventual
+  // removal gets scheduled.
+  it.each(["stateless", "legacy"] as const)("names %s as the protocol it served the call over", async protocol => {
+    fake = await startFakeMcpServer({ protocol });
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
+    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+
+    expect(lines.map(line => JSON.parse(line) as { event: string; protocol?: string })).toContainEqual(
+      expect.objectContaining({ event: "upstream_call", protocol })
+    );
+  });
+
+  // The handshake makes three more requests than the stateless path, and the
+  // session id is a new upstream-authored value that gets written back out.
+  // Neither is a place the credential may surface.
+  it("keeps an echoing legacy upstream out of the log, session and all", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy", echoHeaders: "text", echoAuthAsSessionId: true });
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+
+    // Not vacuous: the upstream really did receive it, on every request.
+    expect(fake.received).not.toHaveLength(0);
+    for (const request of fake.received) expect(request.authorization).toBe(`Bearer ${SECRET}`);
+
+    const written = lines.join("");
+    expect(written).not.toContain(SECRET);
+    expect(written).not.toContain("ghp_");
+    expect(written).not.toContain("Bearer");
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
 });
 
 describe("an upstream that echoes its own auth header", () => {
@@ -371,22 +410,43 @@ describe("an upstream that echoes its own auth header", () => {
 });
 
 describe("shutting down", () => {
+  // Not awaited, on purpose: the refusal has to hold from the instant `close()`
+  // is entered rather than from when its session terminations resolve.
   it("answers rather than opening a connection after close", async () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    dispatcher.close();
+    const closing = dispatcher.close();
 
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("shutting down");
     expect(fake.received).toEqual([]);
+    await closing;
   });
 
-  it("is idempotent", () => {
+  it("is idempotent", async () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({}) });
-    dispatcher.close();
-    expect(() => dispatcher.close()).not.toThrow();
+    await dispatcher.close();
+    await expect(dispatcher.close()).resolves.toBeUndefined();
+  });
+
+  // The line means the sessions are gone rather than that they were asked to
+  // go, which is why it is written after the terminations rather than before.
+  it("terminates a legacy session before it resolves, and says so afterwards", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
+    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    expect(fake.liveSessions.size).toBe(1);
+
+    await dispatcher.close();
+
+    expect(fake.received.filter(request => request.method === "DELETE")).toHaveLength(1);
+    expect(fake.liveSessions.size).toBe(0);
+    expect(lines.map(line => JSON.parse(line) as { event: string }).at(-1)).toMatchObject({
+      event: "mcp_pool_closed"
+    });
   });
 });
 

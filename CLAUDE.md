@@ -118,15 +118,52 @@ spoken to at a version it never agreed to. **An `input_required` result is
 refused** — MRTR replaced server-initiated sampling and elicitation, so an
 upstream can now ask the client to act for a channel from inside an ordinary
 `tools/call`, and answering would spend that channel's model budget on an
-upstream's say-so with no sheet entry and no click. And **nothing is ever
+upstream's say-so with no sheet entry and no click. And **almost nothing is ever
 retried**: `2026-07-28` removed stream resumability, and replaying a
-`tools/call` is how one write becomes two.
+`tools/call` is how one write becomes two. The single exception is #150's, and
+it is argued below rather than assumed.
 
 A discovery failure relays no upstream bytes, and that is a type rather than a
 convention — `McpOutcome`'s `connect_failed` member has no `detail` field to put
 them in, because a failed handshake is as likely to be answered by an auth
-proxy's error page as by anything MCP. The legacy `initialize` handshake for
-older servers is #150, blocking #130.
+proxy's error page as by anything MCP.
+
+**The client also speaks the older protocol, and picks by ladder rather than by
+configuration (#150).** `server/discover` first; if the server *answers* with a
+refusal — a JSON-RPC error of any code, or any HTTP status — the legacy
+`initialize` + `notifications/initialized` handshake is attempted exactly once,
+and the result is cached for the client's life. `SUPPORTED_PROTOCOL_VERSIONS`
+covers `2026-07-28` and the three streamable-HTTP revisions below it;
+`2024-11-05` is excluded because its transport is the two-endpoint HTTP+SSE
+pair, and an `[[mcp_server]]` block holds one url.
+
+Four things there are load-bearing. **The fallback is not classified by error
+code** — an old server refuses `server/discover` with whatever its framework
+does to an unrouted method, so the attempt is the discriminator; but a
+*transport* failure short-circuits with no fallback, because nothing answered
+and there is therefore nothing to fall back from. **The version on the wire is
+the negotiated one, never the pinned constant** — a server receiving an
+`MCP-Protocol-Version` it did not agree to MUST answer 400, so the old
+hardcoded header would have had every legacy call refused. **One signal is
+replayed and only one**: a 404 answering a request that carried a session id,
+because that 404 is generated before the server dispatches, so the tool did not
+run. A 404 from a client carrying no session is a wrong url and stays an
+`http_error`. At most one re-initialize per call, bounded by the structure —
+two statements, no loop and no counter — and a generation check plus a single
+flight make N concurrent losses cost one handshake rather than N. And
+**`negotiatedVersion` reads `STATELESS_PROTOCOL_VERSIONS`, not the union**:
+agreeing to a legacy revision over the sessionless probe would mean sending a
+`tools/call` with no session to a server that requires one.
+
+`callUpstream` takes a closed `"POST" | "DELETE"` union so shutdown can
+terminate a session, both verbs sharing the identical redirect, timeout and
+redaction path. `mcp-session-id` joins `content-type` on the readable-response
+allowlist — the handshake has nowhere else to learn a session — and it is safe
+because every member goes through the same scrub before the one return, so an
+upstream answering with the credential as its session id gets a marker replayed
+at it. The value is validated against the spec's own character set before it is
+written back out, since a CR or LF in it would be request smuggling on the one
+path that carries a credential.
 
 **Two services, one Dockerfile short of running under compose.**
 `deploy/docker-compose.yml` builds both images from paths that do not exist

@@ -65,8 +65,11 @@ export interface HttpDispatcherOptions {
  * that builds this a `close()` it can call without asking whether it exists.
  */
 export interface HttpDispatcher extends ToolDispatcher {
-  /** Drops every client. Idempotent, and never throws. */
-  close(): void;
+  /**
+   * Terminates every legacy session and drops every client. Idempotent,
+   * bounded, and never rejects.
+   */
+  close(): Promise<void>;
 }
 
 /**
@@ -101,6 +104,12 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
       return "The tool server's answer could not be read as MCP.";
     case "input_required":
       return "The tool server asked for more input before answering. The proxy does not answer for a channel, so the call was abandoned.";
+    case "closed":
+      // Reachable since the legacy handshake landed: a client whose session was
+      // terminated mid-call refuses rather than reopening one during shutdown.
+      // Without this case the default below would claim the call was made,
+      // which is wrong in both clauses.
+      return "The proxy is shutting down. The call was not completed.";
     default:
       // The wording the placeholder path used, kept verbatim: it is accurate
       // for a timeout, an unreachable host, and a refused redirect alike.
@@ -124,8 +133,10 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
   });
 
   return {
-    close() {
-      pool.close();
+    // Logged after the await rather than before it, so the line means the
+    // sessions are gone rather than that they were asked to go.
+    async close() {
+      await pool.close();
       logger.log("info", { event: "mcp_pool_closed" });
     },
 
@@ -190,6 +201,9 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
 
       try {
         const outcome = await client.callTool(call.tool, call.arguments);
+        // Read after the call, when the ladder has run. The protocol is settled
+        // for the client's life, so there is no read-after-write hazard here.
+        const protocol = client.protocol;
 
         if (outcome.outcome === "called") {
           logger.log("info", {
@@ -198,6 +212,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
             server: call.server,
             tool: call.tool,
             ...(destination !== null ? { destination } : {}),
+            ...(protocol !== undefined ? { protocol } : {}),
             ...(upstream.credential !== undefined ? { credential: upstream.credential } : {})
           });
 
@@ -216,7 +231,8 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
           tool: call.tool,
           reason: outcome.failure,
           ...(outcome.outcome === "call_failed" && outcome.status !== undefined ? { status: outcome.status } : {}),
-          ...(destination !== null ? { destination } : {})
+          ...(destination !== null ? { destination } : {}),
+          ...(protocol !== undefined ? { protocol } : {})
         });
 
         const result: ToolResult = { content: failureText(outcome), isError: true };

@@ -48,8 +48,32 @@ import type { Secret } from "./vault.js";
  */
 export type AuthScheme = "bearer";
 
+/**
+ * The verbs this function will send.
+ *
+ * A closed union rather than a string, for the reason `AuthScheme` is one: this
+ * is the function that attaches a credential, so what it can do is chosen from
+ * a list and adding a member is a decision. Both members take the identical
+ * path below — the same redirect refusal, the same timeout, the same single
+ * redaction pass on the way out. The only branch on this value in the whole
+ * function is whether a body is written.
+ */
+export type UpstreamMethod = "POST" | "DELETE";
+
 /** How long the proxy waits on an upstream before giving up. */
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
+
+/**
+ * How long a session-termination `DELETE` gets.
+ *
+ * Two seconds rather than `DEFAULT_UPSTREAM_TIMEOUT_MS`, because this one runs
+ * inside a signal handler: Docker sends SIGKILL ten seconds after SIGTERM by
+ * default, and a thirty-second courtesy `DELETE` to a wedged upstream would
+ * mean the budget and audit databases never got their close. Every termination
+ * runs concurrently, so this is the cost of the whole pass rather than the cost
+ * per upstream.
+ */
+export const SESSION_TERMINATION_TIMEOUT_MS = 2_000;
 
 /**
  * The statuses that mean "go somewhere else", which the proxy will not do.
@@ -137,14 +161,38 @@ export class UpstreamError extends Error {
  * `content-type` is here because the MCP client has to know whether a body is
  * JSON or an event stream before it can frame it, and guessing from the bytes
  * is how a parser gets confused deliberately.
+ *
+ * `mcp-session-id` is here because the legacy MCP handshake has nowhere else to
+ * learn it: a server assigns the session on the `initialize` response and in
+ * that header alone, so a client that cannot read it cannot make a second
+ * request to that server at all. It earns the entry on `content-type`'s terms —
+ * read by the transport and by nothing above it, never logged, never put in a
+ * result, never compared against anything.
+ *
+ * **Widening this list is safe here for a structural reason worth saying out
+ * loud rather than inferring:** every member goes through the same `scrub` as
+ * the body before the one return below. A server that answered with the
+ * credential *as* its session id hands back a redaction marker; the proxy then
+ * replays a marker, the server refuses it, and the call fails — which is the
+ * right outcome, and none of it is the value.
  */
-const READABLE_RESPONSE_HEADERS = ["content-type"] as const;
+const READABLE_RESPONSE_HEADERS = ["content-type", "mcp-session-id"] as const;
 
 export interface UpstreamRequest {
   /** Absolute URL of the upstream. Comes from the team sheet, never the model. */
   readonly url: string;
-  /** JSON-serializable. The caller owns the shape; see ./http-dispatcher.ts. */
-  readonly body: unknown;
+  /**
+   * The verb. Absent means `POST`, which is every MCP request. `DELETE` is the
+   * legacy session termination, and is the only thing here that carries no
+   * body.
+   *
+   * Optional-with-a-default rather than required, unlike `scheme`: that one is
+   * explicit at every call site because attaching a credential one way or
+   * another is a security-relevant choice, and a verb is not.
+   */
+  readonly method?: UpstreamMethod;
+  /** JSON-serializable. The caller owns the shape; see ./http-dispatcher.ts. Absent only for a `DELETE`. */
+  readonly body?: unknown;
   /**
    * Extra request headers, lowercase-named. Merged over the defaults and *under*
    * the credential, so nothing here can displace or forge the authorization
@@ -199,7 +247,15 @@ function safeRequestHeaders(headers: Readonly<Record<string, string>> | undefine
 }
 
 /**
- * POST to the upstream with the credential attached.
+ * Call the upstream with the credential attached.
+ *
+ * **One function for both verbs, rather than a second one for the `DELETE`.**
+ * A session termination carries the same credential to the same destination as
+ * every other request, so giving it its own path would mean a second place a
+ * secret leaves the vault and a second thing to check when reasoning about
+ * redaction. Everything below the verb branch is shared by construction: the
+ * refused redirect, both transport-failure classifications, the body read, and
+ * the single redaction pass before the one return.
  *
  * The timeout is not optional in effect — `AbortSignal.timeout` is always
  * applied — because an upstream that accepts a connection and never answers
@@ -221,12 +277,16 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
   // needle list for the response coming back. Both uses are inside this
   // function, so there is still exactly one place a value leaves the vault.
   const value = request.secret?.reveal();
+  // Branched on the verb rather than on whether `body` happens to be set:
+  // `JSON.stringify(undefined)` is `undefined`, so keying off the value would
+  // send a bodiless POST silently instead of failing to compile.
+  const method = request.method ?? "POST";
   // Defaults, then the caller's, then the credential. That order is the point:
   // the credential is attached last, so no caller header can displace it, and
   // `safeRequestHeaders` has already dropped any attempt to set it directly.
   const headers = injectCredential(
     {
-      "content-type": "application/json",
+      ...(method === "POST" ? { "content-type": "application/json" } : {}),
       accept: "application/json",
       ...safeRequestHeaders(request.headers)
     },
@@ -237,9 +297,9 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
   let response: Response;
   try {
     response = await send(request.url, {
-      method: "POST",
+      method,
       headers,
-      body: JSON.stringify(request.body),
+      ...(method === "POST" ? { body: JSON.stringify(request.body) } : {}),
       // Not followed. A redirect target is the only destination in the system
       // that nothing declared: the url above comes from the team sheet, and
       // `[egress]` covers the hosts an operator wrote down, but a 302 is chosen

@@ -7,7 +7,8 @@ specification.
 What is here today: mutual TLS, the rule that decides which channel a request
 belongs to, team-sheet enforcement on the call path, the credential vault,
 credential injection into outbound HTTP calls, and an MCP client that speaks the
-`2026-07-28` revision of the protocol to its upstreams.
+`2026-07-28` revision of the protocol to its upstreams, falling back to the
+`initialize` handshake for servers that predate it.
 
 - `tls.ts` — server options that refuse a client with no certificate the local
   CA signed. `requestCert` and `rejectUnauthorized` together, TLS 1.3 only.
@@ -105,17 +106,28 @@ credential injection into outbound HTTP calls, and an MCP client that speaks the
   argues why: the SDK's transport owns its own `fetch`, which would move the
   credential out from under `callUpstream` and turn a one-grep guarantee into a
   careful-wrapper one.
-- `mcp-client.ts` — one upstream's client. Probes `server/discover` once,
-  fails closed against a server that speaks no version we do, and refuses an
-  `input_required` result rather than answering it — that is an upstream asking
-  the proxy to speak for a channel, with no sheet entry and no click behind it.
-  Retries nothing: `2026-07-28` removed stream resumability, and replaying a
-  `tools/call` is how one write becomes two.
+- `mcp-client.ts` — one upstream's client, and the ladder that decides which
+  protocol it speaks. Probes `server/discover`; if the server *answers* with a
+  refusal of any shape, attempts the legacy `initialize` handshake exactly once
+  and caches the result for the client's life. A transport failure short-
+  circuits without a fallback — nothing answered, so there is nothing to fall
+  back from. Fails closed against a server that speaks no version we do, and
+  refuses an `input_required` result rather than answering it — that is an
+  upstream asking the proxy to speak for a channel, with no sheet entry and no
+  click behind it.
+
+  Replays exactly one signal, on the legacy path only: a 404 answering a request
+  that carried a session id, which is the spec's way of saying the session is
+  gone. That 404 is generated before the server dispatches anything, so the tool
+  did not run and there is no write to double. Nothing else is ever retried —
+  `2026-07-28` removed stream resumability, and re-issuing a `tools/call` is how
+  one write becomes two.
 - `mcp-pool.ts` — one client per upstream, keyed on the `(transport, url,
   credential)` triple `upstreamKey` defines in `enforce.ts`. Sharing that
   definition rather than restating it is what stops the pool from merging two
   blocks enforcement treats as distinct.
-- `mcp-fake-server.ts` — a real `node:http` MCP server for the tests, with the
+- `mcp-fake-server.ts` — a real `node:http` MCP server for the tests, speaking
+  either protocol and holding real session state on the legacy one, with the
   knobs the leak assertions need: both framings, an upstream that echoes its
   auth header plainly or JSON-escaped, and one that advertises versions we do
   not speak.
@@ -137,8 +149,7 @@ error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
 Still to come, each with its own issue: the egress allowlist (#73), the audit
-log's read path (#98), the legacy MCP handshake for servers older than
-`2026-07-28` (#150), and a bound on tool-result size (#151).
+log's read path (#98), and a bound on tool-result size (#151).
 `http-dispatcher.ts` marks where the egress check slots in.
 
 The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and
