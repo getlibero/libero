@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PermittedTool, ToolListing } from "./tool-listing.js";
+import { PermittedTool, ToolInputSchema, ToolListing } from "./tool-listing.js";
 
 const entry = { server: "github", tool: "list_prs", approval: "none" };
 
@@ -35,5 +35,29 @@ describe("the tool listing", () => {
       expect(PermittedTool.safeParse({ ...entry, ...extra }).success).toBe(false);
     }
     expect(ToolListing.safeParse({ tools: [], nextCursor: "x" }).success).toBe(false);
+  });
+});
+
+describe("the shape an input schema must have", () => {
+  it("passes everything past `type` through untouched", () => {
+    // The rule is about shape, never about content. A schema that says
+    // `type: "object"` is accepted whole — the proxy publishes what the
+    // upstream wrote, and the agent hands it to the provider unmodified.
+    const schema = {
+      type: "object",
+      properties: { number: { type: "integer" } },
+      required: ["number"],
+      $schema: "https://json-schema.org/draft/2020-12/schema"
+    };
+    expect(ToolInputSchema.parse(schema)).toEqual(schema);
+  });
+
+  it("rejects everything a provider would answer 400 to", () => {
+    // The one class worth ruling out: a value that fails the whole turn rather
+    // than one tool. `{}` is in the list because a schema with no `type` is
+    // exactly as unusable as one that names the wrong one.
+    for (const value of [{ type: "string" }, {}, [], "x", null, 7]) {
+      expect(ToolInputSchema.safeParse(value).success).toBe(false);
+    }
   });
 });

@@ -6,6 +6,8 @@ import {
   STATELESS_PROTOCOL_VERSIONS,
   SUPPORTED_PROTOCOL_VERSIONS,
   acceptedProtocolVersion,
+  boundedToolDescription,
+  boundedToolInputSchema,
   discoverRequest,
   eventStreamPayloads,
   initializeHeaders,
@@ -14,11 +16,13 @@ import {
   isInputRequired,
   negotiatedVersion,
   parseRpcResponse,
+  parseToolsList,
   readSessionId,
   requestHeaders,
   sessionTerminationHeaders,
   toolResultText,
-  toolsCallRequest
+  toolsCallRequest,
+  toolsListRequest
 } from "./mcp-protocol.js";
 
 /** The wire context a stateless request goes out on. */
@@ -51,6 +55,22 @@ describe("the request shapes", () => {
     const request = toolsCallRequest(7, "list_prs", { repo: "libero" }, "legacy");
     expect("_meta" in request.params).toBe(false);
     expect(request.params).toMatchObject({ name: "list_prs", arguments: { repo: "libero" } });
+  });
+
+  it("frames a tools/list asking for the first page", () => {
+    const request = toolsListRequest(4, "stateless");
+    expect(request).toMatchObject({ jsonrpc: "2.0", id: 4, method: "tools/list" });
+    // Absent, not null. The spec reads an absent cursor as "the first page" and
+    // an explicit one as a position the server issued; a null would be a third
+    // state this client invented.
+    expect("cursor" in request.params).toBe(false);
+  });
+
+  it("carries a cursor only when it was given one, and no _meta on the legacy dialect", () => {
+    expect(toolsListRequest(4, "stateless", "page-2").params).toMatchObject({ cursor: "page-2" });
+    const legacy = toolsListRequest(4, "legacy", "page-2");
+    expect("_meta" in legacy.params).toBe(false);
+    expect(legacy.params).toMatchObject({ cursor: "page-2" });
   });
 
   it("proposes a revision the server can actually accept", () => {
@@ -118,6 +138,9 @@ describe("the request shapes", () => {
 
   it("omits Mcp-Name for a request that has no name to give", () => {
     expect("mcp-name" in requestHeaders(STATELESS, "server/discover")).toBe(false);
+    // A listing names no tool, so there is no name to carry. Asserted here
+    // because it is the header the client would otherwise have to invent one for.
+    expect("mcp-name" in requestHeaders(STATELESS, "tools/list")).toBe(false);
   });
 
   // `Mcp-Method` and `Mcp-Name` are `2026-07-28` transport headers; the version
@@ -458,5 +481,101 @@ describe("mapping a tool result to text", () => {
     ["no content at all", {}]
   ])("refuses to read %s", (_label, result) => {
     expect(toolResultText(result)).toBeNull();
+  });
+});
+
+describe("reading a page of a catalog", () => {
+  it("reads the tools and the cursor", () => {
+    expect(
+      parseToolsList({
+        tools: [{ name: "list_prs", description: "Lists PRs.", inputSchema: { type: "object" } }],
+        nextCursor: "page-2"
+      })
+    ).toEqual({
+      tools: [{ name: "list_prs", description: "Lists PRs.", inputSchema: { type: "object" } }],
+      nextCursor: "page-2"
+    });
+  });
+
+  it("reports the last page as the last page", () => {
+    // No cursor, and an empty one, are the same answer: there is nowhere to go
+    // next. An empty string read as a position is a loop.
+    expect(parseToolsList({ tools: [] })?.nextCursor).toBeNull();
+    expect(parseToolsList({ tools: [], nextCursor: "" })?.nextCursor).toBeNull();
+    expect(parseToolsList({ tools: [], nextCursor: 7 })?.nextCursor).toBeNull();
+  });
+
+  // The opposite call from `toolResultText`, and deliberately: a partial tool
+  // answer misleads, a partial catalog does not. Refusing the page over one bad
+  // entry would cost every other tool on it its schema, and each of those falls
+  // back to an entry the team sheet already produced.
+  it("skips an entry it cannot read and keeps the rest of the page", () => {
+    const page = parseToolsList({
+      tools: [{ name: "list_prs" }, { description: "no name" }, "not an object", { name: "" }, { name: "merge_pr" }]
+    });
+    expect(page?.tools.map((tool) => tool.name)).toEqual(["list_prs", "merge_pr"]);
+  });
+
+  it("refuses a page that is not a page", () => {
+    expect(parseToolsList({ tools: "list_prs" })).toBeNull();
+    expect(parseToolsList({})).toBeNull();
+  });
+
+  it("vouches for the name and nothing else", () => {
+    // `description` and `inputSchema` come back exactly as they arrived, so a
+    // caller cannot mistake them for values this module checked.
+    const page = parseToolsList({ tools: [{ name: "list_prs", description: 7, inputSchema: "nope" }] });
+    expect(page?.tools[0]).toEqual({ name: "list_prs", description: 7, inputSchema: "nope" });
+  });
+});
+
+describe("bounding what an upstream says about a tool", () => {
+  it("keeps a description and truncates an overlong one", () => {
+    expect(boundedToolDescription("  Lists open pull requests.  ")).toBe("Lists open pull requests.");
+    const long = boundedToolDescription("x".repeat(2000));
+    expect(long).toHaveLength(1025);
+    expect(long?.endsWith("…")).toBe(true);
+  });
+
+  it("reports an absent description as absent, however it was absent", () => {
+    for (const value of [undefined, "", "   ", 7, null, {}]) {
+      expect(boundedToolDescription(value)).toBeUndefined();
+    }
+  });
+
+  it("passes an accepted schema through as the bytes the upstream wrote", () => {
+    const schema = { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] };
+    const bounded = boundedToolInputSchema(schema);
+    expect(bounded.ok).toBe(true);
+    // Identity, not equality. The gate does not rewrite, so what reaches a
+    // provider is what arrived.
+    expect(bounded.ok && bounded.schema).toBe(schema);
+  });
+
+  it.each([
+    ["a schema that is not an object", "nope", "not_an_object"],
+    ["an array", [], "not_an_object"],
+    ["nothing at all", undefined, "not_an_object"],
+    ["a schema naming the wrong type", { type: "string" }, "not_type_object"],
+    ["a schema naming no type", { properties: {} }, "not_type_object"]
+  ])("rejects %s", (_label, value, reason) => {
+    expect(boundedToolInputSchema(value)).toEqual({ ok: false, reason });
+  });
+
+  it("rejects a schema too large to publish", () => {
+    const under = { type: "object", description: "x".repeat(8000) };
+    expect(boundedToolInputSchema(under).ok).toBe(true);
+    const over = { type: "object", description: "x".repeat(9000) };
+    expect(boundedToolInputSchema(over)).toEqual({ ok: false, reason: "too_large" });
+  });
+
+  it("treats a schema it cannot even measure as one too large to publish", () => {
+    // A cycle and a BigInt both throw out of `JSON.stringify`. The caller does
+    // nothing different for either, so a fourth reason would be a distinction
+    // with no consequence.
+    const cyclic: Record<string, unknown> = { type: "object" };
+    cyclic["self"] = cyclic;
+    expect(boundedToolInputSchema(cyclic)).toEqual({ ok: false, reason: "too_large" });
+    expect(boundedToolInputSchema({ type: "object", n: 1n })).toEqual({ ok: false, reason: "too_large" });
   });
 });

@@ -721,3 +721,148 @@ describe("when the session is lost", () => {
     expect(fake.callsTo("tools/call")).toHaveLength(7);
   });
 });
+
+describe("listing an upstream's catalog", () => {
+  it("lists over both dialects, up the same ladder", async () => {
+    for (const protocol of ["stateless", "legacy"] as const) {
+      fake = await startFakeMcpServer({ protocol });
+      const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+      const outcome = await client.listTools(undefined, undefined);
+
+      expect(outcome).toMatchObject({ outcome: "listed", nextCursor: null });
+      expect(outcome.outcome === "listed" && outcome.tools.map(tool => tool.name)).toEqual([
+        "list_prs",
+        "merge_pr"
+      ]);
+      await fake.close();
+      fake = undefined;
+    }
+  });
+
+  it("names no tool in the transport headers, because a listing names none", async () => {
+    const client = await clientFor();
+    await client.listTools(undefined, undefined);
+
+    const listing = fake?.callsTo("tools/list")[0];
+    expect(listing?.headers["mcp-method"]).toBe("tools/list");
+    expect("mcp-name" in (listing?.headers ?? {})).toBe(false);
+  });
+
+  it("sends the negotiated revision to a legacy server, never the pinned constant", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy", legacyVersion: "2025-06-18" });
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    await client.listTools(undefined, undefined);
+
+    // A server receiving a version it did not agree to MUST answer 400, so the
+    // pinned constant here would have every legacy listing refused.
+    const listing = fake.callsTo("tools/list")[0];
+    expect(listing?.headers["mcp-protocol-version"]).toBe("2025-06-18");
+    expect(listing?.headers["mcp-protocol-version"]).not.toBe(MCP_PROTOCOL_VERSION);
+  });
+
+  it("walks pages by the cursor the server issued", async () => {
+    const client = await clientFor({ pageSize: 1 });
+
+    const first = await client.listTools(undefined, undefined);
+    expect(first).toMatchObject({ outcome: "listed", nextCursor: "1" });
+
+    const second = await client.listTools("1", undefined);
+    expect(second).toMatchObject({ outcome: "listed", nextCursor: null });
+    expect(second.outcome === "listed" && second.tools.map(tool => tool.name)).toEqual(["merge_pr"]);
+  });
+
+  // The failure members have no `detail` field to fill in. A failing listing
+  // produces no model-facing text, so an upstream byte here could only ever be
+  // written down by the process holding every credential.
+  it("relays a status and a code, and never an upstream byte", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list" ? { status: 500, raw: `boom ${VALUE}` } : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: secretOf(VALUE), timeoutMs: 2000 });
+
+    const outcome = await client.listTools(undefined, undefined);
+
+    expect(outcome).toEqual({ outcome: "call_failed", failure: "http_error", status: 500 });
+    expect(JSON.stringify(outcome)).not.toContain("boom");
+  });
+
+  it("relays a JSON-RPC error as its code alone", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? { message: { jsonrpc: "2.0", id: request.rpc.id, error: { code: METHOD_NOT_FOUND, message: "nope" } } }
+        : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    expect(await client.listTools(undefined, undefined)).toEqual({
+      outcome: "call_failed",
+      failure: "rpc_error",
+      code: METHOD_NOT_FOUND
+    });
+  });
+
+  it.each([
+    ["a body that is not MCP", { raw: "not json" }],
+    ["a result with no tools array", { message: { jsonrpc: "2.0", id: 2, result: { resultType: "complete" } } }]
+  ])("refuses %s", async (_label, reply) => {
+    fake = await startFakeMcpServer();
+    fake.respond = request => (request.rpc?.method === "tools/list" ? reply : null);
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    expect(await client.listTools(undefined, undefined)).toEqual({
+      outcome: "call_failed",
+      failure: "protocol_error"
+    });
+  });
+
+  it("reports a ladder that never opened as a connect failure", async () => {
+    const client = await clientFor({ supportedVersions: ["1999-01-01"], protocol: "stateless" });
+
+    expect(await client.listTools(undefined, undefined)).toEqual({
+      outcome: "connect_failed",
+      failure: "unsupported_protocol"
+    });
+    expect(fake?.callsTo("tools/list")).toHaveLength(0);
+  });
+
+  it("honours the caller's own timeout rather than the client's", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/list" });
+    // The client's default is twenty times the budget, so a listing that comes
+    // back promptly proves the per-call value is the one in force.
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 4000 });
+
+    const started = Date.now();
+    expect(await client.listTools(undefined, 200)).toEqual({ outcome: "call_failed", failure: "timed_out" });
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  // The same signal `callTool` replays, safe here for one more reason: the 404
+  // precedes dispatch, *and* a listing is a read.
+  it("reconnects once when the session was lost, and lists", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    expect((await client.listTools(undefined, undefined)).outcome).toBe("listed");
+    fake.expireSessions();
+
+    expect((await client.listTools(undefined, undefined)).outcome).toBe("listed");
+    expect(fake.callsTo("initialize")).toHaveLength(2);
+    expect(fake.callsTo("tools/list")).toHaveLength(3);
+  });
+
+  it("treats a 404 from a client with no session as the wrong url it is", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy", sessions: false });
+    fake.respond = request => (request.rpc?.method === "tools/list" ? { status: 404, raw: "no such path" } : null);
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    expect(await client.listTools(undefined, undefined)).toEqual({
+      outcome: "call_failed",
+      failure: "http_error",
+      status: 404
+    });
+    expect(fake.callsTo("tools/list")).toHaveLength(1);
+    expect(fake.callsTo("initialize")).toHaveLength(1);
+  });
+});
