@@ -36,19 +36,17 @@ jobs:
     # Belt-and-suspenders alongside the ESLint rule: grep-level check that
     # nothing on the agent side of the boundary — packages/agent, packages/gateway,
     # or the apps/server process that composes both — references the proxy package.
-    # The `\.\./proxy` pattern catches a relative deep import into the proxy's
-    # build output ("../../proxy/dist/…"), which names neither the package nor
-    # its source path; the .js/.mjs/.cjs includes catch a file ESLint's *.ts
-    # blocks would not parse.
+    # The check itself is scripts/boundary-check.sh, which says why it is a raw
+    # string match; running the script rather than a copy of the grep is what
+    # keeps `pnpm boundary-check` and CI from drifting.
+    #
+    # No pnpm install: the script is shell over a checkout and needs no
+    # dependencies, which is also why this job stays separate from build.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Enforce agent/proxy boundary
-        run: |
-          if grep -rn --include='*.ts' --include='*.mts' --include='*.cts' --include='*.js' --include='*.mjs' --include='*.cjs' -e '@getlibero/proxy' -e 'packages/proxy' -e '\.\./proxy' packages/agent/ packages/gateway/ apps/server/; then
-            echo '::error::the agent side references the proxy. The only path from agent to tools is the network call.'
-            exit 1
-          fi
+        run: sh scripts/boundary-check.sh
 
   workflow-guard:
     # A pull_request_target workflow runs with a write token against the base

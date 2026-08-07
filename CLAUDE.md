@@ -11,7 +11,12 @@ pnpm typecheck                        # tsc --noEmit per package
 pnpm lint                             # eslint . (includes the agent→proxy import ban)
 pnpm test                             # vitest run per package
 pnpm license-check                    # allowlisted licenses only; fails on copyleft
+pnpm boundary-check                   # grep gate: the agent side names no proxy
 ```
+
+`boundary-check` is not part of `lint` — ESLint sees imports, the grep sees
+prose and `package.json` too, and a raw string match belongs in a script rather
+than in a rule.
 
 Scoping to one package or test:
 
@@ -312,7 +317,13 @@ These are load-bearing, not stylistic:
 - **`packages/agent` may never import `packages/proxy`.** The only path from
   agent to tools is the network call. Enforced twice — an ESLint
   `no-restricted-imports` rule in `eslint.config.mjs` and a grep-level
-  `boundary-check` job in CI. Do not route around either.
+  `boundary-check` job in CI, which runs `scripts/boundary-check.sh` — the same
+  script `pnpm boundary-check` runs, so the two cannot drift. Do not route
+  around either. The grep is a **raw string match** rather than an import
+  match, on purpose (the argument is in the script's header): it covers what a
+  parser would miss — a comment, and a `package.json` dependency edge, which
+  ships the proxy's code in the agent's image before any import exists. Prose
+  on the agent side says "the tool proxy service".
 - **Enforcement is deterministic and lives in the proxy.** Allowlist checks,
   approvals, budgets, and egress rules resolve from the channel's team sheet
   without the model's cooperation. Anything phrased as "instruct the model not
