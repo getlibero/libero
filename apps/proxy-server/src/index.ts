@@ -65,6 +65,13 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // Hoisted out of the composition below because shutdown needs a handle on it.
 // The dispatcher owns the MCP client pool; `createProxyServer` takes the narrow
 // `ToolDispatcher` and never learns there is one.
+//
+// It also fills `ToolCatalog`, which is why it appears twice below. One object,
+// two seams, on purpose: the listing route closes over the interface that can
+// only describe, and the gate over the one that can run — so a route that asks
+// an upstream what it offers has no method that calls anything. Passing the
+// same object to both is what keeps the credential path single, since this is
+// still the only thing in the process holding a vault and a client pool.
 const dispatcher = createHttpDispatcher({ vault, logger });
 
 const server = createProxyServer({
@@ -84,6 +91,7 @@ const server = createProxyServer({
   // that land next arrive before their implementations do.
   spend: createSqliteSpendMeter({ db: budget, logger }),
   dispatcher,
+  catalog: dispatcher,
   // The writer, not the handle: the serving process appends and cannot close
   // the file it is being audited into. `auditDb` stays here, where shutdown is.
   audit,

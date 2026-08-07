@@ -36,6 +36,7 @@ import type { BudgetDb } from "./budget-db.js";
 import { createSqliteSpendMeter } from "./budget-meter.js";
 import {
   type SpendMeter,
+  createUnavailableCatalog,
   createUnavailableDispatcher,
   markProvisional,
   type ToolDispatcher
@@ -56,6 +57,8 @@ const CHANNEL = "C024BE91L";
 const OTHER_CHANNEL = "C7ZZZ9999";
 /** Its own channel, so the injection sheet cannot disturb the shared one. */
 const INJECT_CHANNEL = "C5INJECT01";
+/** And one for the listing suite, which rewrites its sheet in every test. */
+const DESCRIBED_CHANNEL = "C7DESCRIBE";
 
 interface Response {
   status: number;
@@ -255,7 +258,7 @@ beforeAll(() => {
 
   mint(certs, [
     "--channels",
-    `${CHANNEL},${OTHER_CHANNEL},${INJECT_CHANNEL}`,
+    `${CHANNEL},${OTHER_CHANNEL},${INJECT_CHANNEL},${DESCRIBED_CHANNEL}`,
     // A certificate this CA signed whose subject is not a channel principal —
     // the shape a single shared service certificate would have.
     "--raw-cn",
@@ -287,6 +290,7 @@ beforeAll(() => {
     sheets,
     spend: meter,
     dispatcher,
+    catalog: createUnavailableCatalog(),
     audit: createSqliteAuditWriter({ db: auditDb }),
     logger: createJsonLogger(line => {
       logLines.push(line);
@@ -457,6 +461,7 @@ describe("routing", () => {
       sheets,
       spend: meter,
       dispatcher: createUnavailableDispatcher(),
+      catalog: createUnavailableCatalog(),
       audit: discardingAuditWriter(),
       logger: createJsonLogger(line => {
         lines.push(line);
@@ -931,6 +936,7 @@ describe("the durable audit record", () => {
       sheets,
       spend: meter,
       dispatcher: recordingDispatcher(),
+      catalog: createUnavailableCatalog(),
       audit: {
         append: () => {
           throw new Error("ghp_credential_shaped_value");
@@ -1029,6 +1035,7 @@ describe("composing the proxy", () => {
           recordToolCall: () => {},
           recordTokens: () => ({ outcome: "recorded" as const })
         }),
+        catalog: createUnavailableCatalog(),
         dispatcher: recordingDispatcher(),
         audit: discardingAuditWriter()
       })
@@ -1506,6 +1513,9 @@ credential = "github_service_account"
         // outbound line and the server's request line land in one stream, which
         // is what makes "no log line holds the value" worth asserting.
         dispatcher: (injectDispatcher = createHttpDispatcher({ vault, logger: injectLogger })),
+        // The same object twice, as apps/proxy-server does: one thing holds the
+        // vault and the pool, and the two seams are what each route sees of it.
+        catalog: injectDispatcher,
         // A real audit log for the same reason the logger is shared: this is
         // the one composition where a credential genuinely transits a call, so
         // it is the only place "no audit row holds the value" can be asserted
@@ -1702,6 +1712,250 @@ credential = "absent_credential"
   });
 });
 
+// The acceptance suite for #129: what a listing says once an upstream has been
+// asked, and what it still says when one cannot be.
+//
+// A fresh proxy and a fresh dispatcher per test, because the catalog caches for
+// five minutes on a real clock — a shared composition would have one test's
+// walk answer the next test's question, which is the assertion these are here
+// to make rather than to assume.
+describe("a listing described by its upstream", () => {
+  let vaultDir: string;
+  let described: Server | undefined;
+  let describedDispatcher: HttpDispatcher | undefined;
+  let describedPort = 0;
+  let describedLog: string[] = [];
+
+  /** Stand a proxy up against this sheet, with a real dispatcher and catalog. */
+  async function serving(sheet: string): Promise<void> {
+    writeSheet(DESCRIBED_CHANNEL, sheet);
+    describedLog = [];
+    const logger = createJsonLogger(line => describedLog.push(line));
+    const dispatch = createHttpDispatcher({ vault: describedVault, logger });
+    describedDispatcher = dispatch;
+    const built = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      spend: meter,
+      dispatcher: dispatch,
+      // One object, two seams — the composition root's own shape.
+      catalog: dispatch,
+      audit: discardingAuditWriter(),
+      logger
+    });
+    described = built;
+    describedPort = await new Promise<number>(resolve => {
+      built.listen(0, "127.0.0.1", () => resolve((built.address() as AddressInfo).port));
+    });
+  }
+
+  const listing = async (): Promise<ToolListing> => {
+    const res = await call("/v1/tools", clientCert(certs, DESCRIBED_CHANNEL), "GET", describedPort);
+    expect(res.status).toBe(200);
+    return ToolListing.parse(res.body);
+  };
+
+  let describedVault: Vault;
+  let upstream: FakeMcpServer | undefined;
+
+  beforeAll(() => {
+    vaultDir = mkdtempSync(join(tmpdir(), "libero-proxy-described-"));
+    const parsed = parseVaultKey(randomBytes(32).toString("base64"));
+    if (!parsed.ok) throw new Error("test key did not parse");
+    const file = join(vaultDir, "vault.enc");
+    writeVaultEntries(file, parsed.key, new Map([["github_service_account", "ghp_described"]]));
+    describedVault = openVault({ file, key: parsed.key });
+  });
+
+  afterAll(() => {
+    rmSync(vaultDir, { recursive: true, force: true });
+  });
+
+  afterEach(async () => {
+    described?.closeAllConnections();
+    if (described !== undefined) await new Promise<void>(resolve => described?.close(() => resolve()));
+    described = undefined;
+    await describedDispatcher?.close();
+    describedDispatcher = undefined;
+    await upstream?.close();
+    upstream = undefined;
+  });
+
+  const sheetFor = (url: string, tools = "  [[mcp_server.tool]]\n  name = \"list_prs\"\n"): string => `
+[channel]
+name = "described"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "${url}"
+credential = "github_service_account"
+
+${tools}`;
+
+  // Both halves of the issue's first acceptance criterion, in one test: the
+  // sheet's tool arrives with its schema, and the upstream's other tool is
+  // neither listed nor callable. The upstream describes; it does not decide.
+  it("carries the sheet's tool with its schema, and cannot add one of its own", async () => {
+    upstream = await startFakeMcpServer();
+    await serving(sheetFor(upstream.url));
+
+    const { tools } = await listing();
+
+    expect(tools).toEqual([
+      {
+        server: "github",
+        tool: "list_prs",
+        approval: "none",
+        description: "Lists open pull requests.",
+        inputSchema: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] }
+      }
+    ]);
+
+    // `merge_pr` is on the upstream and not on the sheet. Absent from the
+    // listing, and refused at the gate by the sheet that omitted it.
+    const refused = await call(
+      "/v1/tools/call",
+      clientCert(certs, DESCRIBED_CHANNEL),
+      "POST",
+      describedPort,
+      JSON.stringify(asked({ id: "toolu_01", server: "github", tool: "merge_pr" }))
+    );
+    expect(ToolCallResponse.parse(refused.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "tool_not_allowed" }
+    });
+  });
+
+  // The issue's second acceptance criterion. An upstream that cannot answer
+  // costs the model a schema and costs the channel nothing.
+  it("degrades to the sheet's own entry when the upstream will not answer", async () => {
+    upstream = await startFakeMcpServer();
+    upstream.respond = request => (request.rpc?.method === "tools/list" ? { status: 503, raw: "down" } : null);
+    await serving(sheetFor(upstream.url));
+
+    expect((await listing()).tools).toEqual([{ server: "github", tool: "list_prs", approval: "none" }]);
+
+    // And the gate decides exactly as it would have. The listing is not the
+    // enforcement, so a thin one changes no answer.
+    const ran = await call(
+      "/v1/tools/call",
+      clientCert(certs, DESCRIBED_CHANNEL),
+      "POST",
+      describedPort,
+      JSON.stringify(asked({ id: "toolu_01", server: "github", tool: "list_prs" }))
+    );
+    expect(ToolCallResponse.parse(ran.body)).toMatchObject({ outcome: "ran" });
+  });
+
+  it("asks a server split across blocks by approval exactly once", async () => {
+    upstream = await startFakeMcpServer();
+    await serving(
+      sheetFor(
+        upstream.url,
+        '  [[mcp_server.tool]]\n  name = "list_prs"\n'
+      ) +
+        `
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "${upstream.url}"
+credential = "github_service_account"
+
+  [[mcp_server.tool]]
+  name = "merge_pr"
+  approval = "required"
+`
+    );
+
+    const { tools } = await listing();
+
+    expect(tools.map(tool => [tool.tool, tool.approval, tool.inputSchema !== undefined])).toEqual([
+      ["list_prs", "none", true],
+      ["merge_pr", "required", true]
+    ]);
+    // One upstream, one question. `upstreamKey` groups the blocks, so the
+    // documented way to split a server by approval does not double the traffic.
+    expect(upstream.callsTo("tools/list")).toHaveLength(1);
+  });
+
+  it("lists an ambiguous tool thin, and refuses it at the gate", async () => {
+    upstream = await startFakeMcpServer();
+    await serving(`
+[channel]
+name = "described"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "${upstream.url}"
+
+  [[mcp_server.tool]]
+  name = "list_prs"
+
+[[mcp_server]]
+name = "github"
+transport = "http"
+url = "http://elsewhere.invalid:9"
+
+  [[mcp_server.tool]]
+  name = "list_prs"
+`);
+
+    expect((await listing()).tools).toEqual([{ server: "github", tool: "list_prs", approval: "none" }]);
+    expect(upstream.received).toHaveLength(0);
+    expect(describedLog.join("")).toContain('"reason":"server_ambiguous"');
+  });
+
+  it("lists a stdio server's tools thin, since there is no client to ask", async () => {
+    await serving(`
+[channel]
+name = "described"
+
+[[mcp_server]]
+name = "local"
+transport = "stdio"
+
+  [[mcp_server.tool]]
+  name = "read_file"
+`);
+
+    expect((await listing()).tools).toEqual([{ server: "local", tool: "read_file", approval: "none" }]);
+    expect(describedLog.join("")).toContain('"reason":"unsupported_transport"');
+  });
+
+  it("counts what it described, and writes no upstream byte to the log", async () => {
+    upstream = await startFakeMcpServer({
+      catalog: [{ name: "list_prs", description: "Lists PRs ghp_described.", inputSchema: { type: "object" } }]
+    });
+    await serving(sheetFor(upstream.url));
+
+    await listing();
+
+    const listed = describedLog.filter(line => line.includes('"tools_listed"'));
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toContain('"count":1');
+    expect(listed[0]).toContain('"described":1');
+    // The description reached the wire, and no line of the log carries a byte
+    // of it — a listing's log is counts, not content.
+    expect(describedLog.join("")).not.toContain("Lists PRs");
+    expect(describedLog.join("")).not.toContain("ghp_described");
+  });
+
+  it("asks nothing at all for a channel with no sheet", async () => {
+    upstream = await startFakeMcpServer();
+    await serving(sheetFor(upstream.url));
+    rmSync(join(channelsRoot, DESCRIBED_CHANNEL), { recursive: true, force: true });
+
+    expect((await listing()).tools).toEqual([]);
+    expect(upstream.received).toHaveLength(0);
+  });
+});
+
 // Nothing covered this end to end: `unavailable` was only a unit assertion in
 // dispatch.test.ts. It is the behaviour every deployment currently has, so it
 // is worth pinning at the wire — a permitted call gets 501 and not a refusal,
@@ -1732,6 +1986,7 @@ describe("a permitted call with no upstream", () => {
       // its upstream, which `assertServableComposition` permits.
       spend: meter,
       dispatcher: createUnavailableDispatcher(),
+      catalog: createUnavailableCatalog(),
       audit: createSqliteAuditWriter({ db: bareAuditDb }),
       logger: createJsonLogger(() => {})
     });
@@ -1804,6 +2059,7 @@ describe("a permitted call with no upstream", () => {
           throw new RedactionError("empty_value");
         }
       },
+      catalog: createUnavailableCatalog(),
       // The throw is upstream of the audit call, so there is no row to make.
       audit: discardingAuditWriter(),
       logger: createJsonLogger(line => lines.push(line))
@@ -1887,6 +2143,7 @@ describe("the approval broker", () => {
       sheets,
       spend: meter,
       dispatcher,
+      catalog: createUnavailableCatalog(),
       audit: createSqliteAuditWriter({ db: brokerAuditDb }),
       logger: createJsonLogger(() => {}),
       // The whole reason this block has its own server: a test crosses a

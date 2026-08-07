@@ -62,6 +62,12 @@ function providerSafe(name: string): string {
  * Deterministic given the listing and its order, so the same sheet produces the
  * same names on every session and a model's transcript stays meaningful across
  * turns.
+ *
+ * **Chosen from `server` and `tool` alone**, which is what keeps that true now
+ * that the listing also carries what an upstream said. An upstream that
+ * reorders its catalog, adds a tool, or goes down entirely changes a
+ * description and a schema; it cannot move a name, because no field it fills is
+ * read here.
  */
 function chooseName(entry: PermittedTool, taken: ReadonlySet<string>): string {
   const candidates = [
@@ -84,19 +90,32 @@ function chooseName(entry: PermittedTool, taken: ReadonlySet<string>): string {
 }
 
 /**
+ * The open schema, for a tool nothing described.
+ *
+ * What the manifest used to publish for every tool, now the fallback for the
+ * ones the proxy could not ask about. It says what is true when the arguments
+ * are unknown: they are passed through to the tool unmodified, and the tool is
+ * what validates them.
+ */
+const OPEN_SCHEMA: Record<string, unknown> = { type: "object", properties: {}, additionalProperties: true };
+
+/**
  * The listing as tool definitions, and the map that decodes a call.
  *
- * The definitions are thin because the manifest is thin, and deliberately so:
- * a team sheet lists names and approval and knows nothing about arguments, so
- * there is no input schema to publish and inventing one would describe a
- * contract nobody checked. `{ type: "object" }` with no properties says what is
- * true — the model's arguments are passed through to the tool unmodified, and
- * the tool is what validates them.
+ * The definitions are the sheet's membership plus what the upstream said.
+ * `description` and `inputSchema` arrive on an entry when the proxy reached the
+ * server the sheet named; they are absent when it could not, which is a defined
+ * state rather than a gap — an upstream that is down, slow, or ambiguous costs
+ * the model accuracy and costs the channel nothing.
  *
- * Real descriptions and real input schemas come from the upstream servers
- * themselves, through the proxy's MCP client pool (#129), intersected with this
- * manifest. Until then a model is told what it may call and not what the
- * arguments are, which is worth being explicit about rather than papering over.
+ * **The two fields that come from upstream are third-party text**, and they
+ * enter the model's context on every turn. Nothing here reads them, judges
+ * them, or annotates them: a rule that read a description would be a rule the
+ * upstream phrases around. The proxy bounds their size, and what accepts the
+ * exposure is the team sheet naming the server.
+ *
+ * The one thing an upstream may not describe is approval, because that is
+ * knowledge only the manifest has — see `describe`.
  */
 export function mapPermittedTools(tools: readonly PermittedTool[]): {
   definitions: ToolDefinition[];
@@ -116,7 +135,12 @@ export function mapPermittedTools(tools: readonly PermittedTool[]): {
     definitions.push({
       name: modelName,
       description: describe(entry),
-      inputSchema: { type: "object", properties: {}, additionalProperties: true }
+      // The upstream's own bytes, unmodified. The proxy checked the one thing
+      // that has to hold — a JSON object saying `type: "object"`, because a
+      // provider answering 400 fails the whole turn rather than one tool — and
+      // rewriting it here would be a second opinion on a contract this process
+      // has no way to have one about.
+      inputSchema: entry.inputSchema ?? OPEN_SCHEMA
     });
   }
 
@@ -127,18 +151,28 @@ export function mapPermittedTools(tools: readonly PermittedTool[]): {
  * What the model is told a tool is.
  *
  * House voice: name the call, say what is and is not known about it, say
- * whether a human has to say yes. It claims no capability — describing what
- * `list_prs` does would be this process inventing a contract with a server it
- * has never spoken to.
+ * whether a human has to say yes.
  *
- * Saying so plainly beats saying nothing. A model told only a name will guess
- * at arguments either way; a model told the arguments are unspecified can say
- * so to the channel instead of asserting a signature it made up.
+ * With an upstream description, that description leads and the proxy's own
+ * sentence follows it — the server is the thing that knows what `list_prs`
+ * does, and this process still says where the call goes. Without one, the older
+ * sentence stands unchanged: a model told the arguments are unspecified can say
+ * so to the channel instead of asserting a signature it made up, which beats
+ * saying nothing at all.
+ *
+ * **The approval sentence is appended in both cases, byte for byte.** It is the
+ * one thing about a tool an upstream cannot tell a model — a server has no idea
+ * which of its tools this channel holds for a human — so it comes from the
+ * manifest and is never displaced by what the upstream wrote.
  */
 function describe(entry: PermittedTool): string {
   const held =
     entry.approval === "required"
       ? " This call is held for approval from a human before it runs."
       : "";
-  return `\`${entry.server}.${entry.tool}\`, called through the Libero tool proxy. Its arguments are not described by this channel's team sheet: they are passed to the server unchanged, and the server validates them.${held}`;
+  const body =
+    entry.description === undefined
+      ? `\`${entry.server}.${entry.tool}\`, called through the Libero tool proxy. Its arguments are not described by this channel's team sheet: they are passed to the server unchanged, and the server validates them.`
+      : `${entry.description} Called as \`${entry.server}.${entry.tool}\` through the Libero tool proxy.`;
+  return `${body}${held}`;
 }

@@ -125,6 +125,15 @@ export interface LogFields {
   /** How many tools a listing returned. A count, not the list. */
   count?: number;
   /**
+   * How many of a listing's tools carried an input schema. A count, not the
+   * schemas.
+   *
+   * The operator's one-glance signal that enrichment is working: a listing
+   * where this is below `count` had an upstream it could not ask, and the
+   * `catalog_unavailable` lines beside it say which and why.
+   */
+  described?: number;
+  /**
    * Whether a token report moved the meter. `duplicate` is a retry of a turn
    * already counted, which is a success — so this is not a `reason`.
    */

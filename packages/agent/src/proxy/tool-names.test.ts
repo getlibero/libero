@@ -78,7 +78,10 @@ describe("naming a permitted tool for a model", () => {
   });
 
   it("names the same listing the same way every time", () => {
-    const tools = [listed("github", "search"), listed("zendesk", "search")];
+    const tools = [
+      { ...listed("github", "search"), description: "Searches code.", inputSchema: { type: "object" as const } },
+      listed("zendesk", "search")
+    ];
     expect(mapPermittedTools(tools).definitions).toEqual(mapPermittedTools(tools).definitions);
   });
 
@@ -90,10 +93,22 @@ describe("naming a permitted tool for a model", () => {
 });
 
 describe("what the model is told a tool is", () => {
-  it("names the call and says the arguments are not described", () => {
+  it("says the arguments are not described when nothing described them", () => {
     const [definition] = mapPermittedTools([listed("github", "list_prs")]).definitions;
     expect(definition?.description).toContain("`github.list_prs`");
     expect(definition?.description).toContain("not described");
+  });
+
+  it("relays an upstream description verbatim, and still says where the call goes", () => {
+    const [definition] = mapPermittedTools([
+      { ...listed("github", "list_prs"), description: "Lists open pull requests." }
+    ]).definitions;
+
+    expect(definition?.description).toContain("Lists open pull requests.");
+    expect(definition?.description).toContain("`github.list_prs`");
+    // The server is what knows; this process no longer claims the arguments
+    // are unknown when they are not.
+    expect(definition?.description).not.toContain("not described");
   });
 
   it("says when a call is held for a human", () => {
@@ -103,15 +118,54 @@ describe("what the model is told a tool is", () => {
     expect(free?.description).not.toContain("held for approval");
   });
 
-  // A team sheet knows names and approval. Publishing an input schema would be
-  // this process inventing a contract with a server it has never spoken to —
-  // real schemas arrive with #129.
-  it("publishes an open object schema, because the sheet describes no arguments", () => {
+  // The one thing about a tool an upstream cannot tell a model: a server has no
+  // idea which of its tools this channel holds for a human. So it comes from
+  // the manifest and is never displaced by what the upstream wrote.
+  it("keeps the approval sentence alongside an upstream description", () => {
+    const [definition] = mapPermittedTools([
+      { ...listed("github", "merge_pr", "required"), description: "Merges a pull request." }
+    ]).definitions;
+
+    expect(definition?.description).toContain("Merges a pull request.");
+    expect(definition?.description).toContain("held for approval");
+  });
+
+  // The fallback, for a tool the proxy could not ask about. It says what is
+  // true when the arguments are unknown: they go to the tool unmodified, and
+  // the tool validates them.
+  it("publishes an open object schema when the listing carried none", () => {
     const [definition] = mapPermittedTools([listed("github", "list_prs")]).definitions;
     expect(definition?.inputSchema).toEqual({
       type: "object",
       properties: {},
       additionalProperties: true
     });
+  });
+
+  it("passes a real schema through unmodified", () => {
+    const inputSchema = {
+      type: "object" as const,
+      properties: { repo: { type: "string" } },
+      required: ["repo"]
+    };
+    const [definition] = mapPermittedTools([{ ...listed("github", "list_prs"), inputSchema }]).definitions;
+
+    expect(definition?.inputSchema).toEqual(inputSchema);
+  });
+
+  // Names are chosen from `server` and `tool` alone, so an upstream that
+  // reorders its catalog, adds a tool, or goes down cannot move one. That is
+  // what keeps the determinism contract true now that a listing carries more
+  // than the sheet.
+  it("does not let a description or a schema move a model-facing name", () => {
+    const bare = [listed("github", "search"), listed("zendesk", "search")];
+    const rich = [
+      { ...listed("github", "search"), description: "Searches code.", inputSchema: { type: "object" as const } },
+      { ...listed("zendesk", "search"), description: "Searches tickets." }
+    ];
+
+    expect(mapPermittedTools(rich).definitions.map(definition => definition.name)).toEqual(
+      mapPermittedTools(bare).definitions.map(definition => definition.name)
+    );
   });
 });

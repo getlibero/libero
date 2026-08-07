@@ -93,9 +93,44 @@ Two things about that client are load-bearing rather than incidental. **The flat
 name a model calls is decoded to a (server, tool) pair by a map built from the
 listing, never by parsing the name** — `ResourceName` permits dots and
 underscores, so any separator is ambiguous, and a name the proxy did not publish
-has no pair to become. And **the tool definitions are thin because the manifest
-is thin**: a team sheet knows names and approval, so no input schema is
-published and none is invented. Real schemas arrive with #129.
+has no pair to become. And **a name is chosen from `server` and `tool` alone**,
+which is what keeps names stable across sessions now that a listing carries more
+than the sheet: an upstream that reorders its catalog changes a description, not
+a name.
+
+**The listing carries real tool definitions (#129).** `GET /v1/tools` asks each
+upstream the channel's sheet names for its `tools/list`, keeps the entries the
+sheet named, and publishes an optional `description` and `inputSchema` beside
+the approval. `packages/proxy/src/listing-route.ts` is the route,
+`mcp-catalog.ts` the walk and the cache; `enforce.permittedToolSources` is
+`permittedTools` plus the block that carries each tool, from the same expression
+`decide` uses, so the two cannot disagree about where a call goes.
+
+Four things there are decisions. **The sheet decides what is listed and the
+upstream only describes** — the merge iterates the sheet's entries and looks
+each up by name, so a catalog naming a tool the sheet does not has no row to
+attach to; the intersection is the loop's shape rather than a filter. **Every
+way of not getting an answer degrades to the sheet's own entry** — stdio,
+missing credential, ambiguous blocks, a dead or slow upstream, bytes that are
+not MCP — because the listing is not the enforcement and a missing schema costs
+the model accuracy, never the channel a permission. The single exception is a
+`RedactionError`, which is this proxy unable to hold its own boundary rather
+than an upstream failing, so it propagates and the route uses `Promise.all`
+rather than `allSettled`. **The route holds `ToolCatalog` and nothing wider** —
+one seam that can describe, a separate one that can run, both filled by the
+dispatcher object because that is still the only thing holding a vault and a
+pool; an ESLint block on `listing-route.ts` bans the vault, the pool, the
+client, and the outbound sender. And **upstream descriptions and schemas are
+third-party text entering the model's context every turn** — the tool-poisoning
+surface. Nothing reads them, because a rule that read a description is a rule
+the upstream phrases around; the caps (1024-character descriptions, 8KB
+schemas, 100 tools, 5 pages, a 5s budget per upstream) bound the blast radius
+and are not a mitigation. The sheet naming the server is what accepts it.
+
+A schema must be a JSON object saying `type: "object"` or it is dropped and the
+entry stays thin, and that rule is load-bearing rather than fussy:
+`packages/agent` casts it straight into the provider's tool definition, and a
+provider answering 400 fails the whole turn rather than the one tool.
 
 **The proxy speaks MCP for real, at revision `2026-07-28` (#128).**
 `mcp-protocol.ts` is the wire format as pure functions, `mcp-client.ts` is one

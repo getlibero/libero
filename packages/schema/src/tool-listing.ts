@@ -12,12 +12,25 @@ import { ResourceName } from "./names.js";
  * nothing. Listing keeps an unlisted tool out of the model's context in the
  * first place; the call-time check is what holds.
  *
- * **This is a permission manifest, not a tool catalog.** A team sheet lists
- * names and approval, and nothing else: there is no description and no input
- * schema on a `ToolEntry`, so nothing here can be handed to a model as a tool
- * definition. #129 is what fetches real definitions from
- * upstream servers and intersects them with this manifest. The thinness is the
- * accurate shape of what a team sheet knows, not an unfinished edge.
+ * **The sheet decides membership; the upstream describes.** A team sheet lists
+ * names and approval and knows nothing about arguments, so `description` and
+ * `inputSchema` come from the server the sheet named — fetched by the proxy's
+ * MCP client, intersected with this manifest, and attached to rows the sheet
+ * already produced. Nothing an upstream says can add a tool here, because the
+ * intersection iterates the sheet.
+ *
+ * **Both describing fields are optional, and their absence is a state rather
+ * than a gap.** An upstream that is down, slow, ambiguous, or speaking a
+ * transport the proxy cannot reach degrades to the entry as the sheet wrote it.
+ * That is safe because the listing is not the enforcement: a missing schema
+ * costs the model accuracy, never the channel a permission, and a tool absent
+ * here is still refused at call time by the same sheet that omitted it.
+ *
+ * **They are also third-party text entering the model's context on every
+ * turn** — the tool-poisoning surface. Nothing here mitigates it, and nothing
+ * should pretend to: a rule that reads a description is a rule the upstream
+ * phrases around. The bounds below cap the blast radius and are not a
+ * mitigation. What accepts the exposure is the team sheet naming the server.
  */
 
 /**
@@ -62,7 +75,25 @@ export const PermittedTool = z
      * and reports the answer, so a client never re-derives it — and cannot
      * derive it differently.
      */
-    approval: ApprovalMode
+    approval: ApprovalMode,
+    /**
+     * What the upstream says the tool does, bounded and absent when it said
+     * nothing this proxy would publish.
+     *
+     * Never the sheet's words — a sheet has none — so this field is exactly as
+     * trustworthy as the server the sheet named, which is the trade an
+     * `[[mcp_server]]` block makes.
+     */
+    description: z.string().min(1).max(MAX_TOOL_DESCRIPTION).optional(),
+    /**
+     * The tool's arguments as JSON Schema, absent when the upstream published
+     * none this proxy would relay.
+     *
+     * All-or-nothing where the description truncates: a schema cannot be
+     * shortened and stay a schema, and half of one would have the model form
+     * arguments against a contract nobody holds.
+     */
+    inputSchema: ToolInputSchema.optional()
   })
   .strict();
 

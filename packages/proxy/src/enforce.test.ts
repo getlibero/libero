@@ -6,6 +6,8 @@ import {
   decide,
   decideFromState,
   isDestructiveName,
+  permittedToolSources,
+  permittedToolSourcesFromState,
   permittedTools,
   permittedToolsFromState,
   resolveApproval,
@@ -741,6 +743,78 @@ describe("the tool listing", () => {
     expect(permittedToolsFromState({ status: "active", sheet, stale: true })).toEqual(
       permittedTools(sheet)
     );
+    expect(permittedToolSourcesFromState({ status: "absent" })).toEqual([]);
+  });
+});
+
+describe("which upstream a listed tool would be described by", () => {
+  // The anti-drift assertion. The two answers come from one loop, and this is
+  // what says so — a second loop that merely resembled the first is exactly how
+  // a listing comes to describe a call that is not the call that runs.
+  it("is the same listing the gate reads, with one more field", () => {
+    expect(permittedToolSources(sheet).map(source => source.tool)).toEqual(permittedTools(sheet));
+  });
+
+  it("names the block that carried the tool, not the first block with the name", () => {
+    const split = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://decoy:3001", tool: [{ name: "list_prs" }] },
+        { name: "github", transport: "http", url: "http://real:3001", tool: [{ name: "get_issue" }] }
+      ]
+    });
+    const sources = permittedToolSources(split);
+    expect(sources.map(source => [source.tool.tool, source.upstream?.url])).toEqual([
+      ["list_prs", "http://decoy:3001"],
+      ["get_issue", "http://real:3001"]
+    ]);
+  });
+
+  // The same tools `decide` refuses as `server_ambiguous`. They stay listed —
+  // an upstream fills the describing fields, it does not decide the row — and
+  // there is simply no single server to ask about them.
+  it.each([
+    ["a differing url", { url: "http://a:3001" }, { url: "http://b:3001" }],
+    ["a differing credential", { url: UPSTREAM, credential: "cred_a" }, { url: UPSTREAM, credential: "cred_b" }]
+  ])("has no upstream for a tool whose blocks disagree by %s", (_label, left, right) => {
+    const ambiguous = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", tool: [{ name: "get_issue" }], ...left },
+        { name: "github", transport: "http", tool: [{ name: "get_issue" }], ...right }
+      ]
+    });
+    const sources = permittedToolSources(ambiguous);
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.upstream).toBeNull();
+    // Listed all the same, and refused at call time by the gate that shares the
+    // expression this used.
+    expect(sources[0]?.tool.tool).toBe("get_issue");
+    expect(
+      decide({ sheet: ambiguous, call: callTo("github", "get_issue"), spend: NO_SPEND })
+    ).toMatchObject({ outcome: "refuse", refusal: { reason: "server_ambiguous" } });
+  });
+
+  // The documented idiom: one server split across blocks by approval. Both
+  // entries resolve to the same upstream key, so the caller asks once.
+  it("gives one upstream to a server the sheet split by approval", () => {
+    const split = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "github", transport: "http", url: UPSTREAM, credential: "gh", tool: [{ name: "list_prs" }] },
+        {
+          name: "github",
+          transport: "http",
+          url: UPSTREAM,
+          credential: "gh",
+          tool: [{ name: "merge_pr", approval: "required" }]
+        }
+      ]
+    });
+    const keys = permittedToolSources(split).map(source => source.upstream && upstreamKey(source.upstream));
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).not.toBeNull();
   });
 });
 

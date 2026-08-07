@@ -331,7 +331,38 @@ export function decide(input: EnforcementInput): Decision {
  * a call would do, and a call cannot hit two entries differently.
  */
 export function permittedTools(sheet: TeamSheet): PermittedTool[] {
-  const listed: PermittedTool[] = [];
+  return permittedToolSources(sheet).map(source => source.tool);
+}
+
+/**
+ * A permitted tool and the block that carries it.
+ *
+ * `upstream` is `null` for exactly the tools `decide` refuses as
+ * `server_ambiguous`: the blocks naming them disagree about where they go, so
+ * there is no single upstream to ask about them either. Such a tool is still
+ * listed — the describing fields are what an upstream fills in, not the row
+ * itself — it simply cannot be described.
+ */
+export interface PermittedToolSource {
+  readonly tool: PermittedTool;
+  readonly upstream: McpServer | null;
+}
+
+/**
+ * The listing, plus where each entry would go.
+ *
+ * `permittedTools` is this with the second field dropped, so order, the
+ * duplicate key, and the most-restrictive approval resolution live in one loop
+ * and the two answers cannot drift.
+ *
+ * **The upstream is selected by the same expression `decide` uses**, rather than
+ * by a second rule that resembles it. A listing that thought a tool belonged to
+ * one block while the decision sent it to another would describe a call that is
+ * not the call that runs — the same class of gap `serversNamed` warns about, and
+ * the reason both halves already share `resolveApproval`.
+ */
+export function permittedToolSources(sheet: TeamSheet): PermittedToolSource[] {
+  const listed: PermittedToolSource[] = [];
   const seen = new Set<string>();
 
   for (const server of sheet.mcp_server) {
@@ -346,11 +377,14 @@ export function permittedTools(sheet: TeamSheet): PermittedTool[] {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const entries = toolsNamed(serversNamed(sheet, server.name), entry.name);
+      const named = serversNamed(sheet, server.name);
       listed.push({
-        server: server.name,
-        tool: entry.name,
-        approval: resolveApproval(entries, entry.name)
+        tool: {
+          server: server.name,
+          tool: entry.name,
+          approval: resolveApproval(toolsNamed(named, entry.name), entry.name)
+        },
+        upstream: selectUpstream(serversCarrying(named, entry.name))
       });
     }
   }
@@ -369,7 +403,12 @@ export function permittedTools(sheet: TeamSheet): PermittedTool[] {
  * and an unreadable one is worth drawing.
  */
 export function permittedToolsFromState(state: SheetState): PermittedTool[] {
-  return state.status === "active" ? permittedTools(state.sheet) : [];
+  return permittedToolSourcesFromState(state).map(source => source.tool);
+}
+
+/** The same, for the caller that also needs to know which upstream to ask. */
+export function permittedToolSourcesFromState(state: SheetState): PermittedToolSource[] {
+  return state.status === "active" ? permittedToolSources(state.sheet) : [];
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   type SpendMeter,
   type ToolDispatcher,
   assertServableComposition,
+  createUnavailableCatalog,
   createUnavailableDispatcher,
   markProvisional
 } from "./dispatch.js";
@@ -45,6 +46,22 @@ describe("the provisional dispatcher", () => {
     expect(createUnavailableDispatcher().dispatch(call as ResolvedToolCall, upstream)).toEqual({
       outcome: "unavailable"
     });
+  });
+});
+
+describe("the provisional catalog", () => {
+  it("describes nothing, so every tool stays as the sheet wrote it", async () => {
+    const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
+    expect(await createUnavailableCatalog().describe(upstream, ["list_prs"])).toEqual(new Map());
+  });
+
+  // Deliberately not in `assertServableComposition`. A catalog cannot serve a
+  // call and cannot spend a budget, so this pairing is a proxy publishing thin
+  // listings — a first-class state — rather than the silent failure that check
+  // exists to prevent.
+  it("is not a composition the servability check has an opinion about", () => {
+    expect(() => assertServableComposition(realMeter, realDispatcher)).not.toThrow();
+    expect(() => assertServableComposition(provisionalMeter(), createUnavailableDispatcher())).not.toThrow();
   });
 });
 

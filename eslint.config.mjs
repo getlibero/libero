@@ -155,6 +155,45 @@ export default tseslint.config(
     }
   },
   {
+    // The same mechanism, for the route that reaches an upstream. `GET
+    // /v1/tools` asks each server the sheet named what its tools take, and the
+    // claim worth enforcing is the shape of what it holds: **it can ask an
+    // upstream what it offers, and it can run nothing.**
+    //
+    // It closes over `ToolCatalog`, whose only method describes. What is banned
+    // is everything that could turn a listing into a call or into a second
+    // credential path — the vault, the pool, the client, the dispatcher
+    // implementation, the outbound sender, and the package's own barrel.
+    //
+    // Two things are deliberately *not* banned. `dispatch` holds the
+    // `ToolCatalog` type, and a type-only import of an interface reaches
+    // nothing. `team-sheet-store` and `enforce` are what this route is for —
+    // unlike spend-route.ts, resolving a sheet is precisely its job.
+    files: ["packages/proxy/src/listing-route.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "**/vault*",
+                "**/mcp-pool*",
+                "**/mcp-client*",
+                "**/mcp-catalog*",
+                "**/http-dispatcher*",
+                "**/outbound*",
+                "@getlibero/proxy"
+              ],
+              message:
+                "The tool listing route can ask an upstream what it offers and can run nothing. It holds a ToolCatalog, never a vault, a pool, a client, or the sender that attaches a credential."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     // The third, and the same mechanism again. The audit writer records what the
     // route observed, and what the route observed never included a credential
     // value — that is why the record can hold a hash of the model's arguments
