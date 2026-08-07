@@ -16,7 +16,7 @@ A Contributor License Agreement (Apache-style) is required from your first PR; a
 
 ## Ground rules that CI enforces
 
-- **`packages/agent` may never import `packages/proxy`.** The only path from agent to tools is the network call. An ESLint `no-restricted-imports` rule and a grep-level CI job enforce this; PRs that route around either will not merge regardless of how convenient it is.
+- **`packages/agent` may never import `packages/proxy`.** The only path from agent to tools is the network call. An ESLint `no-restricted-imports` rule and a grep-level check (`pnpm boundary-check`) enforce this; PRs that route around either will not merge regardless of how convenient it is. The grep is a raw string match rather than an import match, so it also fails on a comment that names the proxy package or its path — on this side of the line, write "the tool proxy service".
 - **MIT/Apache-2.0 dependencies only** in the core. The license gate fails the build on copyleft. Per [GOVERNANCE.md](GOVERNANCE.md), AGPL/SSPL and commercially-licensed packages are excluded; the latter are allowed only as optional, user-installed adapters.
 - **`packages/proxy` requires CODEOWNERS review.** The proxy is the security boundary; changes there get extra scrutiny by design.
 - **Privileged workflows must not check out code.** Any `pull_request_target` workflow containing an `actions/checkout` step fails CI.
@@ -82,7 +82,13 @@ most like a hand with.
 pnpm install
 pnpm -r build
 pnpm -r test
+pnpm boundary-check                   # agent side names no proxy; not covered by pnpm lint
+pnpm license-check                    # allowlisted licenses only; fails on copyleft
 ```
+
+The last two are the gates from [Ground rules that CI enforces](#ground-rules-that-ci-enforces).
+Both run the same script CI runs, so a failure is reproducible in a terminal
+rather than only on a push.
 
 Node 22.13+, pnpm 9+ — 22.13 because the budget meter uses the built-in `node:sqlite`, which needs
 a flag below that. The e2e harness (mock Slack + mock MCP server) lands in `e2e/` with phase 1.

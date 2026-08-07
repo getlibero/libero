@@ -18,7 +18,8 @@
     "test": "pnpm -r test",
     "lint": "eslint .",
     "typecheck": "pnpm -r typecheck",
-    "license-check": "sh scripts/license-check.sh"
+    "license-check": "sh scripts/license-check.sh",
+    "boundary-check": "sh scripts/boundary-check.sh"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
