@@ -104,24 +104,24 @@ jobs:
             --label area:proxy \
             --label security \
             --body "$(cat <<EOF
-\`packages/proxy/src/mcp-protocol.ts\` pins \`MCP_PROTOCOL_VERSION = "${pinned}"\`. The
-specification has published \`${latest}\`.
+          \`packages/proxy/src/mcp-protocol.ts\` pins \`MCP_PROTOCOL_VERSION = "${pinned}"\`. The
+          specification has published \`${latest}\`.
 
-Changelog: https://modelcontextprotocol.io/specification/${latest}/changelog
+          Changelog: https://modelcontextprotocol.io/specification/${latest}/changelog
 
-This issue is a prompt to read it, not a claim that anything is broken. The
-questions worth answering, in the order they usually bite:
+          This issue is a prompt to read it, not a claim that anything is broken. The
+          questions worth answering, in the order they usually bite:
 
-- Does the streamable HTTP transport change — required headers, framing, or how
-  a response is terminated? That lands in \`outbound.ts\` and \`mcp-client.ts\`.
-- Does \`tools/call\` or \`CallToolResult\` change shape? That lands in
-  \`toolResultText\`.
-- Does anything new let an upstream ask the client to act on a channel's behalf,
-  the way \`input_required\` does? That is a refusal decision before it is an
-  implementation one.
-- Do the servers we actually talk to speak it yet? A revision this proxy speaks
-  and no upstream implements is not an upgrade.
+          - Does the streamable HTTP transport change — required headers, framing, or how
+            a response is terminated? That lands in \`outbound.ts\` and \`mcp-client.ts\`.
+          - Does \`tools/call\` or \`CallToolResult\` change shape? That lands in
+            \`toolResultText\`.
+          - Does anything new let an upstream ask the client to act on a channel's behalf,
+            the way \`input_required\` does? That is a refusal decision before it is an
+            implementation one.
+          - Do the servers we actually talk to speak it yet? A revision this proxy speaks
+            and no upstream implements is not an upgrade.
 
-Filed by \`.github/workflows/mcp-spec-watch.yml\`.
-EOF
-)"
+          Filed by \`.github/workflows/mcp-spec-watch.yml\`.
+          EOF
+          )"
