@@ -84,9 +84,19 @@ async function writeSheet(channel: string, body: string): Promise<void> {
  */
 const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 12));
 
-/** Waits for a condition the watcher will bring about, without a fixed sleep. */
-async function until(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
-  const deadline = Date.now() + 3000;
+/**
+ * Waits for a condition the watcher will bring about, without a fixed sleep.
+ *
+ * `ms` defaults to 3000. The two save-time watcher tests use a longer window
+ * because FSEvents can buffer notifications for 3+ seconds under concurrent
+ * test load — not a bug in the watcher, just platform event-delivery latency.
+ */
+async function until(
+  predicate: () => boolean | Promise<boolean>,
+  label: string,
+  ms = 3000
+): Promise<void> {
+  const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -331,7 +341,9 @@ describe("deletion", () => {
 // These are the watcher's own tests: nothing calls resolve() between the edit
 // and the assertion, so only a watch event can produce the log line.
 describe("the watcher", () => {
-  it("complains about a broken sheet at save time, with no call in between", async () => {
+  // FSEvents can buffer notifications for several seconds under concurrent load;
+  // 5 s gives the event time to arrive without the test reading as broken.
+  it("complains about a broken sheet at save time, with no call in between", { timeout: 8000 }, async () => {
     await writeSheet("engineering", VALID);
     const { logger, lines } = recordingLogger();
     store = new TeamSheetStore({ root, logger });
@@ -341,14 +353,15 @@ describe("the watcher", () => {
 
     await until(
       () => lines.some(l => l.fields.event === "team_sheet_invalid"),
-      "the watcher to report an invalid sheet"
+      "the watcher to report an invalid sheet",
+      5000
     );
     expect(lines.find(l => l.fields.event === "team_sheet_invalid")?.fields.effect).toBe(
       "previous_sheet_retained"
     );
   });
 
-  it("reloads a valid edit without being asked", async () => {
+  it("reloads a valid edit without being asked", { timeout: 8000 }, async () => {
     await writeSheet("engineering", VALID);
     const { logger, lines } = recordingLogger();
     store = new TeamSheetStore({ root, logger });
@@ -358,7 +371,8 @@ describe("the watcher", () => {
 
     await until(
       () => lines.some(l => l.fields.event === "team_sheet_reloaded"),
-      "the watcher to reload the sheet"
+      "the watcher to reload the sheet",
+      5000
     );
   });
 
