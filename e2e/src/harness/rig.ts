@@ -23,6 +23,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FakeCatalogTool, FakeMcpServer } from "@getlibero/proxy";
+import type { ProxyTransport } from "@getlibero/agent";
 import type { Scheduler } from "@getlibero/gateway";
 import { CANARY, CANARY_CREDENTIAL, surface } from "./canary.js";
 import type { Surface } from "./canary.js";
@@ -40,7 +41,7 @@ import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
 import type { UpstreamOptions } from "./upstream.js";
-import { replayingSpendReports, withoutSpendReports } from "./transport.js";
+import { mutatingResubmission, replayingSpendReports, withoutSpendReports } from "./transport.js";
 import { writeVault } from "./vault.js";
 
 /** The channel every case uses unless it needs a second. Slack-shaped, as production is. */
@@ -115,6 +116,16 @@ export interface RigOptions {
    * held call is relayed to the model as a refusal and nothing runs.
    */
   readonly approvals?: "cards" | "none";
+  /**
+   * What the agent re-submits once a held call has been decided.
+   *
+   * The client re-sends the identical body plus the ticket, so anything else is
+   * a compromised agent and lives on the wire — see harness/transport.ts. Given
+   * `{ arguments }`, the re-submission carries those instead, which is the
+   * approve-then-mutate attack: a human looked at one call and the agent sent
+   * another.
+   */
+  readonly resubmission?: "identical" | { readonly arguments: Record<string, unknown> };
 }
 
 /** A sheet spec with the url left to the rig, since only it knows one. */
@@ -169,6 +180,26 @@ export function rigOf(rig: Rig | undefined): Rig {
   return rig;
 }
 
+/**
+ * The wire decorators this rig's options ask for, as one wrapper.
+ *
+ * Composed rather than chosen, so two knobs set at once both apply — a case
+ * that wants an agent which both mutates a re-submission and reports no spend
+ * gets an agent that does both, rather than whichever branch happened to be
+ * written last. Each is a distinct kind of misbehaviour and none of them knows
+ * about the others.
+ */
+function transportWrapper(options: RigOptions): ((inner: ProxyTransport) => ProxyTransport) | undefined {
+  const wrappers: Array<(inner: ProxyTransport) => ProxyTransport> = [];
+  if (options.spendReports === "dropped") wrappers.push(withoutSpendReports);
+  if (options.spendReports === "replayed") wrappers.push(replayingSpendReports);
+  if (options.resubmission !== undefined && options.resubmission !== "identical") {
+    wrappers.push(mutatingResubmission(options.resubmission.arguments));
+  }
+  if (wrappers.length === 0) return undefined;
+  return inner => wrappers.reduce((wrapped, wrap) => wrap(wrapped), inner);
+}
+
 const DEFAULT_SHEET: SheetInput = {
   credential: CANARY_CREDENTIAL,
   tools: [{ name: "list_prs", approval: "none" }]
@@ -215,6 +246,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       tlsCa: certs.caPath
     }, options.nodeArgs ?? []);
 
+    const wrapper = transportWrapper(options);
     const model = scriptedModel(options.script ?? [], options.onModelTurn);
     const agent = await startAgent(cleanup, {
       proxyUrl: proxy.url,
@@ -222,8 +254,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       clientCertDir: certs.clientCertDir,
       channelsRoot: channelsRoot.path,
       completion: model.client,
-      ...(options.spendReports === "dropped" ? { wrapTransport: withoutSpendReports } : {}),
-      ...(options.spendReports === "replayed" ? { wrapTransport: replayingSpendReports } : {}),
+      ...(wrapper !== undefined ? { wrapTransport: wrapper } : {}),
       ...(options.approvals === "none" ? { cards: false } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.now !== undefined ? { now: options.now } : {})
