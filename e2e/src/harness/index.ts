@@ -21,8 +21,11 @@ export { breakRedaction } from "./mutate.js";
 export { rawClient } from "./client.js";
 export type { RawClient, RawRequest, RawResponse } from "./client.js";
 
-export { calls, relays, says, scriptedModel } from "./model.js";
+export { TURN_TOKENS, calls, relays, says, scriptedModel, withUsage } from "./model.js";
 export type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
+
+export { runBudgetCli } from "./budget-cli.js";
+export type { BudgetCliResult } from "./budget-cli.js";
 
 export { spawnProxy } from "./proxy-process.js";
 export type { ProxyEnv, ProxyProcess } from "./proxy-process.js";
@@ -36,7 +39,7 @@ export type { UpstreamOptions } from "./upstream.js";
 export { auditRows, lastAuditId, spendFor } from "./records.js";
 export type { AuditRow } from "./records.js";
 
-export { recording, withoutSpendReports } from "./transport.js";
+export { recording, replayingSpendReports, withoutSpendReports } from "./transport.js";
 export type { RecordingTransport } from "./transport.js";
 
 export { writeVault } from "./vault.js";

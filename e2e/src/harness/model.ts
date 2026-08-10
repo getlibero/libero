@@ -11,7 +11,13 @@
 // `tool` message on the very next turn — so it is one of the surfaces the
 // canary scan reads, and the most important one.
 
-import type { CompletionClient, CompletionRequest, CompletionResponse, ToolCall } from "@getlibero/agent";
+import type {
+  CompletionClient,
+  CompletionRequest,
+  CompletionResponse,
+  TokenUsage,
+  ToolCall
+} from "@getlibero/agent";
 
 export interface ScriptedModel {
   readonly client: CompletionClient;
@@ -21,6 +27,29 @@ export interface ScriptedModel {
 
 /** Token counts have to be non-zero, or `daily_tokens` never moves and proves nothing. */
 const USAGE = { inputTokens: 12, outputTokens: 7 } as const;
+
+/**
+ * What one scripted turn reports, in total.
+ *
+ * Exported so a budget case sizes its sheet off the script — `daily_tokens: 2 *
+ * TURN_TOKENS` says "the third call is over the line" in a way that survives
+ * someone changing the numbers above, and a literal 38 does not.
+ */
+export const TURN_TOKENS = USAGE.inputTokens + USAGE.outputTokens;
+
+/**
+ * The same turn, reporting different tokens.
+ *
+ * A wrapper rather than a parameter on `calls`/`says`, because usage is
+ * irrelevant to almost every case and an extra argument on the two helpers
+ * every file uses would be noise in all of them. The one case that needs it is
+ * about *which bucket* spend lands in — a turn reporting cache reads and
+ * nothing else — and it reads better as a decoration than as a fourth
+ * positional argument.
+ */
+export function withUsage(response: CompletionResponse, usage: TokenUsage): CompletionResponse {
+  return { ...response, usage };
+}
 
 /** One turn's answer: text and stop. */
 export function says(text: string): CompletionResponse {

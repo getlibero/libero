@@ -40,7 +40,7 @@ import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
 import type { UpstreamOptions } from "./upstream.js";
-import { withoutSpendReports } from "./transport.js";
+import { replayingSpendReports, withoutSpendReports } from "./transport.js";
 import { writeVault } from "./vault.js";
 
 /** The channel every case uses unless it needs a second. Slack-shaped, as production is. */
@@ -97,14 +97,17 @@ export interface RigOptions {
   readonly scheduler?: Scheduler;
   readonly now?: () => number;
   /**
-   * Whether the agent reports token spend to the proxy.
+   * How the agent reports token spend to the proxy.
    *
-   * `"dropped"` swallows `/v1/spend` at the transport, which is a compromised
-   * agent rather than a configuration — see harness/transport.ts. The claim it
-   * makes testable is the narrow one: `daily_tool_calls` is the proxy's own
-   * count and must still bite when `daily_tokens` never moves.
+   * Both departures from `"sent"` are compromised agents rather than
+   * configurations — they interfere with the wire, see harness/transport.ts.
+   * `"dropped"` swallows `/v1/spend`, which makes the narrow claim testable:
+   * `daily_tool_calls` is the proxy's own count and must still bite when
+   * `daily_tokens` never moves. `"replayed"` sends each report twice, which is
+   * the opposite failure — the turn id is the idempotency key, so the second
+   * copy must move no counter.
    */
-  readonly spendReports?: "sent" | "dropped";
+  readonly spendReports?: "sent" | "dropped" | "replayed";
   /**
    * Whether this front-end has anywhere to put an approval card.
    *
@@ -220,6 +223,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       channelsRoot: channelsRoot.path,
       completion: model.client,
       ...(options.spendReports === "dropped" ? { wrapTransport: withoutSpendReports } : {}),
+      ...(options.spendReports === "replayed" ? { wrapTransport: replayingSpendReports } : {}),
       ...(options.approvals === "none" ? { cards: false } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.now !== undefined ? { now: options.now } : {})

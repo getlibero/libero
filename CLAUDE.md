@@ -89,7 +89,21 @@ argument. It is the exception to the barrel's "no client, no pool" doctrine
 rather than a hole in it: a server holds no vault and can open nothing.
 `e2e/` is also the one package the agent/proxy import ban does not cover —
 `scripts/boundary-check.sh` does not scan it, and its header says why.
-`e2e/README.md` is the harness API, and the place #134–#135 should start.
+`e2e/README.md` is the harness API, and the place #135 should start.
+
+**#134 is the budget half, and its shape is the asymmetry between the two
+meters.** `e2e/src/exceed-budget.test.ts` puts each at its `>=` boundary — a
+loop refused when `daily_tool_calls` is *reached*, a call refused when the turn
+that preceded it took `daily_tokens` to the line, which only works because the
+loop awaits `onTurn` before dispatching that turn's calls. The narrow claim gets
+its own case: an agent reporting nothing still exhausts the count the proxy
+keeps itself, while every token counter stays at zero. A replayed turn id is
+answered `duplicate` and charged once. And a channel cannot move its spend into
+a cheaper bucket — cache reads exhaust the budget at the weight the sheet names,
+with the meter storing the raw counts either way. The operator's reset is
+exercised by spawning the real `dist/budget.js` against a running proxy, which
+is the only way to make "no restart, no signal" a demonstration rather than a
+comment.
 
 **#132 is the exfiltration half, and it attacks two paths rather than one.**
 `e2e/src/exfiltration.test.ts` runs the credential back through a tool *result*

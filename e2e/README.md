@@ -160,8 +160,26 @@ agent is the untrusted half, so a claim about what the proxy holds when it stops
 cooperating should interfere with the wire rather than switch a mode nothing
 deploys. `startRig({ spendReports: "dropped" })` swallows `/v1/spend` — which is
 how #134's narrow claim gets made: `daily_tool_calls` is the proxy's own count
-and must still bite when `daily_tokens` never moves. `harness/transport.ts` has
-the decorators; `wrapTransport` on `startAgent` takes any of your own.
+and must still bite when `daily_tokens` never moves. `spendReports: "replayed"`
+is the opposite failure, every report sent twice, and the turn id is what makes
+the second one a `duplicate` that moves nothing. `harness/transport.ts` has the
+decorators; `wrapTransport` on `startAgent` takes any of your own.
+
+**Size a budget off `TURN_TOKENS`, not off a number you counted.** A scripted
+turn reports a fixed usage, and `daily_tokens: 2 * TURN_TOKENS` says "the third
+call is over the line" in a way that survives someone changing what a turn
+reports. `withUsage(turn, usage)` overrides it for the one case that needs a
+turn to report cache tokens and nothing else. Both are in `harness/model.ts`.
+
+**The operator's reset is spawned, not called.** `runBudgetCli(budgetDb,
+["reset", CHANNEL])` runs the built `dist/budget.js` — the documented
+`docker compose run --rm proxy node dist/budget.js reset <channel>` — against a
+rig's meter, with the same built-from-nothing environment the proxy gets.
+`resetChannel` from `@getlibero/proxy` would demonstrate the file-sharing half
+and skip the entrypoint, the env contract, and the exit code. What the case is
+really asserting is a claim about processes: the proxy has no admin route, so
+a reset is a second process against the same file, and WAL plus an uncached
+meter is what makes it land on the running proxy's next call.
 
 **A front-end with no card path is a real shape, not a test mode.**
 `startRig({ approvals: "none" })` composes with no prompter, because
@@ -275,10 +293,13 @@ outlive the run.
 - `src/harness/model.ts` — the scripted `CompletionClient`.
 - `src/harness/client.ts` — the attacker's own mutual-TLS client.
 - `src/harness/records.ts` — reading the audit log and the meter back.
+- `src/harness/budget-cli.ts` — the operator's `budget` entrypoint, spawned.
 - `src/harness/cleanup.ts` — the teardown stack.
 - `src/smoke.test.ts` — the rig proving itself.
 - `src/exfiltration.test.ts` — #132, over both paths a credential could come
   back on: a tool result and a tool description.
+- `src/exceed-budget.test.ts` — #134, both meters at their boundary, and the
+  operator's reset against a running proxy.
 - `src/unlisted-tool.test.ts` · `src/identity.test.ts` — #133, through the agent
   and around it.
 
