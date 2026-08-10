@@ -64,20 +64,36 @@ a restatement of it.
 ## Writing a case
 
 ```ts
-import { CHANNEL, auditRows, calls, expectNoCanary, says, spendFor, startRig } from "./harness/index.js";
+let rig: Rig | undefined;
 
-const rig = await startRig({
-  sheets: { [CHANNEL]: { credential: "e2e_canary", tools: [{ name: "list_prs", approval: "none" }] } },
-  script: [calls("list_prs", { repo: "x" }), says("Two are open.")]
-});
+beforeAll(async () => {
+  rig = await startRig({
+    sheets: { [CHANNEL]: { credential: "e2e_canary", tools: [{ name: "list_prs", approval: "none" }] } },
+    script: [calls("list_prs", { repo: "x" }), says("Two are open.")]
+  });
+}, 60_000);
 
-await rig.agent.slack.deliverMention({ channelId: CHANNEL, /* … */ });
+afterAll(async () => {
+  await rig?.stop();
+}, 60_000);
 
-expect(rig.agent.slack.posted).toHaveLength(1);
-expect(auditRows(rig.auditDb)[0]).toMatchObject({ outcome: "ran" });
-expectNoCanary(rig.surfaces());
-await rig.stop();
+it("…", async () => {
+  const { agent, upstream, auditDb, surfaces } = rigOf(rig);
+
+  await agent.slack.deliverMention({ channelId: CHANNEL, /* … */ });
+
+  expect(agent.slack.posted).toHaveLength(1);
+  expect(upstream.callsTo("tools/call")[0]?.authorization).toBe(`Bearer ${CANARY}`);
+  expectNoCanary(surfaces());
+  expect(auditRows(auditDb)[0]).toMatchObject({ outcome: "ran" });
+}, 30_000);
 ```
+
+`rigOf` and the `?.` in `afterAll` are not ceremony. `beforeAll` assigns and a
+case reads, so the variable is `Rig | undefined` however confident the case is —
+and without them a setup that threw reports `TypeError: Cannot read properties
+of undefined` from every case *and* from the teardown, several lines below the
+real cause and looking nothing like it.
 
 `startRig` is the whole API; `src/smoke.test.ts` is the worked example. Everything
 it returns — `agent`, `proxy`, `upstream`, `model`, `channelsRoot`, `auditDb`,

@@ -90,6 +90,24 @@ export interface Rig {
   stop(): Promise<void>;
 }
 
+/**
+ * The rig, or a failure that says the useful thing.
+ *
+ * `beforeAll` assigns and a case reads, which is a `Rig | undefined` no matter
+ * how confident the case is. Left alone, a setup that threw produces a
+ * `TypeError: Cannot read properties of undefined` in every case *and* in
+ * `afterAll`, three lines below the real cause and looking nothing like it.
+ *
+ * Pair it with `await rig?.stop()` in `afterAll`, which is the other half:
+ * tearing down something that never started is not an error.
+ */
+export function rigOf(rig: Rig | undefined): Rig {
+  if (rig === undefined) {
+    throw new Error("e2e: the rig did not start — the setup failure above is the real one");
+  }
+  return rig;
+}
+
 const DEFAULT_SHEET: SheetInput = {
   credential: CANARY_CREDENTIAL,
   tools: [{ name: "list_prs", approval: "none" }]

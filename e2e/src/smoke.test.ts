@@ -18,6 +18,7 @@ import {
   auditRows,
   calls,
   expectNoCanary,
+  rigOf,
   says,
   spendFor,
   startRig
@@ -30,7 +31,10 @@ import type { Rig } from "./harness/index.js";
 const SETUP_MS = 60_000;
 const CASE_MS = 30_000;
 
-let rig: Rig;
+// Undefined until setup runs, and left that way if setup throws — see `rigOf`,
+// which is what keeps a failed `beforeAll` reporting its own cause rather than
+// a TypeError from every case that followed it.
+let rig: Rig | undefined;
 
 beforeAll(async () => {
   rig = await startRig({
@@ -42,15 +46,16 @@ beforeAll(async () => {
 }, SETUP_MS);
 
 afterAll(async () => {
-  await rig.stop();
+  await rig?.stop();
 }, SETUP_MS);
 
 it(
   "a benign mention completes a permitted tool call through the composed pair",
   async () => {
-    const before = auditRows(rig.auditDb).length;
+    const { agent, upstream, model, auditDb, budgetDb, surfaces } = rigOf(rig);
+    const before = auditRows(auditDb).length;
 
-    await rig.agent.slack.deliverMention({
+    await agent.slack.deliverMention({
       teamId: "T024BE7LD",
       channelId: CHANNEL,
       userId: "U024BE7LH",
@@ -61,31 +66,31 @@ it(
     });
 
     // The answer, in the thread.
-    expect(rig.agent.slack.posted).toHaveLength(1);
-    expect(rig.agent.slack.posted[0]).toMatchObject({
+    expect(agent.slack.posted).toHaveLength(1);
+    expect(agent.slack.posted[0]).toMatchObject({
       channelId: CHANNEL,
       text: "Two are open."
     });
 
     // The model was given the tool, and got a result back rather than a refusal.
-    const offered = rig.model.seen[0]?.tools?.map(tool => tool.name);
+    const offered = model.seen[0]?.tools?.map(tool => tool.name);
     expect(offered).toContain("list_prs");
-    expect(JSON.stringify(rig.model.seen[1]?.messages)).toContain("role\":\"tool");
+    expect(JSON.stringify(model.seen[1]?.messages)).toContain("role\":\"tool");
 
     // The call really left the proxy, as the channel's sheet named it.
-    expect(rig.upstream.callsTo("tools/call")).toHaveLength(1);
+    expect(upstream.callsTo("tools/call")).toHaveLength(1);
 
     // The positive control. Without this, every assertion below passes just as
     // well on a run where no credential was ever resolved — which is the one
     // failure a leak suite must not report as a pass.
-    expect(rig.upstream.callsTo("tools/call")[0]?.authorization).toBe(`Bearer ${CANARY}`);
+    expect(upstream.callsTo("tools/call")[0]?.authorization).toBe(`Bearer ${CANARY}`);
 
     // And the credential is on no surface this process can see.
-    expectNoCanary(rig.surfaces());
+    expectNoCanary(surfaces());
 
     // The proxy wrote the call down. The channel is the one the certificate
     // named — there is no other way for it to have got there.
-    const rows = auditRows(rig.auditDb).slice(before);
+    const rows = auditRows(auditDb).slice(before);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       channel: CHANNEL,
@@ -99,7 +104,7 @@ it(
     // turn, which holds against a prompt-injected model and no further. The
     // meter stores them raw and weighs them itself — which is why there are
     // four numbers here and never a total.
-    const spend = spendFor(rig.budgetDb, CHANNEL);
+    const spend = spendFor(budgetDb, CHANNEL);
     expect(spend.toolCalls).toBe(1);
     expect(spend.inputTokens).toBeGreaterThan(0);
     expect(spend.outputTokens).toBeGreaterThan(0);

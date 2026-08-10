@@ -34,5 +34,5 @@ export type { AuditRow } from "./records.js";
 export { writeVault } from "./vault.js";
 export type { PlantedVault } from "./vault.js";
 
-export { CHANNEL, OTHER_CHANNEL, startRig } from "./rig.js";
+export { CHANNEL, OTHER_CHANNEL, rigOf, startRig } from "./rig.js";
 export type { Rig, RigOptions, SheetInput } from "./rig.js";
