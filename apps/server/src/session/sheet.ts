@@ -17,9 +17,9 @@
 //
 // There is no cache, no stat, no fingerprint, and no watcher. One read per
 // task, next to a TLS handshake and a model turn. An operator's edit lands on
-// the next mention, which is the same freshness a stat-guarded cache would give
-// and none of the invalidation state that #63, #66, and #67 would have to work
-// around.
+// the next task, which is the same freshness a stat-guarded cache would give
+// and none of the invalidation state the message store, the follow-up window,
+// and the context assembler would have to work around.
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -48,6 +48,19 @@ export const SHEET_FILENAME = "channel.toml";
  * here can widen anything — the proxy enforces the same file from its own copy.
  */
 export const DEFAULT_HISTORY_BOUNDS = { maxMessages: 40, maxChars: 12_000 } as const;
+
+/**
+ * What a channel gets when no sheet resolved: the schema's own default, in
+ * milliseconds.
+ *
+ * Mirrored by hand for the reason `DEFAULT_HISTORY_BOUNDS` is. Falling back to
+ * the default rather than to zero, deliberately — a sheet with a typo in it
+ * should not silently change how the agent behaves in a channel's threads, and
+ * this can widen nothing: the proxy enforces the same file from its own copy,
+ * and every task a follow-up starts is capped and metered exactly as a
+ * mention's is.
+ */
+export const DEFAULT_FOLLOW_UP_WINDOW_MS = 900_000;
 
 export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
 
@@ -85,7 +98,11 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     history: {
       maxMessages: sheet.llm.max_history_messages,
       maxChars: sheet.llm.max_history_chars
-    }
+    },
+    // The second conversion, and the same one: seconds in the sheet because
+    // that is what an operator writes, milliseconds here because that is what a
+    // deadline is compared against.
+    followUpWindowMs: sheet.llm.follow_up_window_seconds * 1000
   };
 }
 
@@ -114,7 +131,8 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
     // one to every channel is a caller away from one channel's edit becoming
     // every channel's.
     caps: { ...DEFAULT_AGENT_LOOP_CAPS },
-    history: { ...DEFAULT_HISTORY_BOUNDS }
+    history: { ...DEFAULT_HISTORY_BOUNDS },
+    followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
   });
 
   return async (channel: string): Promise<ChannelSettings> => {

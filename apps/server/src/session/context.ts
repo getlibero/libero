@@ -5,15 +5,25 @@
 // into one voice cannot answer "what did Sam ask for", which is most of what
 // anyone mentions an agent in a busy channel to find out.
 //
-// ### What it reads, and what it deliberately does not
+// ### What it reads: the thread when there is one, the channel when there is not
 //
-// Recent channel history, and nothing thread-scoped. `TaskRequest` carries no
-// Slack timestamp — handler.ts drops `ts` and `thread_ts`, and its test says
-// why: those are where a reply goes, which is the gateway's business, and
-// whether the router ever needs to know about a thread is #66's question. So
-// this reads the channel and #66 narrows it. A mention inside a long thread
-// therefore sees the channel's recent messages rather than that thread's, which
-// is the honest limitation of doing the read half first.
+// A request carries the thread it belongs to (#66), so a question asked inside
+// a conversation is answered from that conversation rather than from whatever
+// else the channel happened to be saying at the time. That is the read a person
+// expects: replying inside a thread is how Slack says "this is about that".
+//
+// **The fallback is one rule and not a branch.** A top-level question is its own
+// thread's root — nobody has replied to it yet — so the thread read finds only
+// the echo of the asking message, and once that is discounted there is nothing
+// to show. The channel read is what fills that in, which is also the right
+// answer for a thread whose messages predate this store. Asking "is this a new
+// thread" instead would need the gateway to tell us, and it cannot: a
+// `SlackMention` coalesces `thread_ts` to `ts`, so a top-level mention and a
+// self-threaded one look identical by the time they get here.
+//
+// The echo filter therefore runs *before* the choice rather than after it. On
+// the other order, every top-level question would find one row, take the thread
+// branch, and end up with an empty transcript.
 //
 // ### One `user` message, and the history is inside it
 //
@@ -80,9 +90,21 @@ const HISTORY_CLOSE = "</channel-history>";
  */
 const MENTION_TOKEN = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/gu;
 
+/**
+ * The two reads this needs, and nothing else `MessageStore` can do.
+ *
+ * Structural rather than the interface itself, so an assembler test states a
+ * channel's history as an array instead of opening a SQLite file — and so this
+ * layer visibly cannot append, remove, or search.
+ */
+export interface HistorySource {
+  recent(limit: number): readonly StoredMessage[];
+  recentInThread(thread: string, limit: number): readonly StoredMessage[];
+}
+
 export interface AssembleOptions {
   /** This channel's store, or null when it has none. */
-  readonly store: { recent(limit: number): readonly StoredMessage[] } | null;
+  readonly store: HistorySource | null;
   /** The session's cache. One lookup per user per session, and this is it. */
   readonly names: NameCache;
   /** How a name is found when the cache does not have one. */
@@ -179,8 +201,7 @@ async function resolveMentions(
 }
 
 /**
- * Reads the channel's recent messages and renders the transcript a task starts
- * from.
+ * Reads the recent conversation and renders the transcript a task starts from.
  *
  * Always returns exactly one `user` message. A session with no store — no team
  * sheet, or a file that would not open — gets the ask and nothing else, which
@@ -191,26 +212,36 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
   const { store, names, lookup, request, bounds } = options;
 
   const asked = await resolveMentions(request.text, names, lookup);
-  const history = store === null || bounds.maxMessages === 0 ? [] : store.recent(bounds.maxMessages);
 
-  // The mention arrives on two subscriptions — `app_mention` answers it and
-  // `message` records it — so by the time this runs it is usually already a
+  // The asking message arrives on two subscriptions — `app_mention` answers it
+  // and `message` records it — so by the time this runs it is usually already a
   // row. Excluded on exact equality of both author and text, which is "this is
   // the same message" rather than a similarity guess; there is no id to match
-  // on, because `TaskRequest` carries no Slack ts. Someone who said the
-  // identical thing twice loses one copy from the block and still has it as the
-  // ask.
-  const withoutEcho = history.filter(
-    message => !(message.userId === request.requestingUser && message.text === request.text)
-  );
+  // on, because a `TaskRequest` carries the thread and not the message. Someone
+  // who said the identical thing twice loses one copy from the block and still
+  // has it as the ask.
+  const withoutEcho = (messages: readonly StoredMessage[]): StoredMessage[] =>
+    messages.filter(
+      message => !(message.userId === request.requestingUser && message.text === request.text)
+    );
 
-  const kept = withinBounds(withoutEcho, bounds);
+  // Read the thread; fall back to the channel when the thread has nothing to
+  // say. See the header for why the two are one rule rather than a branch, and
+  // why the echo has to be discounted first. The channel read only happens for
+  // a question that starts a conversation, so the common case is one query.
+  let history: StoredMessage[] = [];
+  if (store !== null && bounds.maxMessages > 0) {
+    history = withoutEcho(store.recentInThread(request.thread, bounds.maxMessages));
+    if (history.length === 0) history = withoutEcho(store.recent(bounds.maxMessages));
+  }
+
+  const kept = withinBounds(history, bounds);
 
   // Whether anything older exists, and deliberately not *how much*. The store's
   // own LIMIT applies the message bound, so a full page means there is probably
   // more and a count would need a second query for a number nothing acts on.
   // The character bound is applied here, so that one is observed directly.
-  const truncated = history.length >= bounds.maxMessages || kept.length < withoutEcho.length;
+  const truncated = history.length >= bounds.maxMessages || kept.length < history.length;
 
   const lines: string[] = [];
   for (const { message, text } of kept) {

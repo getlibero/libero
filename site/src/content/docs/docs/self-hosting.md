@@ -128,6 +128,11 @@ app and read history anywhere the app is installed.
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
 | `users:read` | Display names, so the model can address the right person. Without it every author in the transcript is a raw `U…` id, and the agent logs `user_lookup_failed` with `missing_scope` |
 
+The agent also calls `auth.test` once before opening the socket, to learn its own user id — a
+message that mentions the app is delivered on both subscriptions, and only an id tells the two
+copies apart. That call needs no scope, and it means a bot token Slack will not accept is a startup
+failure naming `auth_rejected` rather than a reply that never appears.
+
 ### Event subscriptions
 
 | Event | What needs it |
@@ -142,11 +147,16 @@ of a workspace and provisioned for few, and an unprovisioned one has no authoriz
 Messages the agent posts itself are not stored either, so a transcript is what people said.
 
 Those messages are what a task starts from. Before the model is asked anything it is given the
-channel's recent conversation, each message attributed to its author (`@alice: …`) and each `<@U…>`
-resolved to a name, bounded by `[llm] max_history_messages` and `max_history_chars`. It is a
-channel's messages rather than a thread's — narrowing to the thread a mention sits in is its own
-issue. The block is clearly marked as context rather than instructions and never goes in the system
-prompt, because anyone in the channel can write it.
+recent conversation, each message attributed to its author (`@alice: …`) and each `<@U…>` resolved
+to a name, bounded by `[llm] max_history_messages` and `max_history_chars`. A question asked inside
+a thread is answered from that thread; a question that starts one sees the channel around it. The
+block is clearly marked as context rather than instructions and never goes in the system prompt,
+because anyone in the channel can write it.
+
+After the agent has worked in a thread, a reply there reaches it with **no mention**, for
+`[llm] follow_up_window_seconds` after the last answer (default 900, `0` to switch it off).
+Everywhere else in the channel still needs a mention. A follow-up is an ordinary task: same model,
+same caps, same daily budget, same enforcement at the proxy.
 
 Message events carry deletions and edits as a subtype rather than as their own events, and the
 design mirrors them: a message deleted in Slack is deleted from that channel's store, index

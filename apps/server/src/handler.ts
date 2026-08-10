@@ -1,12 +1,18 @@
 // The Slack adapter, and the only file in this process besides index.ts that
 // knows what Slack is.
 //
-// Its whole job is six lines of mapping: a `SlackMention` becomes a
+// Its whole job is a few lines of mapping: a `SlackMention` becomes a
 // `TaskRequest`, and whatever the router replies becomes a `SlackReply`.
 // Everything channel-shaped happens on the other side of that mapping —
 // sessions, the mutex, the team sheet, the loop — and none of it can name a
 // Slack type, because an ESLint rule on `src/session/**` says so rather than a
 // comment asking nicely.
+//
+// It is no longer the only file that does this. `ingest.ts` maps a
+// `SlackMessage` the same way and reaches the same router, which is what a
+// follow-up in an active thread is (#66). The two mappings differ in one field
+// and in one decision: a mention is always routed, and a message is routed only
+// when the session says its thread is one the agent is working in.
 //
 // That is what makes this file the seam. A second front-end — Teams, an HTTP
 // endpoint, a CLI — writes its own version of this mapping and reaches the same
@@ -47,6 +53,12 @@ export function createMentionHandler(
       // `workspace`, and this is where the translation happens.
       key: { workspace: mention.teamId, channel: mention.channelId },
       requestingUser: mention.userId,
+      // The one Slack timestamp that crosses, and #66 is why. `SlackMention`
+      // has already coalesced `thread_ts` to `ts`, so this is the thread a
+      // top-level mention starts as much as the thread a threaded one is in —
+      // which is exactly the identity the router wants, since a reply to the
+      // answer lands there either way.
+      thread: mention.threadTs,
       text: mention.text,
       // Slack's `event_id`, stable across delivery retries, so one grep ties a
       // task's log lines back to the message a person actually sent.

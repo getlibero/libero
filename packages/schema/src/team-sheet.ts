@@ -112,6 +112,22 @@ export const TeamSheet = z.object({
       // than a model's argument.
       max_history_messages: z.number().int().nonnegative().max(200).default(40),
       max_history_chars: z.number().int().nonnegative().default(12_000),
+      // How long a thread the agent has worked in goes on accepting replies
+      // with no mention (#66). Here rather than in the process for the reason
+      // the two bounds above are: it spends the channel's own budget and can
+      // widen nothing, and whether an agent answers messages nobody addressed
+      // to it is a channel's policy rather than a deployment's. `0` turns
+      // follow-ups off, which is the only way to say so short of removing the
+      // sheet.
+      //
+      // The upper bound mirrors `SESSION_IDLE_MS` in
+      // apps/server/src/session/registry.ts, which is how long a session — and
+      // therefore its set of active threads — survives with nothing to do. A
+      // window longer than that would be cut short by eviction, so the sheet
+      // refuses one loudly rather than advertising a number it cannot keep.
+      // Kept in step by hand, as `max_history_messages` and `READ_MAX_LIMIT`
+      // are, and for the same reason.
+      follow_up_window_seconds: z.number().int().nonnegative().max(1800).default(900),
     })
     .prefault({}),
   // The daily caps the proxy meters, and the weights it counts them with.

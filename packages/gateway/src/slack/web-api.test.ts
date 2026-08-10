@@ -20,20 +20,26 @@ const CARD: SlackCard = {
 
 function fakeClient(
   behaviour: () => Promise<unknown> = () => Promise.resolve({ ok: true }),
-  userBehaviour: () => Promise<unknown> = () => Promise.resolve({ ok: true })
+  userBehaviour: () => Promise<unknown> = () => Promise.resolve({ ok: true }),
+  authBehaviour: () => Promise<unknown> = () => Promise.resolve({ ok: true, user_id: "U0BOT" })
 ): {
   client: WebClientLike;
   calls: PostArgs[];
   updates: UpdateArgs[];
   infos: InfoArgs[];
+  auths: number;
 } {
   const calls: PostArgs[] = [];
   const updates: UpdateArgs[] = [];
   const infos: InfoArgs[] = [];
+  const counted = { auths: 0 };
   return {
     calls,
     updates,
     infos,
+    get auths(): number {
+      return counted.auths;
+    },
     client: {
       chat: {
         postMessage(args: PostArgs): Promise<unknown> {
@@ -49,6 +55,12 @@ function fakeClient(
         info(args: InfoArgs): Promise<unknown> {
           infos.push(args);
           return userBehaviour();
+        }
+      },
+      auth: {
+        test(): Promise<unknown> {
+          counted.auths += 1;
+          return authBehaviour();
         }
       }
     }
@@ -351,6 +363,95 @@ describe("createWebApiSurface", () => {
       await users.displayName("U0ALICE");
 
       expect(fake.infos).toHaveLength(2);
+    });
+  });
+
+  describe("identity", () => {
+    it("answers the app's own user id", () => {
+      const fake = fakeClient(undefined, undefined, () =>
+        Promise.resolve({ ok: true, user_id: "U0LIBERO", bot_id: "B0LIBERO" })
+      );
+
+      // `user_id` and not `bot_id`: what appears inside a `<@…>` token is the
+      // bot's user id, and the two are different identifiers.
+      return expect(surface(fake).identity.userId()).resolves.toBe("U0LIBERO");
+    });
+
+    it.each(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"])(
+      "refuses to retry a bot token Slack will never accept: %s",
+      async slackError => {
+        const fake = fakeClient(undefined, undefined, () =>
+          Promise.reject(new WebAPIPlatformError({ ok: false, error: slackError }))
+        );
+
+        const error = await surface(fake)
+          .identity.userId()
+          .catch((cause: unknown) => cause);
+
+        expect(error).toBeInstanceOf(GatewayError);
+        expect(error).toMatchObject({ reason: "auth_rejected", retryable: false, slackError });
+      }
+    );
+
+    it("treats everything else as worth another attempt", async () => {
+      // A rate limit is not a wrong token. Answering `auth_rejected` here would
+      // stop the process for a bad minute at Slack.
+      const fake = fakeClient(undefined, undefined, () =>
+        Promise.reject(new WebAPIPlatformError({ ok: false, error: "ratelimited" }))
+      );
+
+      const error = await surface(fake)
+        .identity.userId()
+        .catch((cause: unknown) => cause);
+
+      expect(error).toMatchObject({
+        reason: "connect_failed",
+        retryable: true,
+        slackError: "ratelimited"
+      });
+    });
+
+    it("treats a failure that is not a platform error as worth another attempt", async () => {
+      const fake = fakeClient(undefined, undefined, () => Promise.reject(new Error("socket hang up")));
+
+      const error = await surface(fake)
+        .identity.userId()
+        .catch((cause: unknown) => cause);
+
+      expect(error).toMatchObject({ reason: "connect_failed", retryable: true });
+    });
+
+    it("refuses an answer that does not say who we are", async () => {
+      // The call succeeded and this is the shape it returned, so asking again
+      // gets the same answer — and carrying on unidentified silently costs
+      // every channel its follow-ups.
+      const fake = fakeClient(undefined, undefined, () => Promise.resolve({ ok: true }));
+
+      const error = await surface(fake)
+        .identity.userId()
+        .catch((cause: unknown) => cause);
+
+      expect(error).toMatchObject({
+        reason: "auth_rejected",
+        retryable: false,
+        slackError: "no_user_id"
+      });
+    });
+
+    it("carries no token in the error it throws", async () => {
+      const fake = fakeClient(undefined, undefined, () =>
+        Promise.reject(
+          new WebAPIHTTPError(401, "Unauthorized", { authorization: "Bearer xoxb-secret" })
+        )
+      );
+
+      const error = await surface(fake)
+        .identity.userId()
+        .catch((cause: unknown) => cause);
+
+      expect(JSON.stringify({ ...(error as GatewayError), message: (error as Error).message })).not.toContain(
+        "xoxb-"
+      );
     });
   });
 });

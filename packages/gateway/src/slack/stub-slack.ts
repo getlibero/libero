@@ -14,6 +14,7 @@
 import type { ApprovalVerdict } from "@getlibero/schema";
 import { actionIdForVerdict } from "./approval-ids.js";
 import type {
+  AppIdentity,
   PostedCard,
   SlackCard,
   SlackEnvelope,
@@ -22,6 +23,17 @@ import type {
   SocketSource,
   UserDirectory
 } from "./types.js";
+
+/**
+ * The app's own user id in a stubbed workspace.
+ *
+ * Exported and matching the id inside `DEFAULT_MENTION`'s text, so a test that
+ * writes `<@U0BOTBOTB> …` and a test that asks the stub identity who it is are
+ * talking about the same app. A message text built with this in it is a mention
+ * as far as every layer above is concerned, which is what makes the
+ * arrives-on-two-subscriptions case testable without a workspace.
+ */
+export const STUB_APP_USER_ID = "U0BOTBOTB";
 
 export interface StubMentionFields {
   teamId: string;
@@ -68,7 +80,7 @@ const DEFAULT_MENTION: StubMentionFields = {
   teamId: "T00000000",
   channelId: "C00000000",
   userId: "U00000000",
-  text: "<@U0BOTBOTB> hello",
+  text: `<@${STUB_APP_USER_ID}> hello`,
   ts: "1717171717.000100",
   eventId: "Ev00000001"
 };
@@ -195,6 +207,8 @@ export interface StubSlack {
   poster: SlackPoster;
   /** Who a user id is, from `StubSlackOptions.users`. */
   users: UserDirectory;
+  /** Who the app is: `STUB_APP_USER_ID`, or a failure the options named. */
+  identity: AppIdentity;
   /** Delivers a raw envelope exactly as the socket would. Resolves once dispatched. */
   deliver(envelope: SlackEnvelope): Promise<void>;
   /** Builds a well-formed `app_mention` envelope and delivers it. */
@@ -257,6 +271,14 @@ export interface StubSlackOptions {
   users?: Record<string, string>;
   /** Thrown by every `displayName`, so a test can drive a failed lookup. */
   userLookupFailure?: unknown;
+  /**
+   * Thrown by every `userId()`, so a test can drive a bot token Slack refuses.
+   *
+   * Every call and not just the first: the gateway asks once and caches, so a
+   * stub that failed once and then succeeded would be testing the cache rather
+   * than the failure.
+   */
+  identityFailure?: unknown;
 }
 
 export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
@@ -358,10 +380,20 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
     }
   };
 
+  const identity: AppIdentity = {
+    userId(): Promise<string> {
+      if (options.identityFailure !== undefined) {
+        return Promise.reject(options.identityFailure);
+      }
+      return Promise.resolve(STUB_APP_USER_ID);
+    }
+  };
+
   return {
     source,
     poster,
     users,
+    identity,
     lookups,
     posted,
     cards,

@@ -37,9 +37,7 @@ bounds their size; what accepts the exposure is the team sheet naming the
 server. The one thing an upstream cannot describe is approval, so "this call is
 held for approval from a human" always comes from the manifest.
 
-Not here yet, and each belongs to its own issue: thread follow-ups without a
-re-mention (#66), thread history and attribution in the prompt (#67), and the
-live checklist (#68).
+Not here yet: the live checklist (#68).
 
 ## Configuration
 
@@ -114,8 +112,13 @@ The Slack app needs Socket Mode enabled; the `app_mentions:read` and
 channels); and the `app_mention` and `message.channels` events subscribed (plus
 `message.groups`). The two are separate concerns: mentions are what the app
 answers, and `message.*` is what fills the per-channel store the context
-assembler reads back. Without the history scope the app answers mentions and
-remembers nothing.
+assembler reads back and what carries a follow-up in an active thread. Without
+the history scope the app answers mentions and remembers nothing.
+
+The process also calls `auth.test` once before opening the socket, to learn its
+own user id. It needs no scope, and it is what tells the two deliveries of one
+mention apart — so a bot token Slack will not accept is now a startup failure
+rather than a reply that never appears.
 
 ## Running it
 
@@ -165,15 +168,57 @@ a session holds that is more than a timestamp. A restart drops every session at
 no cost: the store is the durable half and a session is only a handle to it,
 reopened on demand.
 
-**A message opens a session too, and does not take its queue.** Ordinary
-channel messages are recorded rather than answered, so ingest opens the session
-— which is what makes a message in a channel nobody has mentioned the app in
-still get stored — and writes straight through. The queue exists to serialize
-model turns; a store write is one synchronous statement with nothing to
-serialize, and behind the queue a message arriving mid-task would wait out a
-whole model turn to be filed. The consequence is deliberate: message traffic
-defers eviction, so a chatty channel keeps a warm handle, which is the point of
-holding one.
+**A message opens a session too, and the write does not take its queue.**
+Ordinary channel messages are recorded, so ingest opens the session — which is
+what makes a message in a channel nobody has mentioned the app in still get
+stored — and writes straight through. The queue exists to serialize model turns;
+a store write is one synchronous statement with nothing to serialize, and behind
+the queue a message arriving mid-task would wait out a whole model turn to be
+filed. The consequence is deliberate: message traffic defers eviction, so a
+chatty channel keeps a warm handle, which is the point of holding one.
+
+A message that is *answered* — see below — does take the queue, because it is a
+model turn like any other. The write happens first either way, so the transcript
+its own task assembles already holds the thing it was asked about.
+
+### Follow-ups in a thread the agent is working in
+
+A reply in a thread the agent has already worked in reaches it **with no
+mention**. Everywhere else in the channel still needs one: this is a second door
+into a session, not the agent reading the channel.
+
+A session holds the threads it is active in and when each stops being active. A
+task marks its thread active when it starts and refreshes it when it finishes, so
+the window a person actually gets is measured from the answer rather than from
+the question, and a conversation that keeps going keeps going.
+
+**The window is the channel's**, from `[llm] follow_up_window_seconds`
+(default 900, `0` to switch follow-ups off entirely). It belongs in the sheet for
+the reason the two history bounds do — it spends the channel's own budget and can
+widen nothing — and because whether an agent answers messages nobody addressed to
+it is a channel's policy rather than a deployment's. The schema caps it at 1800
+seconds because a session is evicted after 30 minutes idle, and evicting a
+session deactivates its threads: a longer window is one this process cannot keep,
+so the sheet refuses it loudly rather than advertising it.
+
+Three things have to be true before a message is answered, and each rules out a
+different mistake. It must be **in a thread** — a top-level message is not a
+reply to anything the agent said, and there is nowhere for an answer to go. It
+must **not mention the app**, because a message that does arrives twice, once as
+`app_mention` and once as an ordinary message, with a different `event_id` on
+each; the `app_mention` copy is the one that is answered, and routing both would
+run the task twice and post two replies. And the **thread must be active**.
+
+Telling those two deliveries apart needs the app's own user id, so the gateway
+asks Slack for it with `auth.test` before opening the socket. That also makes a
+bot token Slack will never accept a startup failure rather than a reply that does
+not appear later. Without an id — a process that composed no identity — *any*
+mention token counts as addressing the app, which costs follow-ups and never
+causes a duplicate.
+
+An answered message is logged as `follow_up` rather than `replied`, so "how often
+is this agent answering people who did not address it" is one grep. Nothing else
+about the message path is logged, for the reason it never was.
 
 A session also holds a cache of display names, and that is what makes "resolved
 once per user per session" true: a forty-message transcript needs a name for
@@ -185,14 +230,19 @@ times, which is the right trade at this size.
 
 ### The transcript a task starts from
 
-Before the model is asked anything it is given the channel's recent messages,
-oldest first, each attributed to its author and with every `<@U…>` resolved to a
+Before the model is asked anything it is given the recent conversation, oldest
+first, each message attributed to its author and with every `<@U…>` resolved to a
 name. Four things about that are decisions rather than mechanics.
 
-**It is the channel's recent messages, not the thread's.** A `TaskRequest`
-carries no Slack timestamp — `ts` and `thread_ts` are where a reply goes, which
-is the gateway's business — so narrowing to a thread is #66's, and a mention
-inside a long thread currently sees the channel around it.
+**It is the thread's messages when there is a thread, and the channel's when
+there is not.** A question asked inside a conversation is answered from that
+conversation, which is what replying in a thread means. A question that *starts*
+one is its own thread's root, so the thread read finds only the echo of the
+asking message and the channel read fills it in — one rule rather than a branch,
+which also covers a thread whose messages predate this store. The gateway cannot
+answer "is this a new thread" for us: a `SlackMention` coalesces `thread_ts` to
+`ts`, so a top-level mention and a self-threaded one look identical by the time
+the router sees them.
 
 **It is one `user` message, and never the system prompt.** Channel text is
 written by whoever is in the channel; in `system` it would sit where the agent's
@@ -214,11 +264,12 @@ whole budget.
 ### The team sheet, as this process reads it
 
 Each task resolves its channel's sheet — `$AGENT_CHANNELS_ROOT/<channel
-id>/channel.toml` — to a model, the four per-task caps, and the two context
-bounds, and runs on those. `[llm] model` wins over `AGENT_MODEL`; everything in
-the schema has a default, so a channel whose sheet has no `[llm]` block still
-gets all seven. `max_task_seconds` is seconds in the sheet and milliseconds in
-the loop, which is the one field that is a conversion rather than a rename.
+id>/channel.toml` — to a model, the four per-task caps, the two context bounds,
+and the follow-up window, and runs on those. `[llm] model` wins over
+`AGENT_MODEL`; everything in the schema has a default, so a channel whose sheet
+has no `[llm]` block still gets all eight. `max_task_seconds` and
+`follow_up_window_seconds` are seconds in the sheet and milliseconds in the
+process, which are the two fields that are a conversion rather than a rename.
 
 The sheet is read once per task, with no cache and no watcher, so an operator's
 edit lands on the next mention. And every failure to read one — missing,

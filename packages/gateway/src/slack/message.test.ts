@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toMessage } from "./message.js";
+import { mentionsApp, toMessage } from "./message.js";
 import type { SlackEnvelope } from "./types.js";
 
 /** Builds an envelope by overriding the two halves independently. */
@@ -47,7 +47,8 @@ describe("toMessage", () => {
       text: "the deploy went out at four",
       ts: "1717171717.000100",
       threadTs: null,
-      eventId: "Ev0EVENT"
+      eventId: "Ev0EVENT",
+      mentionsApp: false
     });
   });
 
@@ -188,5 +189,55 @@ describe("toMessage", () => {
     // `readString` rejects "", so this lands on the `?? null` — a message that
     // claims an empty parent is top-level, not a message in a thread named "".
     expect(messageOf(toMessage(envelope({ thread_ts: "" }))).threadTs).toBeNull();
+  });
+
+  it("marks a message that mentions the app", () => {
+    const text = "<@U0BOT> what broke";
+    expect(messageOf(toMessage(envelope({ text }), "U0BOT")).mentionsApp).toBe(true);
+    expect(messageOf(toMessage(envelope({ text }), "U0ALICE")).mentionsApp).toBe(false);
+  });
+});
+
+describe("mentionsApp", () => {
+  it("matches both spellings of a mention token", () => {
+    // Older clients append the display name Slack had at the time. The id
+    // beside it is what identifies the app, and the label is not read.
+    expect(mentionsApp("<@U0BOT> hello", "U0BOT")).toBe(true);
+    expect(mentionsApp("<@U0BOT|libero> hello", "U0BOT")).toBe(true);
+  });
+
+  it("does not match a different user, or an id this one is a prefix of", () => {
+    expect(mentionsApp("<@U0ALICE> hello", "U0BOT")).toBe(false);
+    // The closing bracket is part of the test, so `U0BOT` does not match
+    // `<@U0BOTTLE>`. A `includes("<@U0BOT")` would.
+    expect(mentionsApp("<@U0BOTTLE> hello", "U0BOT")).toBe(false);
+  });
+
+  it("does not match a bare id outside a token", () => {
+    // Ids get quoted in ordinary conversation — "U0BOT is the app" — and that
+    // is not addressing it.
+    expect(mentionsApp("U0BOT is the app", "U0BOT")).toBe(false);
+  });
+
+  it("treats any mention token as the app when the id is unknown", () => {
+    // Fails closed: a message that might address the app is treated as though
+    // it does, because the copy that arrives on `app_mention` is already being
+    // answered and running it twice is the expensive mistake.
+    expect(mentionsApp("<@U0ALICE> does that look right", undefined)).toBe(true);
+    expect(mentionsApp("<@W0ALICE> on Enterprise Grid", undefined)).toBe(true);
+    expect(mentionsApp("no, the other cluster", undefined)).toBe(false);
+  });
+
+  it("answers the same way twice for the same text", () => {
+    // A global regexp carries `lastIndex` between calls, so a shared one used
+    // with `.test` alternates. That would be an intermittent duplicate answer,
+    // which is the worst shape this bug could take.
+    expect(mentionsApp("<@U0ALICE> hi", undefined)).toBe(true);
+    expect(mentionsApp("<@U0ALICE> hi", undefined)).toBe(true);
+  });
+
+  it("does not match a channel or group token", () => {
+    expect(mentionsApp("<!here> deploy is out", undefined)).toBe(false);
+    expect(mentionsApp("<#C0OPS|ops> has the details", undefined)).toBe(false);
   });
 });

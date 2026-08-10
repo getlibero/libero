@@ -20,6 +20,7 @@ import { toMention } from "./mention.js";
 import { toMessage } from "./message.js";
 import { GatewayError } from "./types.js";
 import type {
+  AppIdentity,
   DecisionHandler,
   MentionHandler,
   MessageHandler,
@@ -70,6 +71,15 @@ export interface GatewayOptions {
    * acknowledge it. Absent, a message is acked and dropped.
    */
   onMessage?: MessageHandler;
+  /**
+   * Who this app is, asked once before the socket comes up.
+   *
+   * Optional, and its absence is a degradation rather than a failure: without
+   * it every message carrying any mention token is treated as addressing the
+   * app, which costs follow-ups and never causes a duplicate. See `mentionsApp`
+   * in message.ts.
+   */
+  identity?: AppIdentity;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
   logger?: Logger;
   backoff?: BackoffPolicy;
@@ -108,7 +118,7 @@ function reasonOf(error: unknown): string {
 }
 
 export function createGateway(options: GatewayOptions): SlackGateway {
-  const { source, poster, handler, onDecision, onMessage, onFatal } = options;
+  const { source, poster, handler, onDecision, onMessage, identity, onFatal } = options;
   const logger = options.logger ?? createSilentLogger();
   const policy = options.backoff ?? DEFAULT_BACKOFF;
   const schedule = options.scheduler ?? defaultScheduler;
@@ -119,6 +129,12 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   let attempt = 0;
   /** When the current connection came up, or undefined while it is down. */
   let connectedAt: number | undefined;
+  /**
+   * This app's own Slack user id, once asked for. Resolved once and kept across
+   * reconnects — an app does not change its id, and re-asking on every drop
+   * would spend a bot-token call on a socket recycle.
+   */
+  let appUserId: string | undefined;
   /** True while a connect ladder is running, so only ever one is. */
   let connecting = false;
   let cancelPending: (() => void) | undefined;
@@ -175,11 +191,26 @@ export function createGateway(options: GatewayOptions): SlackGateway {
    * Connects, retrying while the failure is one that waiting could fix. Throws
    * the first non-retryable failure, which is how `start()` reports credentials
    * Slack will never accept.
+   *
+   * Identity is resolved inside the same loop rather than beside it, so the one
+   * ladder covers both halves of coming up: an `invalid_auth` from `auth.test`
+   * stops the process the way a refused socket does, and a rate-limited one
+   * waits the same backoff. It is asked before `connect` on purpose — the two
+   * tokens are different, and a bot token Slack will never accept should be a
+   * startup failure rather than a reply that does not appear an hour later.
    */
   async function connectWithRetry(): Promise<void> {
     while (state === "running") {
       logger.log("info", { event: "connecting", attempt });
       try {
+        if (identity !== undefined && appUserId === undefined) {
+          appUserId = await identity.userId();
+          // The id, once, at startup. It is what decides whether a message is a
+          // mention arriving on its second subscription, and an operator
+          // debugging "the agent answered twice" needs to see which id it
+          // matched on.
+          logger.log("info", { event: "identified", user: appUserId });
+        }
         await source.connect();
         connectedAt = now();
         logger.log("info", { event: "connected", attempt });
@@ -329,11 +360,12 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   }
 
   /**
-   * A message in, and nothing out.
+   * A message in, and — since #66 — sometimes a reply back into its thread.
    *
-   * The quietest of the three paths, and deliberately so. It logs nothing on
-   * the way through and nothing for an ordinary drop — no `message` line, no
-   * `ignored` line for a subtype or a bot.
+   * Still the quietest of the three paths. It logs nothing on the way through
+   * and nothing for an ordinary drop: no `message` line, no `ignored` line for
+   * a subtype or a bot, and nothing at all for the overwhelming majority that
+   * are recorded and not answered.
    *
    * `log.ts` permits ids, so a line carrying channel, user and ts would be
    * legal by the letter of that rule. It is still wrong here: at message volume
@@ -342,15 +374,20 @@ export function createGateway(options: GatewayOptions): SlackGateway {
    * assembled out of fields that are individually fine. Stdout should scale
    * with an operator's problems, not with a channel's conversation.
    *
-   * What does get logged is rare and actionable, and it is logged by whoever
-   * can say something useful: a handler that throws gets `message_failed` here,
-   * and a store that cannot be opened or written says so from the process that
-   * owns it.
+   * An *answered* message is not message volume — it is a task, and it is the
+   * thing #66 introduced that an operator has a reason to count. It gets
+   * `follow_up` rather than `replied` so that "how often is this agent
+   * answering people who did not address it" is one grep rather than a
+   * subtraction.
+   *
+   * The rest of what gets logged is rare and actionable, and is logged by
+   * whoever can say something useful: a handler that throws gets
+   * `message_failed` here, and a store that cannot be opened or written says so
+   * from the process that owns it.
    */
   async function dispatchMessage(envelope: SlackEnvelope): Promise<void> {
-    // Ack first, for the reason `dispatch` gives. A message handler is a SQLite
-    // write rather than a model turn, so the window is not tight — but a
-    // handler that hangs must not turn into a redelivery storm.
+    // Ack first, for the reason `dispatch` gives. A follow-up handler is now a
+    // model turn like a mention's, so this window is as tight as that one.
     try {
       await envelope.ack();
     } catch (error) {
@@ -360,22 +397,75 @@ export function createGateway(options: GatewayOptions): SlackGateway {
     if (state !== "running") return;
     if (onMessage === undefined) return;
 
-    const result = toMessage(envelope);
+    const result = toMessage(envelope, appUserId);
     if ("ignored" in result) return;
+    const message = result.message;
 
+    const startedAt = now();
+    let reply;
     try {
-      await onMessage(result.message);
+      reply = await onMessage(message);
     } catch (error) {
       // One message is lost and the socket stays up, exactly as a failed
       // handler loses one mention. Nothing is posted: a channel does not want
       // to be told its own message was not filed.
       logger.log("error", {
         event: "message_failed",
-        channel: result.message.channelId,
-        eventId: result.message.eventId,
+        channel: message.channelId,
+        eventId: message.eventId,
         reason: reasonOf(error)
       });
+      return;
     }
+
+    if (reply === undefined) return;
+    // A handler that was still running when the gateway stopped does not get to
+    // post, exactly as on the mention path.
+    if (state !== "running") return;
+
+    // The reply target, and the only one there is. A message with no thread has
+    // nowhere for an answer to go — `?? ts` here would start a thread on a
+    // message nobody addressed the app in, which is the one thing this path
+    // must not be able to do. A handler should not have answered such a message
+    // at all, so this is a guard rather than a branch, and it is worth a line
+    // because the symptom otherwise is an answer that silently never appears.
+    if (message.threadTs === null) {
+      logger.log("warn", {
+        event: "ignored",
+        reason: "no_thread",
+        channel: message.channelId,
+        eventId: message.eventId
+      });
+      return;
+    }
+
+    try {
+      await poster.postThreadReply({
+        channelId: message.channelId,
+        threadTs: message.threadTs,
+        text: reply.text
+      });
+    } catch (error) {
+      logger.log("error", {
+        event: "post_failed",
+        channel: message.channelId,
+        eventId: message.eventId,
+        threadTs: message.threadTs,
+        reason: reasonOf(error),
+        ...(error instanceof GatewayError && error.slackError !== undefined
+          ? { slackError: error.slackError }
+          : {})
+      });
+      return;
+    }
+
+    logger.log("info", {
+      event: "follow_up",
+      channel: message.channelId,
+      eventId: message.eventId,
+      threadTs: message.threadTs,
+      durationMs: now() - startedAt
+    });
   }
 
   /**

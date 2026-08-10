@@ -19,8 +19,7 @@
 // counter, and that is not worth a user's answer — so the report is awaited,
 // its failure is a log line, and the reply goes to the thread either way.
 //
-// Still absent, and each belongs to its own issue: the live checklist (#68),
-// and thread-scoped rather than channel-scoped history (#66).
+// Still absent, and it belongs to its own issue: the live checklist (#68).
 
 import { randomUUID } from "node:crypto";
 import {

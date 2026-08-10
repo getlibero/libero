@@ -8,11 +8,22 @@
 import { describe, expect, it } from "vitest";
 import type { StoredMessage } from "@getlibero/memory";
 import { MAX_MESSAGE_CHARS, assembleContext } from "./context.js";
+import type { HistorySource } from "./context.js";
 import { createNameCache } from "./names.js";
 import type { DisplayNameLookup } from "./names.js";
 import type { HistoryBounds, TaskRequest } from "./types.js";
 
 const BOUNDS: HistoryBounds = { maxMessages: 40, maxChars: 12_000 };
+
+/**
+ * The thread every request below is asked in, chosen to match none of the
+ * fixtures.
+ *
+ * So the default case in this file is a question whose thread holds nothing,
+ * which falls back to the channel — the shape almost every test here is about,
+ * and the one a top-level mention has. The thread read gets its own block.
+ */
+const ASK_THREAD = "1717000000.000000";
 
 const NAMES: Record<string, string> = {
   U0ALICE: "alice",
@@ -37,9 +48,25 @@ function request(partial: Partial<TaskRequest> = {}): TaskRequest {
   return {
     key: { workspace: "T024BE7LD", channel: "C024BE91L" },
     requestingUser: "U0ALICE",
+    thread: ASK_THREAD,
     text: "<@U0BOT> what is the deploy window?",
     traceId: "Ev0PV52K25",
     ...partial
+  };
+}
+
+/**
+ * A store over one array, answering both reads the way a real one would.
+ *
+ * `recentInThread` applies the store's own predicate — the root matches on
+ * `ts`, replies on `thread_ts` — rather than a simplification, because what
+ * several tests below turn on is which of the two reads answered.
+ */
+function source(history: StoredMessage[]): HistorySource {
+  return {
+    recent: (limit: number) => history.slice(-limit),
+    recentInThread: (thread: string, limit: number) =>
+      history.filter(entry => entry.ts === thread || entry.threadTs === thread).slice(-limit)
   };
 }
 
@@ -68,7 +95,7 @@ async function assemble(
   } = {}
 ): Promise<string> {
   const messages = await assembleContext({
-    store: history === null ? null : { recent: (limit: number) => history.slice(-limit) },
+    store: history === null ? null : source(history),
     names: createNameCache(),
     lookup: overrides.lookup ?? directory().lookup,
     request: overrides.request ?? request(),
@@ -265,6 +292,10 @@ describe("assembleContext", () => {
           recent: (): StoredMessage[] => {
             reads += 1;
             return many(10);
+          },
+          recentInThread: (): StoredMessage[] => {
+            reads += 1;
+            return many(10);
           }
         },
         names: createNameCache(),
@@ -279,12 +310,17 @@ describe("assembleContext", () => {
 
     it("asks the store for no more than the message bound", async () => {
       // Otherwise a channel with a small bound would still pull the store's
-      // whole ceiling into memory and throw most of it away.
-      let asked: number | undefined;
+      // whole ceiling into memory and throw most of it away. Both reads, since
+      // either one can be the one that answers.
+      const asked: number[] = [];
       await assembleContext({
         store: {
           recent: (limit: number): StoredMessage[] => {
-            asked = limit;
+            asked.push(limit);
+            return [];
+          },
+          recentInThread: (_thread: string, limit: number): StoredMessage[] => {
+            asked.push(limit);
             return [];
           }
         },
@@ -294,7 +330,7 @@ describe("assembleContext", () => {
         bounds: { maxMessages: 7, maxChars: 12_000 }
       });
 
-      expect(asked).toBe(7);
+      expect(asked).toEqual([7, 7]);
     });
 
     it("cuts one enormous message short rather than letting it eat the budget", async () => {
@@ -348,6 +384,89 @@ describe("assembleContext", () => {
       ]);
 
       expect(content).toContain("@alice: something else entirely");
+    });
+  });
+
+  describe("the thread, and the channel behind it", () => {
+    const ROOT = "1758000000.000100";
+    const IN_THREAD = "1758000000.000200";
+    const ELSEWHERE = "1758000000.000300";
+
+    /** A root, one reply to it, and one unrelated message in the channel. */
+    const conversation = (): StoredMessage[] => [
+      stored("U0BOB", "the deploy failed", { ts: ROOT }),
+      stored("U0SAM", "rolling back now", { ts: IN_THREAD, threadTs: ROOT }),
+      stored("U0ALICE", "who is on call", { ts: ELSEWHERE })
+    ];
+
+    it("answers a question in a thread from that thread", async () => {
+      const content = await assemble(conversation(), {
+        request: request({ thread: ROOT })
+      });
+
+      expect(content).toContain("@bob: the deploy failed");
+      expect(content).toContain("@Sam: rolling back now");
+      expect(content).not.toContain("who is on call");
+    });
+
+    it("includes the message that started the thread, not only the replies", async () => {
+      // The root is usually the question, and a transcript that began at the
+      // first reply would be a conversation with its subject removed.
+      const content = await assemble(conversation(), {
+        request: request({ thread: ROOT })
+      });
+
+      expect(content.indexOf("the deploy failed")).toBeLessThan(content.indexOf("rolling back"));
+    });
+
+    it("falls back to the channel for a question that starts a thread", async () => {
+      // A top-level ask is its own thread's root, so the thread read finds only
+      // the echo of it — and the gateway cannot tell us it was top-level,
+      // because a SlackMention coalesces thread_ts to ts.
+      const content = await assemble(
+        [
+          ...conversation(),
+          stored("U0ALICE", "<@U0BOT> what is the deploy window?", { ts: "1758000000.000400" })
+        ],
+        { request: request({ thread: "1758000000.000400" }) }
+      );
+
+      expect(content).toContain("@bob: the deploy failed");
+      expect(content).toContain("@alice: who is on call");
+    });
+
+    it("falls back to the channel for a thread this store has never seen", async () => {
+      const content = await assemble(conversation(), {
+        request: request({ thread: "1700000000.000000" })
+      });
+
+      expect(content).toContain("@alice: who is on call");
+    });
+
+    it("does not fall back when the thread has messages of its own", async () => {
+      // The claim that makes the fallback safe: a thread with a conversation in
+      // it is never widened to the channel, so a busy channel cannot leak into
+      // a quiet thread's context.
+      const content = await assemble(conversation(), {
+        request: request({ thread: ROOT })
+      });
+
+      expect(content).not.toContain("who is on call");
+    });
+
+    it("does not fall back on a thread whose only message is the echo", async () => {
+      // The ordering that matters: the echo is discounted before the choice, so
+      // a top-level ask sees the channel rather than an empty block. On the
+      // other order this returns just the ask, with no history at all.
+      const content = await assemble(
+        [
+          stored("U0BOB", "earlier in the channel", { ts: ROOT }),
+          stored("U0ALICE", "<@U0BOT> what is the deploy window?", { ts: ELSEWHERE })
+        ],
+        { request: request({ thread: ELSEWHERE }) }
+      );
+
+      expect(content).toContain("@bob: earlier in the channel");
     });
   });
 });

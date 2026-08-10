@@ -120,6 +120,13 @@ import type { Logger } from "./log.js";
  * than alter a column — the tokenizer is baked into the index at creation — so
  * expect the next migration to be shaped like `audit-db.ts`'s rebuild rather
  * than like an `ALTER TABLE`.
+ *
+ * **What is versioned is what a reader depends on, not everything in the file.**
+ * `message_thread` was added at 1 and did not move this number: an index changes
+ * which rows SQLite visits and never which rows come back, so no reader of an
+ * older file is wrong, and bumping would have refused every store already on
+ * disk over a query plan. A column, a constraint, or the tokenizer is the other
+ * kind of change and does move it.
  */
 export const MESSAGE_STORE_SCHEMA_VERSION = 1;
 
@@ -175,6 +182,19 @@ CREATE TABLE IF NOT EXISTS message (
   -- on a replay. It is not the transcript's sort key — that is \`ts\`.
   at           INTEGER NOT NULL
 );
+
+-- \`recentInThread\` reads a thread as "the root, plus everything whose parent is
+-- the root", so it filters on \`thread_ts\` and orders on \`ts\`. Without this the
+-- only usable index is the one behind \`ts UNIQUE\`, which makes reading a thread
+-- a descending scan of the channel that stops when the LIMIT fills — cheap for
+-- a thread near the end of the file and a full table scan for one near the
+-- start.
+--
+-- Adding it moves no schema version. \`db.exec(SCHEMA)\` runs at every open and
+-- every statement here is IF NOT EXISTS, so an existing file gains the index the
+-- next time it is opened; nothing a reader expects changes, and bumping the
+-- version would refuse every store already on disk over a query plan.
+CREATE INDEX IF NOT EXISTS message_thread ON message (thread_ts, ts);
 
 -- External content: the index stores no copy of the text and reads through to
 -- \`message\`. The three triggers below are the entire mechanism keeping the two
@@ -331,6 +351,23 @@ export interface MessageStore {
    * the channel has no more, not that anything was dropped.
    */
   recent(limit: number): readonly StoredMessage[];
+  /**
+   * The most recent `limit` messages in one thread, **oldest first**.
+   *
+   * `recent` narrowed to a sub-conversation (#66), and identical in every other
+   * respect: same order, same clamp, same reasons.
+   *
+   * **A thread's identity is its root message's `ts`.** The root is the message
+   * that started it and carries `thread_ts = NULL`; every reply carries the
+   * root's `ts` in `thread_ts`. So a thread is one row matching on `ts` and the
+   * rest matching on `thread_ts`, which is why this is not a single-column
+   * lookup.
+   *
+   * An unknown thread returns nothing rather than throwing — a caller may pass
+   * a ts that this store has never seen, and "no messages" is the honest answer
+   * for a thread that has not reached this file rather than an error condition.
+   */
+  recentInThread(thread: string, limit: number): readonly StoredMessage[];
   close(): void;
 }
 
@@ -592,6 +629,19 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
          FROM message
         ORDER BY ts DESC
         LIMIT ?`
+    ),
+    // The same read narrowed to one thread. `ts = ?` picks up the root, whose
+    // own `thread_ts` is NULL, and `thread_ts = ?` picks up its replies — the
+    // two halves of what a person sees when they open a thread.
+    //
+    // The parameter is bound twice rather than named once: `node:sqlite` binds
+    // positionally, and a thread id is one value used in two comparisons.
+    recentInThread: db.prepare(
+      `SELECT ts, thread_ts, user_id, display_name, text, at
+         FROM message
+        WHERE ts = ? OR thread_ts = ?
+        ORDER BY ts DESC
+        LIMIT ?`
     )
   } satisfies Record<string, StatementSync>;
 
@@ -636,6 +686,15 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       // Newest-first out of SQLite, oldest-first out of here. `reverse` after
       // the map rather than a second sort: the statement already ordered them
       // and re-sorting would be a second opinion about what order means.
+      return rows.map(toStoredMessage).reverse();
+    },
+
+    recentInThread(thread, limit) {
+      const rows = statements.recentInThread.all(
+        thread,
+        thread,
+        clampLimit(limit)
+      ) as MessageRow[];
       return rows.map(toStoredMessage).reverse();
     },
 

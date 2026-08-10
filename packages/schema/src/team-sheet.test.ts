@@ -20,7 +20,7 @@ describe("the example team sheet", () => {
     });
   });
 
-  it("carries the four per-task caps and the two context bounds", () => {
+  it("carries the four per-task caps, the two context bounds, and the follow-up window", () => {
     expect(sheet.llm).toEqual({
       model: "claude-sonnet-4-6",
       max_tool_calls_per_task: 25,
@@ -29,6 +29,7 @@ describe("the example team sheet", () => {
       max_tokens_per_turn: 8_192,
       max_history_messages: 40,
       max_history_chars: 12_000,
+      follow_up_window_seconds: 900,
     });
   });
 
@@ -53,6 +54,7 @@ describe("defaults", () => {
       max_tokens_per_turn: 8_192,
       max_history_messages: 40,
       max_history_chars: 12_000,
+      follow_up_window_seconds: 900,
     });
   });
 
@@ -186,6 +188,27 @@ describe("rejections", () => {
       { max_history_chars: -1 },
       { max_history_messages: 201 },
       { max_history_messages: 2.5 },
+    ]) {
+      expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
+    }
+  });
+
+  // Zero is off, which is a channel saying the agent answers only what it is
+  // addressed in. The ceiling is SESSION_IDLE_MS in apps/server's session
+  // registry: a session — and with it the set of threads it will answer — is
+  // evicted after thirty minutes idle, so a longer window is one the process
+  // cannot keep, and saying so here is what stops it being advertised.
+  it("accepts a zero follow-up window and rejects one longer than a session lives", () => {
+    const off = TeamSheet.parse({
+      channel: { name: "ops" },
+      llm: { follow_up_window_seconds: 0 },
+    });
+    expect(off.llm.follow_up_window_seconds).toBe(0);
+
+    for (const llm of [
+      { follow_up_window_seconds: -1 },
+      { follow_up_window_seconds: 1801 },
+      { follow_up_window_seconds: 90.5 },
     ]) {
       expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
     }

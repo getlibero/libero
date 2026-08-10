@@ -7,6 +7,9 @@ import type { MessageStore, StoredMessage } from "@getlibero/memory";
 import { describe, expect, it } from "vitest";
 import { createMessageIngest } from "./ingest.js";
 import { createSessionRegistry } from "./session/registry.js";
+import type { SessionRegistry } from "./session/registry.js";
+import type { ChannelRouter } from "./session/router.js";
+import type { TaskReply, TaskRequest } from "./session/types.js";
 
 const MESSAGE: SlackMessage = {
   teamId: "T024BE7LD",
@@ -15,8 +18,14 @@ const MESSAGE: SlackMessage = {
   text: "the deploy went out at four",
   ts: "1717171717.000300",
   threadTs: null,
-  eventId: "Ev0MESSAGE"
+  eventId: "Ev0MESSAGE",
+  mentionsApp: false
 };
+
+/** The same message, in a thread. What a follow-up looks like on the wire. */
+function inThread(partial: Partial<SlackMessage> = {}): SlackMessage {
+  return { ...MESSAGE, threadTs: "1717171717.000100", ...partial };
+}
 
 /** A store that records what it was asked to append, and nothing else. */
 function recordingStore(append: (message: StoredMessage) => boolean = () => true): {
@@ -38,6 +47,7 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       replaceText: () => false,
       search: () => [],
       recent: () => [],
+      recentInThread: () => [],
       close: () => {
         closed += 1;
       }
@@ -322,7 +332,8 @@ describe("createMessageIngest", () => {
         remove: () => false,
         replaceText: () => false,
         search: () => [],
-      recent: () => [],
+        recent: () => [],
+        recentInThread: () => [],
         close: () => {}
       })
     });
@@ -353,7 +364,8 @@ describe("createMessageIngest", () => {
         remove: () => false,
         replaceText: () => false,
         search: () => [],
-      recent: () => [],
+        recent: () => [],
+        recentInThread: () => [],
         close: () => {}
       })
     });
@@ -378,5 +390,215 @@ describe("createMessageIngest", () => {
 
     expect(opened).toEqual(["C024BE91L", "C0OTHER11"]);
     expect(sessions.size).toBe(2);
+  });
+});
+
+describe("answering a follow-up", () => {
+  const THREAD = "1717171717.000100";
+  const NOW = 1_700_000_000_000;
+
+  /** A registry whose one session has `THREAD` active, unless told otherwise. */
+  function activeSessions(window = 60_000): SessionRegistry {
+    const sessions = createSessionRegistry({ now: () => NOW });
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(THREAD, NOW, window);
+    return sessions;
+  }
+
+  /** Captures what the router was handed, and answers with whatever it was given. */
+  function recordingRouter(reply: TaskReply | undefined = { text: "reverted" }): {
+    seen: TaskRequest[];
+    route: ChannelRouter;
+  } {
+    const seen: TaskRequest[] = [];
+    return {
+      seen,
+      route: request => {
+        seen.push(request);
+        return Promise.resolve(reply);
+      }
+    };
+  }
+
+  it("routes a reply in an active thread and answers with what came back", async () => {
+    const router = recordingRouter();
+    const ingest = createMessageIngest({
+      sessions: activeSessions(),
+      route: router.route,
+      now: () => NOW
+    });
+
+    await expect(ingest(inThread())).resolves.toEqual({ text: "reverted" });
+    expect(router.seen).toEqual([
+      {
+        key: { workspace: "T024BE7LD", channel: "C024BE91L" },
+        requestingUser: "U0ALICE",
+        thread: THREAD,
+        text: "the deploy went out at four",
+        traceId: "Ev0MESSAGE"
+      }
+    ]);
+  });
+
+  it("does not route a reply in a thread the agent is not working in", async () => {
+    const router = recordingRouter();
+    const ingest = createMessageIngest({
+      sessions: activeSessions(),
+      route: router.route,
+      now: () => NOW
+    });
+
+    await expect(ingest(inThread({ threadTs: "1717171717.000900" }))).resolves.toBeUndefined();
+    expect(router.seen).toEqual([]);
+  });
+
+  it("does not route once the window has passed", async () => {
+    const router = recordingRouter();
+    const ingest = createMessageIngest({
+      sessions: activeSessions(60_000),
+      route: router.route,
+      now: () => NOW + 60_000
+    });
+
+    await expect(ingest(inThread())).resolves.toBeUndefined();
+    expect(router.seen).toEqual([]);
+  });
+
+  it("does not route a top-level message", async () => {
+    // Not a reply to anything the agent said, and with nowhere for an answer to
+    // go — the gateway refuses to start a thread on one.
+    const router = recordingRouter();
+    const sessions = activeSessions();
+    // Even with the message's own ts standing in as a thread that is active.
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(MESSAGE.ts, NOW, 60_000);
+    const ingest = createMessageIngest({ sessions, route: router.route, now: () => NOW });
+
+    await expect(ingest(MESSAGE)).resolves.toBeUndefined();
+    expect(router.seen).toEqual([]);
+  });
+
+  it("does not route a message that mentions the app", async () => {
+    // The `app_mention` copy of it is what gets answered. Routing this one too
+    // would run the task twice for one question, and there is no id shared
+    // between the two deliveries for anything downstream to notice.
+    const router = recordingRouter();
+    const ingest = createMessageIngest({
+      sessions: activeSessions(),
+      route: router.route,
+      now: () => NOW
+    });
+
+    await expect(ingest(inThread({ mentionsApp: true }))).resolves.toBeUndefined();
+    expect(router.seen).toEqual([]);
+  });
+
+  it("files the message whichever way the routing went", async () => {
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ now: () => NOW, openStore: () => recorded.store });
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(THREAD, NOW, 60_000);
+    const ingest = createMessageIngest({
+      sessions,
+      route: recordingRouter().route,
+      now: () => NOW
+    });
+
+    await ingest(inThread());
+    await ingest(inThread({ ts: "1717171717.000500", threadTs: "1717171717.000900" }));
+
+    expect(recorded.appended.map(entry => entry.ts)).toEqual([
+      "1717171717.000300",
+      "1717171717.000500"
+    ]);
+  });
+
+  it("files the message before routing it", async () => {
+    // So the transcript the task assembles already holds the thing it was asked
+    // about, rather than being one message behind the conversation.
+    const order: string[] = [];
+    const sessions = createSessionRegistry({
+      now: () => NOW,
+      openStore: () => recordingStore(() => {
+        order.push("append");
+        return true;
+      }).store
+    });
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(THREAD, NOW, 60_000);
+    const ingest = createMessageIngest({
+      sessions,
+      now: () => NOW,
+      route: () => {
+        order.push("route");
+        return Promise.resolve({ text: "ok" });
+      }
+    });
+
+    await ingest(inThread());
+
+    expect(order).toEqual(["append", "route"]);
+  });
+
+  it("still answers a follow-up in a channel whose store would not open", async () => {
+    // A storage failure must not turn into the agent going silent mid-thread.
+    // The task simply runs with no history, which is what a first mention in
+    // that channel already does.
+    const router = recordingRouter();
+    const sessions = createSessionRegistry({ now: () => NOW, openStore: () => null });
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(THREAD, NOW, 60_000);
+    const ingest = createMessageIngest({ sessions, route: router.route, now: () => NOW });
+
+    await expect(ingest(inThread())).resolves.toEqual({ text: "reverted" });
+  });
+
+  it("answers nothing when the task answered nothing", async () => {
+    const ingest = createMessageIngest({
+      sessions: activeSessions(),
+      route: () => Promise.resolve(undefined),
+      now: () => NOW
+    });
+
+    await expect(ingest(inThread())).resolves.toBeUndefined();
+  });
+
+  it("files the message and answers nothing when no router was composed", async () => {
+    // The pre-#66 behaviour, and a real front-end rather than a broken wiring:
+    // one that records a conversation without joining it.
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ now: () => NOW, openStore: () => recorded.store });
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(THREAD, NOW, 60_000);
+
+    await expect(createMessageIngest({ sessions, now: () => NOW })(inThread())).resolves.toBeUndefined();
+    expect(recorded.appended).toHaveLength(1);
+  });
+
+  it("builds the held-call prompter on the follow-up's own thread", async () => {
+    // A card raised by a follow-up's task belongs beside the follow-up, not in
+    // whatever thread the mention that started this all was in.
+    const targets: Array<{ channelId: string; threadTs: string }> = [];
+    const router = recordingRouter();
+    const ingest = createMessageIngest({
+      sessions: activeSessions(),
+      route: router.route,
+      now: () => NOW,
+      onHeld: target => {
+        targets.push(target);
+        return () => Promise.resolve();
+      }
+    });
+
+    await ingest(inThread());
+
+    expect(targets).toEqual([{ channelId: "C024BE91L", threadTs: THREAD }]);
+    expect(router.seen[0]?.onHeld).toBeDefined();
   });
 });

@@ -80,11 +80,15 @@ export interface SlackSurface {
 
 export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
   const logger = config.logger ?? createJsonLogger();
-  const { poster, users } = createWebApiSurface({ botToken: config.botToken, logger });
+  const { poster, users, identity } = createWebApiSurface({ botToken: config.botToken, logger });
   const gateway = createGateway({
     source: createSocketModeSource({ appToken: config.appToken, logger }),
     poster,
     handler: config.handler,
+    // Not optional in the real thing. Without it every message carrying a
+    // mention token is treated as addressing the app, which turns a channel's
+    // follow-ups off — see `mentionsApp` in message.ts.
+    identity,
     logger,
     // Spread conditionally: `exactOptionalPropertyTypes` rejects an explicit
     // `undefined` for an optional property.

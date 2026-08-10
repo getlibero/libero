@@ -12,7 +12,12 @@ import type { LogFields, Logger, LogLevel } from "../log.js";
 import { renderApprovalCard } from "./approval-card.js";
 import { createGateway } from "./gateway.js";
 import type { Scheduler } from "./gateway.js";
-import { appMentionEnvelope, blockActionsEnvelope, createStubSlack } from "./stub-slack.js";
+import {
+  STUB_APP_USER_ID,
+  appMentionEnvelope,
+  blockActionsEnvelope,
+  createStubSlack
+} from "./stub-slack.js";
 import { GatewayError } from "./types.js";
 import type {
   MentionHandler,
@@ -519,7 +524,7 @@ describe("createGateway", () => {
         seen,
         onMessage: message => {
           seen.push(message);
-          return Promise.resolve();
+          return Promise.resolve(undefined);
         }
       };
     }
@@ -554,7 +559,7 @@ describe("createGateway", () => {
         handler: () => Promise.resolve(undefined),
         onMessage: () => {
           order.push("handler");
-          return Promise.resolve();
+          return Promise.resolve(undefined);
         }
       });
 
@@ -582,22 +587,141 @@ describe("createGateway", () => {
       expect(slack.acked).toHaveLength(1);
     });
 
-    it("does not post anything, ever", async () => {
-      // `forbiddenPoster` rejects, so a path that tried would fail loudly. A
-      // message is recorded, never answered: answering one nobody addressed the
-      // app in is what #66 has to design, not something this path can do by
-      // accident.
+    it("posts nothing for a message the handler does not answer", async () => {
+      // `forbiddenPoster` rejects, so a path that tried would fail loudly. This
+      // is the ordinary case and stays the default: a message is recorded and
+      // not answered unless the layer above says otherwise.
       const slack = createStubSlack();
       const gateway = createGateway({
         source: slack.source,
         poster: forbiddenPoster(),
         handler: () => Promise.resolve(undefined),
-        onMessage: () => Promise.resolve()
+        onMessage: () => Promise.resolve(undefined)
       });
 
       await gateway.start();
       await slack.deliverMessage();
       await flush();
+    });
+
+    it("posts an answered message back into its own thread", async () => {
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        onMessage: () => Promise.resolve({ text: "reverted" })
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({
+        channelId: "C0OPS",
+        ts: "1717171717.000400",
+        threadTs: "1717171717.000300"
+      });
+
+      expect(slack.posted).toEqual([
+        { channelId: "C0OPS", threadTs: "1717171717.000300", text: "reverted" }
+      ]);
+    });
+
+    it("refuses to start a thread on a top-level message it answered", async () => {
+      // The one thing this path must not be able to do. `threadTs ?? ts` here
+      // would post into the channel on a message nobody addressed the app in,
+      // so the answer is dropped and said out loud instead.
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        logger,
+        onMessage: () => Promise.resolve({ text: "an answer with nowhere to go" })
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ channelId: "C0OPS" });
+      await flush();
+
+      expect(slack.posted).toEqual([]);
+      expect(lines.find(line => line.reason === "no_thread")).toMatchObject({
+        level: "warn",
+        event: "ignored",
+        channel: "C0OPS"
+      });
+    });
+
+    it("logs a follow-up rather than a reply when a message is answered", async () => {
+      // Its own word: "how often does this agent answer people who did not
+      // address it" is the question #66 creates, and it should be one grep.
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        logger,
+        onMessage: () => Promise.resolve({ text: "reverted" })
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ channelId: "C0OPS", threadTs: "1717171717.000300" });
+
+      expect(lines.find(line => line.event === "follow_up")).toMatchObject({
+        level: "info",
+        channel: "C0OPS",
+        threadTs: "1717171717.000300"
+      });
+      expect(lines.some(line => line.event === "replied")).toBe(false);
+    });
+
+    it("logs post_failed and stays up when a follow-up cannot be posted", async () => {
+      const slack = createStubSlack({
+        postFailure: new GatewayError("post_failed", false, { slackError: "not_in_channel" })
+      });
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler: () => Promise.resolve(undefined),
+        logger,
+        onMessage: () => Promise.resolve({ text: "reverted" })
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ channelId: "C0OPS", threadTs: "1717171717.000300" });
+
+      expect(lines.find(line => line.event === "post_failed")).toMatchObject({
+        level: "error",
+        channel: "C0OPS",
+        slackError: "not_in_channel"
+      });
+      expect(slack.connected()).toBe(true);
+    });
+
+    it("does not post an answer that arrived after the gateway stopped", async () => {
+      const slack = createStubSlack();
+      let release: (() => void) | undefined;
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage: async () => {
+          await new Promise<void>(resolve => {
+            release = resolve;
+          });
+          return { text: "too late" };
+        }
+      });
+
+      await gateway.start();
+      const inFlight = slack.deliverMessage({ threadTs: "1717171717.000300" });
+      await flush();
+      await gateway.stop();
+      release?.();
+      await inFlight;
+
+      expect(slack.posted).toEqual([]);
     });
 
     it("loses one message and stays up when the handler throws", async () => {
@@ -611,7 +735,9 @@ describe("createGateway", () => {
         logger,
         onMessage: () => {
           calls += 1;
-          return calls === 1 ? Promise.reject(new GatewayError("post_failed", false)) : Promise.resolve();
+          return calls === 1
+            ? Promise.reject(new GatewayError("post_failed", false))
+            : Promise.resolve(undefined);
         }
       });
 
@@ -635,7 +761,7 @@ describe("createGateway", () => {
         poster: forbiddenPoster(),
         handler: () => Promise.resolve(undefined),
         logger,
-        onMessage: () => Promise.resolve()
+        onMessage: () => Promise.resolve(undefined)
       });
 
       await gateway.start();
@@ -658,7 +784,7 @@ describe("createGateway", () => {
         source: slack.source,
         poster: slack.poster,
         handler,
-        onMessage: () => Promise.resolve()
+        onMessage: () => Promise.resolve(undefined)
       });
 
       await gateway.start();
@@ -686,6 +812,184 @@ describe("createGateway", () => {
       await slack.deliverMessage();
 
       expect(seen).toHaveLength(0);
+    });
+  });
+
+  describe("knowing which app it is", () => {
+    /** Records every message the gateway hands down. */
+    function recordingIngest(): { onMessage: MessageHandler; seen: SlackMessage[] } {
+      const seen: SlackMessage[] = [];
+      return {
+        seen,
+        onMessage: message => {
+          seen.push(message);
+          return Promise.resolve(undefined);
+        }
+      };
+    }
+
+    it("asks who it is before opening the socket", async () => {
+      // Before, and not after: the two tokens are different, and a bot token
+      // Slack will never accept should stop the process at startup rather than
+      // an hour later when a reply does not appear.
+      const order: string[] = [];
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: {
+          ...slack.source,
+          connect: () => {
+            order.push("connect");
+            return slack.source.connect();
+          }
+        },
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: {
+          userId: () => {
+            order.push("identity");
+            return slack.identity.userId();
+          }
+        }
+      });
+
+      await gateway.start();
+
+      expect(order).toEqual(["identity", "connect"]);
+    });
+
+    it("logs the id it resolved", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: slack.identity,
+        logger
+      });
+
+      await gateway.start();
+
+      expect(lines.find(line => line.event === "identified")).toMatchObject({
+        user: STUB_APP_USER_ID
+      });
+    });
+
+    it("fails to start when Slack will never accept the bot token", async () => {
+      const slack = createStubSlack({
+        identityFailure: new GatewayError("auth_rejected", false, { slackError: "invalid_auth" })
+      });
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: slack.identity
+      });
+
+      await expect(gateway.start()).rejects.toMatchObject({ reason: "auth_rejected" });
+      expect(slack.connected()).toBe(false);
+    });
+
+    it("retries a lookup that failed for a reason waiting could fix", async () => {
+      // A rate limit is `connect_failed`, which is the same ladder a refused
+      // socket goes round. One shared loop rather than two, so a bad minute at
+      // Slack does not need a second retry policy.
+      const clock = manualClock();
+      let attempts = 0;
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: {
+          userId: () => {
+            attempts += 1;
+            return attempts === 1
+              ? Promise.reject(new GatewayError("connect_failed", true, { slackError: "ratelimited" }))
+              : slack.identity.userId();
+          }
+        },
+        backoff: BACKOFF,
+        scheduler: clock.scheduler,
+        random: () => 0.5
+      });
+
+      const started = gateway.start();
+      await flush();
+      await clock.fire();
+      await started;
+
+      expect(attempts).toBe(2);
+      expect(slack.connected()).toBe(true);
+    });
+
+    it("asks once and keeps the answer across a reconnect", async () => {
+      const clock = manualClock();
+      let attempts = 0;
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: {
+          userId: () => {
+            attempts += 1;
+            return slack.identity.userId();
+          }
+        },
+        backoff: BACKOFF,
+        scheduler: clock.scheduler,
+        random: () => 0.5
+      });
+
+      await gateway.start();
+      slack.drop();
+      await flush();
+      await clock.fire();
+
+      expect(attempts).toBe(1);
+    });
+
+    it("marks a message that mentions the app, and only that message", async () => {
+      // The whole point of asking. A mention arrives on both subscriptions, so
+      // the copy that lands here has to be distinguishable from a follow-up or
+      // the layer above answers one question twice.
+      const slack = createStubSlack();
+      const { onMessage, seen } = recordingIngest();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: slack.identity,
+        onMessage
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ ts: "1.1", text: `<@${STUB_APP_USER_ID}> what broke` });
+      await slack.deliverMessage({ ts: "1.2", text: `<@${STUB_APP_USER_ID}|libero> what broke` });
+      await slack.deliverMessage({ ts: "1.3", text: "no, the other cluster" });
+      await slack.deliverMessage({ ts: "1.4", text: "<@U0ALICE> does that look right" });
+
+      expect(seen.map(message => message.mentionsApp)).toEqual([true, true, false, false]);
+    });
+
+    it("treats any mention token as the app when it does not know its own id", async () => {
+      // Fails closed. Losing a follow-up costs a message the user can repeat;
+      // mistaking a mention for one runs the task twice and posts two answers.
+      const slack = createStubSlack();
+      const { onMessage, seen } = recordingIngest();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ ts: "1.1", text: "<@U0ALICE> does that look right" });
+      await slack.deliverMessage({ ts: "1.2", text: "no, the other cluster" });
+
+      expect(seen.map(message => message.mentionsApp)).toEqual([true, false]);
     });
   });
 

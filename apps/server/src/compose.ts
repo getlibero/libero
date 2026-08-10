@@ -128,6 +128,19 @@ export interface ServerDeps {
   readonly logger?: Logger;
   /** Injected for tests: the approval card's clock. Omitted in production. */
   readonly now?: () => number;
+  /**
+   * Injected for tests: the session's clock. Omitted in production.
+   *
+   * Deliberately not `now`. That one is the approval deadline's, and a test
+   * pinning it to a fixed instant would also freeze session ageing and the
+   * follow-up window — so a test about a card would silently be a test about a
+   * thread that never goes quiet. Two names because they are two clocks.
+   *
+   * It reaches the three things that measure a session's time: eviction, the
+   * queue's `queuedMs`, and how long a worked thread stays answerable. All
+   * three, or a thread activated on one clock would be read on another.
+   */
+  readonly sessionClock?: () => number;
   /** Injected for tests: the approval deadline's timer. Omitted in production. */
   readonly scheduler?: Scheduler;
 }
@@ -137,7 +150,11 @@ export interface ServerDeps {
 // exactly this. Kept to the dependencies a caller must construct: the router,
 // the task runner, and the handler are wired below and are nobody else's to
 // build.
-export { DEFAULT_HISTORY_BOUNDS, createSheetResolver } from "./session/sheet.js";
+export {
+  DEFAULT_FOLLOW_UP_WINDOW_MS,
+  DEFAULT_HISTORY_BOUNDS,
+  createSheetResolver
+} from "./session/sheet.js";
 export type { SheetResolver } from "./session/sheet.js";
 export type { DisplayNameLookup, NameCache } from "./session/names.js";
 export { createMessageStoreOpener } from "./session/store.js";
@@ -182,15 +199,19 @@ export function createServer(deps: ServerDeps): Server {
   // The sessions are built here rather than left to the router, because two
   // things now hold them: the router, which queues a channel's model turns on a
   // session's mutex, and the ingest, which takes a session's store handle and
-  // no mutex at all. One registry, so both see the same session — and so a
-  // channel's file is opened once rather than once per path.
+  // its set of active threads. One registry, so both see the same session — and
+  // so a channel's file is opened once rather than once per path, and a thread
+  // a task activated is one the ingest can see.
   //
-  // `deps.now` is not routed in. It is documented as the approval card's clock,
-  // and the eviction clock is a different one: a test pinning the card's time
-  // would silently freeze session ageing.
+  // Spread into all three of the things that measure a session's time, so a
+  // thread cannot be activated on one clock and read on another. `deps.now` is
+  // not among them — see `sessionClock` for why there are two.
+  const clock = deps.sessionClock !== undefined ? { now: deps.sessionClock } : {};
+
   const sessions = createSessionRegistry({
     logger,
-    ...(deps.store !== undefined ? { openStore: deps.store } : {})
+    ...(deps.store !== undefined ? { openStore: deps.store } : {}),
+    ...clock
   });
 
   // The directory comes off the surface and the surface is built below, so this
@@ -208,7 +229,37 @@ export function createServer(deps: ServerDeps): Server {
     return users === undefined ? Promise.resolve(undefined) : users.displayName(userId);
   };
 
-  const ingest = createMessageIngest({ sessions, names, logger });
+  // Built before the surface, unlike the mention handler, because it does not
+  // need one: what needs the surface is the prompter, and that is applied on
+  // top of the router rather than inside it. Both entry points share this one
+  // router — and must, since a second would mean a second session registry and
+  // therefore two mutexes over one channel.
+  const route = createChannelRouter({
+    sheets: deps.sheets,
+    sessions,
+    names,
+    task: createTaskRunner({
+      completion: deps.completion,
+      transport: deps.transport,
+      logger,
+      ...(deps.signal !== undefined ? { signal: deps.signal } : {})
+    }),
+    logger,
+    ...clock
+  });
+
+  // A follow-up's card goes in the follow-up's own thread, so the factory is
+  // applied per message rather than shared with the mention handler. It closes
+  // over `prompter`, which is assigned below — safe for the same reason
+  // `handleMention` is: nothing dispatches before `start()`.
+  const ingest = createMessageIngest({
+    sessions,
+    names,
+    route,
+    onHeld: target => prompter?.(target),
+    logger,
+    ...clock
+  });
 
   const surface = deps.slack({
     // The prompter needs the surface's card poster and the surface needs the
@@ -219,17 +270,11 @@ export function createServer(deps: ServerDeps): Server {
     // A click becomes a settled wait by way of the proxy — see
     // approvals/decisions.ts for the ordering and what each answer means.
     onDecision: createDecisionHandler({ registry, approvals, logger }),
-    // No closure trick needed: unlike the mention handler, the ingest does not
-    // depend on the surface, so it exists before this call.
+    // Built above, over the same closure trick: it reaches the prompter, which
+    // reaches this surface's cards.
     onMessage: ingest
   });
 
-  // Slack in, request out, and everything below that mapping is transport
-  // neutral: the router serializes per channel, the resolver reads that
-  // channel's sheet, the runner runs one task on what the sheet said. The
-  // prompter factory rides the same seam the reply does — the mention's channel
-  // and thread are captured in handler.ts, and the router sees a closure.
-  //
   // `now` and `scheduler` reach the prompter and nothing else. They are the
   // approval deadline's clock, and routing the same injected scheduler into the
   // gateway's reconnect ladder would put timers a test did not ask about into
@@ -246,21 +291,12 @@ export function createServer(deps: ServerDeps): Server {
           ...(deps.scheduler !== undefined ? { scheduler: deps.scheduler } : {})
         });
 
-  const handleMention = createMentionHandler(
-    createChannelRouter({
-      sheets: deps.sheets,
-      sessions,
-      names,
-      task: createTaskRunner({
-        completion: deps.completion,
-        transport: deps.transport,
-        logger,
-        ...(deps.signal !== undefined ? { signal: deps.signal } : {})
-      }),
-      logger
-    }),
-    prompter
-  );
+  // Slack in, request out, and everything below that mapping is transport
+  // neutral: the router serializes per channel, the resolver reads that
+  // channel's sheet, the runner runs one task on what the sheet said. The
+  // prompter factory rides the same seam the reply does — the mention's channel
+  // and thread are captured in handler.ts, and the router sees a closure.
+  const handleMention = createMentionHandler(route, prompter);
 
   return { gateway: surface.gateway, registry };
 }

@@ -20,7 +20,7 @@ import type {
 } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
+import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
 import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor } from "./task.js";
 import type { TaskRequest, TaskSettings } from "./types.js";
 
@@ -39,6 +39,7 @@ const SETTINGS: TaskSettings = {
   model: MODEL,
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },
+  followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
   messages: [{ role: "user", content: "@U024BE7LH asks: <@U0BOT> what is the deploy window?" }]
 };
 
@@ -46,6 +47,7 @@ function taskRequest(text = "<@U0BOT> what is the deploy window?"): TaskRequest 
   return {
     key: { workspace: "T024BE7LD", channel: "C024BE91L" },
     requestingUser: "U024BE7LH",
+    thread: "1758000000.000100",
     text,
     traceId: "Ev0PV52K25"
   };

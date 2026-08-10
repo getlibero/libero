@@ -40,6 +40,38 @@ const ALLOWED_SUBTYPES: ReadonlySet<string> = new Set(["thread_broadcast", "file
 const REVISION_SUBTYPES: ReadonlySet<string> = new Set(["message_changed", "message_deleted"]);
 
 /**
+ * Any user-mention token: `<@U0ALICE>`, `<@W0ALICE>` on Enterprise Grid, and
+ * either with the `|label` an older client appended.
+ *
+ * No `g` flag, deliberately. A global regexp carries `lastIndex` between calls,
+ * so a shared one used with `.test` answers alternately true and false for the
+ * same string — which here would be an intermittent duplicate answer.
+ */
+const MENTION_TOKEN = /<@[UW][A-Z0-9]+(?:\|[^>]*)?>/u;
+
+/**
+ * Whether this text addresses the app.
+ *
+ * **It fails closed, and that asymmetry is the whole design.** With the app's
+ * own id, the test is exact: this message mentions us, so the `app_mention`
+ * copy of it is being answered and this copy is only to be recorded. Without
+ * the id — before `auth.test` has answered, in a process that composed no
+ * identity — *any* mention token counts, because a message that might address
+ * the app must be treated as though it does.
+ *
+ * The two mistakes are not the same size. Treating a follow-up as a mention
+ * loses one answer to a message the user can repeat; treating a mention as a
+ * follow-up runs the task twice, spends the channel's budget twice, and posts
+ * two replies, with no id anywhere that ties the pair together.
+ */
+export function mentionsApp(text: string, appUserId: string | undefined): boolean {
+  if (appUserId === undefined) return MENTION_TOKEN.test(text);
+  // Two spellings and no regexp: `<@U0BOT>` and the older `<@U0BOT|libero>`.
+  // Building a pattern from an id would mean escaping a value Slack chose.
+  return text.includes(`<@${appUserId}>`) || text.includes(`<@${appUserId}|`);
+}
+
+/**
  * Why an envelope is not a message to record. A closed set — each one is a
  * `reason` in a log line, as with `IgnoreReason`.
  */
@@ -89,8 +121,16 @@ function readString(source: Record<string, unknown>, key: string): string | unde
  * one-sided: the agent's own replies are not in it. Whether the assembler wants
  * them back is #67's question, and answering it here would mean deciding what a
  * bot message from *another* app is worth, which is a separate one.
+ *
+ * `appUserId` is the one argument that is not the envelope, and it does not
+ * make this impure — same inputs, same answer. It is an argument rather than
+ * module state because this function is the only place a `SlackMessage` is
+ * built, and a field filled in by its caller afterwards is a field a second
+ * caller forgets. What it is for is on `SlackMessage.mentionsApp`; `undefined`
+ * is the honest value before `auth.test` has answered, and `mentionsApp` fails
+ * closed on it.
  */
-export function toMessage(envelope: SlackEnvelope): MessageResult {
+export function toMessage(envelope: SlackEnvelope, appUserId?: string): MessageResult {
   const event = asRecord(envelope.event);
   const body = asRecord(envelope.body);
   if (event === undefined || body === undefined) return { ignored: "not_a_message" };
@@ -137,7 +177,8 @@ export function toMessage(envelope: SlackEnvelope): MessageResult {
       ts,
       // The raw value. `?? null` and never `?? ts` — see the header.
       threadTs: readString(event, "thread_ts") ?? null,
-      eventId
+      eventId,
+      mentionsApp: mentionsApp(text, appUserId)
     }
   };
 }
