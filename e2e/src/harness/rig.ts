@@ -153,6 +153,15 @@ export interface Rig {
   /** `PROXY_BUDGET_DB` — read it with `spendFor`. */
   readonly budgetDb: string;
   /**
+   * `AGENT_STORE_ROOT` — one `<channel>/store.db` per channel that has a sheet.
+   *
+   * Read it with a `node:sqlite` handle of your own. There is deliberately no
+   * helper: the store is the agent side's and reading it through
+   * `@getlibero/memory` would prove the writer and the reader agree rather than
+   * that a row is in the file.
+   */
+  readonly storeRoot: string;
+  /**
    * Every surface the canary must not be on, as of now.
    *
    * Called at assertion time rather than held, because three of the five grow
@@ -235,6 +244,14 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     const auditDb = join(dbDir, "audit.db");
     const budgetDb = join(dbDir, "budget.db");
 
+    // Its own root, not a subdirectory of the sheets, because that is the
+    // production layout: the channels directory is the proxy's authorization
+    // source and is read-only to both services, and everything the agent writes
+    // goes here. A case can assert nothing appeared on the other side of that
+    // line.
+    const storeRoot = mkdtempSync(join(tmpdir(), "libero-e2e-store-"));
+    cleanup.add("message stores", () => rmSync(storeRoot, { recursive: true, force: true }));
+
     const proxy = await spawnProxy(cleanup, {
       channelsRoot: channelsRoot.path,
       vaultFile: vault.file,
@@ -253,6 +270,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       caPath: certs.caPath,
       clientCertDir: certs.clientCertDir,
       channelsRoot: channelsRoot.path,
+      storeRoot,
       completion: model.client,
       ...(wrapper !== undefined ? { wrapTransport: wrapper } : {}),
       ...(options.approvals === "none" ? { cards: false } : {}),
@@ -269,6 +287,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       certs,
       auditDb,
       budgetDb,
+      storeRoot,
       surfaces: (): Surface[] => [
         surface("a thread reply", agent.slack.posted),
         // Cards render the model's own tool arguments, so a credential the model

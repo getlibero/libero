@@ -54,15 +54,16 @@ the approval ticket store),
 permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
 `packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
-into the thread, a reconnect ladder the gateway owns rather than the SDK, and
-since #126 an approval card it can render and a click it can decode),
+into the thread, a reconnect ladder the gateway owns rather than the SDK, since
+#126 an approval card it can render and a click it can decode, and since #176 an
+ordinary `message` it normalizes and hands down),
 `apps/server` (the gateway + agent process — env parsing, the mention handler,
-lifecycle), `packages/cli` (placeholder npm release), `design/` (the design
-system — plain CSS, no TypeScript), and `site/` (getlibero.com).
+the message ingest, lifecycle), `packages/cli` (placeholder npm release),
+`design/` (the design system — plain CSS, no TypeScript), and `site/`
+(getlibero.com).
 `packages/memory` (the per-channel message store — one SQLite file per channel,
-an FTS5 index over it, and the delete and edit paths that keep the index in step;
-nothing writes to one yet, because the gateway subscribes to no ordinary message
-events). `e2e/` is the security suite's rig (#131).
+an FTS5 index over it, and the delete and edit paths that keep the index in
+step). `e2e/` is the security suite's rig (#131).
 
 **`packages/memory` is a leaf, and an ESLint block on `packages/memory/**` keeps
 it one.** It may not import the proxy, the gateway, or the agent, because #64 has
@@ -79,6 +80,50 @@ And **`search` takes text, never an FTS5 expression**: MATCH is a query language
 where a bare `AND` is a syntax error, a trailing `*` is a prefix query, and
 `text:vault` is a column filter that parses and runs, so `toMatchQuery` quotes
 every whitespace chunk and is deliberately absent from the barrel.
+
+**#176 fills the store, and its two decisions are the mutex and the root.**
+`packages/gateway` gains a third named subscription (`message`), a `toMessage`
+beside `toMention` that keeps the **raw** `thread_ts` — `toMention`'s `?? ts` is
+picking a reply target and makes top-level and self-threaded indistinguishable —
+and a subtype allowlist of *absent*, `thread_broadcast`, and `file_share`, with
+`message_changed`/`message_deleted` dropped under their own reason code as
+#177's landing site. `apps/server/src/ingest.ts` is the mapping, out beside
+`handler.ts` because it names both a Slack type and a `Session`.
+
+**Ingest opens the session and never takes its mutex.** The mutex serializes
+model turns; a store write is one synchronous statement with SQLite's own WAL
+and busy timeout as the concurrency control, and behind the mutex a message
+arriving mid-task would wait out a whole model turn to be filed. It still goes
+through `registry.open`, because that is where the handle lives and is released
+— the single `entries.delete` in `sweep` now calls `close()`. The consequence is
+wanted: message traffic creates sessions and defers eviction, so a chatty
+channel keeps a warm handle. `session/store.ts` is the opener and is **total** —
+it answers `null` rather than throwing, which is what keeps `open` total, since
+`router.ts` calls it outside any `try`.
+
+**`store.db` lives under its own `AGENT_STORE_ROOT`, and that is the security
+decision rather than a filing preference.** Both services mount the channels
+directory and it is where the proxy reads its authorization from, so an agent
+able to write there could rewrite a `channel.toml` — and the proxy re-reads the
+sheet per call, which makes that a compromised agent widening its own
+permissions. The channels mount stays `:ro` on both services. The cost is that
+`packages/memory`'s "No mkdir" argument had to be restated: the directory
+existing is no longer the operator's statement that the channel exists, so
+`session/store.ts` checks `<channelsRoot>/<channel>/channel.toml` is there
+before it creates anything. The rule is unchanged, its justification moved one
+layer out, and both comments say so. `architecture.md`'s state-dir diagram was
+edited for the same reason, and phase 2's `MEMORY.md` and `skills/` belong on
+the writable side of that line too.
+
+**Messages are deduped by the store's `ts` and never enter the gateway's `seen`
+set.** `gateway.ts` already argues against two idempotency mechanisms that can
+disagree, and the reason `seen` exists — nothing downstream of a mention is
+idempotent — does not apply. The store's key is also better: it is the message's
+own identity and it survives a restart. Concretely, `seen` is FIFO-bounded at
+1000, so message traffic would flush every remembered mention id in seconds.
+And **the message path logs nothing on the way through** — not the arrival, not
+an ordinary drop. Ids are legal in a log line, but one per message turns stdout
+into a record of who spoke in which channel and when.
 
 **The two halves meet for real in `e2e/` (#131, which absorbed #47).** The proxy
 runs as its **spawned built entrypoint**; the agent side runs **in-process**
@@ -159,8 +204,8 @@ injectable, so a true `approval_expired` stays `approvals.test.ts`'s to prove.
 `POST /v1/tools/call`. `apps/server` composes gateway + loop + transport, so
 `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `PROXY_URL`, `PROXY_TLS_CA`,
 `PROXY_CLIENT_CERT_DIR`, `AGENT_PROVIDER`, `AGENT_MODEL`, `AGENT_CHANNELS_ROOT`,
-and the provider key are all live and all required — there is no toolless
-fallback. `apps/server/README.md` has the environment contract.
+`AGENT_STORE_ROOT`, and the provider key are all live and all required — there
+is no toolless fallback. `apps/server/README.md` has the environment contract.
 
 **Mentions in one channel queue rather than interleave, and each task runs on
 its channel's sheet.** `apps/server/src/session/` is the channel router (#65):
@@ -523,6 +568,16 @@ These are load-bearing, not stylistic:
   a shape the type system has rather than a rule a reviewer applies, which is
   why `store-db.ts` needs no equivalent of the proxy's per-statement
   `WHERE channel = ?` check.
+
+  Since #176 the files live under `AGENT_STORE_ROOT`, which is **not**
+  `AGENT_CHANNELS_ROOT` — the agent must not be able to write to the directory
+  the proxy reads team sheets from, because the proxy re-reads a sheet per call
+  and a writable channels mount is a compromised agent widening its own
+  permissions. One thing moved with it: `openMessageStore` still creates no
+  directory, but the directory existing is no longer the operator's statement
+  that the channel exists, so the sheet check is explicit in
+  `apps/server/src/session/store.ts`. A second caller of `openMessageStore` that
+  skipped it would be inventing a channel with no authorization behind it.
 
   **The line is whose data it is and who reads it, not how much of it there
   is.** Content belongs to a channel's members and is read on their behalf, so a

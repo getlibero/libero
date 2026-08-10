@@ -196,15 +196,53 @@ describe("createSocketModeSource", () => {
     expect(acked).toBe(1);
   });
 
-  it("keeps a click and a mention on their own listeners", async () => {
-    // The two subscriptions are separate on purpose: a slash command or a view
-    // submission reaches neither, because neither is subscribed to it.
+  it("delivers a message, event and body untouched, and hands the ack down unused", async () => {
+    let acked = 0;
+    const fake = fakeClient();
+    const adapter = source(fake);
+    const seen: SlackEnvelope[] = [];
+    adapter.onMessage(envelope => {
+      seen.push(envelope);
+      return Promise.resolve();
+    });
+    await adapter.connect();
+
+    fake.emit("message", {
+      ack: () => {
+        acked += 1;
+        return Promise.resolve();
+      },
+      event: { type: "message", channel: "C0CHAN", ts: "1717171717.000100" },
+      body: { team_id: "T0TEAM" }
+    });
+
+    expect(seen[0]?.event).toEqual({
+      type: "message",
+      channel: "C0CHAN",
+      ts: "1717171717.000100"
+    });
+    expect(seen[0]?.body).toEqual({ team_id: "T0TEAM" });
+    // Same ordering as the other two: the adapter does not ack, the dispatcher
+    // does, because the dispatcher is what knows the handler is slow.
+    expect(acked).toBe(0);
+  });
+
+  it("keeps a click, a mention and a message on their own listeners", async () => {
+    // The three subscriptions are separate on purpose: a slash command or a view
+    // submission reaches none of them, because none is subscribed to it. The
+    // mention half matters most — a mention also arrives as a `message`, and the
+    // two paths must stay distinct, one answering and one recording.
     const fake = fakeClient();
     const adapter = source(fake);
     let mentions = 0;
+    let messages = 0;
     let clicks = 0;
     adapter.onMention(() => {
       mentions += 1;
+      return Promise.resolve();
+    });
+    adapter.onMessage(() => {
+      messages += 1;
       return Promise.resolve();
     });
     adapter.onInteraction(() => {
@@ -214,11 +252,41 @@ describe("createSocketModeSource", () => {
     await adapter.connect();
 
     fake.emit("app_mention", { ack: () => Promise.resolve(), event: {}, body: {} });
+    fake.emit("message", { ack: () => Promise.resolve(), event: {}, body: {} });
     fake.emit("interactive", { ack: () => Promise.resolve(), body: {} });
     fake.emit("slash_commands", { ack: () => Promise.resolve(), body: {} });
 
     expect(mentions).toBe(1);
+    expect(messages).toBe(1);
     expect(clicks).toBe(1);
+  });
+
+  it("drops an unreadable message payload, and a listener rejection, like a mention", async () => {
+    const fake = fakeClient();
+    const adapter = source(fake);
+    await adapter.connect();
+
+    // Nothing registered yet: an event arriving before `start()` wired the
+    // dispatcher must not throw out of the SDK's emit.
+    expect(() =>
+      fake.emit("message", { ack: () => Promise.resolve(), event: {}, body: {} })
+    ).not.toThrow();
+
+    let calls = 0;
+    adapter.onMessage(() => {
+      calls += 1;
+      return Promise.reject(new Error("ingest blew up"));
+    });
+
+    expect(() => fake.emit("message", null)).not.toThrow();
+    expect(() => fake.emit("message", { event: {}, body: {} })).not.toThrow();
+    expect(calls).toBe(0);
+
+    expect(() =>
+      fake.emit("message", { ack: () => Promise.resolve(), event: {}, body: {} })
+    ).not.toThrow();
+    expect(calls).toBe(1);
+    await Promise.resolve();
   });
 
   it("drops an unreadable interactive payload instead of throwing into the SDK", async () => {

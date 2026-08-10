@@ -85,6 +85,34 @@ export function channelsRootFromEnv(env: Env): string {
 }
 
 /**
+ * Where the per-channel message stores live: `AGENT_STORE_ROOT`, holding one
+ * directory per channel, each with a `store.db`.
+ *
+ * **A separate root from `AGENT_CHANNELS_ROOT`, and that is a security decision
+ * rather than a filing preference.** The obvious layout puts `store.db` beside
+ * the channel's `channel.toml`, which is what `architecture.md` drew — but both
+ * services mount the channels directory, and it is where the tool proxy reads
+ * its authorization from. Making it writable here would mean the process that
+ * runs the model could rewrite a `channel.toml`; the proxy re-reads the sheet
+ * per call, so that is a compromised agent widening its own permissions. The
+ * channels root stays read-only to both services and everything this process
+ * writes goes somewhere else.
+ *
+ * Required, with no default, and it holds message text — which is what makes it
+ * unlike `PROXY_BUDGET_DB` and `PROXY_AUDIT_DB`, whose paragraphs otherwise
+ * read the same. Those hold counts and outcomes. This holds what people said,
+ * and an operator choosing where it lands should be choosing deliberately
+ * rather than inheriting a default.
+ *
+ * Nothing here reads or creates the directory. Whether a channel gets a store,
+ * and where under this root it goes, is `session/store.ts`'s — and it is gated
+ * on that channel having a team sheet.
+ */
+export function storeRootFromEnv(env: Env): string {
+  return requiredEnv(env, "AGENT_STORE_ROOT");
+}
+
+/**
  * How to reach the tool proxy: `PROXY_URL`, `PROXY_TLS_CA`, `PROXY_CLIENT_CERT_DIR`.
  *
  * All three required, none defaulted, and this is the variable set that decides

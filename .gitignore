@@ -4,9 +4,14 @@ dist/
 .env
 .env.*
 !.env.example
-channels/*/store.db*
 channels/*/MEMORY.md
 audit.db*
+
+# The per-channel message stores, for a process run directly rather than under
+# compose — AGENT_STORE_ROOT. Their own root and not `channels/`, because the
+# channels directory is the proxy's authorization source and stays read-only to
+# both services. The glob covers SQLite's -wal and -shm.
+deploy/store/
 coverage/
 
 # mTLS material from scripts/dev-certs.sh. Private keys — never committed,

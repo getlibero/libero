@@ -97,7 +97,8 @@ real cause and looking nothing like it.
 
 `startRig` is the whole API; `src/smoke.test.ts` is the worked example. Everything
 it returns — `agent`, `proxy`, `upstream`, `model`, `channelsRoot`, `auditDb`,
-`budgetDb` — is there so a case can assert without reaching into rig internals.
+`budgetDb`, `storeRoot` — is there so a case can assert without reaching into
+rig internals.
 If you find yourself needing one, add it to the rig rather than rebuilding a
 piece of it.
 
@@ -295,6 +296,20 @@ minting plus a spawn, so pass timeouts explicitly — `beforeAll(fn, 60_000)`,
 `it(name, fn, 30_000)`. Use the sheet's `max_task_seconds` to bound a hang, so it
 fails as a cap with a stop reason rather than as a bare vitest timeout.
 
+**The message store is the agent side's, and it has no helper.** `rig.storeRoot`
+is `AGENT_STORE_ROOT`: one `<channel>/store.db` per channel that has a sheet,
+written by the composition as an ordinary `message` arrives on
+`agent.slack.deliverMessage`. There is deliberately no `messagesIn` beside
+`auditRows` and `spendFor` — open the file with your own `node:sqlite` handle.
+Reading it through `@getlibero/memory` would prove the writer and the reader
+agree about a schema, which is a weaker claim than the row being in the file,
+and the whole reason a case reaches for it is the one-file-per-channel boundary.
+
+It is a **separate root from the sheets**, exactly as in production, and that is
+what makes "nothing was written to `channelsRoot`" assertable. The channels
+directory is where the proxy reads its authorization from; an agent able to
+write there could rewrite a `channel.toml` and widen its own channel.
+
 **Read the databases while the proxy is still running.** Both are WAL with
 `synchronous = FULL`, so a row the proxy acknowledged is on disk and visible to
 another process. Nothing has to be torn down before an assertion. The audit table
@@ -329,6 +344,9 @@ outlive the run.
   meeting: a click that runs a call, and four ways of not having one.
 - `src/unlisted-tool.test.ts` · `src/identity.test.ts` — #133, through the agent
   and around it.
+- `src/message-intake.test.ts` — #176, the one claim `apps/server`'s own
+  acceptance suite cannot make: two real channels, two real files, and nothing
+  written into the proxy's authorization source.
 
 ## What is enforced rather than asserted
 

@@ -26,12 +26,17 @@ export interface LogFields {
   /**
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
    * "reconnecting", "disconnected", "auth_rejected", "stopping". Dispatch:
-   * "mention", "replied", "ignored", "handler_failed", "post_failed". Tools:
-   * "task", "tools_unavailable", "tool_not_permitted". Spend: "spend_reported",
-   * "spend_report_failed". Sessions: "queued", "session_evicted",
-   * "team_sheet_invalid", "team_sheet_unreadable". Approvals: "decision",
+   * "mention", "replied", "ignored", "handler_failed", "post_failed",
+   * "message_failed". Tools: "task", "tools_unavailable",
+   * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed".
+   * Sessions: "queued", "session_evicted", "team_sheet_invalid",
+   * "team_sheet_unreadable". Message store: "store_opened",
+   * "store_unavailable", "store_write_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".
+   *
+   * There is no word here for an ordinary message arriving, and that is a
+   * decision rather than an omission — see `dispatchMessage`.
    */
   event: string;
   /** Slack team id. An id, never a token. */
@@ -75,6 +80,21 @@ export interface LogFields {
    * so a card that never left amber is greppable without opening Slack.
    */
   cardState?: string;
+  /**
+   * A path this process was configured with — the message store's file.
+   *
+   * Configuration rather than content: an operator wrote it into the
+   * environment, and it is the first thing they need when a store will not
+   * open. Never a path derived from anything a channel's members said.
+   *
+   * It is here because `packages/memory` logs its own `store_opened` line
+   * through whatever `Logger` it is handed, and this is the one it is handed.
+   * That package duplicates this interface rather than importing it (see the
+   * block on `packages/memory/**` in eslint.config.mjs), so the two vocabularies
+   * have to be kept compatible by hand — the alternative is a line whose field
+   * appears on stdout without being declared anywhere.
+   */
+  file?: string;
   /** Why something was ignored or failed. A code, not prose, and never an SDK message. */
   reason?: string;
   /**

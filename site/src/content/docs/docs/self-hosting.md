@@ -22,8 +22,9 @@ the security property holds. Do not run this against a workspace you care about.
 
 ## The shape of a deployment
 
-Two containers and a directory of channel state. No inbound ports: the gateway connects out to
-Slack over Socket Mode, which is the main reason Socket Mode was chosen.
+Two containers and a directory of channel state — read-only to both of them, with everything either
+service writes on a volume of its own. No inbound ports: the gateway connects out to Slack over
+Socket Mode, which is the main reason Socket Mode was chosen.
 
 ```bash
 npx @getlibero/cli init      # scaffolds config + secrets on the host
@@ -37,11 +38,12 @@ LiteLLM sidecar is included for models without first-class support.
 
 The full environment contract is `.env.example` at the repository root, and most of it is
 required with no default — the Slack tokens, the provider key, `AGENT_PROVIDER` and
-`AGENT_MODEL`, the channels roots for both services, the proxy's TLS material, and the vault,
-budget, and audit paths (compose sets the in-container paths itself; the file says which). A
-missing one is a startup failure that names itself. `PROXY_BUDGET_DB` and `PROXY_AUDIT_DB` get
-their own paragraphs under [operating it](#operating-it) because they are the two where a wrong
-value fails quietly rather than loudly.
+`AGENT_MODEL`, the channels roots for both services, the agent's `AGENT_STORE_ROOT`, the proxy's
+TLS material, and the vault, budget, and audit paths (compose sets the in-container paths itself;
+the file says which). A missing one is a startup failure that names itself. `PROXY_BUDGET_DB`,
+`PROXY_AUDIT_DB` and `AGENT_STORE_ROOT` get their own paragraphs under
+[operating it](#operating-it) because they are the three where a wrong value fails quietly rather
+than loudly.
 
 Credentials go into the vault from inside the proxy container, so the master key never has to
 exist on the host:
@@ -122,7 +124,7 @@ app and read history anywhere the app is installed.
 | --- | --- |
 | `app_mentions:read` | Receiving the mention that starts a task |
 | `chat:write` | Posting replies and approval cards, and editing its own messages — a card goes amber, then green or red, in place |
-| `channels:history` | Channel messages for recall and thread follow-ups — the store exists, but nothing subscribes to these events yet, so nothing fills it |
+| `channels:history` | Channel messages for recall and thread follow-ups. Without it the agent answers mentions and remembers nothing — the store stays empty |
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
 | `users:read` | Display names, so the model can address the right person — not wired up yet |
 
@@ -134,10 +136,17 @@ app and read history anywhere the app is installed.
 | `message.channels` | Messages that are not mentions: thread follow-ups, and the message store |
 | `message.groups` | The same, for private channels |
 
-Message events carry deletions as a subtype rather than as their own event, and the design
-mirrors them: a message deleted in Slack is deleted from that channel's store, index included, so
-Slack retention is respected rather than quietly outlived. The store's half of that is built — a
-delete takes its index entry with it. The adapter still ignores subtypes, so nothing calls it yet.
+An ordinary message in a channel that has a team sheet is stored with its author, its thread, its
+timestamp and its text. A channel with no sheet is recorded nowhere: the agent is in most channels
+of a workspace and provisioned for few, and an unprovisioned one has no authorization behind it.
+Messages the agent posts itself are not stored either, so a transcript is what people said.
+
+Message events carry deletions and edits as a subtype rather than as their own events, and the
+design mirrors them: a message deleted in Slack is deleted from that channel's store, index
+included, so Slack retention is respected rather than quietly outlived. Both halves of that are
+built in the store — a delete takes its index entry with it, and an edit updates the index in step.
+The adapter recognizes the two subtypes and drops them today with their own reason code; wiring
+them onto the store is its own issue.
 
 ### Interactivity
 
@@ -219,6 +228,19 @@ finally looks. It has no reset command, because the table refuses `DELETE` from 
 Nothing in it is a secret either: names, ids, and a hash of the model's arguments, never an argument
 value and never a credential. A proxy that cannot write this file refuses the call it could not
 record rather than serving it unrecorded.
+
+`AGENT_STORE_ROOT` is the agent side's equivalent and is required on the same terms: one
+`<channel>/store.db` under it, the *directory* writable for the `-wal` and `-shm` files. **It is
+deliberately not a subdirectory of `AGENT_CHANNELS_ROOT`.** Both services mount the channels
+directory and it is where the proxy reads its authorization from, so an agent able to write there
+could rewrite a `channel.toml` — and the proxy re-reads the sheet per call, which would make that a
+compromised agent widening its own permissions. Under compose the channels mount is `:ro` on both
+services and this is the one writable volume the agent has.
+
+Unlike the two above, **this one is not "nothing in it is a secret"**: it holds what people said in
+a channel, and it belongs to that channel's members. One SQLite file per channel is the isolation
+boundary — there is no channel column for a query to forget to filter on — and back it up, or not,
+on the terms your Slack retention policy already sets.
 
 The meter uses Node's built-in `node:sqlite` — no dependency, no native build. Both services need
 Node 24 or newer: the message store's full-text index needs SQLite's FTS5, and `node:sqlite` was

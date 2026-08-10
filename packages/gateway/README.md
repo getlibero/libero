@@ -9,7 +9,8 @@ built here.
 
 The Socket Mode adapter: dial Slack, receive an `app_mention`, hand it to one
 handler, post what comes back into the thread, and reconnect when the socket
-drops.
+drops. Since #176 it also surfaces ordinary `message` events, normalized and
+handed down — recorded by whatever composed it, never answered here.
 
 ```ts
 import { createSlackGateway } from "@getlibero/gateway";
@@ -88,8 +89,9 @@ for that reason.
 
 | File | What it is |
 | --- | --- |
-| `slack/types.ts` | The whole public surface: `SlackMention`, `SlackDecision`, the handlers, `SocketSource`, `MessagePoster`, `CardPoster`, `GatewayError` |
+| `slack/types.ts` | The whole public surface: `SlackMention`, `SlackMessage`, `SlackDecision`, the handlers, `SocketSource`, `MessagePoster`, `CardPoster`, `GatewayError` |
 | `slack/mention.ts` | One envelope to a `SlackMention`, or to a reason it is not one. Pure, and fails closed |
+| `slack/message.ts` | One envelope to a `SlackMessage`, on the same terms. Keeps the raw `thread_ts`, which is the whole reason it is not `mention.ts` |
 | `slack/decision.ts` | One `block_actions` payload to a `SlackDecision`, on the same terms |
 | `slack/approval-ids.ts` | The two action ids and the verdict each means, read both directions |
 | `slack/approval-card.ts` | The card renderer. Pure, and the three status colours live here |
@@ -174,7 +176,11 @@ await gateway.start();
 
 The app needs `app_mentions:read` and `chat:write`, the `app_mention` event
 subscription, Socket Mode on, and — for a click to arrive at all —
-**Interactivity on**. There is no Request URL to configure for either.
+**Interactivity on**. There is no Request URL to configure for either. For
+ordinary messages to arrive as well it needs `channels:history` (and
+`groups:history` for private channels) with `message.channels` and
+`message.groups` subscribed; without them the adapter answers mentions and
+surfaces no messages, which is a working app with no transcript.
 [Self-hosting](https://getlibero.com/docs/self-hosting/)
 has the full setup, including the scopes the rest of the system will need. Use a
 free scratch workspace first.

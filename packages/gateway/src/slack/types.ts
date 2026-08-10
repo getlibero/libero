@@ -5,9 +5,11 @@
 // are one of the paths a secret leaks, and this is the process that holds the
 // app and bot tokens.
 //
-// The adapter answers a mention and reports a click, and nothing else.
-// Sessions, the per-session mutex, attribution, the live checklist, and the
-// message store are the channel router's job and are not modelled here.
+// The adapter answers a mention, reports a click, and surfaces an ordinary
+// message, and nothing else. Sessions, the per-session mutex, attribution, the
+// live checklist, and the message store itself are above this package and are
+// not modelled here — what a `SlackMessage` is *for* does not appear in this
+// file, which is why it carries the wire's own fields and none of the store's.
 //
 // The one import from the workspace is `@getlibero/schema`, and it is **type
 // only**: `ApprovalVerdict` is the exact wire vocabulary of the thing being
@@ -44,6 +46,36 @@ export interface SlackMention {
   eventId: string;
 }
 
+/**
+ * An ordinary channel message, normalized off the wire.
+ *
+ * Its own type rather than a `SlackMention`, and the difference is one field.
+ * `SlackMention.threadTs` is a *reply target* — `toMention` coalesces it to the
+ * mentioning message's own ts so a top-level mention starts a thread — which
+ * makes a top-level message and a self-threaded one indistinguishable. What is
+ * stored needs the raw value: `null` here means the message was top-level, and
+ * a store cannot recover that from a coalesced one.
+ *
+ * `null` rather than optional. `exactOptionalPropertyTypes` would make the
+ * absent case something a reader has to check for rather than something the
+ * type states, and "top-level" is a fact about the message rather than a field
+ * Slack forgot to send.
+ */
+export interface SlackMessage {
+  teamId: string;
+  channelId: string;
+  /** The Slack user who posted. Display-name lookup is not done here. */
+  userId: string;
+  /** The message text, with Slack's `<@U…>` tokens still in it. */
+  text: string;
+  /** The message's own ts. Slack's identity for it, and the store's. */
+  ts: string;
+  /** The parent thread's ts, or null when the message was top-level. */
+  threadTs: string | null;
+  /** Slack's `event_id`. Stable across delivery retries. */
+  eventId: string;
+}
+
 /** What the handler wants posted. A reply always lands in `threadTs`. */
 export interface SlackReply {
   text: string;
@@ -55,6 +87,16 @@ export interface SlackReply {
  * mention without the adapter inventing a message.
  */
 export type MentionHandler = (mention: SlackMention) => Promise<SlackReply | undefined>;
+
+/**
+ * A message in, and nothing out.
+ *
+ * No reply, deliberately. A message is recorded, never answered — answering one
+ * without a mention is #66's, and a handler that could return a `SlackReply`
+ * would make the adapter capable of posting into a channel nobody addressed it
+ * in. The seam is narrow because the capability should be.
+ */
+export type MessageHandler = (message: SlackMessage) => Promise<void>;
 
 /**
  * A human's click on an approval card, normalized off the wire.
@@ -149,6 +191,16 @@ export interface SocketSource {
   close(): Promise<void>;
   /** Registers the mention listener. Called once, before `connect`. */
   onMention(listener: (envelope: SlackEnvelope) => Promise<void>): void;
+  /**
+   * Registers the ordinary-message listener. Called once, before `connect`.
+   *
+   * A `message` is an events_api envelope like a mention, so it arrives as a
+   * `SlackEnvelope` and not as a shape of its own. A separate listener rather
+   * than a widened mention one because the two subscriptions are separate on
+   * the wire and the two dispatch paths share nothing: one is answered, the
+   * other is recorded.
+   */
+  onMessage(listener: (envelope: SlackEnvelope) => Promise<void>): void;
   /**
    * Registers the interactivity listener. Called once, before `connect`.
    *

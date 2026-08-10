@@ -30,18 +30,32 @@ Slack (Socket Mode)
 └──────────────┬────────────────┘      └──────────────┬───────────────┘
                │                                      │
                ▼                                      ▼
-   per-channel state dir                    audit.db (append-only)
-   ├─ channel.toml   (team sheet, git-managed)        │
-   ├─ MEMORY.md      (agent-curated)                  ▼
-   ├─ skills/*.md    (agent-authored)         sandbox runner
-   └─ store.db       (SQLite+FTS5+sqlite-vec) (containerized code exec)
+   channels root (read-only to both)        audit.db (append-only)
+   └─ <channel>/channel.toml                          │
+        (team sheet, git-managed)                     ▼
+                                              sandbox runner
+   agent state root (writable, agent only)    (containerized code exec)
+   └─ <channel>/
+      ├─ store.db     (SQLite+FTS5+sqlite-vec)
+      ├─ MEMORY.md    (agent-curated)
+      └─ skills/*.md  (agent-authored)
 ```
+
+**Two roots, not one, and the split is load-bearing.** The obvious layout puts a
+channel's whole state in one directory. It cannot: both services mount the
+channels directory and it is where the proxy reads its authorization from, so an
+agent able to write there could rewrite a `channel.toml` — and the proxy
+re-reads the sheet per call, which makes that a compromised agent widening its
+own permissions. The channels root stays read-only to both services and
+everything the agent writes goes to a root only it mounts. `store.db` is the
+first thing on that side; `MEMORY.md` and `skills/` join it in phase 2 for the
+same reason.
 
 The proxy is a separate OS process listening only on localhost/private network with mutual TLS between services. The agent authenticates to the proxy per-channel: one client certificate per channel, subject `CN=channel:<id>`, and that certificate is the only place the proxy reads a channel identity from — never a header, query parameter, or body field, because the process on the other end runs the model and anything the model can influence is not a boundary. Certificates authenticate; team sheets authorize. There is no revocation list: removing a channel's sheet removes its permissions on the next call, and a stale certificate is left holding nothing. That is revocation for a channel being retired, not for a leaked key — a certificate whose channel is still in use holds whatever that channel's sheet allows, and re-minting does not invalidate the old one, because both carry the same CN. Pinning a channel's key in its team sheet is the intended fix and is not built yet. The proxy resolves which credentials and tools that channel's team sheet permits. Compromise of the agent process (prompt injection, malicious skill, model misbehavior) yields no tool credentials and only the tool surface that channel's team sheet allows, with every call audited. Those are model-level cases, and none of them reaches certificate selection: which channel a task runs as is derived from the Slack event, not from anything the model produces. Full compromise of the process is wider, because it holds one certificate per channel it serves — the union of those channels' tool surfaces, though still no tool credentials, since none are in that process. What is in it is the Slack app and bot tokens and the model provider key, which the gateway and the loop cannot run without; a leak there lets an attacker speak as the app and spend against the provider, and reaches no tool the proxy guards. See the [security model](/docs/security#which-secrets-are-where).
 
 ## Gateway and channel router
 
-Built over Slack Socket Mode (no inbound ports — good self-host ergonomics). Sessions are keyed on `(team_id, channel_id)` with a per-session async mutex serializing context writes; concurrent mentions in one channel queue rather than interleave. Every inbound message is stored with `user_id`, display name, `thread_ts`, and timestamp, and the context assembler renders attribution (`@alice: ...`) so the model can address the right person. Long tasks render a single live-updating checklist message in the thread (edit, don't spam). Follow-ups in a thread the agent is active in do not require re-mention.
+Built over Slack Socket Mode (no inbound ports — good self-host ergonomics). Sessions are keyed on `(team_id, channel_id)` with a per-session async mutex serializing context writes; concurrent mentions in one channel queue rather than interleave. Every inbound message in a provisioned channel is stored with `user_id`, display name, `thread_ts`, and timestamp — the raw `thread_ts`, null for a top-level message, so a thread is recoverable from the store rather than inferred. The context assembler renders attribution (`@alice: ...`) so the model can address the right person; the display name is a snapshot taken when the message was stored, and resolving it is the assembler's rather than the write path's. Long tasks render a single live-updating checklist message in the thread (edit, don't spam). Follow-ups in a thread the agent is active in do not require re-mention.
 
 ## Agent loop
 

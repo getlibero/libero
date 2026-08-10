@@ -7,6 +7,7 @@ export type {
   DecisionHandler,
   GatewayErrorReason,
   MentionHandler,
+  MessageHandler,
   MessagePoster,
   PostedCard,
   SlackBlock,
@@ -16,6 +17,7 @@ export type {
   SlackGateway,
   SlackInteractionEnvelope,
   SlackMention,
+  SlackMessage,
   SlackPoster,
   SlackReply,
   SocketSource
@@ -23,6 +25,9 @@ export type {
 
 export { toMention } from "./slack/mention.js";
 export type { IgnoreReason, MentionResult } from "./slack/mention.js";
+
+export { toMessage } from "./slack/message.js";
+export type { MessageIgnoreReason, MessageResult } from "./slack/message.js";
 
 export { toDecision } from "./slack/decision.js";
 export type { DecisionIgnoreReason, DecisionResult } from "./slack/decision.js";
@@ -57,10 +62,16 @@ export type { SocketModeClientLike, SocketSourceOptions } from "./slack/socket-m
 export { createWebApiPoster } from "./slack/web-api.js";
 export type { MessagePosterOptions, WebClientLike } from "./slack/web-api.js";
 
-export { appMentionEnvelope, blockActionsEnvelope, createStubSlack } from "./slack/stub-slack.js";
+export {
+  appMentionEnvelope,
+  blockActionsEnvelope,
+  createStubSlack,
+  messageEnvelope
+} from "./slack/stub-slack.js";
 export type {
   StubDecisionFields,
   StubMentionFields,
+  StubMessageFields,
   StubSlack,
   StubSlackOptions
 } from "./slack/stub-slack.js";

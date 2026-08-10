@@ -16,6 +16,7 @@ import type {
   DecisionHandler,
   GatewayError,
   MentionHandler,
+  MessageHandler,
   SlackGateway
 } from "./types.js";
 import { createWebApiPoster } from "./web-api.js";
@@ -28,6 +29,8 @@ export interface SlackGatewayConfig {
   handler: MentionHandler;
   /** A human clicked an approval card. See `GatewayOptions.onDecision`. */
   onDecision?: DecisionHandler;
+  /** An ordinary message arrived. See `GatewayOptions.onMessage`. */
+  onMessage?: MessageHandler;
   /** Defaults to JSON lines on stdout. */
   logger?: Logger;
   backoff?: BackoffPolicy;
@@ -74,6 +77,7 @@ export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
     // Spread conditionally: `exactOptionalPropertyTypes` rejects an explicit
     // `undefined` for an optional property.
     ...(config.onDecision !== undefined ? { onDecision: config.onDecision } : {}),
+    ...(config.onMessage !== undefined ? { onMessage: config.onMessage } : {}),
     ...(config.backoff !== undefined ? { backoff: config.backoff } : {}),
     ...(config.onFatal !== undefined ? { onFatal: config.onFatal } : {}),
     ...(config.scheduler !== undefined ? { scheduler: config.scheduler } : {})

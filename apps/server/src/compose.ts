@@ -24,6 +24,7 @@ import type {
   DecisionHandler,
   Logger,
   MentionHandler,
+  MessageHandler,
   Scheduler,
   SlackGateway
 } from "@getlibero/gateway";
@@ -33,9 +34,12 @@ import { createHeldCallPrompter } from "./approvals/prompter.js";
 import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
+import { createMessageIngest } from "./ingest.js";
+import { createSessionRegistry } from "./session/registry.js";
 import { createChannelRouter } from "./session/router.js";
 import { createTaskRunner } from "./session/task.js";
 import type { SheetResolver } from "./session/sheet.js";
+import type { MessageStoreOpener } from "./session/store.js";
 
 /**
  * The Slack side, once built.
@@ -78,6 +82,12 @@ export interface SlackSurfaceLike {
 export type SlackSurfaceFactory = (wiring: {
   readonly handler: MentionHandler;
   readonly onDecision: DecisionHandler;
+  /**
+   * Where an ordinary message goes. Always passed, even with no store: with
+   * nowhere to file one it is a function that does nothing, which is cheaper
+   * than making every implementer handle its absence.
+   */
+  readonly onMessage: MessageHandler;
 }) => SlackSurfaceLike;
 
 export interface ServerDeps {
@@ -90,6 +100,15 @@ export interface ServerDeps {
   readonly transport: ProxyTransport;
   /** What each channel's team sheet resolves to. Per task, never cached here. */
   readonly sheets: SheetResolver;
+  /**
+   * How a channel gets its message store.
+   *
+   * Optional, and the degradation is the one `cards` documents: a process with
+   * nowhere to file a message still answers mentions, and a front-end that has
+   * no store is a real front-end rather than a test mode. Production always has
+   * one — `AGENT_STORE_ROOT` is required.
+   */
+  readonly store?: MessageStoreOpener;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -107,6 +126,8 @@ export interface ServerDeps {
 // build.
 export { createSheetResolver } from "./session/sheet.js";
 export type { SheetResolver } from "./session/sheet.js";
+export { createMessageStoreOpener } from "./session/store.js";
+export type { MessageStoreOpener, MessageStoreOpenerOptions } from "./session/store.js";
 export type { SessionKey, TaskRequest, TaskReply, TaskSettings } from "./session/types.js";
 
 export interface Server {
@@ -137,6 +158,21 @@ export function createServer(deps: ServerDeps): Server {
   const registry = createApprovalRegistry();
   const approvals = createProxyApprovalsClient({ transport: deps.transport });
 
+  // The sessions are built here rather than left to the router, because two
+  // things now hold them: the router, which queues a channel's model turns on a
+  // session's mutex, and the ingest, which takes a session's store handle and
+  // no mutex at all. One registry, so both see the same session — and so a
+  // channel's file is opened once rather than once per path.
+  //
+  // `deps.now` is not routed in. It is documented as the approval card's clock,
+  // and the eviction clock is a different one: a test pinning the card's time
+  // would silently freeze session ageing.
+  const sessions = createSessionRegistry({
+    logger,
+    ...(deps.store !== undefined ? { openStore: deps.store } : {})
+  });
+  const ingest = createMessageIngest({ sessions, logger });
+
   const surface = deps.slack({
     // The prompter needs the surface's card poster and the surface needs the
     // handler, so the handler closes over a binding assigned just below. Safe:
@@ -145,7 +181,10 @@ export function createServer(deps: ServerDeps): Server {
     handler: mention => handleMention(mention),
     // A click becomes a settled wait by way of the proxy — see
     // approvals/decisions.ts for the ordering and what each answer means.
-    onDecision: createDecisionHandler({ registry, approvals, logger })
+    onDecision: createDecisionHandler({ registry, approvals, logger }),
+    // No closure trick needed: unlike the mention handler, the ingest does not
+    // depend on the surface, so it exists before this call.
+    onMessage: ingest
   });
 
   // Slack in, request out, and everything below that mapping is transport
@@ -173,6 +212,7 @@ export function createServer(deps: ServerDeps): Server {
   const handleMention = createMentionHandler(
     createChannelRouter({
       sheets: deps.sheets,
+      sessions,
       task: createTaskRunner({
         completion: deps.completion,
         transport: deps.transport,

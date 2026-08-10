@@ -47,8 +47,23 @@ a build without it at open, naming the floor rather than letting SQLite report
 
 ## What is not here
 
-Nothing writes to a store yet. The gateway subscribes to `app_mention` and
-interactions only, so ordinary channel messages never reach the process —
-intake, and the mirroring of Slack deletions and edits onto `remove` and
-`replaceText`, are their own issues. Layers 2 and 3 of the spec (`MEMORY.md`
-curation, sqlite-vec recall) are phase 2.
+Nothing reads a store yet. `apps/server` fills one — since #176 the gateway
+subscribes to `message` as well, and an ordinary channel message becomes a row
+— but who reads it back is still #64's to settle: the proxy opening `store.db`
+as a second reader, or the gateway answering a callback. That is the open
+question the ESLint block on this package exists to keep open.
+
+The mirroring of Slack deletions and edits onto `remove` and `replaceText` is
+#177: `message_changed` and `message_deleted` reach the process today and are
+dropped with their own reason code, so the two paths built here are still
+unused. Layers 2 and 3 of the spec (`MEMORY.md` curation, sqlite-vec recall) are
+phase 2.
+
+One thing about the file's location moved with #176 and is worth knowing before
+you write a second caller. `openMessageStore` still creates no directory, but
+the argument changed: the store lives under `AGENT_STORE_ROOT`, not beside the
+channel's `channel.toml`, so the directory existing is no longer the operator's
+statement that the channel exists. The check that a channel has a team sheet is
+now explicit, in `apps/server/src/session/store.ts`, and a caller that skipped
+it would be inventing a channel. The header of `src/store-db.ts` has the full
+account.

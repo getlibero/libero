@@ -45,12 +45,28 @@
 // `packages/proxy/src/budget-db.ts` refuses to create its directory because a
 // budget file invented under a path nobody meant is a channel with a
 // permanently fresh budget — the failure that fails open. The argument here is
-// stronger. `channels/<id>/` is where the operator wrote `channel.toml`. **The
-// directory existing is the operator's statement that this channel exists.** A
-// store that created one would invent a channel that has no team sheet, and
-// therefore no authorization at all, and then quietly log a conversation into
-// it. A missing directory is a misconfiguration and says so here, at open, with
-// the path named.
+// the same shape and a channel's conversation is the thing at stake: a store
+// created for an id nobody provisioned is a channel with no team sheet, and
+// therefore no authorization at all, quietly logging a conversation into a file
+// nothing else knows about. A missing directory is a misconfiguration and says
+// so here, at open, with the path named.
+//
+// **The gate this leaves to the caller is now explicit, and #176 moved it.**
+// The original argument was that `channels/<id>/` is where the operator wrote
+// `channel.toml`, so the directory existing *was* the statement that the
+// channel exists. That stopped being true when the store moved to its own root:
+// `AGENT_STORE_ROOT` is separate from the team sheets, because the sheets
+// directory is where the tool proxy reads its authorization from and an agent
+// able to write there could widen its own permissions. Nothing an operator does
+// creates `<storeRoot>/<channel>/`.
+//
+// So the rule here is unchanged and its justification lives one layer out:
+// `apps/server/src/session/store.ts` checks the channel has a sheet, and only
+// then creates the directory this function opens in. The gate is a line of code
+// with a test rather than a property of a filesystem layout, which is strictly
+// better — but it means a caller that skipped the check would be inventing a
+// channel, and this file cannot stop it. That is the one thing a reviewer of a
+// second caller has to look for.
 //
 // ## This package depends on neither service, and must not start
 //
