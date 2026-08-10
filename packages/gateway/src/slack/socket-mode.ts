@@ -123,34 +123,59 @@ export function createSocketModeSource(options: SocketSourceOptions): SocketSour
   const closeTimeoutMs = options.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
 
   let onMention: ((envelope: SlackEnvelope) => Promise<void>) | undefined;
+  let onMessage: ((envelope: SlackEnvelope) => Promise<void>) | undefined;
   let onInteraction: ((envelope: SlackInteractionEnvelope) => Promise<void>) | undefined;
   let onDrop: (() => void) | undefined;
   /** Set by `close()`, so an intentional disconnect is not read as a drop. */
   let closing = false;
 
-  // Two subscriptions, because the SDK hands down two shapes. `app_mention` is
-  // what it emits for an events_api envelope whose inner event type is
-  // app_mention; `interactive` is what it emits for a click. Subscribing to
-  // each by name rather than to `slack_event` means a slash command or a view
-  // submission never reaches a dispatch path at all.
-  client.on("app_mention", (...args: unknown[]) => {
-    const payload = args[0];
-    if (typeof payload !== "object" || payload === null) return;
-    const { ack, event, body } = payload as {
-      ack?: unknown;
-      event?: unknown;
-      body?: unknown;
+  /**
+   * The two events_api subscriptions share a shape, so they share a translator.
+   *
+   * `app_mention` and `message` both arrive as `{ack, event, body}` — the SDK
+   * splits out an inner `event` for exactly these — so the difference between
+   * them is which normalizer runs downstream, not how the envelope is built.
+   */
+  const forwardEvent = (
+    listener: () => ((envelope: SlackEnvelope) => Promise<void>) | undefined
+  ): ((...args: unknown[]) => void) => {
+    return (...args: unknown[]): void => {
+      const payload = args[0];
+      if (typeof payload !== "object" || payload === null) return;
+      const { ack, event, body } = payload as {
+        ack?: unknown;
+        event?: unknown;
+        body?: unknown;
+      };
+      if (typeof ack !== "function") return;
+      const envelope: SlackEnvelope = {
+        ack: () => (ack as () => Promise<void>)(),
+        event,
+        body
+      };
+      // The SDK does not await this listener, so a rejection here would be
+      // unhandled. The dispatcher handles its own failures; this is the backstop.
+      void listener()?.(envelope).catch(() => {});
     };
-    if (typeof ack !== "function") return;
-    const envelope: SlackEnvelope = {
-      ack: () => (ack as () => Promise<void>)(),
-      event,
-      body
-    };
-    // The SDK does not await this listener, so a rejection here would be
-    // unhandled. The dispatcher handles its own failures; this is the backstop.
-    void onMention?.(envelope).catch(() => {});
-  });
+  };
+
+  // Three subscriptions, each by name. `app_mention` and `message` are what the
+  // SDK emits for events_api envelopes whose inner event type is each of those;
+  // `interactive` is what it emits for a click. Subscribing to each by name
+  // rather than to `slack_event` means a slash command or a view submission
+  // never reaches a dispatch path at all — the drop happens at the subscription
+  // rather than at a content check, which is the cheaper of the two.
+  //
+  // `message` widens what this socket receives more than the other two did: it
+  // is every message in every channel the app is in, not only the ones
+  // addressed to it. The narrowing that matters is not here — a channel with no
+  // team sheet is a channel nothing is recorded for — but it is above this
+  // package, so this file subscribes broadly and says so.
+  //
+  // The listener is read through a thunk rather than captured, because
+  // `onMention`/`onMessage` are assigned after this runs.
+  client.on("app_mention", forwardEvent(() => onMention));
+  client.on("message", forwardEvent(() => onMessage));
 
   // No `event` field on this one: the client splits out an inner event only for
   // events_api envelopes (SocketModeClient.js:341, verified in 3.0.0), so
@@ -202,6 +227,10 @@ export function createSocketModeSource(options: SocketSourceOptions): SocketSour
 
     onMention(listener: (envelope: SlackEnvelope) => Promise<void>): void {
       onMention = listener;
+    },
+
+    onMessage(listener: (envelope: SlackEnvelope) => Promise<void>): void {
+      onMessage = listener;
     },
 
     onInteraction(listener: (envelope: SlackInteractionEnvelope) => Promise<void>): void {

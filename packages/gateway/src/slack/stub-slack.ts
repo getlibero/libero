@@ -32,6 +32,25 @@ export interface StubMentionFields {
   eventId: string;
 }
 
+export interface StubMessageFields {
+  teamId: string;
+  channelId: string;
+  userId: string;
+  text: string;
+  ts: string;
+  /**
+   * The parent thread, when there is one. Absent means top-level — the
+   * distinction `toMessage` preserves and `toMention` cannot, so it has to be
+   * expressible here by omission rather than by a null.
+   */
+  threadTs?: string;
+  /** `thread_broadcast`, `file_share`, `channel_join`, `message_changed`, … */
+  subtype?: string;
+  /** Present on a message an app posted. Set it to build one this app must drop. */
+  botId?: string;
+  eventId: string;
+}
+
 export interface StubDecisionFields {
   teamId: string;
   channelId: string;
@@ -68,6 +87,44 @@ export function appMentionEnvelope(
       ts: merged.ts,
       channel: merged.channelId,
       ...(merged.threadTs !== undefined ? { thread_ts: merged.threadTs } : {})
+    },
+    body: {
+      team_id: merged.teamId,
+      event_id: merged.eventId,
+      type: "event_callback"
+    }
+  };
+}
+
+const DEFAULT_MESSAGE: StubMessageFields = {
+  teamId: "T00000000",
+  channelId: "C00000000",
+  userId: "U00000000",
+  text: "the deploy went out at four",
+  // A different ts from DEFAULT_MENTION, so a test that delivers both does not
+  // get one silently swallowed by the store's UNIQUE ts.
+  ts: "1717171717.000300",
+  eventId: "Ev00000002"
+};
+
+/** The envelope shape Slack sends for a `message`, built from fields. */
+export function messageEnvelope(
+  fields: Partial<StubMessageFields> = {},
+  ack: () => Promise<void> = () => Promise.resolve()
+): SlackEnvelope {
+  const merged = { ...DEFAULT_MESSAGE, ...fields };
+  return {
+    ack,
+    event: {
+      type: "message",
+      user: merged.userId,
+      text: merged.text,
+      ts: merged.ts,
+      channel: merged.channelId,
+      channel_type: "channel",
+      ...(merged.threadTs !== undefined ? { thread_ts: merged.threadTs } : {}),
+      ...(merged.subtype !== undefined ? { subtype: merged.subtype } : {}),
+      ...(merged.botId !== undefined ? { bot_id: merged.botId } : {})
     },
     body: {
       team_id: merged.teamId,
@@ -139,6 +196,8 @@ export interface StubSlack {
   deliver(envelope: SlackEnvelope): Promise<void>;
   /** Builds a well-formed `app_mention` envelope and delivers it. */
   deliverMention(fields?: Partial<StubMentionFields>): Promise<void>;
+  /** Builds a `message` envelope and delivers it on the message listener. */
+  deliverMessage(fields?: Partial<StubMessageFields>): Promise<void>;
   /** Delivers a raw interactive envelope exactly as the socket would. */
   deliverInteraction(envelope: SlackInteractionEnvelope): Promise<void>;
   /** Builds a well-formed `block_actions` envelope and delivers it. */
@@ -189,6 +248,7 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
   let nextCard = 0;
 
   let listener: ((envelope: SlackEnvelope) => Promise<void>) | undefined;
+  let messageListener: ((envelope: SlackEnvelope) => Promise<void>) | undefined;
   let interactionListener:
     | ((envelope: SlackInteractionEnvelope) => Promise<void>)
     | undefined;
@@ -208,6 +268,12 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
     },
     onMention(next: (envelope: SlackEnvelope) => Promise<void>): void {
       listener = next;
+    },
+    // Its own slot rather than the mention one, so a test can prove the socket
+    // keeps the two apart — a stub that fanned one listener out to both would
+    // hide exactly the bug that matters, a mention reaching the message path.
+    onMessage(next: (envelope: SlackEnvelope) => Promise<void>): void {
+      messageListener = next;
     },
     onInteraction(next: (envelope: SlackInteractionEnvelope) => Promise<void>): void {
       interactionListener = next;
@@ -274,6 +340,13 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
         return Promise.resolve();
       });
       await listener?.(envelope);
+    },
+    async deliverMessage(fields: Partial<StubMessageFields> = {}): Promise<void> {
+      const envelope = messageEnvelope(fields, () => {
+        acked.push(envelope);
+        return Promise.resolve();
+      });
+      await messageListener?.(envelope);
     },
     async deliverInteraction(envelope: SlackInteractionEnvelope): Promise<void> {
       await interactionListener?.(envelope);

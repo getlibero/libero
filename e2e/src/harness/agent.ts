@@ -25,7 +25,7 @@ import { createProxyTransport } from "@getlibero/agent";
 import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import { createGateway, createStubSlack } from "@getlibero/gateway";
 import type { LogFields, LogLevel, Logger, Scheduler, SlackGateway, StubSlack } from "@getlibero/gateway";
-import { createServer, createSheetResolver } from "@getlibero/server";
+import { createMessageStoreOpener, createServer, createSheetResolver } from "@getlibero/server";
 import type { Cleanup } from "./cleanup.js";
 
 export interface AgentOptions {
@@ -35,6 +35,15 @@ export interface AgentOptions {
   readonly clientCertDir: string;
   /** The same directory the proxy reads. Here it is caps and a model name. */
   readonly channelsRoot: string;
+  /**
+   * Where the per-channel message stores go — `AGENT_STORE_ROOT`.
+   *
+   * A separate directory from `channelsRoot`, exactly as in production, and the
+   * separation is the point rather than tidiness: the channels root is where
+   * the proxy reads its authorization from and is read-only to both services.
+   * A case can assert that nothing appeared under it.
+   */
+  readonly storeRoot: string;
   readonly completion: CompletionClient;
   /** Falls back to this when a sheet names no model. Never widens anything. */
   readonly model?: string;
@@ -89,12 +98,13 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
   const tasks = new AbortController();
 
   const { gateway } = createServer({
-    slack: ({ handler, onDecision }) => ({
+    slack: ({ handler, onDecision, onMessage }) => ({
       gateway: createGateway({
         source: slack.source,
         poster: slack.poster,
         handler,
         onDecision,
+        onMessage,
         logger
       }),
       // Omitted rather than stubbed when a case asks for no card path: the
@@ -108,6 +118,13 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     sheets: createSheetResolver({
       root: options.channelsRoot,
       model: options.model ?? "e2e-model",
+      logger
+    }),
+    // Real, and gated on the sheet the harness wrote: a channel with a
+    // certificate but no sheet gets no store here, exactly as in production.
+    store: createMessageStoreOpener({
+      storeRoot: options.storeRoot,
+      channelsRoot: options.channelsRoot,
       logger
     }),
     signal: tasks.signal,

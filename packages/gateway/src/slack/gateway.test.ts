@@ -14,7 +14,14 @@ import { createGateway } from "./gateway.js";
 import type { Scheduler } from "./gateway.js";
 import { appMentionEnvelope, blockActionsEnvelope, createStubSlack } from "./stub-slack.js";
 import { GatewayError } from "./types.js";
-import type { MentionHandler, MessagePoster, SlackDecision, SlackMention } from "./types.js";
+import type {
+  MentionHandler,
+  MessageHandler,
+  MessagePoster,
+  SlackDecision,
+  SlackMention,
+  SlackMessage
+} from "./types.js";
 
 const BACKOFF = { baseMs: 1_000, maxMs: 30_000, resetAfterMs: 60_000 };
 
@@ -502,6 +509,184 @@ describe("createGateway", () => {
     await slack.deliverMention();
 
     expect(seen).toHaveLength(0);
+  });
+
+  describe("ordinary messages", () => {
+    /** Records every message the gateway hands down. */
+    function recordingIngest(): { onMessage: MessageHandler; seen: SlackMessage[] } {
+      const seen: SlackMessage[] = [];
+      return {
+        seen,
+        onMessage: message => {
+          seen.push(message);
+          return Promise.resolve();
+        }
+      };
+    }
+
+    it("hands a normalized message down with its raw thread ts", async () => {
+      const slack = createStubSlack();
+      const { onMessage, seen } = recordingIngest();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ channelId: "C0OPS", ts: "1717171717.000300" });
+      await slack.deliverMessage({
+        channelId: "C0OPS",
+        ts: "1717171717.000400",
+        threadTs: "1717171717.000300"
+      });
+
+      expect(seen.map(message => message.threadTs)).toEqual([null, "1717171717.000300"]);
+    });
+
+    it("acknowledges a message before running the handler", async () => {
+      const order: string[] = [];
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage: () => {
+          order.push("handler");
+          return Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await slack.deliverMessage();
+
+      expect(order).toEqual(["handler"]);
+      expect(slack.acked).toHaveLength(1);
+    });
+
+    it("acknowledges and drops a message when nothing composed a handler", async () => {
+      // The subscription belongs to the Slack app, not to what this process
+      // wired up. Not subscribing is not an option — an unacknowledged envelope
+      // is redelivered forever.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined)
+      });
+
+      await gateway.start();
+      await slack.deliverMessage();
+
+      expect(slack.acked).toHaveLength(1);
+    });
+
+    it("does not post anything, ever", async () => {
+      // `forbiddenPoster` rejects, so a path that tried would fail loudly. A
+      // message is recorded, never answered: answering one nobody addressed the
+      // app in is what #66 has to design, not something this path can do by
+      // accident.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage: () => Promise.resolve()
+      });
+
+      await gateway.start();
+      await slack.deliverMessage();
+      await flush();
+    });
+
+    it("loses one message and stays up when the handler throws", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      let calls = 0;
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        logger,
+        onMessage: () => {
+          calls += 1;
+          return calls === 1 ? Promise.reject(new GatewayError("post_failed", false)) : Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await slack.deliverMessage({ ts: "1717171717.000300", channelId: "C0OPS" });
+      await slack.deliverMessage({ ts: "1717171717.000400" });
+
+      expect(calls).toBe(2);
+      const failed = lines.find(line => line.event === "message_failed");
+      expect(failed).toMatchObject({ level: "error", channel: "C0OPS", reason: "post_failed" });
+    });
+
+    it("logs nothing at all for a message that arrives and is handled", async () => {
+      // Deliberate, and the argument is in `dispatchMessage`: ids are legal in a
+      // log line, but one line per message turns stdout into a record of who
+      // spoke in which channel and when. A drop is silent for the same reason.
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        logger,
+        onMessage: () => Promise.resolve()
+      });
+
+      await gateway.start();
+      const before = lines.length;
+      await slack.deliverMessage();
+      await slack.deliverMessage({ ts: "1717171717.000400", subtype: "channel_join" });
+      await slack.deliverMessage({ ts: "1717171717.000500", botId: "B0BOT" });
+
+      expect(lines.slice(before)).toEqual([]);
+    });
+
+    it("does not spend the mention dedupe budget on messages", async () => {
+      // `seen` is bounded and evicts oldest-first. If messages went in, a busy
+      // workspace would flush every remembered mention id and a redelivered
+      // mention would run a second model turn. The store's own UNIQUE ts is what
+      // makes a redelivered message a no-op instead.
+      const slack = createStubSlack();
+      const { handler, seen } = recordingHandler("on it");
+      const gateway = createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler,
+        onMessage: () => Promise.resolve()
+      });
+
+      await gateway.start();
+      await slack.deliverMention({ eventId: "Ev0MENTION" });
+      for (let i = 0; i < 1_100; i += 1) {
+        await slack.deliverMessage({ eventId: `Ev0MSG${i}`, ts: `1717171717.${i}` });
+      }
+      await slack.deliverMention({ eventId: "Ev0MENTION" });
+
+      expect(seen).toHaveLength(1);
+    });
+
+    it("stops handing messages down once the gateway has stopped", async () => {
+      const slack = createStubSlack();
+      const { onMessage, seen } = recordingIngest();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage
+      });
+
+      await gateway.start();
+      await gateway.stop();
+      await slack.deliverMessage();
+
+      expect(seen).toHaveLength(0);
+    });
   });
 
   describe("approval cards", () => {

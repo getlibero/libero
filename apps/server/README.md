@@ -57,7 +57,8 @@ the far end of a thread.
 | `PROXY_CLIENT_CERT_DIR` | Holds `client-<channel id>.pem` and `.key` per channel. |
 | `AGENT_PROVIDER` | `anthropic` or `openai-compatible`. |
 | `AGENT_MODEL` | Model id, passed to the provider verbatim. The fallback for a channel whose sheet names none. |
-| `AGENT_CHANNELS_ROOT` | The team sheets: one directory per channel, each with a `channel.toml`. |
+| `AGENT_CHANNELS_ROOT` | The team sheets: one directory per channel, each with a `channel.toml`. Read only. |
+| `AGENT_STORE_ROOT` | The message stores: one directory per channel, each with a `store.db`. Written. Not the same root. |
 | `ANTHROPIC_API_KEY` | Required when `AGENT_PROVIDER=anthropic`. |
 | `OPENAI_API_KEY` | Required when `AGENT_PROVIDER=openai-compatible`. |
 | `ANTHROPIC_BASE_URL` | Optional. Anthropic's own endpoint when unset. |
@@ -89,8 +90,32 @@ path that is merely typed wrong. Nothing is read from the directory at startup:
 a root that does not exist is a channel whose sheet falls back, not a process
 that will not boot.
 
-The Slack app needs Socket Mode enabled, the `app_mentions:read` and
-`chat:write` scopes, and the `app_mention` event subscribed.
+`AGENT_STORE_ROOT` is where this process writes, and **it is deliberately a
+different root from the sheets**. That is a security decision rather than a
+filing preference. The obvious layout puts a channel's `store.db` beside its
+`channel.toml`, but `deploy/docker-compose.yml` mounts the channels directory
+into both services and it is where the proxy reads its authorization from — so
+making it writable here would mean the process that runs the model could rewrite
+a `channel.toml`. The proxy re-reads the sheet per call, so that is a compromised
+agent widening its own permissions. The channels root stays read-only to both
+services and everything this process writes goes somewhere else.
+
+It is required, with no default, and the reason is different from the others: it
+holds message text. `PROXY_BUDGET_DB` and `PROXY_AUDIT_DB` hold counts and
+outcomes and say "nothing in it is a secret"; this holds what people said, and
+an operator should be choosing where a channel's conversation lands rather than
+inheriting a path. Nothing is read or created from the directory at startup —
+whether a channel gets a store is decided per channel, on first use, and is
+gated on that channel having a team sheet: the app is in most channels of a
+workspace and provisioned for few, and an unprovisioned one is recorded nowhere.
+
+The Slack app needs Socket Mode enabled; the `app_mentions:read` and
+`chat:write` scopes, plus `channels:history` (and `groups:history` for private
+channels); and the `app_mention` and `message.channels` events subscribed (plus
+`message.groups`). The two are separate concerns: mentions are what the app
+answers, and `message.*` is what fills the per-channel store the context
+assembler reads back. Without the history scope the app answers mentions and
+remembers nothing.
 
 ## Running it
 
@@ -135,7 +160,20 @@ when the task starts — so end-to-end latency is queue plus cap.
 Sessions are evicted after 30 minutes idle, and never while they have work
 running or queued, however old. Eviction is lazy: it happens on the path a
 mention takes anyway, so nothing here keeps a timer alive to free memory nobody
-is waiting on. Nothing is durable, so a restart drops every session at no cost.
+is waiting on. Eviction closes the session's `store.db`, which is the one thing
+a session holds that is more than a timestamp. A restart drops every session at
+no cost: the store is the durable half and a session is only a handle to it,
+reopened on demand.
+
+**A message opens a session too, and does not take its queue.** Ordinary
+channel messages are recorded rather than answered, so ingest opens the session
+— which is what makes a message in a channel nobody has mentioned the app in
+still get stored — and writes straight through. The queue exists to serialize
+model turns; a store write is one synchronous statement with nothing to
+serialize, and behind the queue a message arriving mid-task would wait out a
+whole model turn to be filed. The consequence is deliberate: message traffic
+defers eviction, so a chatty channel keeps a warm handle, which is the point of
+holding one.
 
 ### The team sheet, as this process reads it
 
@@ -216,8 +254,11 @@ is #86.
 `SIGTERM` or `SIGINT` aborts every task in flight and closes the socket. A
 cancelled task posts nothing: the operator asked for quiet, and an answer
 arriving after the socket closed has nowhere to go. A second signal exits
-immediately — nothing here is durable, so the cost is at most one answer that
-was already cancelled, and the one turn each in-flight task was reporting.
+immediately, and exiting with a session's `store.db` still open is safe rather
+than merely tolerated: the store runs in WAL with `synchronous = FULL`, so a
+committed row survives a hard kill and nothing is buffered waiting for a close.
+The cost is at most one answer that was already cancelled, and the one turn each
+in-flight task was reporting.
 That under-reports rather than over-reports, so the budget fails open, and the
 proxy's own tool-call meter is unaffected either way. Draining before exit is
 #118, which also has to settle whether a task finishing during the drain gets
@@ -236,12 +277,19 @@ brings it back once the environment is fixed.
   `index.ts` that knows what Slack is. A `SlackMention` becomes a `TaskRequest`
   and a reply goes back; a second front-end writes its own version of exactly
   this file.
+- `src/ingest.ts` — the other half of that seam, and the shorter one: a
+  `SlackMessage` becomes a row in its channel's store. Out here rather than
+  under `session/` because it names both a Slack type and a session, which is
+  the pair the ESLint rule forbids in one file.
 - `src/session/types.ts` — what everything below the adapter works in:
   `SessionKey`, `TaskRequest`, `TaskSettings`. No Slack type appears in it, and
   an ESLint rule on `src/session/**` is what keeps that true.
 - `src/session/mutex.ts` — one at a time, in arrival order.
 - `src/session/registry.ts` — the sessions, and when they are torn down.
 - `src/session/sheet.ts` — a channel's team sheet to a model and four caps.
+- `src/session/store.ts` — a channel's message store, gated on it having a
+  sheet. Symmetric with `sheet.ts`, and total in the same way: it answers `null`
+  rather than throwing, because `registry.open` is synchronous and uncaught.
 - `src/session/router.ts` — request in, reply out: which session, what it waits
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend

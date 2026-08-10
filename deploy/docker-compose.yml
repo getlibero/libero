@@ -39,6 +39,19 @@ services:
       # agent reads from them can widen what a channel may do — the proxy
       # decides that from its own copy, and its meter is what is authoritative.
       AGENT_CHANNELS_ROOT: /data/channels
+      # The per-channel message stores: one <channel>/store.db, written as
+      # ordinary messages arrive. A separate root from the sheets above, and
+      # that is a security decision rather than tidiness — the channels
+      # directory is where the proxy reads its authorization from and stays
+      # read-only to both services, so an agent that could write there could
+      # rewrite a channel.toml and widen what its own channel may do. Everything
+      # this process writes goes here instead.
+      #
+      # SQLite writes -wal and -shm beside each file, so the volume is mounted
+      # read-write and the *directory* has to be writable. Unlike the two proxy
+      # databases, this one holds message text: it is a channel's conversation,
+      # and it belongs to that channel's members.
+      AGENT_STORE_ROOT: /data/store
       # LLM provider keys go HERE (completion only) — never tool credentials.
       # Each provider's own conventional variable: the one matching
       # AGENT_PROVIDER is required, the other is ignored. The base URLs are
@@ -53,6 +66,9 @@ services:
       # Read-only: the agent reads sheets and writes none. The proxy's mount is
       # already :ro for the same reason.
       - ../channels:/data/channels:ro
+      # The one writable mount this service has, and it is deliberately not the
+      # one above. See AGENT_STORE_ROOT.
+      - store-data:/data/store
       # The trust anchor and the channel client certs — not ./certs whole. The
       # server key would let a compromised agent impersonate the proxy, and the
       # CA key would let it mint an identity for any channel.
@@ -71,7 +87,9 @@ services:
     environment:
       # Encrypts credentials at rest. The `:?` form fails `docker compose up`
       # with this message rather than starting a container that restart-loops.
-      PROXY_VAULT_KEY: ${PROXY_VAULT_KEY:?set PROXY_VAULT_KEY in .env — generate with: openssl rand -base64 32}
+      # Quoted because the message contains ": ", which YAML would otherwise
+      # read as a nested mapping — the whole file fails to parse without it.
+      PROXY_VAULT_KEY: "${PROXY_VAULT_KEY:?set PROXY_VAULT_KEY in .env — generate with: openssl rand -base64 32}"
       # Read, and required. Secrets are loaded into it by an admin running
       # `docker compose run --rm proxy node dist/vault.js set <name>`, which
       # keeps the master key inside this container rather than on the host.
@@ -137,4 +155,7 @@ networks:
 volumes:
   audit-data:
   budget-data:
+  # The only one of these the agent side mounts, and the only one holding
+  # channel content rather than operator records.
+  store-data:
   vault-data:

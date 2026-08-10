@@ -9,9 +9,12 @@
 // handler.ts, the sessions and the loop under session/ — where they are
 // testable without a socket, a provider, or a process.
 //
-// Sessions are in memory and nothing here is durable. A restart drops every
-// session, which costs nothing today: a session holds a queue and a timestamp,
-// and the team sheet is read from disk per task rather than cached into one.
+// Sessions are in memory, and one thing in them is not: since #176 a live
+// session holds an open `store.db` for its channel. A restart drops every
+// session and reopens the files on demand, which costs nothing — the store is
+// the durable thing and the session is only a handle to it, the team sheet is
+// read from disk per task rather than cached into one, and a queue that was
+// drained by the abort below has nothing left to lose.
 //
 // This process holds the Slack app and bot tokens and the model provider key.
 // It holds no tool credential and has no way to reach a tool except one: a
@@ -26,9 +29,11 @@ import {
   completionConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
-  slackTokensFromEnv
+  slackTokensFromEnv,
+  storeRootFromEnv
 } from "./env.js";
 import { createSheetResolver } from "./session/sheet.js";
+import { createMessageStoreOpener } from "./session/store.js";
 
 const logger = createJsonLogger();
 
@@ -38,6 +43,9 @@ const logger = createJsonLogger();
 const { appToken, botToken } = slackTokensFromEnv(process.env);
 const model = modelFromEnv(process.env);
 const channelsRoot = channelsRootFromEnv(process.env);
+// A different root from the sheets, on purpose: this one is written to, and the
+// sheets directory is the tool proxy's authorization source. See env.ts.
+const storeRoot = storeRootFromEnv(process.env);
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
 // Reads the CA and rejects a non-https PROXY_URL here, before the socket opens.
 // A per-channel client certificate is resolved on first use — one channel with
@@ -54,12 +62,13 @@ const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
   // here with them, because what it does is exit.
-  slack: ({ handler, onDecision }) =>
+  slack: ({ handler, onDecision, onMessage }) =>
     createSlackSurface({
       appToken,
       botToken,
       handler,
       onDecision,
+      onMessage,
       logger,
       // The socket died for a reason retrying cannot fix — a revoked or rotated
       // token. Exiting is the honest outcome: the alternative is a process that
@@ -74,6 +83,7 @@ const { gateway } = createServer({
   completion,
   transport,
   sheets: createSheetResolver({ root: channelsRoot, model, logger }),
+  store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
   signal: tasks.signal,
   logger
 });
@@ -101,9 +111,14 @@ let closing = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     if (closing) {
-      // A second signal is an operator done waiting. Nothing here is durable —
-      // no file is open — so exiting costs at most one in-flight answer that
-      // was already cancelled, and one spend report per task in flight. The
+      // A second signal is an operator done waiting. Exiting with a session's
+      // `store.db` still open is safe rather than merely tolerable: the store
+      // runs in WAL with `synchronous = FULL`, so a committed row survives a
+      // hard kill and an uncommitted one was one synchronous statement that
+      // either ran or did not. Nothing is buffered waiting for a `close()`.
+      //
+      // What exiting does cost is at most one in-flight answer that was
+      // already cancelled, and one spend report per task in flight. The
       // meter under-reports in that case rather than over-reports: the budget
       // fails open, bounded by the tasks running at that moment, and the loop's
       // own token cap and the proxy's tool-call meter are what still bite.

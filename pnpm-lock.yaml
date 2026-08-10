@@ -48,6 +48,9 @@ importers:
       '@getlibero/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
+      '@getlibero/memory':
+        specifier: workspace:*
+        version: link:../../packages/memory
       '@getlibero/schema':
         specifier: workspace:*
         version: link:../../packages/schema

@@ -17,10 +17,12 @@ import { DEFAULT_BACKOFF, nextDelayMs } from "./backoff.js";
 import type { BackoffPolicy } from "./backoff.js";
 import { toDecision } from "./decision.js";
 import { toMention } from "./mention.js";
+import { toMessage } from "./message.js";
 import { GatewayError } from "./types.js";
 import type {
   DecisionHandler,
   MentionHandler,
+  MessageHandler,
   MessagePoster,
   SlackEnvelope,
   SlackGateway,
@@ -59,6 +61,15 @@ export interface GatewayOptions {
    * reason, which is the only safe way to ignore one.
    */
   onDecision?: DecisionHandler;
+  /**
+   * An ordinary message arrived in a channel this app is in.
+   *
+   * Optional for the same reason `onDecision` is: the subscription is a
+   * property of the Slack app, not of what this process composed, so a process
+   * with nowhere to put a message still receives one and still has to
+   * acknowledge it. Absent, a message is acked and dropped.
+   */
+  onMessage?: MessageHandler;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
   logger?: Logger;
   backoff?: BackoffPolicy;
@@ -97,7 +108,7 @@ function reasonOf(error: unknown): string {
 }
 
 export function createGateway(options: GatewayOptions): SlackGateway {
-  const { source, poster, handler, onDecision, onFatal } = options;
+  const { source, poster, handler, onDecision, onMessage, onFatal } = options;
   const logger = options.logger ?? createSilentLogger();
   const policy = options.backoff ?? DEFAULT_BACKOFF;
   const schedule = options.scheduler ?? defaultScheduler;
@@ -128,6 +139,15 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   // mechanisms that can disagree are worse than one that is authoritative.
   // There is also no honest key to use: an interactive payload carries no
   // `event_id`.
+  //
+  // Ordinary messages get no entry either, on the same argument. The message
+  // store is authoritative for them: its `ts` column is UNIQUE and its insert
+  // is `ON CONFLICT DO NOTHING`, so a redelivery is already a no-op — and that
+  // key is the better one, being the message's own identity and surviving a
+  // restart, which this set does not. Adding them would also break the thing
+  // this set is for: it is bounded at SEEN_EVENT_LIMIT and evicts oldest-first,
+  // so a busy workspace's message traffic would flush every remembered mention
+  // id within seconds.
   const seen = new Set<string>();
 
   function remember(eventId: string): void {
@@ -309,6 +329,56 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   }
 
   /**
+   * A message in, and nothing out.
+   *
+   * The quietest of the three paths, and deliberately so. It logs nothing on
+   * the way through and nothing for an ordinary drop — no `message` line, no
+   * `ignored` line for a subtype or a bot.
+   *
+   * `log.ts` permits ids, so a line carrying channel, user and ts would be
+   * legal by the letter of that rule. It is still wrong here: at message volume
+   * the log becomes a running record of who spoke in which channel and when,
+   * which is the shape of the thing the "no message text" rule is protecting,
+   * assembled out of fields that are individually fine. Stdout should scale
+   * with an operator's problems, not with a channel's conversation.
+   *
+   * What does get logged is rare and actionable, and it is logged by whoever
+   * can say something useful: a handler that throws gets `message_failed` here,
+   * and a store that cannot be opened or written says so from the process that
+   * owns it.
+   */
+  async function dispatchMessage(envelope: SlackEnvelope): Promise<void> {
+    // Ack first, for the reason `dispatch` gives. A message handler is a SQLite
+    // write rather than a model turn, so the window is not tight — but a
+    // handler that hangs must not turn into a redelivery storm.
+    try {
+      await envelope.ack();
+    } catch (error) {
+      logger.log("warn", { event: "ignored", reason: reasonOf(error) });
+      return;
+    }
+    if (state !== "running") return;
+    if (onMessage === undefined) return;
+
+    const result = toMessage(envelope);
+    if ("ignored" in result) return;
+
+    try {
+      await onMessage(result.message);
+    } catch (error) {
+      // One message is lost and the socket stays up, exactly as a failed
+      // handler loses one mention. Nothing is posted: a channel does not want
+      // to be told its own message was not filed.
+      logger.log("error", {
+        event: "message_failed",
+        channel: result.message.channelId,
+        eventId: result.message.eventId,
+        reason: reasonOf(error)
+      });
+    }
+  }
+
+  /**
    * A click in, and nothing out.
    *
    * Mirrors `dispatch` deliberately, including the order: the ack comes first
@@ -379,10 +449,12 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       if (state !== "idle") throw new GatewayError("connect_failed", false);
       state = "running";
       // Registered before connecting, so no event can arrive unlistened. The
-      // interaction listener goes on unconditionally, even with no
-      // `onDecision`: an unacknowledged envelope is redelivered, so a gateway
-      // that simply did not subscribe would be retried at forever.
+      // interaction and message listeners go on unconditionally, even with no
+      // `onDecision` and no `onMessage`: an unacknowledged envelope is
+      // redelivered, so a gateway that simply did not subscribe would be
+      // retried at forever.
       source.onMention(dispatch);
+      source.onMessage(dispatchMessage);
       source.onInteraction(dispatchInteraction);
       source.onDrop(handleDrop);
       connecting = true;

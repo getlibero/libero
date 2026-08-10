@@ -5,7 +5,8 @@ import {
   modelFromEnv,
   proxyConfigFromEnv,
   requiredEnv,
-  slackTokensFromEnv
+  slackTokensFromEnv,
+  storeRootFromEnv
 } from "./env.js";
 
 describe("requiredEnv", () => {
@@ -69,6 +70,37 @@ describe("channelsRootFromEnv", () => {
     // sheet falls back — the deployment still answers, and the tool proxy
     // service still refuses everything it should.
     expect(channelsRootFromEnv({ AGENT_CHANNELS_ROOT: "/nowhere/at/all" })).toBe("/nowhere/at/all");
+  });
+});
+
+describe("storeRootFromEnv", () => {
+  it("returns the root as given", () => {
+    expect(storeRootFromEnv({ AGENT_STORE_ROOT: "/data/store" })).toBe("/data/store");
+  });
+
+  it("has no default", () => {
+    // It holds message text, which is what makes a default worse here than for
+    // the two proxy databases: an operator should be choosing where a channel's
+    // conversation lands, not inheriting a path.
+    expect(() => storeRootFromEnv({})).toThrow(/AGENT_STORE_ROOT/);
+  });
+
+  it("is a separate variable from the channels root", () => {
+    // The security decision, in the smallest form it can be asserted in. The
+    // channels directory is where the tool proxy reads its authorization from
+    // and stays read-only to both services; everything this process writes goes
+    // somewhere else. One variable serving both would make the two the same
+    // directory by default.
+    const env = { AGENT_CHANNELS_ROOT: "/data/channels", AGENT_STORE_ROOT: "/data/store" };
+
+    expect(storeRootFromEnv(env)).not.toBe(channelsRootFromEnv(env));
+    expect(() => storeRootFromEnv({ AGENT_CHANNELS_ROOT: "/data/channels" })).toThrow(
+      /AGENT_STORE_ROOT/
+    );
+  });
+
+  it("reads nothing from disk", () => {
+    expect(storeRootFromEnv({ AGENT_STORE_ROOT: "/nowhere/at/all" })).toBe("/nowhere/at/all");
   });
 });
 
