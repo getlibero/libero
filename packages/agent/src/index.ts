@@ -52,7 +52,8 @@ export type {
   HeldCallPrompter,
   HeldToolCall,
   ProxyToolClient,
-  ProxyToolClientOptions
+  ProxyToolClientOptions,
+  UnmappedToolCall
 } from "./proxy/tools.js";
 
 export { createProxySpendClient } from "./proxy/spend.js";

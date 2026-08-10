@@ -124,14 +124,23 @@ Script `calls("list_prs", …)`.
 
 **An unlisted name never reaches the proxy.** The agent decodes a flat name to a
 `(server, tool)` pair through a map built from the listing, so a name the listing
-did not carry is refused client-side (`packages/agent/src/proxy/tools.ts:172`):
-no `/v1/tools/call`, no audit row, and the model gets *"`x` is not a tool this
-channel permits."* That is correct — *"the proxy is not asked about a tool it
-never published"* — and it means a case testing the **proxy's** enforcement has
+did not carry is refused client-side (`packages/agent/src/proxy/tools.ts`, the
+`mapped === undefined` branch of `execute`): no `/v1/tools/call`, no audit row,
+and the model gets *"`x` is not a tool this channel permits."* That is correct —
+*"the proxy is not asked about a tool it never published"* — and it means a case
+testing the **proxy's** enforcement has
 to submit a call the listing *did* carry. Two ways: rewrite the channel's sheet
 between the listing and the call (`rig.channelsRoot.write`, which the proxy
 re-reads per call), or remove it entirely (`rig.channelsRoot.remove`). Scripting
 a name nobody published tests the agent's map, which is a different claim.
+
+**The refused-here half is asserted on the log, not the upstream.** Because
+nothing is sent, `upstream` and `auditDb` are both silent, and a case proving
+*"the attack was really attempted"* has only one surface: `agent.log()` carries a
+`warn` line, `event: "tool_not_permitted"`, with the model's name in `tool` and
+the task in `task` (#170). That is the only record of a call this system refused
+before deciding it, and it is deliberately on the agent side — the proxy never
+saw the call and rightly writes no row for it.
 
 **Making the agent misbehave is a transport wrapper, not a config flag.** The
 agent is the untrusted half, so a claim about what the proxy holds when it stops
