@@ -124,11 +124,24 @@ Script `calls("list_prs", …)`.
 
 **An unlisted name never reaches the proxy.** The agent decodes a flat name to a
 `(server, tool)` pair through a map built from the listing, so a name the listing
-did not carry is refused client-side: no `/v1/tools/call`, no audit row, and the
-model gets *"`x` is not a tool this channel permits."* That is correct, and it
-means a case testing the **proxy's** enforcement has to submit a call the listing
-*did* carry — change the sheet between the listing and the call, or remove the
-channel's sheet mid-task, rather than simply scripting a name nobody published.
+did not carry is refused client-side (`packages/agent/src/proxy/tools.ts:172`):
+no `/v1/tools/call`, no audit row, and the model gets *"`x` is not a tool this
+channel permits."* That is correct — *"the proxy is not asked about a tool it
+never published"* — and it means a case testing the **proxy's** enforcement has
+to submit a call the listing *did* carry. Two ways: rewrite the channel's sheet
+between the listing and the call (`rig.channelsRoot.write`, which the proxy
+re-reads per call), or remove it entirely (`rig.channelsRoot.remove`). Scripting
+a name nobody published tests the agent's map, which is a different claim.
+
+**Some attacks cannot go through the agent at all.** `createProxyToolClient`
+sends no `channel` field and cannot be made to — `ToolCall` is strict, so a body
+carrying one is refused by the proxy rather than stripped — and it will only
+present the certificate matching the channel it was asked for. A case attacking
+identity resolution has to be its own client: build a `node:https` request
+against `rig.proxy.url` using `rig.certs`, and use `startRig({ rawCns })` for a
+certificate whose CN says something the CA never meant. That is the only way to
+put a header, a query parameter, and a body field in disagreement with a
+certificate and watch the certificate win.
 
 **Everything runs on real time.** The loop's wall clock is `AbortSignal.timeout`,
 which no fake timer can drive, so there is no `vi.useFakeTimers()` anywhere here.

@@ -30,6 +30,7 @@ import type { Surface } from "./canary.js";
 import { createCleanup, guarded } from "./cleanup.js";
 import type { Cleanup } from "./cleanup.js";
 import { mintCerts } from "./certs.js";
+import type { Certs } from "./certs.js";
 import { tempChannelsRoot } from "./channels.js";
 import type { ChannelsRoot, SheetSpec } from "./channels.js";
 import { scriptedModel } from "./model.js";
@@ -76,6 +77,17 @@ export interface Rig {
   readonly proxy: ProxyProcess;
   readonly agent: AgentSide;
   readonly model: ScriptedModel;
+  /**
+   * The mutual-TLS material, for a case that has to make its own request.
+   *
+   * Two things the agent's transport cannot do, and both are #133's: it will
+   * not send a `channel` field — `ToolCall` is strict, so a body carrying one
+   * is refused rather than stripped — and it will not present a certificate
+   * whose CN disagrees with the channel it was asked for. A case that needs
+   * either builds a `node:https` request against `proxy.url` with these paths,
+   * which is the only way to attack identity resolution from outside.
+   */
+  readonly certs: Certs;
   /** `PROXY_AUDIT_DB` — read it with `auditRows` / `lastAuditId`. */
   readonly auditDb: string;
   /** `PROXY_BUDGET_DB` — read it with `spendFor`. */
@@ -171,6 +183,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       proxy,
       agent,
       model,
+      certs,
       auditDb,
       budgetDb,
       surfaces: (): Surface[] => [
