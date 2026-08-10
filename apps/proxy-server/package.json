@@ -13,10 +13,12 @@
     "start": "node dist/index.js",
     "vault": "node dist/vault.js",
     "budget": "node dist/budget.js",
+    "audit": "node dist/audit.js",
     "test": "vitest run --exclude '**/dist/**'"
   },
   "dependencies": {
-    "@getlibero/proxy": "workspace:*"
+    "@getlibero/proxy": "workspace:*",
+    "@getlibero/schema": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.20.1"

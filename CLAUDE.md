@@ -51,8 +51,8 @@ calls, the redaction pass on the way back, the MCP client and its per-upstream
 pool, the daily budget meter over `node:sqlite`, the append-only audit log, and
 the approval ticket store),
 `apps/proxy-server` (the process composing all of it — a
-permitted call is now served rather than answered 501, plus a `budget`
-entrypoint alongside `vault` for the operator),
+permitted call is now served rather than answered 501, plus `budget` and
+`audit` entrypoints alongside `vault` for the operator),
 `packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
 into the thread, a reconnect ladder the gateway owns rather than the SDK, since
 #126 an approval card it can render and a click it can decode, since #176 an
@@ -801,13 +801,51 @@ These are load-bearing, not stylistic:
   shape goes when the code needing it lands, not something you can import yet.
 
   `src/audit.ts` is the one shape that never crosses the wire: the proxy builds
-  it from its own observation and the CLI reads it back out of SQLite. It is in
-  schema anyway because `packages/cli` is npm-published and `@getlibero/proxy`
-  is private, so #98 opens the file itself and needs the column names from
-  somewhere shared. `AuditRecord` is a **type with no zod object**, for the
-  reason `ResolvedToolCall` has none — a `.parse()` is how a channel gets taken
-  from a request body. `AuditOutcome` does get a zod enum, because #98 parses it
-  off `argv`.
+  it from its own observation and reads it back out of SQLite on the operator's
+  path. It is in schema because the row is written by one mapping and read by
+  another and the two must agree — a column renamed on one side is a type error
+  rather than a silently empty CSV column. `AuditRecord` is a **type with no zod
+  object**, for the reason `ResolvedToolCall` has none — a `.parse()` is how a
+  channel gets taken from a request body. `AuditOutcome` does get a zod enum,
+  because #98 parses it off `argv`. `auditRefusalMessage` lives here too: it
+  rebuilds a `ToolRefusal` from a row's columns and delegates to
+  `refusalMessage`, so the operator reading the log and the channel that saw the
+  refusal get the same words, and answers `null` for the three reasons whose
+  facts the table has no column for rather than inventing one.
+
+**#98 is the read path, and where it landed is the decision.** The issue said
+`packages/cli`; it went to `apps/proxy-server` as a third entrypoint
+(`node dist/audit.js`) beside `vault` and `budget`, because
+`deploy/docker-compose.yml` mounts the audit log as a **named volume**
+(`audit-data`) exactly as it does the vault's and the budget's — so
+`npx @getlibero/cli audit` would open a path that is not on the host. The rule
+the compose file already draws, now written down: **the CLI owns what the
+operator authors on the host** (`../channels`, `./certs`, the env file — all
+bind-mounted `:ro` into the services, and all still `libero init` /
+`channel add` / `doctor`'s), **and the proxy's own entrypoints own what the
+services own inside their volumes**. It defers rather than dodges the packaging
+question — `@getlibero/schema` is `private` too, so `doctor` will have to answer
+it — and that belongs to `doctor`.
+
+  Three things about the reader are settled. **It is a second connection, opened
+  `readOnly`**, so SQLite refuses a write before the append-only triggers have
+  to; the `-wal`/`-shm` sidecars it creates are bookkeeping beside the file
+  rather than a write to the log, and the module says so rather than claiming it
+  writes nothing. **It does not migrate**, in either direction, because
+  migrating is writing and a reader that repaired a file would be a reader that
+  changed the evidence — so a version mismatch names both numbers and stops.
+  And **the query statements are in `audit-db.ts`** with the INSERT, which is
+  what that file's rule already promised #98 would do; filter values are bound
+  and never concatenated, and the only thing whose length varies is the
+  `outcome IN (…)` placeholder run.
+
+  `parseArgs` from `node:util` is the flag parser, so no dependency was added.
+  The time bounds are parsed **by rule rather than by `Date.parse`**, which
+  accepts `04/08/2026` in whatever order it likes, silently rolls `2026-02-30`
+  into March, and reads a zoneless instant as the *host's* time on a command
+  whose usage says UTC. A bare date is that whole UTC day and a time must carry
+  a zone. **No colour is emitted**, ever: the outcome word is the status, three
+  colours do not cover eight outcomes, and ANSI in a CSV is a corrupt file.
 
 ## Design
 

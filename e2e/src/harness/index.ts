@@ -24,6 +24,9 @@ export type { RawClient, RawRequest, RawResponse } from "./client.js";
 export { TURN_TOKENS, calls, relays, says, scriptedModel, withUsage } from "./model.js";
 export type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
 
+export { runAuditCli } from "./audit-cli.js";
+export type { AuditCliResult } from "./audit-cli.js";
+
 export { runBudgetCli } from "./budget-cli.js";
 export type { BudgetCliResult } from "./budget-cli.js";
 

@@ -258,11 +258,13 @@ export default tseslint.config(
     }
   },
   {
-    // The other end of the budget-admin boundary: the barrel re-exports the
-    // operator functions for the budget CLI, so the composition root could
-    // reach them by name without ever naming budget-admin. The serving process
-    // closes over read/recordToolCall/recordTokens; the CLI (budget-cli.ts,
-    // its own bin) is the importer these exports exist for.
+    // The other end of the operator boundary: the barrel re-exports the
+    // operator functions for the vault, budget and audit CLIs, so the
+    // composition root could reach them by name without ever naming
+    // budget-admin or audit-db. The serving process closes over
+    // read/recordToolCall/recordTokens and an `AuditWriter` that can only
+    // append; the three CLIs, each its own entrypoint, are the importers these
+    // exports exist for.
     files: ["apps/proxy-server/src/index.ts"],
     rules: {
       "no-restricted-imports": [
@@ -271,9 +273,15 @@ export default tseslint.config(
           paths: [
             {
               name: "@getlibero/proxy",
-              importNames: ["resetChannel", "readChannelSpend", "channelDays", "pruneTurnReports"],
+              importNames: [
+                "resetChannel",
+                "readChannelSpend",
+                "channelDays",
+                "pruneTurnReports",
+                "openAuditReader"
+              ],
               message:
-                "Operator paths on the meter stay off the serving process. They belong to the budget CLI (budget-cli.ts), reached as its own entrypoint."
+                "Operator paths stay off the serving process. Meter resets and aggregate reads belong to the budget CLI, and reading the audit log belongs to the audit CLI — each reached as its own entrypoint."
             }
           ]
         }
