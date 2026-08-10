@@ -110,6 +110,20 @@ describe("the wire tool call", () => {
       expect(ToolCall.safeParse({ ...wire, server: name }).success).toBe(true);
     }
   });
+
+  // Two layers, and this is where the boundary between them is drawn. A name
+  // that reaches the enforcement gate is refused there by an exact scan of the
+  // team sheet's array, which is what packages/proxy/src/enforce.test.ts
+  // covers for `constructor` and its siblings. These never get that far — the
+  // leading underscore is not in the identifier's first character class — so
+  // the layer that refuses them is this one, and a reader looking for
+  // `__proto__` beside `constructor` should find the answer here.
+  it("cannot express the prototype names that do not start with a letter", () => {
+    for (const name of ["__proto__", "_constructor", "__defineGetter__"]) {
+      expect(ToolCall.safeParse({ ...wire, server: name }).success, name).toBe(false);
+      expect(ToolCall.safeParse({ ...wire, tool: name }).success, name).toBe(false);
+    }
+  });
 });
 
 describe("resolving a call to a channel", () => {
