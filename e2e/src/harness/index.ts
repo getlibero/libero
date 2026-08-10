@@ -18,8 +18,11 @@ export type { ChannelsRoot, SheetSpec, SheetTool } from "./channels.js";
 
 export { breakRedaction } from "./mutate.js";
 
+export { rawClient } from "./client.js";
+export type { RawClient, RawRequest, RawResponse } from "./client.js";
+
 export { calls, says, scriptedModel } from "./model.js";
-export type { ScriptedModel } from "./model.js";
+export type { ModelTurnHook, ScriptedModel } from "./model.js";
 
 export { spawnProxy } from "./proxy-process.js";
 export type { ProxyEnv, ProxyProcess } from "./proxy-process.js";

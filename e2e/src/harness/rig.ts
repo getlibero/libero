@@ -34,7 +34,7 @@ import type { Certs } from "./certs.js";
 import { tempChannelsRoot } from "./channels.js";
 import type { ChannelsRoot, SheetSpec } from "./channels.js";
 import { scriptedModel } from "./model.js";
-import type { ScriptedModel } from "./model.js";
+import type { ModelTurnHook, ScriptedModel } from "./model.js";
 import { spawnProxy } from "./proxy-process.js";
 import type { ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
@@ -80,6 +80,15 @@ export interface RigOptions {
   readonly nodeArgs?: readonly string[];
   /** The model's turns, in order. Running past the end throws. */
   readonly script?: readonly CompletionResponse[];
+  /**
+   * Fired as the model is asked for each turn, with the 1-based turn number.
+   *
+   * The ordering seam: the loop lists tools before its first turn, so a hook
+   * on turn 1 lands between the listing and the call the answer provokes. That
+   * is how a case rewrites a team sheet after the listing carried a tool and
+   * before the proxy judges the call — see `ModelTurnHook`.
+   */
+  readonly onModelTurn?: ModelTurnHook;
   readonly scheduler?: Scheduler;
   readonly now?: () => number;
   /**
@@ -198,7 +207,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       tlsCa: certs.caPath
     }, options.nodeArgs ?? []);
 
-    const model = scriptedModel(options.script ?? []);
+    const model = scriptedModel(options.script ?? [], options.onModelTurn);
     const agent = await startAgent(cleanup, {
       proxyUrl: proxy.url,
       caPath: certs.caPath,

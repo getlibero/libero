@@ -27,6 +27,8 @@ type ProxyChild = ChildProcessByStdio<null, Readable, Readable>;
 const READY_TIMEOUT_MS = 15_000;
 /** After SIGTERM. See `stop` for why this is not simply "wait for close". */
 const TERM_GRACE_MS = 2_000;
+/** How long `waitForLog` waits. Generous — it is a pipe, not a network. */
+const LOG_TIMEOUT_MS = 5_000;
 
 export interface ProxyEnv {
   readonly channelsRoot: string;
@@ -45,6 +47,37 @@ export interface ProxyProcess {
   readonly port: number;
   /** Every line the process wrote, stdout and stderr, in arrival order. */
   log(): string[];
+  /**
+   * Resolves with the first log line whose fields all equal `match`.
+   *
+   * The only way to assert on this process's output, and the reason is a race
+   * that `log()` alone cannot avoid: a line and the response it accompanies
+   * cross two different pipes. The proxy writes `identity_rejected` before it
+   * sends the 401, but the stdout write and the TLS write arrive here in
+   * whatever order the kernel delivers them, so a case that reads `log()` the
+   * moment its request settles is a coin flip. Some lines have no response at
+   * all to be ordered against — `tls_client_rejected` fires on a socket event.
+   *
+   * Matches on equality across the given fields only, so a case names the two
+   * or three that carry its claim rather than restating a whole log line.
+   */
+  waitForLog(match: Readonly<Record<string, unknown>>, timeoutMs?: number): Promise<Record<string, unknown>>;
+}
+
+/** A line, if it is JSON holding every field of `match` at the same value. */
+function matches(line: string, match: Readonly<Record<string, unknown>>): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const fields = parsed as Record<string, unknown>;
+  for (const [key, value] of Object.entries(match)) {
+    if (fields[key] !== value) return null;
+  }
+  return fields;
 }
 
 function entrypoint(): string {
@@ -105,6 +138,10 @@ export async function spawnProxy(
     await stop(child);
   });
 
+  // Woken on every completed line rather than polled, so `waitForLog` settles
+  // as soon as the pipe delivers and a case that is right costs no wall clock.
+  const waiters = new Set<() => void>();
+
   let buffered = "";
   const consume = (chunk: Buffer): void => {
     buffered += chunk.toString();
@@ -114,6 +151,7 @@ export async function spawnProxy(
       lines.push(buffered.slice(0, at));
       buffered = buffered.slice(at + 1);
     }
+    for (const wake of [...waiters]) wake();
   };
   child.stdout.on("data", consume);
   child.stderr.on("data", consume);
@@ -147,7 +185,47 @@ export async function spawnProxy(
     child.once("exit", code => fail(`exited with code ${String(code)} before listening`));
   });
 
-  return { url: `https://127.0.0.1:${port}`, port, log: () => [...lines] };
+  const waitForLog = (
+    match: Readonly<Record<string, unknown>>,
+    timeoutMs: number = LOG_TIMEOUT_MS
+  ): Promise<Record<string, unknown>> =>
+    new Promise((resolve, reject) => {
+      // From zero, not from the end: the line a case is waiting for has often
+      // already arrived by the time it asks, and a cursor here would turn the
+      // race this exists to remove into a hang.
+      let at = 0;
+      const look = (): boolean => {
+        for (; at < lines.length; at++) {
+          const line = lines[at];
+          const found = line === undefined ? null : matches(line, match);
+          if (found !== null) {
+            settle();
+            resolve(found);
+            return true;
+          }
+        }
+        return false;
+      };
+      const settle = (): void => {
+        clearTimeout(timer);
+        waiters.delete(look);
+      };
+      const timer = setTimeout(() => {
+        settle();
+        reject(
+          new Error(
+            `e2e: no log line matched ${JSON.stringify(match)} within ${timeoutMs}ms. Output:\n${
+              lines.join("\n") || "(none)"
+            }`
+          )
+        );
+      }, timeoutMs);
+
+      if (look()) return;
+      waiters.add(look);
+    });
+
+  return { url: `https://127.0.0.1:${port}`, port, log: () => [...lines], waitForLog };
 }
 
 /**

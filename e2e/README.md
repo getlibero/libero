@@ -185,11 +185,43 @@ would be the exact failure it exists to prevent.
 sends no `channel` field and cannot be made to — `ToolCall` is strict, so a body
 carrying one is refused by the proxy rather than stripped — and it will only
 present the certificate matching the channel it was asked for. A case attacking
-identity resolution has to be its own client: build a `node:https` request
-against `rig.proxy.url` using `rig.certs`, and use `startRig({ rawCns })` for a
-certificate whose CN says something the CA never meant. That is the only way to
-put a header, a query parameter, and a body field in disagreement with a
-certificate and watch the certificate win.
+identity resolution has to be its own client: `rawClient({ url: rig.proxy.url,
+certs: rig.certs })`, then `send({ method, path, as, body, headers })`. `as` is
+the certificate to present, by the name `dev-certs.sh` wrote it under — a
+channel id from `channels`, or the label half of a `startRig({ rawCns })` entry,
+which is how a certificate claims something the CA never meant. `path` carries
+its own query string and `body` is serialized verbatim as `unknown`, because a
+client that could only send well-formed calls could not attack the parser. That
+is the only way to put a header, a query parameter, and a body field in
+disagreement with a certificate and watch the certificate win.
+`src/identity.test.ts` is the worked example.
+
+The trust anchor is not one of the knobs. The CA the *server* is verified
+against is always the rig's, whichever client certificate is being presented;
+swap both and the case fails at its own end of the handshake, proving nothing.
+
+**A side effect that has to land mid-task goes on the model, not the upstream.**
+`startRig({ onModelTurn })` fires as the model is asked for each turn, and the
+loop lists tools once before its first turn — so a hook on turn 1 is provably
+after the listing was built and before the call it provokes is submitted. That
+is the ordering the one case needs that rewrites a team sheet between them
+(`src/unlisted-tool.test.ts`), and it is how the proxy's own gate gets handed a
+call the listing really did carry.
+
+Hooking the upstream's `respond` instead looks equivalent and is not: it also
+fires for `server/discover`, and the catalog is cached per upstream for five
+minutes, so whether a later task asks the upstream anything at all stops being
+the case's to decide.
+
+**Assert on the proxy's log through `proxy.waitForLog`, never `proxy.log()`.** A
+log line and the response it accompanies cross two different pipes. The proxy
+writes `identity_rejected` before it sends the 401, but the two arrive here in
+whatever order the kernel delivers them, so a case that reads `log()` the moment
+its request settles is a coin flip — and some lines have no response at all to
+be ordered against, since `tls_client_rejected` fires on a socket event.
+`waitForLog({ event, reason })` matches on the fields given and resolves with the
+parsed line. `log()` stays for the canary scan, which reads everything and races
+nothing.
 
 **Everything runs on real time.** The loop's wall clock is `AbortSignal.timeout`,
 which no fake timer can drive, so there is no `vi.useFakeTimers()` anywhere here.
@@ -219,9 +251,12 @@ outlive the run.
 - `src/harness/certs.ts` · `channels.ts` · `vault.ts` — the material the proxy reads.
 - `src/harness/upstream.ts` — the recording MCP server.
 - `src/harness/model.ts` — the scripted `CompletionClient`.
+- `src/harness/client.ts` — the attacker's own mutual-TLS client.
 - `src/harness/records.ts` — reading the audit log and the meter back.
 - `src/harness/cleanup.ts` — the teardown stack.
 - `src/smoke.test.ts` — the rig proving itself.
+- `src/unlisted-tool.test.ts` · `src/identity.test.ts` — #133, through the agent
+  and around it.
 
 ## What is enforced rather than asserted
 
