@@ -99,7 +99,13 @@ const server = createProxyServer({
 });
 
 server.listen(listenPort, host, () => {
-  logger.log("info", { event: "listening", host, port: listenPort });
+  // The bound port, not the configured one. They differ whenever PROXY_PORT is
+  // 0 — where the whole point is to learn what the OS chose — and a line that
+  // reported the request rather than the result would be a log that lies in the
+  // one case anybody reads it for.
+  const bound = server.address();
+  const port = typeof bound === "object" && bound !== null ? bound.port : listenPort;
+  logger.log("info", { event: "listening", host, port });
 });
 
 let closing = false;

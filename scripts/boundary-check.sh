@@ -26,6 +26,15 @@
 # would not parse. `package.json` is included because a dependency edge is
 # already wrong on its own — it puts the proxy's code into the agent's image —
 # and it trips neither gate until an import appears.
+#
+# `e2e/` is not among the roots below, and that is deliberate rather than an
+# omission. The end-to-end suite composes both sides on purpose: it stands up
+# the real proxy and the real agent composition and drives one against the
+# other, which is the only way to show the two halves agree about the wire. It
+# ships in no image, so a dependency edge there carries none of the risk this
+# check exists for. The rule e2e/ does carry — that Slack and the model are the
+# only things it may fake — is an ESLint block on `e2e/**`, because that one is
+# genuinely about imports and has a parser available.
 set -eu
 
 if grep -rn \

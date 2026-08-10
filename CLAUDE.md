@@ -59,7 +59,37 @@ since #126 an approval card it can render and a click it can decode),
 `apps/server` (the gateway + agent process — env parsing, the mention handler,
 lifecycle), `packages/cli` (placeholder npm release), `design/` (the design
 system — plain CSS, no TypeScript), and `site/` (getlibero.com).
-`packages/memory` is a README stub and `e2e/` is empty.
+`packages/memory` is a README stub. `e2e/` is the security suite's rig (#131).
+
+**The two halves meet for real in `e2e/` (#131, which absorbed #47).** The proxy
+runs as its **spawned built entrypoint**; the agent side runs **in-process**
+through `createServer` — the same call `apps/server/src/index.ts` makes, which
+is why `apps/server/src/compose.ts` exists at all and why the package's
+`main`/`exports` point at it rather than at the process module.
+`held-call.test.ts` runs on it too, which is what proves the extraction is the
+wiring rather than a copy of it.
+
+Three things there are decisions. **What is faked is exactly two things** — the
+Slack socket (`createStubSlack`) and the model (a scripted `CompletionClient`) —
+and an ESLint block on `e2e/**` enforces it, banning `@slack/*`, the provider
+SDKs, and `createCompletionClient`, which is re-exported from `@getlibero/agent`
+and would otherwise reach a provider without any file naming one. **The proxy is
+the half that had to be spawned**, because the claim is that tool credentials
+live only there — with the vault in the agent's own heap, a leak assertion is
+about module scope rather than a process boundary. The agent side *cannot* be
+spawned: `createSlackSurface` builds the real `SocketModeClient` and `WebClient`,
+forwards neither injection seam beneath it, and sets no `slackApiUrl`. And **the
+positive control is load-bearing** — every "the credential did not leak"
+assertion also passes on a run where none was ever resolved, so a case asserts
+the canary *did* arrive at the upstream as `Bearer <canary>` before asserting it
+reached nothing else.
+
+`packages/proxy`'s `mcp-fake-server.ts` is exported for this, on `stub-slack.ts`'s
+argument. It is the exception to the barrel's "no client, no pool" doctrine
+rather than a hole in it: a server holds no vault and can open nothing.
+`e2e/` is also the one package the agent/proxy import ban does not cover —
+`scripts/boundary-check.sh` does not scan it, and its header says why.
+`e2e/README.md` is the harness API, and the place #132–#135 should start.
 
 **The agent calls tools, through the proxy and only through it.**
 `packages/agent/src/proxy/` is the client (#109): an mTLS transport over

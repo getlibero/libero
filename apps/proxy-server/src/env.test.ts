@@ -52,7 +52,14 @@ describe("portFromEnv", () => {
     expect(portFromEnv({ PROXY_PORT: "9443" })).toBe(9443);
   });
 
-  it.each(["0", "65536", "-1", "8443.5", "https"])("refuses %j", raw => {
+  // Not a deployment setting: no PROXY_URL can be written against a port the
+  // OS has not chosen yet. It exists so a harness spawning this process can be
+  // told the port in the `listening` line instead of racing to reserve one.
+  it("accepts 0, which asks the OS to choose", () => {
+    expect(portFromEnv({ PROXY_PORT: "0" })).toBe(0);
+  });
+
+  it.each(["65536", "-1", "8443.5", "https"])("refuses %j", raw => {
     expect(() => portFromEnv({ PROXY_PORT: raw })).toThrow(/PROXY_PORT/);
   });
 });

@@ -5,8 +5,14 @@
   "description": "The gateway + agent process: composes @getlibero/gateway and @getlibero/agent, talks to Slack over Socket Mode. Holds no tool credential.",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/compose.js",
+  "types": "dist/compose.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/compose.d.ts",
+      "default": "./dist/compose.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

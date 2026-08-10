@@ -145,11 +145,21 @@ export function hostFromEnv(env: Env): string {
   return raw;
 }
 
+/**
+ * The listening port: `PROXY_PORT`, defaulting to 8443.
+ *
+ * Zero is accepted and means what it means to `listen(2)`: the OS picks a free
+ * port. Nothing in a deployment should want that — a port the agent's
+ * `PROXY_URL` cannot be written against is useless — but a test harness that
+ * spawns this process needs a port it did not have to guess, and picking one
+ * itself is a race against everything else on the host. The `listening` log
+ * line reports the bound port, so 0 is discoverable rather than lost.
+ */
 export function portFromEnv(env: Env): number {
   const raw = env.PROXY_PORT;
   if (raw === undefined || raw === "") return DEFAULT_PORT;
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
     throw new Error(`proxy: PROXY_PORT is not a port number: ${raw}`);
   }
   return parsed;

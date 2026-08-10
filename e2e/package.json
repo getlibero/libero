@@ -1,0 +1,24 @@
+{
+  "name": "@getlibero/e2e",
+  "version": "0.0.1",
+  "private": true,
+  "description": "End-to-end security suite: the real proxy process and the production agent composition, over real mutual TLS. Fakes the Slack socket and the model, and nothing else.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --exclude '**/dist/**' --no-file-parallelism"
+  },
+  "dependencies": {
+    "@getlibero/agent": "workspace:*",
+    "@getlibero/gateway": "workspace:*",
+    "@getlibero/proxy": "workspace:*",
+    "@getlibero/proxy-server": "workspace:*",
+    "@getlibero/schema": "workspace:*",
+    "@getlibero/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
+  }
+}
