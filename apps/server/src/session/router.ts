@@ -6,6 +6,14 @@
 // from — that is handler.ts, and an ESLint rule on this directory keeps it that
 // way.
 //
+// Since #66 it is also where a thread becomes one the agent will answer without
+// being addressed again. That belongs here rather than in either caller for the
+// same reason the sheet read does: this is the layer that holds the session and
+// resolves the settings, and the window is one of them. Both entry points —
+// mention and follow-up — run through this one function, so a follow-up
+// refreshes its own thread and there is no second place that has to remember
+// to.
+//
 // Serialization lives here rather than in the gateway, and the gateway should
 // go on dispatching concurrently. It acknowledges an inbound event within about
 // three seconds or Slack redelivers it, so a mention queued behind a slow task
@@ -90,11 +98,32 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         });
       }
 
+      // The window this task's thread stays warm for, once the sheet has said.
+      // Held out here so the refresh below can reach it whichever way the task
+      // ended: a task that threw still worked in this thread, and a thread that
+      // went cold because the provider was down is a user typing a follow-up
+      // into silence.
+      //
+      // `undefined` means the sheet never answered, which is the one case where
+      // this leaves the thread exactly as it found it. The sheet is the only
+      // thing that gets to say how long a window is, and a resolver that threw
+      // — it is documented total, so this is defence rather than a path — has
+      // said nothing rather than said zero.
+      let followUpWindowMs: number | undefined;
+
       try {
         // Inside the lock, so the sheet a task runs on is resolved in the same
         // serialized step as the task itself. An operator's edit lands between
         // two tasks rather than half way through one.
         const settings = await options.sheets(request.key.channel);
+        followUpWindowMs = settings.followUpWindowMs;
+
+        // Marked active before the task runs, not after, so a message arriving
+        // while this one is still thinking is routed rather than dropped — it
+        // then queues on the mutex behind this task, which is the serialization
+        // working rather than a way around it. Refreshed in the `finally`, so
+        // the window a person actually gets is measured from the answer.
+        session.threads.activate(request.thread, now(), followUpWindowMs);
 
         // And so is the transcript, for a second reason on top of that one: the
         // read has to see the messages the previous task's conversation left
@@ -112,7 +141,11 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
 
         return await options.task(request, { ...settings, messages });
       } finally {
-        session.lastUsedAt = now();
+        const finishedAt = now();
+        session.lastUsedAt = finishedAt;
+        if (followUpWindowMs !== undefined) {
+          session.threads.activate(request.thread, finishedAt, followUpWindowMs);
+        }
       }
     });
   };

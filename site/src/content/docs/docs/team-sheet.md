@@ -25,18 +25,21 @@ This is `channels/example/channel.toml` in the repository, kept in sync with the
 name        = "engineering"
 description = "Deploys, code review, incident response."
 
-# Hard caps on a single task, and how much of the channel's conversation it
-# starts with. The proxy's daily meter below is the authoritative spend limit;
-# the caps stop one task running away, and the two history bounds decide what a
-# task costs before the model has done anything.
+# Hard caps on a single task, how much of the channel's conversation it starts
+# with, and how long a thread it has worked in goes on answering without a
+# mention. The proxy's daily meter below is the authoritative spend limit; the
+# caps stop one task running away, the two history bounds decide what a task
+# costs before the model has done anything, and the follow-up window decides
+# how many tasks a thread can start without anyone addressing the app again.
 [llm]
-model                   = "claude-sonnet-4-6"   # per-channel override
-max_tool_calls_per_task = 25
-max_task_seconds        = 300                   # wall time, seconds
-max_tokens_per_task     = 60000
-max_tokens_per_turn     = 8192                  # ceiling on one turn's output
-max_history_messages    = 40                    # recent messages in the prompt; 0 for none
-max_history_chars       = 12000                 # and the character budget they share
+model                    = "claude-sonnet-4-6"   # per-channel override
+max_tool_calls_per_task  = 25
+max_task_seconds         = 300                   # wall time, seconds
+max_tokens_per_task      = 60000
+max_tokens_per_turn      = 8192                  # ceiling on one turn's output
+max_history_messages     = 40                    # recent messages in the prompt; 0 for none
+max_history_chars        = 12000                 # and the character budget they share
+follow_up_window_seconds = 900                   # replies in a worked thread need no re-mention; 0 for off
 
 [budget]
 daily_tokens     = 2_000_000
@@ -91,6 +94,20 @@ The message count is capped at 200, which is the most one read of a channel's st
 Whichever bound is reached first wins, the oldest messages are dropped first, and a single message
 is truncated at 2,000 characters so one wall of text cannot consume the whole budget — that last
 number is the agent's rather than yours, for the same reason its network timeouts are.
+
+A question asked inside a thread is answered from that thread rather than from the channel around
+it. A question that starts one has no thread to read, so it sees the channel instead.
+
+`follow_up_window_seconds` is a third kind of setting again: it decides whether there is a *next*
+task at all. After the agent has worked in a thread, a reply in that thread reaches it with no
+mention, for this long after the last answer — the clock restarts each time, so a conversation that
+keeps going keeps going. Everywhere else in the channel still needs a mention; this does not make
+the agent answer the channel. `0` switches it off, which is a channel saying the agent speaks only
+when addressed. It is capped at 1800 seconds: the agent forgets a channel's threads 30 minutes
+after its last task there, so a longer window is one it could not keep.
+
+A follow-up is an ordinary task. It runs on this channel's model, these caps, and this channel's
+daily budget, and every tool call it makes is enforced by the proxy exactly as a mention's is.
 
 Libero is model-agnostic — Anthropic is supported natively; OpenAI, Groq, Ollama, and Gemini
 work through their OpenAI-compatible endpoints, and the optional LiteLLM sidecar covers everything

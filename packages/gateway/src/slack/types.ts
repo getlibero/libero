@@ -80,6 +80,21 @@ export interface SlackMessage {
   threadTs: string | null;
   /** Slack's `event_id`. Stable across delivery retries. */
   eventId: string;
+  /**
+   * Whether this message addresses the app.
+   *
+   * The one field here that is not read off the wire, and it exists because a
+   * message that mentions the app arrives **twice** — once on `app_mention` and
+   * once here. Both deliveries are real events with their own `event_id`, so
+   * nothing that deduplicates on ids can tell them apart, and a consumer that
+   * acts on both acts twice on one message.
+   *
+   * True is the answer that costs nothing: the `app_mention` copy is already
+   * being answered, so a consumer skips this one. That is why it fails closed —
+   * see `mentionsApp` in message.ts for what "closed" means when the app's own
+   * id is not known yet.
+   */
+  mentionsApp: boolean;
 }
 
 /** What the handler wants posted. A reply always lands in `threadTs`. */
@@ -95,14 +110,21 @@ export interface SlackReply {
 export type MentionHandler = (mention: SlackMention) => Promise<SlackReply | undefined>;
 
 /**
- * A message in, and nothing out.
+ * A message in, and a reply only into the thread it was already in.
  *
- * No reply, deliberately. A message is recorded, never answered — answering one
- * without a mention is #66's, and a handler that could return a `SlackReply`
- * would make the adapter capable of posting into a channel nobody addressed it
- * in. The seam is narrow because the capability should be.
+ * #66 widened this from `Promise<void>`, and the narrow rule that replaced the
+ * old "no reply, deliberately" is what keeps the capability bounded: a reply
+ * goes to `message.threadTs` and nowhere else. `ts` is deliberately not a
+ * fallback — coalescing the two is how an adapter starts a thread on a message
+ * nobody addressed it in, and a top-level message therefore has nowhere for an
+ * answer to go. Returning `undefined` is the ordinary case: almost every
+ * message is recorded and not answered.
+ *
+ * Whether a message deserves an answer at all is decided above this seam, from
+ * state this package does not hold — which threads the agent is working in, and
+ * for how long the channel's team sheet says that lasts.
  */
-export type MessageHandler = (message: SlackMessage) => Promise<void>;
+export type MessageHandler = (message: SlackMessage) => Promise<SlackReply | undefined>;
 
 /**
  * A human's click on an approval card, normalized off the wire.
@@ -322,6 +344,31 @@ export interface UserDirectory {
    * what an unnamed author should look like in the thing it is building.
    */
   displayName(userId: string): Promise<string | undefined>;
+}
+
+/**
+ * Who this app is, as Slack's own answer rather than as configuration.
+ *
+ * One question, asked once, on the bot token — so it lives here with the other
+ * calls that token makes. It exists because two subscriptions deliver the same
+ * message and only an id can tell the copies apart: see `SlackMessage
+ * .mentionsApp`.
+ *
+ * Discovered rather than supplied. An operator-set id would be a required
+ * variable holding a value the process can ask for, and a wrong one produces
+ * duplicate work with no signal — the failure would be two answers to one
+ * question, which reads as a model problem rather than a configuration one.
+ */
+export interface AppIdentity {
+  /**
+   * The app's own Slack user id — the `U…` that appears inside a `<@…>` token
+   * when someone mentions it.
+   *
+   * Rejects with a `GatewayError` whose `retryable` splits the two ways this
+   * fails: a revoked or invalid token is `auth_rejected` and final, and
+   * anything else is `connect_failed` and worth another attempt.
+   */
+  userId(): Promise<string>;
 }
 
 /** The adapter's lifecycle, and all of it. */

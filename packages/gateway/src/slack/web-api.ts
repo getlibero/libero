@@ -20,7 +20,7 @@ import { WebAPIPlatformError, WebClient } from "@slack/web-api";
 import type { Logger } from "../log.js";
 import { createSdkLogger } from "./sdk-logger.js";
 import { GatewayError } from "./types.js";
-import type { PostedCard, SlackCard, SlackPoster, UserDirectory } from "./types.js";
+import type { AppIdentity, PostedCard, SlackCard, SlackPoster, UserDirectory } from "./types.js";
 
 /**
  * The three call shapes this adapter makes, spelled out separately.
@@ -57,6 +57,9 @@ export interface WebClientLike {
   users: {
     info(args: { user: string }): Promise<unknown>;
   };
+  auth: {
+    test(): Promise<unknown>;
+  };
 }
 
 /**
@@ -79,11 +82,36 @@ function attachmentOf(card: SlackCard): MessageAttachment {
   };
 }
 
+/**
+ * The Slack errors that mean these credentials will never work.
+ *
+ * Separated from everything else `auth.test` can fail with, because the two
+ * deserve opposite treatment: a revoked token is not something retrying fixes
+ * and should stop the process, and a rate limit or a network blip is exactly
+ * what the reconnect ladder exists for.
+ */
+const FATAL_AUTH_ERRORS: ReadonlySet<string> = new Set([
+  "invalid_auth",
+  "not_authed",
+  "account_inactive",
+  "token_revoked",
+  "token_expired"
+]);
+
 /** The `ts` of the message Slack says it posted, if it said. */
 function readTs(response: unknown): string | undefined {
   if (typeof response !== "object" || response === null) return undefined;
   const ts = (response as { ts?: unknown }).ts;
   return typeof ts === "string" && ts.length > 0 ? ts : undefined;
+}
+
+/** The app's own user id from an `auth.test` response, if it said. */
+function readUserId(response: unknown): string | undefined {
+  if (typeof response !== "object" || response === null) return undefined;
+  // `user_id` and not `bot_id`. What appears inside a `<@…>` token in a message
+  // is the bot's *user* id; `bot_id` is a different identifier that never does.
+  const userId = (response as { user_id?: unknown }).user_id;
+  return typeof userId === "string" && userId.length > 0 ? userId : undefined;
 }
 
 /**
@@ -149,10 +177,11 @@ export interface WebApiOptions {
   createClient?: (botToken: string, logger: Logger) => WebClientLike;
 }
 
-/** The two halves this adapter is, kept apart because their consumers are. */
+/** The halves this adapter is, kept apart because their consumers are. */
 export interface WebApiSurface {
   poster: SlackPoster;
   users: UserDirectory;
+  identity: AppIdentity;
 }
 
 function defaultCreateClient(botToken: string, logger: Logger): WebClientLike {
@@ -266,5 +295,38 @@ export function createWebApiSurface(options: WebApiOptions): WebApiSurface {
     }
   };
 
-  return { poster, users };
+  const identity: AppIdentity = {
+    async userId(): Promise<string> {
+      let response: unknown;
+      try {
+        response = await client.auth.test();
+      } catch (cause) {
+        const slackError = slackErrorOf(cause);
+        const fatal = slackError !== undefined && FATAL_AUTH_ERRORS.has(slackError);
+
+        // Two different failures wearing one call. A revoked token is
+        // `auth_rejected` and stops the process; anything else — a rate limit,
+        // a network blip, Slack having a bad minute — is `connect_failed` and
+        // goes round the reconnect ladder with everything else that could not
+        // come up.
+        throw new GatewayError(fatal ? "auth_rejected" : "connect_failed", !fatal, {
+          cause,
+          ...(slackError !== undefined ? { slackError } : {})
+        });
+      }
+
+      const userId = readUserId(response);
+      if (userId === undefined) {
+        // Slack answered without saying who we are. Not retryable: the call
+        // succeeded and this is the shape it returned, so asking again gets the
+        // same answer. Failing here rather than carrying on unidentified,
+        // because the fallback for an unknown id costs a channel its follow-ups
+        // and it should not be silent.
+        throw new GatewayError("auth_rejected", false, { slackError: "no_user_id" });
+      }
+      return userId;
+    }
+  };
+
+  return { poster, users, identity };
 }

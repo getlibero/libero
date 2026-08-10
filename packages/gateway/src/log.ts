@@ -25,9 +25,9 @@ export type LogLevel = "info" | "warn" | "error";
 export interface LogFields {
   /**
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
-   * "reconnecting", "disconnected", "auth_rejected", "stopping". Dispatch:
-   * "mention", "replied", "ignored", "handler_failed", "post_failed",
-   * "message_failed". Tools: "task", "tools_unavailable",
+   * "identified", "reconnecting", "disconnected", "auth_rejected", "stopping".
+   * Dispatch: "mention", "replied", "follow_up", "ignored", "handler_failed",
+   * "post_failed", "message_failed". Tools: "task", "tools_unavailable",
    * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed".
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
    * "team_sheet_unreadable". Message store: "store_opened",
@@ -37,7 +37,9 @@ export interface LogFields {
    * "approval_ignored", "approval_unknown".
    *
    * There is no word here for an ordinary message arriving, and that is a
-   * decision rather than an omission — see `dispatchMessage`.
+   * decision rather than an omission — see `dispatchMessage`. "follow_up" is
+   * not that word: it marks the rare message that became a task, which is a
+   * thing an operator counts rather than a record of who spoke.
    */
   event: string;
   /** Slack team id. An id, never a token. */
@@ -45,9 +47,10 @@ export interface LogFields {
   /** Slack channel id — the same id a team sheet is keyed on. */
   channel?: string;
   /**
-   * A Slack user — who mentioned the app, who clicked, or who could not be
-   * looked up. **An id, never a display name**: a name is content in a way an
-   * id is not, being something a person chose to be called.
+   * A Slack user — who mentioned the app, who clicked, who could not be looked
+   * up, or which id this app itself resolved to. **An id, never a display
+   * name**: a name is content in a way an id is not, being something a person
+   * chose to be called.
    */
   user?: string;
   /** Slack's `event_id`. Stable across delivery retries, so a duplicate is greppable. */

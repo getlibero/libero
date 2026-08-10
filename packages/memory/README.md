@@ -10,7 +10,7 @@ answering "what did we decide about X". See
 statement run against it. `src/log.ts` is a duplicated `Logger` interface, and
 the duplication is argued in the file.
 
-## Two reads, and they are not each other
+## Three reads, and they are not each other
 
 `search(text, limit)` answers "what was said about this": ranked full-text,
 best match first, and it takes **text and never an FTS5 expression**.
@@ -21,15 +21,22 @@ rather than newest-first is the API's decision, not the caller's — the stateme
 sorts descending because that is the only way to ask SQLite for a tail, and a
 caller made to reverse it is a caller that can forget to.
 
+`recentInThread(thread, limit)` is that read narrowed to one sub-conversation
+(#66), and identical in every other respect. **A thread's identity is its root
+message's `ts`**: the root carries `thread_ts = NULL` and every reply carries the
+root's `ts`, so a thread is one row matching on `ts` and the rest matching on
+`thread_ts`. An unknown thread answers nothing rather than throwing — a caller
+may hold a ts from a conversation that started before this file did.
+
 Ordering is on `ts`, compared as a string, and that is correct because a Slack
 timestamp is fixed-width: ten digits of seconds, a dot, six more. The two
 alternatives are both wrong. `id` is insertion order, which a redelivery or a
 late event reorders; `at` is when this store *learned* of a message, which is a
 different clock.
 
-Both are clamped to `READ_MAX_LIMIT`, which is one ceiling for both because what
-it bounds is the same thing either way: how much of this file a single call can
-pull into a model's context.
+All three are clamped to `READ_MAX_LIMIT`, which is one ceiling rather than
+three because what it bounds is the same thing every time: how much of this file
+a single call can pull into a model's context.
 
 ## The isolation boundary
 

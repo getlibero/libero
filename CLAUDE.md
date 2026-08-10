@@ -55,10 +55,12 @@ permitted call is now served rather than answered 501, plus a `budget`
 entrypoint alongside `vault` for the operator),
 `packages/gateway` (the Slack Socket Mode adapter — mention in, handler, reply
 into the thread, a reconnect ladder the gateway owns rather than the SDK, since
-#126 an approval card it can render and a click it can decode, and since #176 an
-ordinary `message` it normalizes and hands down),
+#126 an approval card it can render and a click it can decode, since #176 an
+ordinary `message` it normalizes and hands down, and since #66 its own user id
+from `auth.test` plus a reply path for a message it was told to answer),
 `apps/server` (the gateway + agent process — env parsing, the mention handler,
-the message ingest, lifecycle), `packages/cli` (placeholder npm release),
+the message ingest and the follow-up route, lifecycle),
+`packages/cli` (placeholder npm release),
 `design/` (the design system — plain CSS, no TypeScript), and `site/`
 (getlibero.com).
 `packages/memory` (the per-channel message store — one SQLite file per channel,
@@ -134,12 +136,11 @@ and `system` is where the agent's own instructions live; it goes in a marked
 block that says it is context rather than instructions. **It is one message and
 not a reconstructed dialogue**, because the agent's own replies are not stored
 (`postThreadReply` returns nothing, deliberately) so history is one-sided and an
-assistant/user alternation would be a lie the model reasons from. **It is the
-channel's recent messages, not a thread's** — `TaskRequest` carries no Slack ts,
-which `handler.test.ts` argues is #66's question to reopen. And **the echo of
-the ask is excluded on exact `userId` + `text` equality**, because a mention
-arrives on both subscriptions and is usually already a row, with no id to match
-on.
+assistant/user alternation would be a lie the model reasons from. **It was the
+channel's recent messages, not a thread's** — that was the one #66 reopened; see
+below. And **the echo of the ask is excluded on exact `userId` + `text`
+equality**, because a mention arrives on both subscriptions and is usually
+already a row, with no id to match on.
 
 **Names resolve live and are cached per session**, at the `entries.delete`
 `registry.ts` reserved. `session/names.ts` caches the *promise*, not the value —
@@ -162,6 +163,53 @@ transcript's tokens before sending, so without these an oversized seed fails at
 the provider rather than at a cap. `packages/memory` gained `recent(limit)` for
 this — ordered by `ts` (fixed-width, so lexicographic is chronological; `id` is
 arrival order and `at` is a different clock) and returned **oldest-first**.
+
+**#66 answers a thread without a re-mention, and three things there are
+decisions.** `TaskRequest` now carries `thread` — an opaque id the router only
+ever compares — and `apps/server/src/session/threads.ts` is the per-session set
+of threads a task has worked in, with a deadline each.
+`apps/server/src/ingest.ts` routes a message through the *same* router the
+mention handler uses, so a follow-up queues on the same mutex; `compose.ts`
+hoists `createChannelRouter` above `deps.slack(...)` for it, and two routers
+would have been two session registries and two mutexes over one channel.
+
+**The window is a sheet field and not a constant.** `[llm]
+follow_up_window_seconds` (default 900, `0` off), because whether the agent
+answers messages nobody addressed to it is a channel's policy with a per-channel
+cost in budget and noise — the `max_history_*` argument verbatim — and because
+without a field the only way to switch it off is to unprovision the channel. It
+is **bounded at 1800 in the schema**, which is `SESSION_IDLE_MS`: evicting a
+session deactivates its threads, so a longer window is one the process cannot
+keep, and a sheet naming one is a loud parse error rather than a silent clamp.
+Deactivation is TTL and not task completion — completion-only would route
+mid-task messages and nothing else, which is not the case anyone wants. The
+deadline is computed at **write** time from the settings the task already
+resolved, which is what keeps the per-message read path from needing a sheet.
+
+**A mention arrives twice, and the second copy must not become a second task.**
+Slack delivers it on `app_mention` *and* `message`, with a different `event_id`
+on each, so nothing downstream can dedupe — and the `app_mention` copy activates
+the thread, so the `message` copy fires on the *first* mention, not just later
+ones. The gateway therefore resolves its own user id with `auth.test` inside
+`connectWithRetry`, before the socket, and sets `SlackMessage.mentionsApp`;
+`mentionsApp` in `message.ts` **fails closed** — with no id, any `<@…>` token
+counts — because losing a follow-up costs a message the user can repeat and
+mistaking a mention for one costs two model turns and two replies. Resolving
+identity there also makes a bad bot token a startup `auth_rejected` rather than a
+reply that never appears. `MessageHandler` now returns a `SlackReply | undefined`
+and the gateway posts it to `message.threadTs` and **never `?? ts`**, so the
+adapter still cannot start a thread on a message nobody addressed it in. An
+answered message logs `follow_up`, not `replied`; nothing else on that path logs.
+
+**History narrowed with it.** `packages/memory` gained `recentInThread(thread,
+limit)` — `WHERE ts = ? OR thread_ts = ?`, since a thread is its root plus the
+replies naming it — with a `message_thread` index added under
+`CREATE INDEX IF NOT EXISTS` and **no schema-version bump**, because an index
+changes which rows SQLite visits and never which come back. `context.ts` reads
+the thread and falls back to the channel when it is empty, and **the echo filter
+runs before that choice**: a top-level ask is its own thread's root, so on the
+other order every first question would find one row, take the thread branch, and
+seed with nothing.
 
 **The two halves meet for real in `e2e/` (#131, which absorbed #47).** The proxy
 runs as its **spawned built entrypoint**; the agent side runs **in-process**
@@ -255,7 +303,8 @@ mention.
 
 Two things there are load-bearing. **The router never learns what Slack is** —
 it takes a `TaskRequest`, `handler.ts` is the short mapping that builds one
-from a `SlackMention`, and an ESLint block on `apps/server/src/session/**`
+from a `SlackMention` and `ingest.ts` the one that builds one from a
+`SlackMessage` (#66), and an ESLint block on `apps/server/src/session/**`
 allows only logging names (`Logger` and friends) through from the gateway
 package. That is what a second front-end
 plugs into, and it is enforced rather than asserted. And **what the sheet

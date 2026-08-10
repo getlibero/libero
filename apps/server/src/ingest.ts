@@ -1,18 +1,35 @@
-// The message write path: a `SlackMessage` becomes a `StoredMessage`.
+// The message path: a `SlackMessage` becomes a `StoredMessage`, and sometimes a
+// `TaskRequest`.
 //
 // The sibling of handler.ts, and here for the same reason. It names both a
 // Slack type and a session, which is exactly the pair `src/session/**`'s ESLint
 // rule forbids in one file — so the mapping lives out here, above the seam, and
 // the router below it goes on not knowing what Slack is.
 //
-// It is a shorter mapping than the mention one, and the difference is the
-// point: a mention becomes a request that is answered, a message becomes a row
-// that is filed. Nothing here can post, because nothing here holds a poster.
+// Two things happen to a message and they are independent. Every message that
+// gets this far is **filed**. A message in a thread the agent is working in is
+// also **answered** (#66), which means the same `TaskRequest` a mention
+// produces, through the same router, on the same mutex. Everywhere else in the
+// channel still needs a mention, so this is a second door into a session rather
+// than a way past the one that was already there.
+//
+// **Nothing here decides how long a thread stays answerable.** It asks the
+// session, which was told by the task that last ran there, which read the
+// channel's sheet. That is what keeps this path from needing a sheet of its
+// own — a read per message rather than a read per task.
 
-import type { MessageHandler, Logger, SlackMessage } from "@getlibero/gateway";
+import type {
+  Logger,
+  MessageHandler,
+  SlackMessage,
+  SlackReply
+} from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
+import type { HeldCallPrompter } from "@getlibero/agent";
+import type { PromptTarget } from "./approvals/prompter.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import type { SessionRegistry } from "./session/registry.js";
+import type { ChannelRouter } from "./session/router.js";
 
 export interface MessageIngestOptions {
   sessions: SessionRegistry;
@@ -26,6 +43,31 @@ export interface MessageIngestOptions {
    * which is the only attribution available to a reader holding no Slack token.
    */
   names?: DisplayNameLookup;
+  /**
+   * Where a follow-up goes.
+   *
+   * Optional, and its absence is the pre-#66 behaviour rather than a broken
+   * wiring: messages are filed and never answered, which is a front-end that
+   * records a conversation without joining it. A composing app that wants
+   * follow-ups passes the same router the mention handler was built on — the
+   * same one, deliberately, because two routers would be two session
+   * registries and therefore two mutexes over one channel.
+   */
+  route?: ChannelRouter;
+  /**
+   * Where an approval card goes for a call a follow-up's task held.
+   *
+   * Optional on the same terms it is for a mention: a front-end with no one to
+   * ask gets the refusal-shaped result instead. A follow-up's card belongs in
+   * the thread the follow-up is in, which is why this is applied here rather
+   * than shared with handler.ts — the two capture different threads.
+   *
+   * It may answer `undefined` per call, which `HeldCallPrompterFactory` does
+   * not. That is compose.ts's knot rather than a second kind of optional: the
+   * card poster is built *after* this handler, so "is there anyone to ask" can
+   * only be answered when a card is actually wanted.
+   */
+  onHeld?: (target: PromptTarget) => HeldCallPrompter | undefined;
   logger?: Logger;
   /** Injected so a test states the clock rather than faking timers. */
   now?: () => number;
@@ -34,35 +76,43 @@ export interface MessageIngestOptions {
 /**
  * Wraps the session registry as the handler the gateway hands messages to.
  *
- * **It does not take the session's mutex, deliberately.** The mutex serializes
- * model turns so a channel's mentions queue rather than interleave; a store
- * write is one synchronous statement with nothing to serialize, and SQLite's
- * own WAL and busy timeout are the concurrency control for the file. Behind the
- * mutex, a message arriving mid-task would wait out a model turn — up to the
- * channel's whole wall-clock cap — to be written, which is the opposite of what
- * a transcript is for.
+ * **The store write does not take the session's mutex, deliberately.** The
+ * mutex serializes model turns so a channel's tasks queue rather than
+ * interleave; a store write is one synchronous statement with nothing to
+ * serialize, and SQLite's own WAL and busy timeout are the concurrency control
+ * for the file. Behind the mutex, a message arriving mid-task would wait out a
+ * model turn — up to the channel's whole wall-clock cap — to be written, which
+ * is the opposite of what a transcript is for.
  *
- * It does open the session, so a message in a channel with nothing running is
- * still written, and so the open file handle has an owner with a lifetime.
+ * **The follow-up does take it**, because it is a model turn like any other.
+ * That ordering is the whole reason the write comes first: by the time the task
+ * starts, the message that provoked it is already a row, so the transcript the
+ * task assembles is complete rather than missing the thing it was asked about.
+ *
+ * It opens the session either way, so a message in a channel with nothing
+ * running is still written, and so the open file handle has an owner with a
+ * lifetime.
  *
  * Nothing is deduplicated here. The store's `ts` is UNIQUE and its insert is
  * `ON CONFLICT DO NOTHING`, so a redelivered event is a no-op that returns
  * false — and that is the authoritative key, being the message's own identity
  * and surviving a restart, which the gateway's `seen` set does not.
  *
- * **It does await one thing, and that is new.** Resolving the author's name is
- * a Slack call, so this path can now be slow and can now fail in a way it could
- * not before. Both are bounded: the session's cache makes it one call per
- * author per session and shares an in-flight one between concurrent messages,
- * and a failed lookup stores no name rather than dropping the message. The
- * `append` still happens either way.
+ * **It does await one thing before the write, and that is new.** Resolving the
+ * author's name is a Slack call, so this path can now be slow and can now fail
+ * in a way it could not before. Both are bounded: the session's cache makes it
+ * one call per author per session and shares an in-flight one between
+ * concurrent messages, and a failed lookup stores no name rather than dropping
+ * the message. The `append` still happens either way.
  */
 export function createMessageIngest(options: MessageIngestOptions): MessageHandler {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
   const names = options.names;
+  const route = options.route;
+  const onHeld = options.onHeld;
 
-  return async (message: SlackMessage): Promise<void> => {
+  return async (message: SlackMessage): Promise<SlackReply | undefined> => {
     const session = options.sessions.open({
       // Slack's word for the workspace is `team_id`; the router's is
       // `workspace`, and this is the same translation handler.ts makes.
@@ -71,45 +121,87 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
     });
 
     // No store: no team sheet, or the file could not be opened. Said once when
-    // the session was created, and silent per message after that. Checked
-    // before the name is resolved, so an unprovisioned channel costs no lookup.
-    if (session.store === null) return;
+    // the session was created, and silent per message after that.
+    //
+    // It skips the write and not the answer. A channel with an unreadable store
+    // can still have a thread the agent worked in, and refusing to answer a
+    // follow-up there would turn a storage failure into the agent going silent
+    // mid-conversation — the task would simply run with no history, which is
+    // what a first mention in that channel already does.
+    if (session.store !== null) {
+      // The author's name as of now, cached on the session — so this is one
+      // Slack call per author per session and not one per message, and two
+      // messages from the same new author share one in-flight lookup rather
+      // than making two. `undefined` when there is no name to have or the
+      // lookup failed, and neither costs the message: the row is stored either
+      // way.
+      const displayName =
+        names === undefined ? undefined : await session.names.get(message.userId, names);
 
-    // The author's name as of now, cached on the session — so this is one Slack
-    // call per author per session and not one per message, and two messages
-    // from the same new author share one in-flight lookup rather than making
-    // two. `undefined` when there is no name to have or the lookup failed, and
-    // neither costs the message: the row is stored either way.
-    const displayName =
-      names === undefined ? undefined : await session.names.get(message.userId, names);
-
-    try {
-      session.store.append({
-        ts: message.ts,
-        threadTs: message.threadTs,
-        userId: message.userId,
-        // A snapshot, not a lookup: what the author was called when this was
-        // said. It is deliberately not refreshed later, and the assembler's
-        // live resolution is a different question with a different answer for
-        // anyone who has since changed their name or left.
-        displayName: displayName ?? null,
-        text: message.text,
-        // When this store learned of the message, not when it was sent — the
-        // field's own definition. `message.ts` is the sent time and is stored
-        // beside it.
-        at: now()
-      });
-    } catch (error) {
-      // One message lost, and the process carries on. The gateway would log
-      // `message_failed` for a rejection, but this is the layer that knows it
-      // was the store, and a channel's members do not want to be told in the
-      // channel that their message was not filed.
-      logger.log("error", {
-        event: "store_write_failed",
-        channel: message.channelId,
-        eventId: message.eventId,
-        reason: error instanceof Error ? error.name : "unknown"
-      });
+      try {
+        session.store.append({
+          ts: message.ts,
+          threadTs: message.threadTs,
+          userId: message.userId,
+          // A snapshot, not a lookup: what the author was called when this was
+          // said. It is deliberately not refreshed later, and the assembler's
+          // live resolution is a different question with a different answer for
+          // anyone who has since changed their name or left.
+          displayName: displayName ?? null,
+          text: message.text,
+          // When this store learned of the message, not when it was sent — the
+          // field's own definition. `message.ts` is the sent time and is stored
+          // beside it.
+          at: now()
+        });
+      } catch (error) {
+        // One message lost, and the process carries on. The gateway would log
+        // `message_failed` for a rejection, but this is the layer that knows it
+        // was the store, and a channel's members do not want to be told in the
+        // channel that their message was not filed.
+        logger.log("error", {
+          event: "store_write_failed",
+          channel: message.channelId,
+          eventId: message.eventId,
+          reason: error instanceof Error ? error.name : "unknown"
+        });
+      }
     }
+
+    // Three conditions on the way to answering, and each rules out a different
+    // way of getting this wrong.
+    //
+    // **It must be in a thread.** `threadTs` is the raw value, so `null` means
+    // top-level — not a reply to anything the agent said, and with nowhere to
+    // put an answer, since the gateway refuses to start a thread on a message
+    // nobody addressed it in.
+    //
+    // **It must not mention the app.** A message that does arrives *twice*,
+    // once here and once as an `app_mention`, with a different `event_id` on
+    // each — so nothing downstream can tell the pair apart, and answering both
+    // runs the task twice, spends the channel's budget twice, and posts two
+    // replies. The `app_mention` copy is the one that gets answered, including
+    // in a thread that is already active.
+    //
+    // **The thread must be one the agent is working in**, which is what makes
+    // this a follow-up rather than the agent reading the whole channel. The
+    // session holds that, with a deadline the channel's own sheet set.
+    const thread = message.threadTs;
+    if (route === undefined || thread === null) return undefined;
+    if (message.mentionsApp) return undefined;
+    if (!session.threads.isActive(thread, now())) return undefined;
+
+    const held = onHeld?.({ channelId: message.channelId, threadTs: thread });
+
+    const reply = await route({
+      key: { workspace: message.teamId, channel: message.channelId },
+      requestingUser: message.userId,
+      thread,
+      text: message.text,
+      traceId: message.eventId,
+      ...(held !== undefined ? { onHeld: held } : {})
+    });
+
+    return reply === undefined ? undefined : { text: reply.text };
   };
 }

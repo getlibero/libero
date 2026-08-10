@@ -23,6 +23,7 @@ import type { ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/age
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   createMessageStoreOpener,
   createServer
@@ -85,7 +86,8 @@ function rig(options: { users?: Record<string, string>; history?: Partial<Histor
       Promise.resolve({
         model: "test-model",
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
-        history: { ...DEFAULT_HISTORY_BOUNDS, ...options.history }
+        history: { ...DEFAULT_HISTORY_BOUNDS, ...options.history },
+        followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     logger

@@ -18,7 +18,7 @@ import type { ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/age
 import type { Scheduler } from "@getlibero/gateway";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_HISTORY_BOUNDS, createServer } from "./compose.js";
+import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS, createServer } from "./compose.js";
 
 const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
@@ -171,7 +171,8 @@ function rig(redeemed: () => ProxyResponse) {
     sheets: () => Promise.resolve({
           model: "test-model",
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
-          history: { ...DEFAULT_HISTORY_BOUNDS }
+          history: { ...DEFAULT_HISTORY_BOUNDS },
+        followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
         }),
     logger,
     now: () => NOW,

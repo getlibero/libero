@@ -9,15 +9,18 @@
 import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
+import { createSessionRegistry } from "./registry.js";
+import type { SessionRegistry } from "./registry.js";
 import { createChannelRouter } from "./router.js";
 import type { SheetResolver } from "./sheet.js";
-import { DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
+import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
 import type { ChannelSettings, TaskReply, TaskRequest, TaskSettings } from "./types.js";
 
 const SETTINGS: ChannelSettings = {
   model: "test-model",
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
-  history: { ...DEFAULT_HISTORY_BOUNDS }
+  history: { ...DEFAULT_HISTORY_BOUNDS },
+  followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
 };
 
 /** Every channel resolves to the same settings unless a test says otherwise. */
@@ -27,6 +30,7 @@ function request(partial: Partial<TaskRequest> = {}): TaskRequest {
   return {
     key: { workspace: "T024BE7LD", channel: "C024BE91L" },
     requestingUser: "U024BE7LH",
+    thread: "1758000000.000100",
     text: "<@U0BOT> ping",
     traceId: "Ev0PV52K25",
     ...partial
@@ -340,5 +344,133 @@ describe("what the router passes through", () => {
     await route(sent);
 
     expect(seen).toEqual(sent);
+  });
+});
+
+describe("the thread a task worked in", () => {
+  /** A registry a test can look into, since the router builds its own by default. */
+  function registryAt(now: () => number): SessionRegistry {
+    return createSessionRegistry({ now });
+  }
+
+  it("is marked active for the window the channel's sheet named", async () => {
+    const clock = 1_000_000;
+    const sessions = registryAt(() => clock);
+    const route = createChannelRouter({
+      sheets: () => Promise.resolve({ ...SETTINGS, followUpWindowMs: 60_000 }),
+      sessions,
+      now: () => clock,
+      task: () => Promise.resolve({ text: "ok" })
+    });
+
+    await route(request({ thread: "T1" }));
+    const session = sessions.open({ workspace: "T024BE7LD", channel: "C024BE91L" });
+
+    expect(session.threads.isActive("T1", clock)).toBe(true);
+    expect(session.threads.isActive("T1", clock + 59_000)).toBe(true);
+    expect(session.threads.isActive("T1", clock + 60_000)).toBe(false);
+  });
+
+  it("is marked active before the task runs, so a message mid-task is not dropped", async () => {
+    // The follow-up then queues on the mutex behind the task that activated the
+    // thread, which is the serialization working rather than a way around it.
+    let activeDuringTask = false;
+    const clock = 1_000_000;
+    const sessions = registryAt(() => clock);
+    const route = createChannelRouter({
+      sheets: anySheet,
+      sessions,
+      now: () => clock,
+      task: (task): Promise<TaskReply> => {
+        const session = sessions.open(task.key);
+        activeDuringTask = session.threads.isActive(task.thread, clock);
+        return Promise.resolve({ text: "ok" });
+      }
+    });
+
+    await route(request({ thread: "T1" }));
+
+    expect(activeDuringTask).toBe(true);
+  });
+
+  it("has its window measured from the answer rather than the question", async () => {
+    let clock = 1_000_000;
+    const sessions = registryAt(() => clock);
+    const route = createChannelRouter({
+      sheets: () => Promise.resolve({ ...SETTINGS, followUpWindowMs: 60_000 }),
+      sessions,
+      now: () => clock,
+      task: (): Promise<TaskReply> => {
+        clock += 30_000;
+        return Promise.resolve({ text: "ok" });
+      }
+    });
+
+    await route(request({ thread: "T1" }));
+    const session = sessions.open({ workspace: "T024BE7LD", channel: "C024BE91L" });
+
+    // Activation was at 1_000_000 and the task took 30s; a window measured from
+    // the question would already be half gone.
+    expect(session.threads.isActive("T1", clock + 59_000)).toBe(true);
+  });
+
+  it("stays active when the task threw", async () => {
+    // A task that died still worked in this thread, and a thread that went cold
+    // because the provider was down is a person typing a follow-up into
+    // silence.
+    const clock = 1_000_000;
+    const sessions = registryAt(() => clock);
+    const route = createChannelRouter({
+      sheets: anySheet,
+      sessions,
+      now: () => clock,
+      task: () => Promise.reject(new Error("connect ECONNREFUSED"))
+    });
+
+    await expect(route(request({ thread: "T1" }))).rejects.toThrow();
+    const session = sessions.open({ workspace: "T024BE7LD", channel: "C024BE91L" });
+
+    expect(session.threads.isActive("T1", clock)).toBe(true);
+  });
+
+  it("is never marked active when the channel turned follow-ups off", async () => {
+    const clock = 1_000_000;
+    const sessions = registryAt(() => clock);
+    const route = createChannelRouter({
+      sheets: () => Promise.resolve({ ...SETTINGS, followUpWindowMs: 0 }),
+      sessions,
+      now: () => clock,
+      task: () => Promise.resolve({ text: "ok" })
+    });
+
+    await route(request({ thread: "T1" }));
+    const session = sessions.open({ workspace: "T024BE7LD", channel: "C024BE91L" });
+
+    expect(session.threads.isActive("T1", clock)).toBe(false);
+  });
+
+  it("leaves a warm thread alone when the sheet resolver throws", async () => {
+    // The resolver is documented total, so this is defence rather than a path.
+    // A resolver that said nothing has not said zero, and the thread keeps
+    // whatever the last task that did read a sheet gave it.
+    const clock = 1_000_000;
+    let failing = false;
+    const sessions = registryAt(() => clock);
+    const route = createChannelRouter({
+      sheets: () =>
+        failing
+          ? Promise.reject(new Error("resolver blew up"))
+          : Promise.resolve({ ...SETTINGS, followUpWindowMs: 60_000 }),
+      sessions,
+      now: () => clock,
+      task: () => Promise.resolve({ text: "ok" })
+    });
+
+    await route(request({ thread: "T1" }));
+    failing = true;
+    await expect(route(request({ thread: "T1" }))).rejects.toThrow();
+
+    const session = sessions.open({ workspace: "T024BE7LD", channel: "C024BE91L" });
+    expect(session.threads.isActive("T1", clock)).toBe(true);
   });
 });

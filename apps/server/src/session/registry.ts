@@ -2,20 +2,23 @@
 //
 // A session is created on first use and torn down when it has been idle long
 // enough, because a long-lived process must not accumulate one per channel
-// forever. Since #176 a session holds an open SQLite file and since #67 a cache
-// of display names, so eviction now frees something real — both go at the
+// forever. Since #176 a session holds an open SQLite file, since #67 a cache of
+// display names, and since #66 the set of threads it will answer without a
+// re-mention — so eviction now frees something real, and all three go at the
 // single `entries.delete` below.
 //
 // There is no accessor that returns more than one session and no iteration over
 // them outside the sweep. Ask for one session, get one session.
 //
-// **Two callers open a session and only one of them takes its mutex.** A
-// mention goes through the router, which queues on the mutex so a channel's
-// model turns do not interleave. Message ingest opens a session and writes
-// straight through: a store write is one synchronous statement with nothing to
-// serialize — SQLite's own WAL and busy timeout are the concurrency control for
-// the file — and putting it behind the mutex would leave a message unwritten
-// for the length of a model turn. The mutex is for turns, not for the file.
+// **Two callers open a session, and the store write is the one thing that does
+// not take its mutex.** A mention goes through the router, which queues on the
+// mutex so a channel's model turns do not interleave, and since #66 a follow-up
+// in an active thread goes through the same router and queues on the same
+// mutex. What stays outside it is the write: one synchronous statement with
+// nothing to serialize — SQLite's own WAL and busy timeout are the concurrency
+// control for the file — and putting it behind the mutex would leave a message
+// unwritten for the length of a model turn. The mutex is for turns, not for the
+// file.
 //
 // The consequence is deliberate: message traffic creates sessions and defers
 // their eviction, so a chatty channel that never mentions the app keeps a warm
@@ -30,15 +33,20 @@ import { createMutex } from "./mutex.js";
 import { createNameCache } from "./names.js";
 import type { NameCache } from "./names.js";
 import type { MessageStoreOpener } from "./store.js";
+import { createThreadActivity } from "./threads.js";
+import type { ThreadActivity } from "./threads.js";
 import type { SessionKey } from "./types.js";
 
 /**
  * How long a session survives with nothing to do.
  *
- * Exported because #66 has to reconcile with it: once a session holds the set
- * of threads it will answer without a re-mention, evicting a session
- * deactivates its threads. #66's follow-up window must therefore be this or
- * shorter, or a thread goes quiet before the window it advertised is up.
+ * Exported because #66 had to reconcile with it, and did: a session holds the
+ * set of threads it will answer without a re-mention, so evicting one
+ * deactivates its threads. `[llm] follow_up_window_seconds` is therefore
+ * bounded at 1800 in `packages/schema` — this number in seconds — and the two
+ * are kept in step by hand, because schema is the base package and cannot
+ * import from here. **Moving this down means moving that bound down**, or a
+ * channel can name a window the process quietly fails to keep.
  *
  * A constructor option with a constant default rather than an environment
  * variable. This process's environment contract is that everything in it is
@@ -68,6 +76,17 @@ export interface Session {
    * directory has to name a Slack type.
    */
   readonly names: NameCache;
+  /**
+   * The threads this channel's agent is working in, and until when (#66).
+   *
+   * On the session because the session is what a channel's state hangs off, and
+   * because eviction is the outer bound on it: a thread cannot stay active
+   * longer than the session holding it, which is why `[llm]
+   * follow_up_window_seconds` is capped at `SESSION_IDLE_MS`. The router writes
+   * it once per task; the message ingest reads it once per message and takes no
+   * mutex to do so.
+   */
+  readonly threads: ThreadActivity;
   /** When work here last finished. The sweep reads it; the router writes it. */
   lastUsedAt: number;
 }
@@ -179,6 +198,7 @@ export function createSessionRegistry(options: SessionRegistryOptions = {}): Ses
         mutex: createMutex(),
         store: openStore?.(key.channel) ?? null,
         names: createNameCache(),
+        threads: createThreadActivity(),
         lastUsedAt: at
       };
       entries.set(id, session);

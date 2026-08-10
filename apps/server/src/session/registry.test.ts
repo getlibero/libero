@@ -148,6 +148,7 @@ describe("createSessionRegistry", () => {
           replaceText: () => false,
           search: () => [],
           recent: () => [],
+          recentInThread: () => [],
           close: () => {
             closed += 1;
           }

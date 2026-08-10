@@ -48,6 +48,26 @@ export interface TaskRequest {
    */
   readonly requestingUser: string;
   /**
+   * Which sub-conversation this belongs to, as an opaque id.
+   *
+   * `handler.test.ts` used to assert that no Slack timestamp reached this type
+   * and named #66 as what would decide it; this is that decision. Two things
+   * need it and neither is Slack-shaped: the transcript is read from this
+   * thread rather than from the channel around it, and the thread is what a
+   * completed task marks active so a reply to the answer needs no second
+   * mention.
+   *
+   * **Opaque, and only ever compared.** Nothing here parses it, orders it, or
+   * derives anything from it — it is a map key and a store argument. A Slack
+   * `thread_ts` today; a second front-end supplies whatever names a
+   * sub-conversation in its own world, and one with no such concept can supply
+   * the request's own id, which makes every request its own thread.
+   *
+   * Always present. A front-end with nothing to put here would be one whose
+   * every task shares one thread, which is a worse default than a distinct one.
+   */
+  readonly thread: string;
+  /**
    * What was asked, verbatim — the mention token still in it.
    *
    * Verbatim is what makes it usable: the context assembler resolves every
@@ -111,6 +131,17 @@ export interface ChannelSettings {
   readonly caps: AgentLoopCaps;
   /** The two context bounds, out of the same block. */
   readonly history: HistoryBounds;
+  /**
+   * How long this task's thread goes on accepting replies with no mention,
+   * from `[llm] follow_up_window_seconds`. Milliseconds here, seconds in the
+   * sheet — the same conversion `max_task_seconds` gets, and for the same
+   * reason.
+   *
+   * On `ChannelSettings` rather than beside the bounds because it is neither: a
+   * bound decides what one task starts with, and this decides whether there is
+   * a *next* task at all. `0` is a channel that answers only when addressed.
+   */
+  readonly followUpWindowMs: number;
 }
 
 /**

@@ -12,18 +12,21 @@
 name        = "engineering"
 description = "Deploys, code review, incident response."
 
-# Hard caps on a single task, and how much of the channel's conversation it
-# starts with. The proxy's daily meter below is the authoritative spend limit;
-# the caps stop one task running away, and the two history bounds decide what a
-# task costs before the model has done anything.
+# Hard caps on a single task, how much of the channel's conversation it starts
+# with, and how long a thread it has worked in goes on answering without a
+# mention. The proxy's daily meter below is the authoritative spend limit; the
+# caps stop one task running away, the two history bounds decide what a task
+# costs before the model has done anything, and the follow-up window decides
+# how many tasks a thread can start without anyone addressing the app again.
 [llm]
-model                   = "claude-sonnet-4-6"   # per-channel override
-max_tool_calls_per_task = 25
-max_task_seconds        = 300                   # wall time, seconds
-max_tokens_per_task     = 60000
-max_tokens_per_turn     = 8192                  # ceiling on one turn's output
-max_history_messages    = 40                    # recent messages in the prompt; 0 for none
-max_history_chars       = 12000                 # and the character budget they share
+model                    = "claude-sonnet-4-6"   # per-channel override
+max_tool_calls_per_task  = 25
+max_task_seconds         = 300                   # wall time, seconds
+max_tokens_per_task      = 60000
+max_tokens_per_turn      = 8192                  # ceiling on one turn's output
+max_history_messages     = 40                    # recent messages in the prompt; 0 for none
+max_history_chars        = 12000                 # and the character budget they share
+follow_up_window_seconds = 900                   # replies in a worked thread need no re-mention; 0 for off
 
 # The daily meter, per channel, in the proxy. The two limits are not equally
 # strong: daily_tool_calls is counted by the proxy from calls it serves, so it

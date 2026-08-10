@@ -156,6 +156,7 @@ describe("the interface", () => {
       "append",
       "close",
       "recent",
+      "recentInThread",
       "remove",
       "replaceText",
       "search"
@@ -332,6 +333,104 @@ describe("reading recent messages", () => {
 
     expect(store.recent(10)).toEqual([]);
     expect(other.recent(10).map(hit => hit.ts)).toEqual([TS.first]);
+
+    other.close();
+  });
+});
+
+describe("reading one thread", () => {
+  // Two threads interleaved in the channel, which is the arrangement that makes
+  // the read worth having: reading the channel here returns both conversations
+  // shuffled together, and the point of #66 is to answer a reply from its own.
+  const ROOT_A = "1758000000.000100";
+  const ROOT_B = "1758000030.000100";
+  const REPLY_A1 = "1758000060.000200";
+  const REPLY_B1 = "1758000090.000200";
+  const REPLY_A2 = "1758000120.000300";
+
+  function inThread(thread: string, limit = 10): string[] {
+    return store.recentInThread(thread, limit).map(hit => hit.ts);
+  }
+
+  beforeEach(() => {
+    store.append(message(ROOT_A, "how do we roll back"));
+    store.append(message(ROOT_B, "lunch?"));
+    store.append(message(REPLY_A1, "revert the tag", { threadTs: ROOT_A }));
+    store.append(message(REPLY_B1, "the usual place", { threadTs: ROOT_B }));
+    store.append(message(REPLY_A2, "and redeploy", { threadTs: ROOT_A }));
+  });
+
+  it("returns the root and its replies, oldest first", () => {
+    // The root matches on `ts` and the replies on `thread_ts`. A read that only
+    // did the second would drop the message that started the conversation,
+    // which is usually the question.
+    expect(inThread(ROOT_A)).toEqual([ROOT_A, REPLY_A1, REPLY_A2]);
+  });
+
+  it("leaves out another thread in the same channel", () => {
+    expect(inThread(ROOT_A)).not.toContain(REPLY_B1);
+    expect(inThread(ROOT_B)).toEqual([ROOT_B, REPLY_B1]);
+  });
+
+  it("leaves out a top-level message that is in no thread", () => {
+    store.append(message("1758000150.000400", "unrelated"));
+
+    expect(inThread(ROOT_A)).toEqual([ROOT_A, REPLY_A1, REPLY_A2]);
+  });
+
+  it("returns the newest of a long thread, still oldest first", () => {
+    expect(inThread(ROOT_A, 2)).toEqual([REPLY_A1, REPLY_A2]);
+  });
+
+  it("keeps every field, the way the other reads do", () => {
+    const sent = message("1758000200.000500", "one more", {
+      threadTs: ROOT_A,
+      userId: "U0SAM",
+      displayName: "Sam",
+      at: 42
+    });
+    store.append(sent);
+
+    expect(store.recentInThread(ROOT_A, 1)).toEqual([sent]);
+  });
+
+  it("returns nothing for a thread this store has never seen", () => {
+    // Not an error: a caller may hold a ts from a conversation that started
+    // before this file did, or in a channel whose messages were never stored.
+    expect(store.recentInThread("1700000000.000000", 10)).toEqual([]);
+  });
+
+  it("does not return a message that was removed", () => {
+    store.remove(REPLY_A1);
+
+    expect(inThread(ROOT_A)).toEqual([ROOT_A, REPLY_A2]);
+  });
+
+  it("caps the limit at the maximum", () => {
+    expect(store.recentInThread(ROOT_A, 10_000).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["not a number", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY]
+  ])("clamps a limit that is out of range: %s", (_name, limit) => {
+    expect(store.recentInThread(ROOT_A, limit).length).toBeGreaterThanOrEqual(1);
+    expect(store.recentInThread(ROOT_A, limit).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
+  });
+
+  it("cannot reach another channel's store", () => {
+    // The third read, and the same claim. A thread id is not a channel id and
+    // carries no way to become one: it selects rows inside the one file this
+    // store was opened on, and another channel's identical thread is another
+    // file.
+    mkdirSync(join(root, OTHER));
+    const other = openMessageStore({ channel: OTHER, root });
+    other.append(message(ROOT_A, "a thread with the same root elsewhere"));
+
+    expect(inThread(ROOT_A)).toEqual([ROOT_A, REPLY_A1, REPLY_A2]);
+    expect(other.recentInThread(ROOT_A, 10).map(hit => hit.ts)).toEqual([ROOT_A]);
 
     other.close();
   });

@@ -51,6 +51,7 @@ describe("createMentionHandler", () => {
         // the one place the two meet.
         key: { workspace: "T024BE7LD", channel: "C024BE91L" },
         requestingUser: "U024BE7LH",
+        thread: "1758000000.000100",
         text: "<@U0BOT> what is the deploy window?",
         traceId: "Ev0PV52K25"
       }
@@ -67,16 +68,33 @@ describe("createMentionHandler", () => {
     expect(router.seen[0]?.text).toBe("<@U0BOT> ping");
   });
 
-  it("carries no Slack timestamp into the request", async () => {
-    // `ts` and `thread_ts` are where a reply goes, which is the gateway's
-    // business. A request carries what was asked and by whom, and #66 is what
-    // decides whether the router ever needs to know about a thread.
+  it("carries the thread and no other Slack timestamp", async () => {
+    // #66 decided this, and the earlier version of this test said it would.
+    // The router needs a thread — it is what the transcript is read from and
+    // what a follow-up is matched against — and it needs nothing else Slack
+    // times. The mention's own `ts` is where a reply goes, which stays the
+    // gateway's business.
+    const router = recordingRouter();
+    const handler = createMentionHandler(
+      router.route
+    );
+
+    await handler(mention({ ts: "1758000000.000900", threadTs: "1758000000.000100" }));
+
+    expect(router.seen[0]?.thread).toBe("1758000000.000100");
+    expect(JSON.stringify(router.seen[0])).not.toContain("1758000000.000900");
+  });
+
+  it("uses the reply target as the thread, so a top-level mention gets its own", async () => {
+    // `SlackMention.threadTs` is already `thread_ts ?? ts`, so a mention that
+    // starts a thread names the thread it is about to start. That is the right
+    // identity either way: the answer lands there, and so does the reply to it.
     const router = recordingRouter();
     const handler = createMentionHandler(router.route);
 
-    await handler(mention());
+    await handler(mention({ ts: "1758000000.000900", threadTs: "1758000000.000900" }));
 
-    expect(JSON.stringify(router.seen[0])).not.toContain("1758000000.000100");
+    expect(router.seen[0]?.thread).toBe("1758000000.000900");
   });
 
   it("posts the router's reply", async () => {

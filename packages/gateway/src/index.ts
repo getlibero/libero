@@ -3,6 +3,7 @@ export type { LogFields, Logger, LogLevel } from "./log.js";
 
 export { GatewayError } from "./slack/types.js";
 export type {
+  AppIdentity,
   CardPoster,
   DecisionHandler,
   GatewayErrorReason,
@@ -27,7 +28,7 @@ export type {
 export { toMention } from "./slack/mention.js";
 export type { IgnoreReason, MentionResult } from "./slack/mention.js";
 
-export { toMessage } from "./slack/message.js";
+export { mentionsApp, toMessage } from "./slack/message.js";
 export type { MessageIgnoreReason, MessageResult } from "./slack/message.js";
 
 export { toDecision } from "./slack/decision.js";
@@ -64,6 +65,7 @@ export { createWebApiSurface } from "./slack/web-api.js";
 export type { WebApiOptions, WebApiSurface, WebClientLike } from "./slack/web-api.js";
 
 export {
+  STUB_APP_USER_ID,
   appMentionEnvelope,
   blockActionsEnvelope,
   createStubSlack,
