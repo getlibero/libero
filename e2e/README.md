@@ -133,6 +133,25 @@ between the listing and the call (`rig.channelsRoot.write`, which the proxy
 re-reads per call), or remove it entirely (`rig.channelsRoot.remove`). Scripting
 a name nobody published tests the agent's map, which is a different claim.
 
+**Making the agent misbehave is a transport wrapper, not a config flag.** The
+agent is the untrusted half, so a claim about what the proxy holds when it stops
+cooperating should interfere with the wire rather than switch a mode nothing
+deploys. `startRig({ spendReports: "dropped" })` swallows `/v1/spend` — which is
+how #134's narrow claim gets made: `daily_tool_calls` is the proxy's own count
+and must still bite when `daily_tokens` never moves. `harness/transport.ts` has
+the decorators; `wrapTransport` on `startAgent` takes any of your own.
+
+**A front-end with no card path is a real shape, not a test mode.**
+`startRig({ approvals: "none" })` composes with no prompter, because
+`SlackSurfaceLike.cards` is optional and its absence means "no one to ask". A
+held call then degrades to the refusal-shaped result `tools.ts` documents:
+audited as `held` by the proxy, never run, and relayed to the model. That is
+#135's degraded-mode case, and the composition reads the absent card path rather
+than posting into a stub that swallows it.
+
+`src/harness-knobs.test.ts` pins both, so a case built on either is testing the
+property it means to rather than a seam that quietly did nothing.
+
 **Some attacks cannot go through the agent at all.** `createProxyToolClient`
 sends no `channel` field and cannot be made to — `ToolCall` is strict, so a body
 carrying one is refused by the proxy rather than stripped — and it will only

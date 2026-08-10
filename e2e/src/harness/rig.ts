@@ -40,6 +40,7 @@ import type { ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
+import { withoutSpendReports } from "./transport.js";
 import { writeVault } from "./vault.js";
 
 /** The channel every case uses unless it needs a second. Slack-shaped, as production is. */
@@ -66,6 +67,22 @@ export interface RigOptions {
   readonly script?: readonly CompletionResponse[];
   readonly scheduler?: Scheduler;
   readonly now?: () => number;
+  /**
+   * Whether the agent reports token spend to the proxy.
+   *
+   * `"dropped"` swallows `/v1/spend` at the transport, which is a compromised
+   * agent rather than a configuration — see harness/transport.ts. The claim it
+   * makes testable is the narrow one: `daily_tool_calls` is the proxy's own
+   * count and must still bite when `daily_tokens` never moves.
+   */
+  readonly spendReports?: "sent" | "dropped";
+  /**
+   * Whether this front-end has anywhere to put an approval card.
+   *
+   * `"none"` composes with no prompter — the documented degraded mode, where a
+   * held call is relayed to the model as a refusal and nothing runs.
+   */
+  readonly approvals?: "cards" | "none";
 }
 
 /** A sheet spec with the url left to the rig, since only it knows one. */
@@ -173,6 +190,8 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       clientCertDir: certs.clientCertDir,
       channelsRoot: channelsRoot.path,
       completion: model.client,
+      ...(options.spendReports === "dropped" ? { wrapTransport: withoutSpendReports } : {}),
+      ...(options.approvals === "none" ? { cards: false } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.now !== undefined ? { now: options.now } : {})
     });
