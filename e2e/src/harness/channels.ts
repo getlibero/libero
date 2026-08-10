@@ -41,6 +41,15 @@ export interface SheetSpec {
   readonly maxToolCallsPerTask?: number;
   readonly dailyTokens?: number;
   readonly dailyToolCalls?: number;
+  /**
+   * What a cached token is worth against `dailyTokens`.
+   *
+   * Written out rather than left to the schema's defaults by the one case that
+   * is about the weighting itself: a sheet whose ratio is implicit makes a
+   * budget assertion depend on a default nothing in the case names.
+   */
+  readonly cacheReadWeight?: number;
+  readonly cacheWriteWeight?: number;
 }
 
 export interface ChannelsRoot {
@@ -93,6 +102,8 @@ export function tempChannelsRoot(cleanup: Cleanup): ChannelsRoot {
           `[budget]`,
           `daily_tokens = ${spec.dailyTokens ?? 1_000_000}`,
           `daily_tool_calls = ${spec.dailyToolCalls ?? 200}`,
+          ...(spec.cacheReadWeight !== undefined ? [`cache_read_weight = ${spec.cacheReadWeight}`] : []),
+          ...(spec.cacheWriteWeight !== undefined ? [`cache_write_weight = ${spec.cacheWriteWeight}`] : []),
           ``,
           `[[mcp_server]]`,
           `name = "${server}"`,

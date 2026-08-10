@@ -33,6 +33,34 @@ export function withoutSpendReports(inner: ProxyTransport): ProxyTransport {
   };
 }
 
+/**
+ * Sends every `/v1/spend` twice, and answers with what the first send said.
+ *
+ * The other half of the metering threat model: an agent that under-reports is
+ * `withoutSpendReports`, and an agent that over-reports is this — a retry loop,
+ * a restart replaying a queue, or a compromised sender trying to make a
+ * channel's budget look spent. The turn id is the idempotency key, so the
+ * second copy must be a `duplicate` and must move no counter.
+ *
+ * The *first* answer is returned rather than the second, so the agent's own
+ * view of what it reported stays honest and the duplicate is observed where it
+ * is authoritative: the proxy's log line. A wrapper that reported the duplicate
+ * back to the agent would be testing this decorator's bookkeeping instead.
+ */
+export function replayingSpendReports(inner: ProxyTransport): ProxyTransport {
+  return {
+    async request(options: ProxyRequest): Promise<ProxyResponse> {
+      const first = await inner.request(options);
+      if (options.path !== "/v1/spend") return first;
+      // Sequential, not concurrent: two in flight at once would race the
+      // meter's own insert and the case would be about SQLite's locking rather
+      // than about the turn id.
+      await inner.request(options);
+      return first;
+    }
+  };
+}
+
 /** Every request that crossed, for a case asserting on what the agent sent. */
 export interface RecordingTransport {
   readonly transport: ProxyTransport;
