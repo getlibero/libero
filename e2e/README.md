@@ -124,11 +124,63 @@ Script `calls("list_prs", …)`.
 
 **An unlisted name never reaches the proxy.** The agent decodes a flat name to a
 `(server, tool)` pair through a map built from the listing, so a name the listing
-did not carry is refused client-side: no `/v1/tools/call`, no audit row, and the
-model gets *"`x` is not a tool this channel permits."* That is correct, and it
-means a case testing the **proxy's** enforcement has to submit a call the listing
-*did* carry — change the sheet between the listing and the call, or remove the
-channel's sheet mid-task, rather than simply scripting a name nobody published.
+did not carry is refused client-side (`packages/agent/src/proxy/tools.ts:172`):
+no `/v1/tools/call`, no audit row, and the model gets *"`x` is not a tool this
+channel permits."* That is correct — *"the proxy is not asked about a tool it
+never published"* — and it means a case testing the **proxy's** enforcement has
+to submit a call the listing *did* carry. Two ways: rewrite the channel's sheet
+between the listing and the call (`rig.channelsRoot.write`, which the proxy
+re-reads per call), or remove it entirely (`rig.channelsRoot.remove`). Scripting
+a name nobody published tests the agent's map, which is a different claim.
+
+**Making the agent misbehave is a transport wrapper, not a config flag.** The
+agent is the untrusted half, so a claim about what the proxy holds when it stops
+cooperating should interfere with the wire rather than switch a mode nothing
+deploys. `startRig({ spendReports: "dropped" })` swallows `/v1/spend` — which is
+how #134's narrow claim gets made: `daily_tool_calls` is the proxy's own count
+and must still bite when `daily_tokens` never moves. `harness/transport.ts` has
+the decorators; `wrapTransport` on `startAgent` takes any of your own.
+
+**A front-end with no card path is a real shape, not a test mode.**
+`startRig({ approvals: "none" })` composes with no prompter, because
+`SlackSurfaceLike.cards` is optional and its absence means "no one to ask". A
+held call then degrades to the refusal-shaped result `tools.ts` documents:
+audited as `held` by the proxy, never run, and relayed to the model. That is
+#135's degraded-mode case, and the composition reads the absent card path rather
+than posting into a stub that swallows it.
+
+`src/harness-knobs.test.ts` pins both, so a case built on either is testing the
+property it means to rather than a seam that quietly did nothing.
+
+**You can break the proxy on purpose, and you should.** A leak test that has
+never seen a leak is a test that passes. `breakRedaction(cleanup)` writes a
+module loader hook, and `startRig({ nodeArgs: ["--import", hook] })` registers it
+inside the spawned proxy, where it rewrites `redactSecrets` into the identity
+function as Node loads it. Combined with `upstream: { echoHeaders: "text" }` —
+which makes the upstream reflect its `Authorization` header into the tool
+result — that is a real, complete leak: the credential lands verbatim in the
+model's transcript.
+
+`src/redaction-detector.test.ts` runs that scenario twice, as shipped and
+gutted, and requires `expectNoCanary` to pass the first and **throw** the
+second. It is the answer to "would this suite notice?", which no negative
+assertion can answer about itself.
+
+A loader hook rather than a stub because the proxy is a separate process and its
+imports are ESM bindings — nothing in the test process can reach them, and the
+launch is the only seam there is. It patches compiled output, so the hook throws
+if its needle no longer matches; a mutation that silently applied to nothing
+would be the exact failure it exists to prevent.
+
+**Some attacks cannot go through the agent at all.** `createProxyToolClient`
+sends no `channel` field and cannot be made to — `ToolCall` is strict, so a body
+carrying one is refused by the proxy rather than stripped — and it will only
+present the certificate matching the channel it was asked for. A case attacking
+identity resolution has to be its own client: build a `node:https` request
+against `rig.proxy.url` using `rig.certs`, and use `startRig({ rawCns })` for a
+certificate whose CN says something the CA never meant. That is the only way to
+put a header, a query parameter, and a body field in disagreement with a
+certificate and watch the certificate win.
 
 **Everything runs on real time.** The loop's wall clock is `AbortSignal.timeout`,
 which no fake timer can drive, so there is no `vi.useFakeTimers()` anywhere here.

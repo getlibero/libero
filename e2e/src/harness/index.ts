@@ -16,6 +16,8 @@ export type { Certs, MintOptions } from "./certs.js";
 export { tempChannelsRoot } from "./channels.js";
 export type { ChannelsRoot, SheetSpec, SheetTool } from "./channels.js";
 
+export { breakRedaction } from "./mutate.js";
+
 export { calls, says, scriptedModel } from "./model.js";
 export type { ScriptedModel } from "./model.js";
 
@@ -30,6 +32,9 @@ export type { UpstreamOptions } from "./upstream.js";
 
 export { auditRows, lastAuditId, spendFor } from "./records.js";
 export type { AuditRow } from "./records.js";
+
+export { recording, withoutSpendReports } from "./transport.js";
+export type { RecordingTransport } from "./transport.js";
 
 export { writeVault } from "./vault.js";
 export type { PlantedVault } from "./vault.js";

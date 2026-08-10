@@ -22,7 +22,7 @@
 // production.
 
 import { createProxyTransport } from "@getlibero/agent";
-import type { CompletionClient } from "@getlibero/agent";
+import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import { createGateway, createStubSlack } from "@getlibero/gateway";
 import type { LogFields, LogLevel, Logger, Scheduler, SlackGateway, StubSlack } from "@getlibero/gateway";
 import { createServer, createSheetResolver } from "@getlibero/server";
@@ -40,6 +40,23 @@ export interface AgentOptions {
   readonly model?: string;
   readonly scheduler?: Scheduler;
   readonly now?: () => number;
+  /**
+   * Wraps the real transport before the composition gets it.
+   *
+   * How a case makes the agent misbehave — see harness/transport.ts. The
+   * agent is the untrusted half, so interfering with what it sends is a
+   * faithful compromise rather than a mode; the wrapper never sees the
+   * certificate, which stays the transport's.
+   */
+  readonly wrapTransport?: (inner: ProxyTransport) => ProxyTransport;
+  /**
+   * Whether this front-end has anywhere to put an approval card.
+   *
+   * `false` composes with no prompter, which is the documented degraded mode:
+   * a held call is relayed to the model as a refusal and nothing runs. It is a
+   * real front-end shape, not a test switch — see `SlackSurfaceLike.cards`.
+   */
+  readonly cards?: boolean;
 }
 
 export interface AgentSide {
@@ -62,11 +79,12 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
   // scan reads, and a silent logger would make that assertion vacuous.
   const logger: Logger = { log: (level, fields) => void lines.push({ level, fields }) };
 
-  const transport = createProxyTransport({
+  const real = createProxyTransport({
     url: options.proxyUrl,
     caPath: options.caPath,
     clientCertDir: options.clientCertDir
   });
+  const transport = options.wrapTransport === undefined ? real : options.wrapTransport(real);
 
   const tasks = new AbortController();
 
@@ -79,7 +97,11 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
         onDecision,
         logger
       }),
-      cards: slack.poster
+      // Omitted rather than stubbed when a case asks for no card path: the
+      // composition reads its absence as "no one to ask" and wires no prompter,
+      // which is the shape being tested. A stub that accepted cards and dropped
+      // them would test nothing.
+      ...(options.cards === false ? {} : { cards: slack.poster })
     }),
     completion: options.completion,
     transport,

@@ -12,13 +12,18 @@
 // run where no credential was ever resolved.
 
 import { startFakeMcpServer } from "@getlibero/proxy";
-import type { FakeCatalogTool, FakeMcpServer } from "@getlibero/proxy";
+import type { FakeMcpServer, FakeMcpServerOptions } from "@getlibero/proxy";
 import type { Cleanup } from "./cleanup.js";
 
-export interface UpstreamOptions {
-  /** What `tools/list` publishes. Defaults to the fake's own `list_prs`/`merge_pr`. */
-  readonly catalog?: readonly FakeCatalogTool[];
-}
+/**
+ * The fake's own options, passed through.
+ *
+ * Not a narrowed vocabulary: `echoHeaders`, `echoAuthAsSessionId`, `hangOn`,
+ * `pageSize` and the rest are documented on `FakeMcpServerOptions` and are
+ * exactly what the attack cases reach for. Restating a subset here would be a
+ * second list to keep in step.
+ */
+export type UpstreamOptions = Partial<FakeMcpServerOptions>;
 
 /**
  * Starts the upstream and registers its shutdown.
@@ -29,9 +34,7 @@ export interface UpstreamOptions {
  * `FakeMcpServerOptions` and are not worth a second vocabulary here.
  */
 export async function startUpstream(cleanup: Cleanup, options: UpstreamOptions = {}): Promise<FakeMcpServer> {
-  const upstream = await startFakeMcpServer(
-    options.catalog !== undefined ? { catalog: options.catalog } : {}
-  );
+  const upstream = await startFakeMcpServer(options);
   // `close` calls `closeAllConnections` first, so a request left hanging by the
   // `hangOn` knob cannot stall teardown.
   cleanup.add("upstream", () => upstream.close());

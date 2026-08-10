@@ -30,6 +30,7 @@ import type { Surface } from "./canary.js";
 import { createCleanup, guarded } from "./cleanup.js";
 import type { Cleanup } from "./cleanup.js";
 import { mintCerts } from "./certs.js";
+import type { Certs } from "./certs.js";
 import { tempChannelsRoot } from "./channels.js";
 import type { ChannelsRoot, SheetSpec } from "./channels.js";
 import { scriptedModel } from "./model.js";
@@ -39,6 +40,8 @@ import type { ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
+import type { UpstreamOptions } from "./upstream.js";
+import { withoutSpendReports } from "./transport.js";
 import { writeVault } from "./vault.js";
 
 /** The channel every case uses unless it needs a second. Slack-shaped, as production is. */
@@ -59,12 +62,42 @@ export interface RigOptions {
    * which is exactly the "revoked channel" case.
    */
   readonly sheets?: Readonly<Record<string, SheetInput>>;
-  /** What the upstream publishes from `tools/list`. */
+  /** What the upstream publishes from `tools/list`. Shorthand for `upstream.catalog`. */
   readonly catalog?: readonly FakeCatalogTool[];
+  /**
+   * The fake upstream's own options — `echoHeaders`, `hangOn`, `pageSize`, and
+   * the rest of `FakeMcpServerOptions`. `catalog` above wins if both set it.
+   */
+  readonly upstream?: UpstreamOptions;
+  /**
+   * Extra arguments for the spawned proxy's `node`, before the entrypoint.
+   *
+   * The seam a mutation case needs: `["--import", hook]` registers a module
+   * loader hook inside the proxy process, which is the only way to break one of
+   * its passes from out here — the proxy is a separate process and its imports
+   * are ESM bindings, so nothing in this process can reach them.
+   */
+  readonly nodeArgs?: readonly string[];
   /** The model's turns, in order. Running past the end throws. */
   readonly script?: readonly CompletionResponse[];
   readonly scheduler?: Scheduler;
   readonly now?: () => number;
+  /**
+   * Whether the agent reports token spend to the proxy.
+   *
+   * `"dropped"` swallows `/v1/spend` at the transport, which is a compromised
+   * agent rather than a configuration — see harness/transport.ts. The claim it
+   * makes testable is the narrow one: `daily_tool_calls` is the proxy's own
+   * count and must still bite when `daily_tokens` never moves.
+   */
+  readonly spendReports?: "sent" | "dropped";
+  /**
+   * Whether this front-end has anywhere to put an approval card.
+   *
+   * `"none"` composes with no prompter — the documented degraded mode, where a
+   * held call is relayed to the model as a refusal and nothing runs.
+   */
+  readonly approvals?: "cards" | "none";
 }
 
 /** A sheet spec with the url left to the rig, since only it knows one. */
@@ -76,6 +109,17 @@ export interface Rig {
   readonly proxy: ProxyProcess;
   readonly agent: AgentSide;
   readonly model: ScriptedModel;
+  /**
+   * The mutual-TLS material, for a case that has to make its own request.
+   *
+   * Two things the agent's transport cannot do, and both are #133's: it will
+   * not send a `channel` field — `ToolCall` is strict, so a body carrying one
+   * is refused rather than stripped — and it will not present a certificate
+   * whose CN disagrees with the channel it was asked for. A case that needs
+   * either builds a `node:https` request against `proxy.url` with these paths,
+   * which is the only way to attack identity resolution from outside.
+   */
+  readonly certs: Certs;
   /** `PROXY_AUDIT_DB` — read it with `auditRows` / `lastAuditId`. */
   readonly auditDb: string;
   /** `PROXY_BUDGET_DB` — read it with `spendFor`. */
@@ -125,10 +169,10 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       ...(options.rawCns !== undefined ? { rawCns: options.rawCns } : {})
     });
 
-    const upstream = await startUpstream(
-      cleanup,
-      options.catalog !== undefined ? { catalog: options.catalog } : {}
-    );
+    const upstream = await startUpstream(cleanup, {
+      ...options.upstream,
+      ...(options.catalog !== undefined ? { catalog: options.catalog } : {})
+    });
 
     const channelsRoot = tempChannelsRoot(cleanup);
     const sheets = options.sheets ?? { [CHANNEL]: DEFAULT_SHEET };
@@ -152,7 +196,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       tlsCert: certs.serverCert,
       tlsKey: certs.serverKey,
       tlsCa: certs.caPath
-    });
+    }, options.nodeArgs ?? []);
 
     const model = scriptedModel(options.script ?? []);
     const agent = await startAgent(cleanup, {
@@ -161,6 +205,8 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       clientCertDir: certs.clientCertDir,
       channelsRoot: channelsRoot.path,
       completion: model.client,
+      ...(options.spendReports === "dropped" ? { wrapTransport: withoutSpendReports } : {}),
+      ...(options.approvals === "none" ? { cards: false } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.now !== undefined ? { now: options.now } : {})
     });
@@ -171,6 +217,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       proxy,
       agent,
       model,
+      certs,
       auditDb,
       budgetDb,
       surfaces: (): Surface[] => [

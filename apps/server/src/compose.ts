@@ -46,7 +46,20 @@ import type { SheetResolver } from "./session/sheet.js";
  */
 export interface SlackSurfaceLike {
   readonly gateway: SlackGateway;
-  readonly cards: CardPoster;
+  /**
+   * Where an approval card goes — when there is anywhere.
+   *
+   * Optional because "no one to ask" is a real front-end rather than a test
+   * mode. `createProxyToolClient` takes its prompter optionally for the same
+   * reason: without one, a held call is relayed to the model as the
+   * refusal-shaped result it already is, which is safe and abandons a call a
+   * human could have approved. A surface with no card path therefore gets no
+   * prompter, and that degraded mode is the documented fallback rather than a
+   * misconfiguration.
+   *
+   * Slack always has one. `createSlackSurface` returns it.
+   */
+  readonly cards?: CardPoster;
 }
 
 /**
@@ -145,6 +158,18 @@ export function createServer(deps: ServerDeps): Server {
   // approval deadline's clock, and routing the same injected scheduler into the
   // gateway's reconnect ladder would put timers a test did not ask about into
   // the queue it is asserting on.
+  const cards = surface.cards;
+  const prompter =
+    cards === undefined
+      ? undefined
+      : createHeldCallPrompter({
+          cards,
+          registry,
+          logger,
+          ...(deps.now !== undefined ? { now: deps.now } : {}),
+          ...(deps.scheduler !== undefined ? { scheduler: deps.scheduler } : {})
+        });
+
   const handleMention = createMentionHandler(
     createChannelRouter({
       sheets: deps.sheets,
@@ -156,13 +181,7 @@ export function createServer(deps: ServerDeps): Server {
       }),
       logger
     }),
-    createHeldCallPrompter({
-      cards: surface.cards,
-      registry,
-      logger,
-      ...(deps.now !== undefined ? { now: deps.now } : {}),
-      ...(deps.scheduler !== undefined ? { scheduler: deps.scheduler } : {})
-    })
+    prompter
   );
 
   return { gateway: surface.gateway, registry };
