@@ -26,6 +26,11 @@ max_tokens_per_task      = 60000
 max_tokens_per_turn      = 8192                  # ceiling on one turn's output
 max_history_messages     = 40                    # recent messages in the prompt; 0 for none
 max_history_chars        = 12000                 # and the character budget they share
+max_result_chars         = 32768                 # one tool answer's ceiling; past it the result
+                                                 # is truncated and says so. How many bytes the
+                                                 # proxy will read off an upstream at all is
+                                                 # PROXY_MAX_RESPONSE_BYTES, a deployment
+                                                 # setting: that heap is shared by every channel.
 follow_up_window_seconds = 900                   # replies in a worked thread need no re-mention; 0 for off
 
 # The daily meter, per channel, in the proxy. The two limits are not equally
@@ -52,7 +57,10 @@ credential = "github_service_account"       # name only; value lives in the vaul
 
   # Tools not listed here do not exist as far as this channel is concerned.
   [[mcp_server.tool]]
-  name = "list_prs"
+  name             = "list_prs"
+  max_result_chars = 8000                   # this one lists; a channel-wide 32k is more
+                                            # context than a PR list is worth. Overrides
+                                            # [llm] max_result_chars for this tool alone.
 
   [[mcp_server.tool]]
   name     = "trigger_workflow"

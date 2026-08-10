@@ -11,6 +11,7 @@ import {
   permittedTools,
   permittedToolsFromState,
   resolveApproval,
+  resolveLimits,
   upstreamKey
 } from "./enforce.js";
 
@@ -334,6 +335,69 @@ describe("duplicate entries", () => {
   });
 });
 
+// The channel's half of #151: how much of a tool's answer reaches the model.
+// The other half — how many bytes come off the wire at all — is the
+// deployment's, reaches the client through `McpClientOptions`, and is
+// deliberately not resolvable from a sheet.
+describe("the result bound a decision carries", () => {
+  /** The tool entries `decide` would have matched for `tool`. */
+  const entriesFor = (input: unknown, tool: string) => {
+    const parsed = sheetOf(input);
+    return { sheet: parsed, entries: parsed.mcp_server.flatMap(s => s.tool.filter(t => t.name === tool)) };
+  };
+
+  it("falls through to the channel's bound when no entry names one", () => {
+    const { sheet: parsed, entries } = entriesFor(BASE, "list_prs");
+    expect(resolveLimits(parsed, entries).maxResultChars).toBe(parsed.llm.max_result_chars);
+  });
+
+  // An override may raise as well as lower. A tool that returns diffs is as
+  // good a reason to want more as a tool that returns listings is to want less,
+  // and the channel's number is a default rather than a ceiling — the ceiling
+  // that matters is the deployment's, and it bounds the bytes rather than this.
+  it.each([
+    ["below", 500],
+    ["above", 90_000]
+  ])("takes an entry's override %s the channel's bound", (_label, max_result_chars) => {
+    const { sheet: parsed, entries } = entriesFor(
+      {
+        ...BASE,
+        llm: { max_result_chars: 4_000 },
+        mcp_server: [{ name: "github", transport: "http", url: UPSTREAM, tool: [{ name: "list_prs", max_result_chars }] }]
+      },
+      "list_prs"
+    );
+    expect(resolveLimits(parsed, entries).maxResultChars).toBe(max_result_chars);
+  });
+
+  // `resolveApproval`'s rule, for `resolveApproval`'s reason: two entries naming
+  // one tool are an operator slip, so they get a defined resolution rather than
+  // whichever the array happened to hold first.
+  it("takes the smaller when two entries disagree", () => {
+    const { sheet: parsed, entries } = entriesFor(
+      {
+        ...BASE,
+        mcp_server: [
+          { name: "github", transport: "http", url: UPSTREAM, tool: [{ name: "list_prs", max_result_chars: 9_000 }] },
+          { name: "github", transport: "http", url: UPSTREAM, tool: [{ name: "list_prs", max_result_chars: 700 }] }
+        ]
+      },
+      "list_prs"
+    );
+    expect(entries).toHaveLength(2);
+    expect(resolveLimits(parsed, entries).maxResultChars).toBe(700);
+  });
+
+  // A hold is what the dispatcher runs from on every approved call, so a hold
+  // without a bound would leave a redeemed call unbounded.
+  it("rides on a hold as well as on an allow", () => {
+    const held = decide({ sheet, call: callTo("github", "trigger_workflow"), spend: NO_SPEND });
+    const allowed = decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND });
+    expect(held.outcome === "hold" && held.limits.maxResultChars).toBe(sheet.llm.max_result_chars);
+    expect(allowed.outcome === "allow" && allowed.limits.maxResultChars).toBe(sheet.llm.max_result_chars);
+  });
+});
+
 describe("which upstream an allow names", () => {
   // The whole point of carrying the entry rather than the name: the dispatcher
   // is handed a destination the decision matched, not one it looks up later.
@@ -341,7 +405,8 @@ describe("which upstream an allow names", () => {
     const decision = decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND });
     expect(decision).toEqual({
       outcome: "allow",
-      upstream: expect.objectContaining({ name: "github", transport: "http" })
+      upstream: expect.objectContaining({ name: "github", transport: "http" }),
+      limits: { maxResultChars: expect.any(Number) }
     });
   });
 

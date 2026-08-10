@@ -39,6 +39,11 @@ max_tokens_per_task      = 60000
 max_tokens_per_turn      = 8192                  # ceiling on one turn's output
 max_history_messages     = 40                    # recent messages in the prompt; 0 for none
 max_history_chars        = 12000                 # and the character budget they share
+max_result_chars         = 32768                 # one tool answer's ceiling; past it the result
+                                                 # is truncated and says so. How many bytes the
+                                                 # proxy will read off an upstream at all is
+                                                 # PROXY_MAX_RESPONSE_BYTES, a deployment
+                                                 # setting: that heap is shared by every channel.
 follow_up_window_seconds = 900                   # replies in a worked thread need no re-mention; 0 for off
 
 [budget]
@@ -55,7 +60,10 @@ credential = "github_service_account"       # name only; value lives in the vaul
 
   # Tools not listed here do not exist as far as this channel is concerned.
   [[mcp_server.tool]]
-  name = "list_prs"
+  name             = "list_prs"
+  max_result_chars = 8000                   # this one lists; a channel-wide 32k is more
+                                            # context than a PR list is worth. Overrides
+                                            # [llm] max_result_chars for this tool alone.
 
   [[mcp_server.tool]]
   name     = "trigger_workflow"
@@ -97,6 +105,23 @@ number is the agent's rather than yours, for the same reason its network timeout
 
 A question asked inside a thread is answered from that thread rather than from the channel around
 it. A question that starts one has no thread to read, so it sees the channel instead.
+
+`max_result_chars` bounds the other direction: how much of a single tool's answer reaches the
+model. A tool that lists files, reads a log, or returns a long diff can hand back more in one call
+than the whole conversation cost, and every character of it is charged against
+`max_tokens_per_task`. Past the bound the result is cut and carries a line saying so —
+`[result truncated: 32768 of 412903 characters]` — so the model knows it is working from part of an
+answer rather than assuming it has all of one. It is per channel and can be overridden per tool;
+see `[[mcp_server.tool]]` below.
+
+There is a second bound underneath it that is **not** yours to set. Before any of this, the proxy
+decides how many bytes it will read off an upstream at all — `PROXY_MAX_RESPONSE_BYTES`, four
+megabytes by default, set by whoever deployed the proxy. A response past it is abandoned mid-read
+and the call fails; the model is told the answer was too large rather than shown part of it. The
+split is deliberate: `max_result_chars` spends your channel's token budget, so it is yours, while
+the wire bound spends memory in a process every channel shares, so it belongs to the operator who
+sized that process. If tool answers are being refused rather than truncated, that is the number to
+raise, and it is not in this file.
 
 `follow_up_window_seconds` is a third kind of setting again: it decides whether there is a *next*
 task at all. After the agent has worked in a thread, a reply in that thread reaches it with no
@@ -214,10 +239,14 @@ approval costs one click and one line, and the alternative errs towards running 
 nobody reviewed. An explicit `approval` in the sheet always wins — the heuristic is only consulted
 when the entry says nothing.
 
+`max_result_chars` on an entry overrides `[llm] max_result_chars` for that tool alone, in either
+direction. A tool that returns file listings usually wants less than the channel's default; one
+that returns diffs may want more. Most entries should name nothing and take the channel's number.
+
 Names are matched exactly. `GitHub` is not `github`, and a tool listed as `List_PRs` will not match
 a call to `list_prs` — the call is refused as an unlisted tool. If a tool you allowlisted is being
-refused, check the spelling before anything else. If the same tool appears twice with different
-approval settings, the stricter one applies.
+refused, check the spelling before anything else. If the same tool appears twice they are resolved
+the same way in both fields: the stricter approval applies, and the smaller result bound applies.
 
 ### `[egress]`
 

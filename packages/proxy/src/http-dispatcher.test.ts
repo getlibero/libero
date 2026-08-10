@@ -3,6 +3,15 @@ import type { AddressInfo } from "node:net";
 import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHttpDispatcher } from "./http-dispatcher.js";
+import type { CallLimits } from "./enforce.js";
+
+/**
+ * The channel's bound on a result, which every `callTool` now carries.
+ *
+ * Roomy on purpose: these cases are about the protocol and the transport, not
+ * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ */
+const LIMITS: CallLimits = { maxResultChars: 100_000 };
 import { createJsonLogger } from "./log.js";
 import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import { RedactionError } from "./redact.js";
@@ -82,7 +91,7 @@ describe("serving a call", () => {
   it("delivers the real secret to the upstream", async () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result).toEqual({ outcome: "ran", result: { content: "called list_prs", isError: false } });
     // Every request, not just the call: the discovery probe carries it too.
@@ -95,7 +104,7 @@ describe("serving a call", () => {
   it("sends the tool and its arguments, and no channel or attribution", async () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     const call = fake.callsTo("tools/call")[0];
     expect(call?.rpc?.params).toMatchObject({ name: "list_prs", arguments: { state: "open" } });
@@ -121,7 +130,7 @@ describe("serving a call", () => {
       url: fake.url,
       tool: [{ name: "list_prs" }]
     };
-    const result = await dispatcher.dispatch(callTo(), upstreamWithoutCredential);
+    const result = await dispatcher.dispatch(callTo(), upstreamWithoutCredential, LIMITS);
 
     expect(result.outcome).toBe("ran");
     expect(fake.received[0]?.authorization).toBeUndefined();
@@ -134,7 +143,7 @@ describe("serving a call", () => {
     fake.respond = request => (request.rpc?.method === "tools/call" ? { status: 404, raw: "no such repo" } : null);
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
     expect(result.outcome).toBe("ran");
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("HTTP 404");
@@ -145,7 +154,7 @@ describe("serving a call", () => {
     fake = await startFakeMcpServer({ framing: "sse" });
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
-    expect(await dispatcher.dispatch(callTo(), serverAt(fake.url))).toEqual({
+    expect(await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS)).toEqual({
       outcome: "ran",
       result: { content: "called list_prs", isError: false }
     });
@@ -157,7 +166,7 @@ describe("a credential the vault cannot resolve", () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ other: SECRET }) });
 
-    expect(await dispatcher.dispatch(callTo(), serverAt(fake.url))).toEqual({
+    expect(await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS)).toEqual({
       outcome: "refused",
       refusal: { reason: "credential_unresolved", credential: CRED }
     });
@@ -169,7 +178,7 @@ describe("a credential the vault cannot resolve", () => {
   it("opens no connection, not even to discover", async () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({}) });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(fake.received).toEqual([]);
   });
@@ -178,7 +187,7 @@ describe("a credential the vault cannot resolve", () => {
     fake = await startFakeMcpServer();
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url, { credential: "absent_credential" }));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url, { credential: "absent_credential" }), LIMITS);
 
     expect(lines.join("")).toContain("absent_credential");
     expect(lines.join("")).not.toContain(SECRET);
@@ -190,7 +199,7 @@ describe("an upstream that cannot be served", () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
-    expect(await dispatcher.dispatch(callTo(), stdioServer())).toEqual({ outcome: "unavailable" });
+    expect(await dispatcher.dispatch(callTo(), stdioServer(), LIMITS)).toEqual({ outcome: "unavailable" });
     expect(fake.received).toEqual([]);
   });
 
@@ -203,7 +212,7 @@ describe("an upstream that cannot be served", () => {
       },
       size: 0
     };
-    await createHttpDispatcher({ vault: counting }).dispatch(callTo(), stdioServer());
+    await createHttpDispatcher({ vault: counting }).dispatch(callTo(), stdioServer(), LIMITS);
     expect(looked).toBe(0);
   });
 });
@@ -218,7 +227,7 @@ describe("an upstream that does not answer", () => {
 
     try {
       const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), timeoutMs: 50 });
-      const result = await dispatcher.dispatch(callTo(), serverAt(hangOrigin));
+      const result = await dispatcher.dispatch(callTo(), serverAt(hangOrigin), LIMITS);
 
       expect(result.outcome).toBe("ran");
       expect(result.outcome === "ran" && result.result.isError).toBe(true);
@@ -233,7 +242,7 @@ describe("an upstream that does not answer", () => {
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
     // Port 1 on loopback: nothing listens, so the connection is refused.
-    const result = await dispatcher.dispatch(callTo(), serverAt("http://127.0.0.1:1"));
+    const result = await dispatcher.dispatch(callTo(), serverAt("http://127.0.0.1:1"), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(lines.join("")).toContain("unreachable");
@@ -250,7 +259,7 @@ describe("an upstream that does not answer", () => {
     fake.respond = () => ({ status: 502, raw: `<html>edge proxy rejected Bearer ${SECRET}</html>` });
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
     const content = result.outcome === "ran" ? result.result.content : "";
 
     expect(content).toBe("The tool server does not speak a version of MCP this proxy supports. The call was not made.");
@@ -266,7 +275,7 @@ describe("a server this proxy cannot speak to", () => {
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
 
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("does not speak a version of MCP");
@@ -288,7 +297,7 @@ describe("an upstream asking for more input", () => {
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
 
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("does not answer for a channel");
@@ -301,7 +310,7 @@ describe("what the proxy writes down", () => {
     fake = await startFakeMcpServer();
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     const written = lines.join("");
     expect(written).toContain("127.0.0.1");
@@ -315,7 +324,7 @@ describe("what the proxy writes down", () => {
     fake = await startFakeMcpServer({ echoHeaders: "text" });
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(lines.join("")).not.toContain(SECRET);
   });
@@ -328,7 +337,7 @@ describe("what the proxy writes down", () => {
     fake = await startFakeMcpServer({ protocol });
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(lines.map(line => JSON.parse(line) as { event: string; protocol?: string })).toContainEqual(
       expect.objectContaining({ event: "upstream_call", protocol })
@@ -342,7 +351,7 @@ describe("what the proxy writes down", () => {
     fake = await startFakeMcpServer({ protocol: "legacy", echoHeaders: "text", echoAuthAsSessionId: true });
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     // Not vacuous: the upstream really did receive it, on every request.
     expect(fake.received).not.toHaveLength(0);
@@ -363,7 +372,7 @@ describe("an upstream that echoes its own auth header", () => {
   it("does not hand the value back in the result", async () => {
     fake = await startFakeMcpServer({ echoHeaders: "text" });
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome).toBe("ran");
     const content = result.outcome === "ran" ? result.result.content : "";
@@ -379,7 +388,7 @@ describe("an upstream that echoes its own auth header", () => {
   it("does not hand it back JSON-escaped either", async () => {
     fake = await startFakeMcpServer({ echoHeaders: "json-escaped" });
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     const content = result.outcome === "ran" ? result.result.content : "";
     expect(content).toContain("[redacted:github_service_account]");
@@ -394,7 +403,7 @@ describe("an upstream that echoes its own auth header", () => {
         ? { status: 500, raw: `request failed: ${request.authorization ?? ""}` }
         : null;
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).not.toContain(SECRET);
@@ -403,7 +412,7 @@ describe("an upstream that echoes its own auth header", () => {
   it("keeps it out of a response header the client reads", async () => {
     fake = await startFakeMcpServer({ echoIntoResponseHeader: true });
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
@@ -417,7 +426,7 @@ describe("shutting down", () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
     const closing = dispatcher.close();
 
-    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("shutting down");
@@ -437,7 +446,7 @@ describe("shutting down", () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
-    await dispatcher.dispatch(callTo(), serverAt(fake.url));
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
     expect(fake.liveSessions.size).toBe(1);
 
     await dispatcher.close();
@@ -460,7 +469,7 @@ describe("fail-closed", () => {
     // would be worse than no answer.
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: "" }) });
 
-    await expect(dispatcher.dispatch(callTo(), serverAt(fake.url))).rejects.toBeInstanceOf(RedactionError);
+    await expect(dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS)).rejects.toBeInstanceOf(RedactionError);
   });
 
   // A rejected discovery must not be cached as a rejected promise, or every
@@ -469,15 +478,107 @@ describe("fail-closed", () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: "" }) });
 
-    await expect(dispatcher.dispatch(callTo(), serverAt(fake.url))).rejects.toBeInstanceOf(RedactionError);
-    await expect(dispatcher.dispatch(callTo(), serverAt(fake.url))).rejects.toBeInstanceOf(RedactionError);
+    await expect(dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS)).rejects.toBeInstanceOf(RedactionError);
+    await expect(dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS)).rejects.toBeInstanceOf(RedactionError);
   });
 
   it("still converts a transport failure into a result, which is a tool failing", async () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
-    const result = await dispatcher.dispatch(callTo(), serverAt("http://127.0.0.1:1"));
+    const result = await dispatcher.dispatch(callTo(), serverAt("http://127.0.0.1:1"), LIMITS);
 
     expect(result.outcome).toBe("ran");
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
+  });
+});
+
+// #151's two bounds, met at the seam where a call actually crosses a socket.
+// outbound.test.ts proves the *mechanism* — the read stops and cancels — against
+// a stubbed stream; these prove the *outcome* a model and an operator get, over
+// loopback. The fake writes its reply with a single `end()` and cannot drip a
+// body, and does not need to: a multi-megabyte write still arrives at the reader
+// as many chunks.
+describe("the two bounds on what comes back", () => {
+  /** A `tools/call` reply carrying one text block of `size` characters. */
+  const answering = (size: number) => (request: { rpc: { id?: unknown; method?: unknown } | null }) =>
+    request.rpc?.method === "tools/call"
+      ? {
+          message: {
+            jsonrpc: "2.0",
+            id: request.rpc.id,
+            result: { content: [{ type: "text", text: "x".repeat(size) }] }
+          }
+        }
+      : null;
+
+  // The channel's bound. A large answer is usually still a useful one, so it is
+  // truncated and says so rather than being refused.
+  it("truncates a result past the channel's bound and names the truncation", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = answering(200_000);
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), { maxResultChars: 1_000 });
+
+    expect(result.outcome).toBe("ran");
+    const content = result.outcome === "ran" ? result.result.content : "";
+    expect(content).toContain("[result truncated: 1000 of 200000 characters]");
+    // A truncated answer is still an answer: the tool did not fail.
+    expect(result.outcome === "ran" && result.result.isError).toBe(false);
+  });
+
+  // The deployment's bound. Nothing is decoded, so there is no partial answer to
+  // give — but the call did reach the upstream, and the sentence says so rather
+  // than claiming the call was never made.
+  it("refuses a body past the deployment's bound, after the tool has run", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = answering(200_000);
+    const dispatcher = createHttpDispatcher({
+      vault: vaultOf({ [CRED]: SECRET }),
+      maxResponseBytes: 8_192
+    });
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    expect(result.outcome).toBe("ran");
+    expect(result.outcome === "ran" && result.result.isError).toBe(true);
+    expect(result.outcome === "ran" && result.result.content).toBe(
+      "The tool server's answer was larger than this proxy will accept. The call was made and the answer was discarded."
+    );
+    // The honest part of that sentence: the upstream did receive the call, so a
+    // model must not be told it was never made.
+    expect(fake.callsTo("tools/call")).not.toHaveLength(0);
+  });
+
+  // The bounds are layered rather than alternatives, and the wire one has to sit
+  // well above the content one or the ordinary large result never gets to be a
+  // truncated one.
+  it("truncates rather than refusing when the body fits but the result does not", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = answering(50_000);
+    const dispatcher = createHttpDispatcher({
+      vault: vaultOf({ [CRED]: SECRET }),
+      maxResponseBytes: 4_194_304
+    });
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), { maxResultChars: 2_000 });
+
+    expect(result.outcome === "ran" && result.result.isError).toBe(false);
+    expect(result.outcome === "ran" && result.result.content).toContain("[result truncated: 2000 of 50000");
+  });
+
+  // A handshake runs under MAX_CONTROL_BODY_BYTES, well below the configured
+  // cap, and reports its own sentence: "could not be reached" would be false
+  // about a server that answered at length.
+  it("names an oversized handshake as one, not as an unreachable server", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "server/discover" ? { raw: `{"pad":"${"z".repeat(200_000)}"}` } : null;
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    expect(result.outcome === "ran" && result.result.content).toBe(
+      "The tool server's handshake was larger than this proxy will accept. The call was not made."
+    );
   });
 });

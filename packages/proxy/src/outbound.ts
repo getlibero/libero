@@ -64,6 +64,56 @@ export type UpstreamMethod = "POST" | "DELETE";
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
 
 /**
+ * How many bytes of a response body the proxy will hold, when nothing says
+ * otherwise.
+ *
+ * The sibling of the timeout above, and it exists for the same reason: an
+ * upstream that answers forever and an upstream that answers enormously are the
+ * same failure wearing different clothes, and neither is bounded by anything
+ * else on this path. Until this landed, `response.text()` read a body to
+ * completion — so a fifty-megabyte answer was buffered, scanned fifteen times by
+ * `redactSecrets`, parsed, and handed to a model that spent a channel's whole
+ * task budget reading it.
+ *
+ * **Four megabytes, and deliberately not `MAX_BODY_BYTES`'s one.** That number
+ * bounds an *inbound* request, which is one tool call's arguments; this bounds
+ * an outbound response, which since #129 may be a `tools/list` catalog — a
+ * hundred tools carrying full JSON Schema is half a megabyte before anything
+ * exotic happens. Four leaves room for that and still refuses to hold a file
+ * transfer.
+ *
+ * **The real cost is three to five times this number per concurrent call**, and
+ * an operator changing it should know that: the decoded string is up to two
+ * bytes per character, `redactSecrets` builds an output copy per needle it
+ * matches, and `JSON.parse` then builds an object graph beside both. The cap is
+ * on the bytes off the wire because that is the quantity this function can
+ * actually refuse, not because it is the whole bill.
+ *
+ * A default rather than a constant: `PROXY_MAX_RESPONSE_BYTES` overrides it, for
+ * the reason argued on `maxBodyBytes` below.
+ */
+export const DEFAULT_UPSTREAM_RESPONSE_BYTES = 4_194_304;
+
+/**
+ * How much of a control-plane answer the proxy will read.
+ *
+ * The version probe, the legacy `initialize` handshake, its acknowledgement, and
+ * the session-termination `DELETE`. A fixed constant rather than the configured
+ * cap, on `SESSION_TERMINATION_TIMEOUT_MS`'s argument: these are not a
+ * deployment's business, because nothing about them scales with what an
+ * operator's upstreams return. A `server/discover` result is a list of protocol
+ * revisions and an `initialize` result is a capabilities object; both are
+ * kilobytes by construction, and a `DELETE`'s answer is read by nobody at all.
+ *
+ * Sixty-four kilobytes is far above any of them and far below the tool-result
+ * cap, which is the point: a server answering the *handshake* with megabytes has
+ * shown it is not speaking MCP, and `McpOutcome.connect_failed` structurally has
+ * no `detail` field to relay a word of it. Cutting that off early costs nothing
+ * that could have been used.
+ */
+export const MAX_CONTROL_BODY_BYTES = 65_536;
+
+/**
  * How long a session-termination `DELETE` gets.
  *
  * Two seconds rather than `DEFAULT_UPSTREAM_TIMEOUT_MS`, because this one runs
@@ -129,7 +179,7 @@ export function injectCredential(
  * that holds a secret, so the failure a caller reports has to be something the
  * caller chose from a list rather than a string that came back from the stack.
  */
-export type UpstreamFailure = "timed_out" | "unreachable" | "redirected";
+export type UpstreamFailure = "timed_out" | "unreachable" | "redirected" | "too_large";
 
 /**
  * An outbound call that did not complete.
@@ -213,6 +263,25 @@ export interface UpstreamRequest {
    */
   readonly credentialName?: string;
   readonly timeoutMs?: number;
+  /**
+   * How many bytes of the response body to hold before abandoning it. Absent
+   * means `DEFAULT_UPSTREAM_RESPONSE_BYTES`.
+   *
+   * Optional-with-a-default like `timeoutMs`, and settled by the same principal
+   * for the same reason. Which upstreams a channel may call is the team sheet's
+   * business; how much memory this process will spend on one of their answers is
+   * not — the heap is shared by every channel the proxy serves, so a sheet able
+   * to raise this would be one channel degrading service for all of them. It is
+   * a deployment setting (`PROXY_MAX_RESPONSE_BYTES`) rather than a constant
+   * because the operator who sized the container is the one who should say how
+   * much of it a response may occupy.
+   *
+   * That is the whole of the split this file cares about. The companion bound —
+   * how much of a *result* reaches the model — is the channel's own token spend
+   * and does live in the sheet; it is applied in ./mcp-protocol.ts, and nothing
+   * here knows about it.
+   */
+  readonly maxBodyBytes?: number;
   /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
   readonly fetch?: typeof globalThis.fetch;
 }
@@ -247,6 +316,72 @@ function safeRequestHeaders(headers: Readonly<Record<string, string>> | undefine
 }
 
 /**
+ * The body, decoded, or `null` if it ran past the limit.
+ *
+ * **Equivalent to `response.text()` for anything under the limit, and that is a
+ * fact about the specification rather than an approximation.** `Response.text()`
+ * is defined as "consume body" followed by *UTF-8 decode* — the declared charset
+ * is never consulted, unlike `XMLHttpRequest` — and *UTF-8 decode* is exactly
+ * `TextDecoder("utf-8")` at its defaults: `ignoreBOM: false`, so a leading byte
+ * order mark is stripped, and `fatal: false`, so an invalid sequence becomes
+ * U+FFFD rather than throwing. `{ stream: true }` holds an incomplete sequence
+ * back across a chunk boundary, including a BOM split across the first two
+ * chunks, so the joined result is character-for-character what one decode of the
+ * whole buffer produces. The suite proves this rather than trusting it, by
+ * feeding the same bytes through both paths three at a time.
+ *
+ * **Counted on the wire bytes, before decoding**, because that is the quantity
+ * the heap is spent in and the only one available before the spending happens.
+ * Chunks are decoded and dropped as they arrive rather than accumulated, so the
+ * peak is one chunk plus the string built so far.
+ *
+ * **Overflow is this return value and never a thrown error**, which is load
+ * bearing rather than stylistic. The caller runs this inside the try that
+ * classifies transport failures, and that catch reads `error.name` to tell an
+ * abort from a broken socket: an `UpstreamError` thrown from in here would be
+ * caught, found not to be a `TimeoutError`, and rethrown as `unreachable`. The
+ * bound would vanish, and every test asserting only that the call failed would
+ * go on passing. A value the catch cannot see is the version of this that cannot
+ * be undone by an edit somewhere else.
+ */
+async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit: number): Promise<string | null> {
+  // What `response.text()` answers for a bodiless response, which is an ordinary
+  // case here rather than an edge: the 202 an MCP server acknowledges a
+  // notification with, and the 204 a session `DELETE` is answered by.
+  if (stream === null) return "";
+
+  const reader = stream.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const parts: string[] = [];
+  let total = 0;
+
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    total += chunk.value.byteLength;
+    // Strictly greater, so a body of exactly the limit is a body that fits. And
+    // before the decode below, so the chunk that crosses the line is never added
+    // to what is being accumulated.
+    if (total > limit) {
+      // Tells the transport to stop pulling rather than draining a body nobody
+      // will read, and awaited so the socket is released before this returns.
+      // Its rejection is swallowed on purpose: cancelling an already-errored
+      // stream rejects, and letting that escape would land in the caller's
+      // transport catch and be reported as `unreachable` — the exact confusion
+      // the return value above exists to avoid.
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    parts.push(decoder.decode(chunk.value, { stream: true }));
+  }
+
+  // Flushes a trailing incomplete sequence to U+FFFD, as one whole-buffer decode
+  // would.
+  parts.push(decoder.decode());
+  return parts.join("");
+}
+
+/**
  * Call the upstream with the credential attached.
  *
  * **One function for both verbs, rather than a second one for the `DELETE`.**
@@ -254,8 +389,8 @@ function safeRequestHeaders(headers: Readonly<Record<string, string>> | undefine
  * every other request, so giving it its own path would mean a second place a
  * secret leaves the vault and a second thing to check when reasoning about
  * redaction. Everything below the verb branch is shared by construction: the
- * refused redirect, both transport-failure classifications, the body read, and
- * the single redaction pass before the one return.
+ * refused redirect, both transport-failure classifications, the body read and
+ * the bound on it, and the single redaction pass before the one return.
  *
  * The timeout is not optional in effect — `AbortSignal.timeout` is always
  * applied — because an upstream that accepts a connection and never answers
@@ -338,9 +473,11 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
     throw new UpstreamError("redirected");
   }
 
-  let body: string;
+  const limit = request.maxBodyBytes ?? DEFAULT_UPSTREAM_RESPONSE_BYTES;
+
+  let body: string | null;
   try {
-    body = await response.text();
+    body = await readBoundedText(response.body, limit);
   } catch (error) {
     // The response began and then failed mid-stream. Still a transport
     // failure, and still nothing from the error is kept beyond whether it was
@@ -350,6 +487,16 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
     const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
     throw new UpstreamError(timedOut ? "timed_out" : "unreachable");
   }
+
+  // Outside the catch, deliberately: this is a limit this function chose to
+  // enforce, not a transport failure it was handed, and the classifier above
+  // would turn it into `unreachable`. See the note on `readBoundedText`.
+  //
+  // Nothing was decoded and nothing is returned, so there is no body to redact
+  // and none to relay — which is also why no caller can report what the upstream
+  // said. That is the same shape `McpOutcome.connect_failed` takes one level up:
+  // bytes the proxy declined to hold are bytes it has nothing to say about.
+  if (body === null) throw new UpstreamError("too_large");
 
   // Before the body goes anywhere. Not at the caller's discretion and not
   // behind a flag: the return statement below is the only way out of this

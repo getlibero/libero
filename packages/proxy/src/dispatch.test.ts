@@ -9,6 +9,15 @@ import {
   createUnavailableDispatcher,
   markProvisional
 } from "./dispatch.js";
+import type { CallLimits } from "./enforce.js";
+
+/**
+ * The channel's bound on a result, which every `callTool` now carries.
+ *
+ * Roomy on purpose: these cases are about the protocol and the transport, not
+ * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ */
+const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
 const noSpend = { toolCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
@@ -43,7 +52,7 @@ describe("the provisional dispatcher", () => {
   it("serves no call at all", () => {
     const call = { id: "1", server: "github", tool: "list_prs", arguments: {}, channel: "C1" };
     const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
-    expect(createUnavailableDispatcher().dispatch(call as ResolvedToolCall, upstream)).toEqual({
+    expect(createUnavailableDispatcher().dispatch(call as ResolvedToolCall, upstream, LIMITS)).toEqual({
       outcome: "unavailable"
     });
   });

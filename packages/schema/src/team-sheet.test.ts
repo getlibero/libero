@@ -20,7 +20,7 @@ describe("the example team sheet", () => {
     });
   });
 
-  it("carries the four per-task caps, the two context bounds, and the follow-up window", () => {
+  it("carries the four per-task caps, the three context bounds, and the follow-up window", () => {
     expect(sheet.llm).toEqual({
       model: "claude-sonnet-4-6",
       max_tool_calls_per_task: 25,
@@ -29,16 +29,20 @@ describe("the example team sheet", () => {
       max_tokens_per_turn: 8_192,
       max_history_messages: 40,
       max_history_chars: 12_000,
+      max_result_chars: 32_768,
       follow_up_window_seconds: 900,
     });
   });
 
-  it("carries the documented tool allowlist and approval mode", () => {
+  it("carries the documented tool allowlist, approval mode, and result bound", () => {
     const github = sheet.mcp_server[0];
     expect(github?.name).toBe("github");
     expect(github?.credential).toBe("github_service_account");
     expect(github?.tool.map((t) => t.name)).toEqual(["list_prs", "trigger_workflow"]);
     expect(github?.tool[1]?.approval).toBe("required");
+    // The starter sheet is where an operator learns the per-tool override
+    // exists, so it documents one rather than only describing it.
+    expect(github?.tool[0]?.max_result_chars).toBe(8_000);
   });
 });
 
@@ -54,6 +58,7 @@ describe("defaults", () => {
       max_tokens_per_turn: 8_192,
       max_history_messages: 40,
       max_history_chars: 12_000,
+      max_result_chars: 32_768,
       follow_up_window_seconds: 900,
     });
   });
@@ -212,6 +217,44 @@ describe("rejections", () => {
     ]) {
       expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
     }
+  });
+
+  // Unlike the two history bounds beside it, zero is not a policy here: it means
+  // every tool call comes back as nothing but a truncation notice. And no upper
+  // bound, deliberately — the deployment's PROXY_MAX_RESPONSE_BYTES already
+  // bounds the string this can describe, so a large number here buys nothing
+  // rather than costing something.
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+  ])("rejects a %s channel result bound", (_label, max_result_chars) => {
+    expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm: { max_result_chars } }).success).toBe(false);
+  });
+
+  // The per-tool override takes the same shape as the channel's, and is checked
+  // separately because it is a different schema object: a rule added to one and
+  // forgotten on the other is a hole the override walks straight through.
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+  ])("rejects a %s per-tool result bound", (_label, max_result_chars) => {
+    const sheet = {
+      channel: { name: "ops" },
+      mcp_server: [
+        { name: "github", transport: "http", url: "http://x/mcp", tool: [{ name: "list_prs", max_result_chars }] },
+      ],
+    };
+    expect(TeamSheet.safeParse(sheet).success).toBe(false);
+  });
+
+  it("leaves the per-tool result bound absent when the entry names none", () => {
+    const sheet = TeamSheet.parse({
+      channel: { name: "ops" },
+      mcp_server: [{ name: "github", transport: "http", url: "http://x/mcp", tool: [{ name: "list_prs" }] }],
+    });
+    expect(sheet.mcp_server[0]?.tool[0]?.max_result_chars).toBeUndefined();
   });
 
   it("rejects a fractional per-task cap", () => {

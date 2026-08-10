@@ -66,13 +66,14 @@ interface Harness {
   readonly advance: (ms: number) => void;
 }
 
-function harnessFor(vault: Vault = vaultOf({ [CRED]: SECRET })): Harness {
+function harnessFor(vault: Vault = vaultOf({ [CRED]: SECRET }), maxResponseBytes?: number): Harness {
   const lines: Record<string, unknown>[] = [];
   const clock = clockFrom(1_000_000);
   const built = createHttpDispatcher({
     vault,
     timeoutMs: 2000,
     now: clock.now,
+    ...(maxResponseBytes !== undefined ? { maxResponseBytes } : {}),
     logger: createJsonLogger(line => lines.push(JSON.parse(line) as Record<string, unknown>))
   });
   dispatcher = built;
@@ -224,6 +225,30 @@ describe("when the upstream cannot be asked", () => {
 
     expect(await ask(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
     expect(lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === reason)).toBe(true);
+  });
+
+  // #151's listing half, and the reason the wire bound refuses a body rather
+  // than truncating it. A tool result cut at a cap is a short answer that admits
+  // it; half a JSON-RPC envelope is not a short catalog, it is an unparseable
+  // one. So an oversized listing takes the path a malformed listing already
+  // took: nothing is parsed, the tools fall back to the thin entries the sheet
+  // wrote, and one line says why.
+  it("answers thin for a listing past the wire bound rather than parsing half of it", async () => {
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: { tools: [{ name: "list_prs", description: "y".repeat(200_000) }], nextCursor: null }
+            }
+          }
+        : null;
+    const { describe: ask, lines } = harnessFor(vaultOf({ [CRED]: SECRET }), 16_384);
+
+    expect(await ask(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
+    expect(lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === "too_large")).toBe(true);
   });
 
   it("never writes an upstream byte to the log", async () => {

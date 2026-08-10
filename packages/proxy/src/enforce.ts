@@ -100,9 +100,40 @@ export interface EnforcementInput {
  * elsewhere. Neither question is allowed to stand in for the other.
  */
 export type Decision =
-  | { readonly outcome: "allow"; readonly upstream: McpServer }
-  | { readonly outcome: "hold"; readonly upstream: McpServer; readonly refusal: ToolRefusal }
+  | { readonly outcome: "allow"; readonly upstream: McpServer; readonly limits: CallLimits }
+  | {
+      readonly outcome: "hold";
+      readonly upstream: McpServer;
+      readonly refusal: ToolRefusal;
+      readonly limits: CallLimits;
+    }
   | { readonly outcome: "refuse"; readonly refusal: ToolRefusal };
+
+/**
+ * What a served call may spend of the channel's context.
+ *
+ * Rides on the decision for the reason `upstream` does, and the argument above
+ * applies to it unchanged: resolving it in the dispatcher would be the second
+ * lookup that paragraph refuses, one field over, against a sheet that may have
+ * reloaded in between. `hold` carries it too, because an approved call comes
+ * back as a re-submission and is decided again — which means a redeemed ticket
+ * runs under whatever the sheet says at redemption, not what it said when the
+ * human clicked. That is the same freshness `upstream` already has and is the
+ * behaviour wanted: an operator tightening a bound during a hold should win.
+ *
+ * A named type rather than a bare `number` parameter, because
+ * `dispatch(call, upstream, 32768)` reads as nothing at a call site.
+ *
+ * One field, and the *other* bound is pointedly not here: how many bytes the
+ * proxy will read off an upstream is `PROXY_MAX_RESPONSE_BYTES`, settled per
+ * process rather than per channel, because that heap is shared by every channel
+ * the proxy serves. It reaches the client through `McpClientOptions` and never
+ * through a decision.
+ */
+export interface CallLimits {
+  /** Characters of `ToolResult.content` the model may see. Past it, truncated with a notice. */
+  readonly maxResultChars: number;
+}
 
 const refuse = (refusal: ToolRefusal): Decision => ({ outcome: "refuse", refusal });
 
@@ -306,15 +337,44 @@ export function decide(input: EnforcementInput): Decision {
     return refuse({ reason: "budget_exhausted", limit });
   }
 
+  const limits = resolveLimits(sheet, tools);
+
   if (resolveApproval(tools, call.tool) === "required") {
     return {
       outcome: "hold",
       upstream,
-      refusal: { reason: "approval_required", server: call.server, tool: call.tool }
+      refusal: { reason: "approval_required", server: call.server, tool: call.tool },
+      limits
     };
   }
 
-  return { outcome: "allow", upstream };
+  return { outcome: "allow", upstream, limits };
+}
+
+/**
+ * What this tool's answer may spend of the channel's context.
+ *
+ * `resolveApproval`'s shape and its duplicate rule, for the same reason: two
+ * entries naming one tool are an operator slip rather than a policy, so they get
+ * a defined resolution instead of whichever the array happened to order first,
+ * and the most restrictive wins. An entry naming nothing falls through to the
+ * channel's `[llm] max_result_chars`, so an override may raise as well as lower
+ * — a tool that returns diffs is as legitimate a reason to want more as a tool
+ * that returns listings is to want less.
+ *
+ * Exported for the tests and for `decide`, not for `index.ts`: the resolved
+ * numbers leave this module on a `Decision` and the rule that produced them
+ * does not.
+ */
+export function resolveLimits(sheet: TeamSheet, entries: readonly ToolEntry[]): CallLimits {
+  // The type predicate is required rather than decorative: a bare
+  // `!== undefined` in a filter does not narrow, and `Math.min` over
+  // `(number | undefined)[]` will not compile.
+  const chars = entries.map(entry => entry.max_result_chars).filter((value): value is number => value !== undefined);
+
+  return {
+    maxResultChars: chars.length === 0 ? sheet.llm.max_result_chars : Math.min(...chars)
+  };
 }
 
 /**

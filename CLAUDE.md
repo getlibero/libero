@@ -367,6 +367,52 @@ entry stays thin, and that rule is load-bearing rather than fussy:
 `packages/agent` casts it straight into the provider's tool definition, and a
 provider answering 400 fails the whole turn rather than the one tool.
 
+**#151 bounds a response, and the decision is that there are two bounds owned by
+two different principals.** Those listing caps bound what reaches the *model*;
+nothing bounded what the proxy *buffered*, so a 50MB answer was read to
+completion, scanned by fifteen redaction needles, parsed, and charged to a
+channel. The split is **who owns the resource each spends**, and it is the
+`max_history_chars` argument applied twice with opposite answers.
+
+**The wire bound is the deployment's**: `PROXY_MAX_RESPONSE_BYTES` (4 MiB
+default, `DEFAULT_UPSTREAM_RESPONSE_BYTES` in `outbound.ts`), reaching the client
+through `McpClientOptions` and never through a sheet. It buys memory in a process
+every channel shares, so a sheet able to raise it would be one channel degrading
+service for all of them — but it is not a constant either, on
+`PROXY_HOST`'s argument: the operator who sized the container is the one who
+should say how much of it a response may occupy. **No ceiling**, because that
+operator is the principal who owns the heap; an earlier draft put this field in
+the sheet with a schema `.max()`, and taking it out of the sheet is what made the
+ceiling unnecessary. `MAX_CONTROL_BODY_BYTES` (64 KiB) covers the handshake and
+the `DELETE`, which nobody reads at length.
+
+**The result bound is the channel's**: `[llm] max_result_chars` (32,768), with a
+per-tool override on `[[mcp_server.tool]]` resolved most-restrictive-wins by
+`resolveLimits`, beside `resolveApproval` and on its argument. It is charged
+against `max_tokens_per_task`, so it spends the channel's own budget and can
+widen nothing. It travels per call on `Decision.limits` — *not* on the client —
+because two channels share a pooled client and must not share each other's
+bounds; `mcp-pool.ts`'s header says so, since moving it there is the obvious
+wrong edit. A redeemed approval ticket therefore runs under the live sheet's
+bound rather than the one current when the human clicked, which is `upstream`'s
+freshness and is wanted.
+
+Three things there are settled. **Overflow is a return value, not a throw** —
+`readBoundedText` answers `null` and `callUpstream` throws
+`UpstreamError("too_large")` *outside* the transport catch, because that catch
+reads `error.name` and would have reclassified a thrown `UpstreamError` as
+`unreachable`, deleting the feature while every "the call failed" test kept
+passing. **A `tools/list` past the bound is refused rather than truncated**: a
+cut tool result is a short answer that admits it, but half a JSON-RPC envelope is
+unparseable, so an oversized listing takes the path a malformed one already takes
+and `mcp-catalog.ts` needed no change at all. And **`result_bytes` is the
+post-truncation length**, which is what that column is for — it correlates with
+the next turn's input tokens, driven by what the model was handed. The original
+size survives in the notice the model reads, so no column was added.
+`failureText`'s `default:` does **not** force a case for a new `McpFailure`
+member and silently claims "no result came back"; `too_large` and `closed` each
+have one because both clauses were false for them.
+
 **The proxy speaks MCP for real, at revision `2026-07-28` (#128).**
 `mcp-protocol.ts` is the wire format as pure functions, `mcp-client.ts` is one
 upstream's client, `mcp-pool.ts` keys one client per `(transport, url,

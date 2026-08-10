@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { DEFAULT_UPSTREAM_RESPONSE_BYTES } from "@getlibero/proxy";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HOST,
@@ -7,6 +8,7 @@ import {
   budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
+  maxResponseBytesFromEnv,
   portFromEnv,
   requiredEnv,
   vaultFileFromEnv,
@@ -61,6 +63,31 @@ describe("portFromEnv", () => {
 
   it.each(["65536", "-1", "8443.5", "https"])("refuses %j", raw => {
     expect(() => portFromEnv({ PROXY_PORT: raw })).toThrow(/PROXY_PORT/);
+  });
+});
+
+// The deployment's half of #151. The channel's half is a team sheet field, and
+// the split is which principal owns the resource each spends: this one buys
+// memory in a process every channel shares, so no sheet may raise it.
+describe("maxResponseBytesFromEnv", () => {
+  it("defaults when unset or empty", () => {
+    expect(maxResponseBytesFromEnv({})).toBe(DEFAULT_UPSTREAM_RESPONSE_BYTES);
+    expect(maxResponseBytesFromEnv({ PROXY_MAX_RESPONSE_BYTES: "" })).toBe(DEFAULT_UPSTREAM_RESPONSE_BYTES);
+  });
+
+  it("takes the operator's number", () => {
+    expect(maxResponseBytesFromEnv({ PROXY_MAX_RESPONSE_BYTES: "8388608" })).toBe(8_388_608);
+  });
+
+  // Zero is not "no limit" here, it is every call refused — unlike PROXY_PORT,
+  // where zero is a real request. And no upper bound: the operator setting this
+  // is the one who owns the heap it spends, so a ceiling would be advice.
+  it.each(["0", "-1", "4194304.5", "4mb", "unlimited"])("refuses %j", raw => {
+    expect(() => maxResponseBytesFromEnv({ PROXY_MAX_RESPONSE_BYTES: raw })).toThrow(/PROXY_MAX_RESPONSE_BYTES/);
+  });
+
+  it("accepts a number far above the default", () => {
+    expect(maxResponseBytesFromEnv({ PROXY_MAX_RESPONSE_BYTES: "67108864" })).toBe(67_108_864);
   });
 });
 

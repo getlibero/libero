@@ -1,7 +1,7 @@
 // Environment parsing for the proxy process, apart from index.ts so the
 // rules — and their failure modes — can be tested without starting a listener.
 
-import { VAULT_KEY_BYTES, parseVaultKey } from "@getlibero/proxy";
+import { DEFAULT_UPSTREAM_RESPONSE_BYTES, VAULT_KEY_BYTES, parseVaultKey } from "@getlibero/proxy";
 import type { VaultKey } from "@getlibero/proxy";
 
 /**
@@ -161,6 +161,44 @@ export function portFromEnv(env: Env): number {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
     throw new Error(`proxy: PROXY_PORT is not a port number: ${raw}`);
+  }
+  return parsed;
+}
+
+/**
+ * How many bytes of an upstream's answer the proxy will hold:
+ * `PROXY_MAX_RESPONSE_BYTES`, defaulting to four megabytes.
+ *
+ * **A deployment setting rather than a team sheet field, and that split is the
+ * decision rather than a filing preference.** The companion bound — how much of
+ * a tool result reaches the model — *is* a sheet field, because it is charged
+ * against the channel's own `max_tokens_per_task` and a channel raising it
+ * spends only its own budget. This one buys memory in a process shared by every
+ * channel the proxy serves, so a sheet able to raise it would be one channel
+ * degrading service for all of them.
+ *
+ * It is not hardcoded either, on the argument this file already makes about
+ * `PROXY_HOST` and `PROXY_PORT`: the operator who sized the container is the
+ * one who should say how much of it a response may occupy, and an upstream
+ * returning large catalogs is a deployment fact rather than something this repo
+ * can know. No ceiling for the same reason — capping the one principal who owns
+ * the heap would be advice, not a boundary.
+ *
+ * Optional with a default, unlike the four path variables above. Their argument
+ * for being required is that a wrong value fails silently at the far end of a
+ * Slack thread; this one fails loudly at the first oversized body, with a
+ * `too_large` in the log and a sentence the model reads, and there is a correct
+ * number to default to.
+ */
+export function maxResponseBytesFromEnv(env: Env): number {
+  const raw = env.PROXY_MAX_RESPONSE_BYTES;
+  // "" alongside undefined, per `hostFromEnv`: a blanked-out line in an env file
+  // is a setting removed rather than a setting of zero, which here would refuse
+  // every call.
+  if (raw === undefined || raw === "") return DEFAULT_UPSTREAM_RESPONSE_BYTES;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`proxy: PROXY_MAX_RESPONSE_BYTES is not a positive byte count: ${raw}`);
   }
   return parsed;
 }

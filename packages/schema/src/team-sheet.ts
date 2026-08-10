@@ -21,6 +21,15 @@ export const ApprovalMode = z.enum(["required", "none"]);
 export const ToolEntry = z.object({
   name: ResourceName,
   approval: ApprovalMode.optional(),
+  // This tool's own ceiling on what its answer may spend of the channel's
+  // context, overriding `[llm] max_result_chars`. Optional because most tools
+  // want the channel's number; a tool that returns file listings or diffs is
+  // where an operator needs a different one, in either direction.
+  //
+  // Two entries naming one tool are an operator slip rather than a policy, so
+  // they resolve the way `resolveApproval` resolves a disagreement about
+  // approval: the most restrictive wins. See packages/proxy/src/enforce.ts.
+  max_result_chars: z.number().int().positive().optional(),
 });
 
 // Everything a server block carries whatever it speaks. Spread into both
@@ -112,6 +121,27 @@ export const TeamSheet = z.object({
       // than a model's argument.
       max_history_messages: z.number().int().nonnegative().max(200).default(40),
       max_history_chars: z.number().int().nonnegative().default(12_000),
+      // How much of one tool answer reaches the model (#151), and here for the
+      // reason the two bounds above are: it is charged against
+      // `max_tokens_per_task`, so it spends the channel's own budget and can
+      // widen nothing. A tool result past this is truncated and says so, rather
+      // than being refused — a large answer is usually still a useful one, and a
+      // short answer that admits it is better than a silently short one.
+      //
+      // `positive`, not `nonnegative`, unlike `max_history_chars`. Zero history
+      // is a real answer — send the model the question and nothing around it —
+      // but a zero-character result cap means every tool call returns nothing but
+      // a truncation notice, which is not a policy anyone holds.
+      //
+      // **The companion bound is deliberately not here.** How many bytes the
+      // proxy will read off an upstream before abandoning the response is
+      // `PROXY_MAX_RESPONSE_BYTES`, a deployment setting, because the heap it
+      // spends belongs to the process and is shared by every channel it serves —
+      // a sheet able to raise it would be one channel degrading service for all
+      // of them. That also means this field needs no upper bound of its own: the
+      // wire cap admits at most N bytes, so the string this bounds is at most N
+      // characters however large a number a sheet names.
+      max_result_chars: z.number().int().positive().default(32_768),
       // How long a thread the agent has worked in goes on accepting replies
       // with no mention (#66). Here rather than in the process for the reason
       // the two bounds above are: it spends the channel's own budget and can
