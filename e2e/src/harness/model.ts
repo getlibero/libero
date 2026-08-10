@@ -34,13 +34,30 @@ export function calls(name: string, args: Record<string, unknown>, id = "call-1"
 }
 
 /**
+ * Fired as the model is asked for a turn, with the 1-based turn number.
+ *
+ * The seam a mid-flight mutation needs, and the reason it is here rather than
+ * on the upstream: the loop lists tools once and only then enters the turn
+ * loop, so anything this does on turn 1 is provably after the listing was
+ * built and before the first tool call is submitted. That is the ordering a
+ * case wants when it changes a team sheet between the two — the listing
+ * carries the tool, and the call is judged against the sheet without it.
+ *
+ * Firing on the upstream's `tools/list` instead would depend on two things a
+ * case cannot see: that hook also fires for `server/discover`, and the catalog
+ * is cached per upstream for five minutes, so whether a later task asks the
+ * upstream anything at all is not the case's to decide.
+ */
+export type ModelTurnHook = (turn: number) => void;
+
+/**
  * Replays `script` one entry per turn.
  *
  * Running off the end throws rather than looping or returning something
  * plausible: a task that took more turns than the case scripted has stopped
  * being the scenario under test, and the error says which turn it was.
  */
-export function scriptedModel(script: readonly CompletionResponse[]): ScriptedModel {
+export function scriptedModel(script: readonly CompletionResponse[], onTurn?: ModelTurnHook): ScriptedModel {
   const seen: CompletionRequest[] = [];
   return {
     seen,
@@ -51,6 +68,10 @@ export function scriptedModel(script: readonly CompletionResponse[]): ScriptedMo
         if (next === undefined) {
           throw new Error(`e2e: the model was asked for turn ${seen.length}; the script has ${script.length}`);
         }
+        // Before the answer, so what it changes is in force by the time the
+        // loop acts on that answer. A throw here propagates for the same
+        // reason running off the end does: the scenario stopped being itself.
+        onTurn?.(seen.length);
         return Promise.resolve(next);
       }
     }

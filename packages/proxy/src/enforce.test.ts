@@ -188,6 +188,55 @@ describe("names that only look allowed", () => {
   });
 });
 
+// The other half of the exactness argument, and the one `serversNamed` and
+// `permittedToolSources` both raise in comments: these names are not near
+// misses of anything on the sheet, but they *are* on `Object.prototype`, so a
+// lookup object would answer for them. Every name here is a valid
+// `ResourceName`, which is what makes them the cases the first layer cannot
+// catch — `__proto__` is not, and packages/schema/src/tool-call.test.ts says so
+// rather than this file pretending to test it.
+describe("names that exist on Object.prototype", () => {
+  const inherited = ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf"];
+
+  it("refuses a server named after an inherited property", () => {
+    for (const server of inherited) {
+      const decision = decide({ sheet, call: callTo(server, "list_prs"), spend: NO_SPEND });
+      expect(decision.outcome, server).toBe("refuse");
+      expect(decision.outcome !== "allow" && decision.refusal.reason, server).toBe("server_not_allowed");
+    }
+  });
+
+  it("refuses a tool named after an inherited property", () => {
+    for (const tool of inherited) {
+      const decision = decide({ sheet, call: callTo("github", tool), spend: NO_SPEND });
+      expect(decision.outcome, tool).toBe("refuse");
+      expect(decision.outcome !== "allow" && decision.refusal.reason, tool).toBe("tool_not_allowed");
+    }
+  });
+
+  // And the same names on the sheet are ordinary entries. The defence is that
+  // nothing is looked up on an object, not that the name is special — a rule
+  // that banned these would be a rule an operator has to know about.
+  it("allows the ones a sheet does name, and lists each once", () => {
+    const inheriting = sheetOf({
+      ...BASE,
+      mcp_server: [
+        {
+          name: "constructor",
+          transport: "http",
+          url: UPSTREAM,
+          tool: [{ name: "toString" }, { name: "hasOwnProperty" }]
+        }
+      ]
+    });
+
+    expect(decide({ sheet: inheriting, call: callTo("constructor", "toString"), spend: NO_SPEND }).outcome).toBe(
+      "allow"
+    );
+    expect(permittedTools(inheriting).map(listed => listed.tool)).toEqual(["toString", "hasOwnProperty"]);
+  });
+});
+
 describe("the destructive-verb heuristic", () => {
   it("fires on every documented verb", () => {
     for (const verb of DESTRUCTIVE_VERBS) {
