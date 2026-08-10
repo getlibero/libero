@@ -19,8 +19,8 @@
 // counter, and that is not worth a user's answer — so the report is awaited,
 // its failure is a log line, and the reply goes to the thread either way.
 //
-// Still absent, and each belongs to its own issue: thread history and display
-// names in the prompt (#67), and the live checklist (#68).
+// Still absent, and each belongs to its own issue: the live checklist (#68),
+// and thread-scoped rather than channel-scoped history (#66).
 
 import { randomUUID } from "node:crypto";
 import {
@@ -231,10 +231,15 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         // and a name is not what an audit record wants anyway.
         requestingUser: request.requestingUser,
         system: SYSTEM_PROMPT,
-        // The text as it arrived, mention token and all. Stripping it,
-        // resolving display names, and prepending thread history are the
-        // context assembler's (#67).
-        messages: [{ role: "user", content: request.text }],
+        // The whole seed transcript, already assembled: the channel's recent
+        // messages with their authors, then what was asked. Built by the router
+        // from the session's store and name cache, because those are the
+        // session's and this file is given one task's settings rather than a
+        // channel's state.
+        //
+        // A copy, because `AgentTaskOptions.messages` is mutable and the loop's
+        // contract is only that it does not mutate what it was handed.
+        messages: [...settings.messages],
         // The channel's `[llm]` caps. Defence in depth — the proxy's meter is
         // what is authoritative — but the channel's numbers rather than the
         // process's.

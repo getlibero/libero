@@ -20,7 +20,8 @@ export type {
   SlackMessage,
   SlackPoster,
   SlackReply,
-  SocketSource
+  SocketSource,
+  UserDirectory
 } from "./slack/types.js";
 
 export { toMention } from "./slack/mention.js";
@@ -59,8 +60,8 @@ export type { SlackGatewayConfig, SlackSurface } from "./slack/factory.js";
 export { createSocketModeSource } from "./slack/socket-mode.js";
 export type { SocketModeClientLike, SocketSourceOptions } from "./slack/socket-mode.js";
 
-export { createWebApiPoster } from "./slack/web-api.js";
-export type { MessagePosterOptions, WebClientLike } from "./slack/web-api.js";
+export { createWebApiSurface } from "./slack/web-api.js";
+export type { WebApiOptions, WebApiSurface, WebClientLike } from "./slack/web-api.js";
 
 export {
   appMentionEnvelope,

@@ -63,6 +63,9 @@ const { gateway } = createServer({
   // and the real Web API client, built from the two tokens. `onFatal` stays
   // here with them, because what it does is exit.
   slack: ({ handler, onDecision, onMessage }) =>
+    // `createSlackSurface` returns `users` alongside `gateway` and `cards`, and
+    // the whole object is what `SlackSurfaceLike` reads — so the directory is
+    // wired by returning it rather than by naming it here.
     createSlackSurface({
       appToken,
       botToken,

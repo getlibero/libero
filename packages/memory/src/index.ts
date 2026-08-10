@@ -6,7 +6,7 @@
 // nothing outside that module should. `assertFts5` is absent for the same kind
 // of reason: it is a startup check this module already runs.
 
-export { MESSAGE_STORE_SCHEMA_VERSION, SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, openMessageStore } from "./store-db.js";
+export { MESSAGE_STORE_SCHEMA_VERSION, READ_MAX_LIMIT, SEARCH_MAX_TERMS, openMessageStore } from "./store-db.js";
 export type { MessageStore, MessageStoreOptions, StoredMessage } from "./store-db.js";
 
 export { createSilentLogger } from "./log.js";

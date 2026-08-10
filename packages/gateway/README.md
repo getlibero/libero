@@ -10,7 +10,10 @@ built here.
 The Socket Mode adapter: dial Slack, receive an `app_mention`, hand it to one
 handler, post what comes back into the thread, and reconnect when the socket
 drops. Since #176 it also surfaces ordinary `message` events, normalized and
-handed down — recorded by whatever composed it, never answered here.
+handed down — recorded by whatever composed it, never answered here. Since #67
+it answers one question as well: who a user id belongs to, over `users.info` on
+the same client the posters use. That is the only read in the package, and what
+a name is *used for* is above it.
 
 ```ts
 import { createSlackGateway } from "@getlibero/gateway";
@@ -98,7 +101,7 @@ for that reason.
 | `slack/gateway.ts` | Dispatch and the reconnect supervisor. No Slack SDK in it |
 | `slack/backoff.ts` | The reconnect policy, as arithmetic |
 | `slack/socket-mode.ts` | The inbound adapter. Holds the app token |
-| `slack/web-api.ts` | The outbound adapter. Holds the bot token |
+| `slack/web-api.ts` | The Web API adapter — both posters and the user directory, on one client. Holds the bot token |
 | `slack/sdk-logger.ts` | A `@slack/logger` that discards everything it is given |
 | `slack/stub-slack.ts` | A workspace that is not one. Shipped, not test-only |
 | `log.ts` | JSON lines with a closed field set |
@@ -180,7 +183,9 @@ subscription, Socket Mode on, and — for a click to arrive at all —
 ordinary messages to arrive as well it needs `channels:history` (and
 `groups:history` for private channels) with `message.channels` and
 `message.groups` subscribed; without them the adapter answers mentions and
-surfaces no messages, which is a working app with no transcript.
+surfaces no messages, which is a working app with no transcript. `users:read` is
+what turns a `U…` id into a name — without it the directory answers `undefined`
+for everyone and logs `user_lookup_failed` with `missing_scope`.
 [Self-hosting](https://getlibero.com/docs/self-hosting/)
 has the full setup, including the scopes the rest of the system will need. Use a
 free scratch workspace first.

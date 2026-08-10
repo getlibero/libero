@@ -26,7 +26,8 @@ import type {
   MentionHandler,
   MessageHandler,
   Scheduler,
-  SlackGateway
+  SlackGateway,
+  UserDirectory
 } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import { createDecisionHandler } from "./approvals/decisions.js";
@@ -35,6 +36,7 @@ import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
 import { createMessageIngest } from "./ingest.js";
+import type { DisplayNameLookup } from "./session/names.js";
 import { createSessionRegistry } from "./session/registry.js";
 import { createChannelRouter } from "./session/router.js";
 import { createTaskRunner } from "./session/task.js";
@@ -64,6 +66,17 @@ export interface SlackSurfaceLike {
    * Slack always has one. `createSlackSurface` returns it.
    */
   readonly cards?: CardPoster;
+  /**
+   * Who a user id is, for the transcript the router assembles.
+   *
+   * Optional on the same terms as `cards`: a front-end with no directory to ask
+   * renders every author as its id, which is a readable transcript with worse
+   * attribution rather than no transcript. It comes off the surface rather than
+   * out of `ServerDeps` because it must share the surface's Slack client — a
+   * second one on the same bot token would give the process two rate-limit
+   * queues over one API.
+   */
+  readonly users?: UserDirectory;
 }
 
 /**
@@ -124,11 +137,19 @@ export interface ServerDeps {
 // exactly this. Kept to the dependencies a caller must construct: the router,
 // the task runner, and the handler are wired below and are nobody else's to
 // build.
-export { createSheetResolver } from "./session/sheet.js";
+export { DEFAULT_HISTORY_BOUNDS, createSheetResolver } from "./session/sheet.js";
 export type { SheetResolver } from "./session/sheet.js";
+export type { DisplayNameLookup, NameCache } from "./session/names.js";
 export { createMessageStoreOpener } from "./session/store.js";
 export type { MessageStoreOpener, MessageStoreOpenerOptions } from "./session/store.js";
-export type { SessionKey, TaskRequest, TaskReply, TaskSettings } from "./session/types.js";
+export type {
+  ChannelSettings,
+  HistoryBounds,
+  SessionKey,
+  TaskRequest,
+  TaskReply,
+  TaskSettings
+} from "./session/types.js";
 
 export interface Server {
   readonly gateway: SlackGateway;
@@ -171,7 +192,23 @@ export function createServer(deps: ServerDeps): Server {
     logger,
     ...(deps.store !== undefined ? { openStore: deps.store } : {})
   });
-  const ingest = createMessageIngest({ sessions, logger });
+
+  // The directory comes off the surface and the surface is built below, so this
+  // closes over `surface` before it exists — the same trick `handleMention`
+  // uses, and safe for the same reason: nothing dispatches before `start()`, and
+  // both bindings exist the moment this function returns. Building the sessions
+  // after the surface is not an option, because the ingest is one of the things
+  // the surface is constructed *from*.
+  //
+  // A plain function rather than the `UserDirectory` itself, because this is
+  // what crosses into `src/session/**` — an ESLint rule there allows no Slack
+  // type through, and a name lookup is not one in any sense that matters.
+  const names: DisplayNameLookup = userId => {
+    const users = surface.users;
+    return users === undefined ? Promise.resolve(undefined) : users.displayName(userId);
+  };
+
+  const ingest = createMessageIngest({ sessions, names, logger });
 
   const surface = deps.slack({
     // The prompter needs the surface's card poster and the surface needs the
@@ -213,6 +250,7 @@ export function createServer(deps: ServerDeps): Server {
     createChannelRouter({
       sheets: deps.sheets,
       sessions,
+      names,
       task: createTaskRunner({
         completion: deps.completion,
         transport: deps.transport,

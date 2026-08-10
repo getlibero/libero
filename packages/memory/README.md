@@ -10,6 +10,27 @@ answering "what did we decide about X". See
 statement run against it. `src/log.ts` is a duplicated `Logger` interface, and
 the duplication is argued in the file.
 
+## Two reads, and they are not each other
+
+`search(text, limit)` answers "what was said about this": ranked full-text,
+best match first, and it takes **text and never an FTS5 expression**.
+
+`recent(limit)` answers "what was said here lately": the newest N, returned
+**oldest first**. It is what a transcript is assembled from (#67). Reading order
+rather than newest-first is the API's decision, not the caller's — the statement
+sorts descending because that is the only way to ask SQLite for a tail, and a
+caller made to reverse it is a caller that can forget to.
+
+Ordering is on `ts`, compared as a string, and that is correct because a Slack
+timestamp is fixed-width: ten digits of seconds, a dot, six more. The two
+alternatives are both wrong. `id` is insertion order, which a redelivery or a
+late event reorders; `at` is when this store *learned* of a message, which is a
+different clock.
+
+Both are clamped to `READ_MAX_LIMIT`, which is one ceiling for both because what
+it bounds is the same thing either way: how much of this file a single call can
+pull into a model's context.
+
 ## The isolation boundary
 
 CLAUDE.md's one-file-per-channel rule is narrowed for operator-facing data — the
@@ -47,11 +68,11 @@ a build without it at open, naming the floor rather than letting SQLite report
 
 ## What is not here
 
-Nothing reads a store yet. `apps/server` fills one — since #176 the gateway
-subscribes to `message` as well, and an ordinary channel message becomes a row
-— but who reads it back is still #64's to settle: the proxy opening `store.db`
-as a second reader, or the gateway answering a callback. That is the open
-question the ESLint block on this package exists to keep open.
+`search` has no caller yet. #176 fills a store and #67 reads one back with
+`recent`, both from `apps/server` — but who answers `search_channel_history` as
+a *tool* is still #64's to settle: the proxy opening `store.db` as a second
+reader, or the gateway answering a callback. That is the open question the
+ESLint block on this package exists to keep open.
 
 The mirroring of Slack deletions and edits onto `remove` and `replaceText` is
 #177: `message_changed` and `message_deleted` reach the process today and are

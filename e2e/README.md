@@ -296,6 +296,14 @@ minting plus a spawn, so pass timeouts explicitly — `beforeAll(fn, 60_000)`,
 `it(name, fn, 30_000)`. Use the sheet's `max_task_seconds` to bound a hang, so it
 fails as a cap with a stop reason rather than as a bare vitest timeout.
 
+**The model's transcript now carries channel history, and that is a canary
+surface.** Since #67 a task is seeded with the channel's recent messages rather
+than the mention alone, so anything stored in a channel reaches the model on the
+next mention. `expectNoCanary(surfaces())` already reads the transcript, and it
+now has something in it. `startRig({ users })` seeds the directory those
+messages are attributed by; an author with no entry renders as their id, which
+is a real state rather than a gap.
+
 **The message store is the agent side's, and it has no helper.** `rig.storeRoot`
 is `AGENT_STORE_ROOT`: one `<channel>/store.db` per channel that has a sheet,
 written by the composition as an ordinary `message` arrives on
@@ -347,6 +355,9 @@ outlive the run.
 - `src/message-intake.test.ts` — #176, the one claim `apps/server`'s own
   acceptance suite cannot make: two real channels, two real files, and nothing
   written into the proxy's authorization source.
+- `src/context.test.ts` — #67, the same shape: `[llm] max_history_messages`
+  followed out of a real `channel.toml`, through the shipped schema and
+  resolver, into the prompt.
 
 ## What is enforced rather than asserted
 

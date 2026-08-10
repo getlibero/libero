@@ -20,13 +20,15 @@ describe("the example team sheet", () => {
     });
   });
 
-  it("carries all four per-task caps", () => {
+  it("carries the four per-task caps and the two context bounds", () => {
     expect(sheet.llm).toEqual({
       model: "claude-sonnet-4-6",
       max_tool_calls_per_task: 25,
       max_task_seconds: 300,
       max_tokens_per_task: 60_000,
       max_tokens_per_turn: 8_192,
+      max_history_messages: 40,
+      max_history_chars: 12_000,
     });
   });
 
@@ -42,14 +44,30 @@ describe("the example team sheet", () => {
 describe("defaults", () => {
   // A sheet with no [llm] section must still yield every cap: the composition
   // root maps sheet to caps field by field and has no defaults of its own.
-  it("yields all four per-task caps when the llm section is absent", () => {
+  it("yields every cap and bound when the llm section is absent", () => {
     const sheet = TeamSheet.parse({ channel: { name: "ops" } });
     expect(sheet.llm).toEqual({
       max_tool_calls_per_task: 25,
       max_task_seconds: 300,
       max_tokens_per_task: 200_000,
       max_tokens_per_turn: 8_192,
+      max_history_messages: 40,
+      max_history_chars: 12_000,
     });
+  });
+
+  // Zero is a real answer here and not a rejected one, which is the difference
+  // between a bound and a cap: a channel that wants the model to see only what
+  // it was asked, with no conversation around it, says so this way. A cap of
+  // zero tool calls or zero tokens is a task that cannot run, and those stay
+  // `positive()`.
+  it("allows a channel to ask for no history at all", () => {
+    const sheet = TeamSheet.parse({
+      channel: { name: "ops" },
+      llm: { max_history_messages: 0, max_history_chars: 0 },
+    });
+    expect(sheet.llm.max_history_messages).toBe(0);
+    expect(sheet.llm.max_history_chars).toBe(0);
   });
 
   it("fills each cap the section omits", () => {
@@ -153,6 +171,21 @@ describe("rejections", () => {
       { max_task_seconds: -1 },
       { max_tokens_per_task: 0 },
       { max_tokens_per_turn: -8192 },
+    ]) {
+      expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
+    }
+  });
+
+  // Negative is still nonsense, and so is asking for more history than one read
+  // of a store returns — that ceiling is READ_MAX_LIMIT in packages/memory, and
+  // rejecting here is what keeps an operator's stated number from being
+  // silently clamped there.
+  it("rejects a negative or oversized context bound", () => {
+    for (const llm of [
+      { max_history_messages: -1 },
+      { max_history_chars: -1 },
+      { max_history_messages: 201 },
+      { max_history_messages: 2.5 },
     ]) {
       expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
     }

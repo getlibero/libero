@@ -93,6 +93,25 @@ export const TeamSheet = z.object({
       max_task_seconds: z.number().int().positive().default(300),
       max_tokens_per_task: z.number().int().positive().default(200_000),
       max_tokens_per_turn: z.number().int().positive().default(8_192),
+      // The two bounds on assembled context (#67), and they are not caps in the
+      // sense the four above are. A cap stops a task that is already running;
+      // these decide how much of the channel's conversation the task *starts*
+      // with, and every character of it is charged against
+      // `max_tokens_per_task` before the model has done anything. They live
+      // here for the reason the caps do — a channel spending its own budget,
+      // able to widen nothing — and they are deliberately not `AgentLoopCaps`,
+      // because the loop never sees them: the context assembler is above it and
+      // hands it a finished transcript.
+      //
+      // The upper bound on `max_history_messages` mirrors `READ_MAX_LIMIT` in
+      // packages/memory, which is the most rows one read of a store returns.
+      // Kept in step by hand, as the caps above are, and for the same reason:
+      // this is the base package and cannot import either. Without it a sheet
+      // could name a number the store would silently clamp — the one place that
+      // clamp would surprise, since it is an operator's stated intent rather
+      // than a model's argument.
+      max_history_messages: z.number().int().nonnegative().max(200).default(40),
+      max_history_chars: z.number().int().nonnegative().default(12_000),
     })
     .prefault({}),
   // The daily caps the proxy meters, and the weights it counts them with.

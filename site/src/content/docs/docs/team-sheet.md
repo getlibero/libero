@@ -25,14 +25,18 @@ This is `channels/example/channel.toml` in the repository, kept in sync with the
 name        = "engineering"
 description = "Deploys, code review, incident response."
 
-# Hard caps on a single task. The proxy's daily meter below is the
-# authoritative spend limit; these stop one task running away.
+# Hard caps on a single task, and how much of the channel's conversation it
+# starts with. The proxy's daily meter below is the authoritative spend limit;
+# the caps stop one task running away, and the two history bounds decide what a
+# task costs before the model has done anything.
 [llm]
 model                   = "claude-sonnet-4-6"   # per-channel override
 max_tool_calls_per_task = 25
 max_task_seconds        = 300                   # wall time, seconds
 max_tokens_per_task     = 60000
 max_tokens_per_turn     = 8192                  # ceiling on one turn's output
+max_history_messages    = 40                    # recent messages in the prompt; 0 for none
+max_history_chars       = 12000                 # and the character budget they share
 
 [budget]
 daily_tokens     = 2_000_000
@@ -75,6 +79,18 @@ The per-channel model override and the four hard caps on a single task: tool cal
 total tokens, and one turn's output. The agent loop enforces them, and a task that hits one stops
 and says which. They bound a single runaway task — the per-day spend limit is `[budget]` below,
 metered in the proxy. Every cap has a default, so a channel with no `[llm]` block is still capped.
+
+`max_history_messages` and `max_history_chars` are a different kind of setting, and the difference
+is worth knowing. A cap stops a task that is already running; these two decide how much of the
+channel's recent conversation the task *starts* with — the transcript the model reads before it
+does anything, with each message attributed to its author. Every character of it is charged against
+`max_tokens_per_task`, so raising them buys context and spends budget, and `0` is a real answer:
+a channel that sets it sends the model the question and nothing around it.
+
+The message count is capped at 200, which is the most one read of a channel's store returns.
+Whichever bound is reached first wins, the oldest messages are dropped first, and a single message
+is truncated at 2,000 characters so one wall of text cannot consume the whole budget — that last
+number is the agent's rather than yours, for the same reason its network timeouts are.
 
 Libero is model-agnostic — Anthropic is supported natively; OpenAI, Groq, Ollama, and Gemini
 work through their OpenAI-compatible endpoints, and the optional LiteLLM sidecar covers everything

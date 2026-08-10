@@ -2,9 +2,9 @@
 //
 // A session is created on first use and torn down when it has been idle long
 // enough, because a long-lived process must not accumulate one per channel
-// forever. Since #176 a session holds an open SQLite file, so eviction now
-// frees something real; #67's display-name cache is released at the same single
-// `entries.delete` below.
+// forever. Since #176 a session holds an open SQLite file and since #67 a cache
+// of display names, so eviction now frees something real — both go at the
+// single `entries.delete` below.
 //
 // There is no accessor that returns more than one session and no iteration over
 // them outside the sweep. Ask for one session, get one session.
@@ -27,6 +27,8 @@ import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
 import type { Mutex } from "./mutex.js";
 import { createMutex } from "./mutex.js";
+import { createNameCache } from "./names.js";
+import type { NameCache } from "./names.js";
 import type { MessageStoreOpener } from "./store.js";
 import type { SessionKey } from "./types.js";
 
@@ -56,6 +58,16 @@ export interface Session {
    * message. Closed by the sweep.
    */
   readonly store: MessageStore | null;
+  /**
+   * Who each user id in this channel is, resolved once and kept.
+   *
+   * On the session because the session's lifetime *is* the invalidation policy:
+   * a name that changed is stale for at most one idle window, and there is no
+   * TTL, watcher, or bus to invent. It holds no lookup of its own — the
+   * function that finds a name is passed in per call, so nothing under this
+   * directory has to name a Slack type.
+   */
+  readonly names: NameCache;
   /** When work here last finished. The sweep reads it; the router writes it. */
   lastUsedAt: number;
 }
@@ -166,6 +178,7 @@ export function createSessionRegistry(options: SessionRegistryOptions = {}): Ses
         key,
         mutex: createMutex(),
         store: openStore?.(key.channel) ?? null,
+        names: createNameCache(),
         lastUsedAt: at
       };
       entries.set(id, session);

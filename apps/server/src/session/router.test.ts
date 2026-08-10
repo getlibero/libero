@@ -11,9 +11,14 @@ import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
 import { createChannelRouter } from "./router.js";
 import type { SheetResolver } from "./sheet.js";
-import type { TaskReply, TaskRequest, TaskSettings } from "./types.js";
+import { DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
+import type { ChannelSettings, TaskReply, TaskRequest, TaskSettings } from "./types.js";
 
-const SETTINGS: TaskSettings = { model: "test-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS } };
+const SETTINGS: ChannelSettings = {
+  model: "test-model",
+  caps: { ...DEFAULT_AGENT_LOOP_CAPS },
+  history: { ...DEFAULT_HISTORY_BOUNDS }
+};
 
 /** Every channel resolves to the same settings unless a test says otherwise. */
 const anySheet: SheetResolver = () => Promise.resolve(SETTINGS);
@@ -45,8 +50,7 @@ const flush = (): Promise<void> => Promise.resolve().then(() => {});
 
 describe("two mentions in one channel", () => {
   it("queues the second behind the first rather than interleaving", async () => {
-    // There is no session state to write yet — the message store is #63 and the
-    // assembled context is #67 — so the shared counter stands in for one. The
+    // A shared counter stands in for the session state a task mutates. The
     // await between the read and the write is the point: interleaved runs lose
     // an increment, serialized ones do not.
     const shared = { value: 0 };
@@ -193,11 +197,11 @@ describe("two channels", () => {
   });
 
   it("runs each channel's task on that channel's own settings", async () => {
-    const settingsFor: Record<string, TaskSettings> = {
-      C024BE91L: { model: "sheet-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 3 } },
-      C0OTHER11: { model: "other-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 9 } }
+    const settingsFor: Record<string, ChannelSettings> = {
+      C024BE91L: { ...SETTINGS, model: "sheet-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 3 } },
+      C0OTHER11: { ...SETTINGS, model: "other-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 9 } }
     };
-    const seen: Array<[string, TaskSettings]> = [];
+    const seen: Array<[string, ChannelSettings]> = [];
 
     const route = createChannelRouter({
       sheets: channel => Promise.resolve(settingsFor[channel] ?? SETTINGS),
@@ -212,8 +216,60 @@ describe("two channels", () => {
       route(request({ key: { workspace: "T024BE7LD", channel: "C0OTHER11" } }))
     ]);
 
-    expect(seen).toContainEqual(["C024BE91L", settingsFor.C024BE91L]);
-    expect(seen).toContainEqual(["C0OTHER11", settingsFor.C0OTHER11]);
+    // The channel's own model and caps, unchanged by the router. `messages` is
+    // the one field it adds, so the settings a task sees are the sheet's plus
+    // exactly one thing the sheet cannot know.
+    expect(seen.map(([channel, settings]) => [channel, settings.model])).toContainEqual([
+      "C024BE91L",
+      "sheet-model"
+    ]);
+    expect(seen.map(([channel, settings]) => [channel, settings.caps.maxToolCalls])).toContainEqual([
+      "C0OTHER11",
+      9
+    ]);
+  });
+
+  it("assembles the transcript and hands it to the task", async () => {
+    // The router is where the two halves meet: the sheet says how much history,
+    // the session holds the store and the names, and neither the resolver nor
+    // the runner can see both.
+    const seen: TaskSettings[] = [];
+    const route = createChannelRouter({
+      sheets: anySheet,
+      task: (_task, settings): Promise<TaskReply> => {
+        seen.push(settings);
+        return Promise.resolve({ text: "ok" });
+      }
+    });
+
+    await route(request({ text: "<@U0BOT> ping" }));
+
+    // No store on a bare session, so this is the ask alone — one well-formed
+    // user message rather than an empty array the runner would have to handle.
+    expect(seen[0]?.messages).toEqual([
+      { role: "user", content: "@U024BE7LH asks: <@U0BOT> ping" }
+    ]);
+  });
+
+  it("resolves names through the lookup it was given", async () => {
+    const asked: string[] = [];
+    const seen: TaskSettings[] = [];
+    const route = createChannelRouter({
+      sheets: anySheet,
+      names: userId => {
+        asked.push(userId);
+        return Promise.resolve(userId === "U024BE7LH" ? "alice" : undefined);
+      },
+      task: (_task, settings): Promise<TaskReply> => {
+        seen.push(settings);
+        return Promise.resolve({ text: "ok" });
+      }
+    });
+
+    await route(request({ text: "<@U0BOT> ping" }));
+
+    expect(asked).toContain("U024BE7LH");
+    expect(seen[0]?.messages).toEqual([{ role: "user", content: "@alice asks: <@U0BOT> ping" }]);
   });
 });
 

@@ -39,6 +39,15 @@ export interface SheetSpec {
    */
   readonly maxTaskSeconds?: number;
   readonly maxToolCallsPerTask?: number;
+  /**
+   * How much of the channel's conversation a task starts with.
+   *
+   * Written out only by the case that is about the bound itself. Left to the
+   * schema's default otherwise, which is what every other case wants: enough
+   * history that a stored message is visible, without a number in the fixture
+   * that nothing asserts on.
+   */
+  readonly maxHistoryMessages?: number;
   readonly dailyTokens?: number;
   readonly dailyToolCalls?: number;
   /**
@@ -98,6 +107,9 @@ export function tempChannelsRoot(cleanup: Cleanup): ChannelsRoot {
           `[llm]`,
           `max_task_seconds = ${spec.maxTaskSeconds ?? 30}`,
           `max_tool_calls_per_task = ${spec.maxToolCallsPerTask ?? 5}`,
+          ...(spec.maxHistoryMessages !== undefined
+            ? [`max_history_messages = ${spec.maxHistoryMessages}`]
+            : []),
           ``,
           `[budget]`,
           `daily_tokens = ${spec.dailyTokens ?? 1_000_000}`,

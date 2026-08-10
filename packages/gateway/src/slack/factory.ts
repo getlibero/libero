@@ -17,9 +17,10 @@ import type {
   GatewayError,
   MentionHandler,
   MessageHandler,
-  SlackGateway
+  SlackGateway,
+  UserDirectory
 } from "./types.js";
-import { createWebApiPoster } from "./web-api.js";
+import { createWebApiSurface } from "./web-api.js";
 
 export interface SlackGatewayConfig {
   /** App-level token, `xapp-…`. Opens the socket; cannot post. */
@@ -64,11 +65,22 @@ export interface SlackSurface {
    * lifetime genuinely outlives the handler that raised it.
    */
   cards: CardPoster;
+  /**
+   * Who a user id is, on the same client as the two posters.
+   *
+   * Here rather than reachable from the gateway because nothing in the dispatch
+   * path needs a name — the adapter answers a mention and posts a reply, and
+   * resolving an author is what the layer assembling a transcript does. Sharing
+   * the client is the whole reason it comes out of this one call: a second
+   * `WebClient` on the same bot token would give the process two rate-limit
+   * queues over one API.
+   */
+  users: UserDirectory;
 }
 
 export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
   const logger = config.logger ?? createJsonLogger();
-  const poster = createWebApiPoster({ botToken: config.botToken, logger });
+  const { poster, users } = createWebApiSurface({ botToken: config.botToken, logger });
   const gateway = createGateway({
     source: createSocketModeSource({ appToken: config.appToken, logger }),
     poster,
@@ -82,7 +94,7 @@ export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
     ...(config.onFatal !== undefined ? { onFatal: config.onFatal } : {}),
     ...(config.scheduler !== undefined ? { scheduler: config.scheduler } : {})
   });
-  return { gateway, cards: poster };
+  return { gateway, cards: poster, users };
 }
 
 /** The gateway alone, for a process that renders no cards. */

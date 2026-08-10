@@ -20,13 +20,27 @@ import type {
 } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
 import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor } from "./task.js";
 import type { TaskRequest, TaskSettings } from "./types.js";
 
 const MODEL = "test-model";
 
-/** What a channel with no `[llm]` block of its own resolves to. */
-const SETTINGS: TaskSettings = { model: MODEL, caps: { ...DEFAULT_AGENT_LOOP_CAPS } };
+/**
+ * What a channel with no `[llm]` block of its own resolves to, plus the seed
+ * transcript the router would have assembled from it.
+ *
+ * The runner is handed a finished transcript rather than building one — that is
+ * the context assembler's, one layer up in the router, where the session's
+ * store and name cache are. So this is what a channel with no history looks
+ * like by the time it gets here.
+ */
+const SETTINGS: TaskSettings = {
+  model: MODEL,
+  caps: { ...DEFAULT_AGENT_LOOP_CAPS },
+  history: { ...DEFAULT_HISTORY_BOUNDS },
+  messages: [{ role: "user", content: "@U024BE7LH asks: <@U0BOT> what is the deploy window?" }]
+};
 
 function taskRequest(text = "<@U0BOT> what is the deploy window?"): TaskRequest {
   return {
@@ -195,21 +209,63 @@ describe("createMentionHandler", () => {
     await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
   });
 
-  it("sends the mention text, the system prompt, and the configured model", async () => {
+  it("sends the assembled transcript, the system prompt, and the configured model", async () => {
     const { client, requests } = fakeCompletion({ text: "ok" });
     const runner = createTaskRunner({
       completion: client,
       transport: fakeTransport().transport
     });
 
-    await runner(taskRequest("<@U0BOT> ping"), SETTINGS);
+    await runner(taskRequest("<@U0BOT> ping"), {
+      ...SETTINGS,
+      messages: [{ role: "user", content: "@alice asks: @libero ping" }]
+    });
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.model).toBe(MODEL);
     expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
-    // The `<@U…>` token is left in: stripping it and resolving display names
-    // is the context assembler's job (#67).
-    expect(requests[0]?.messages).toEqual([{ role: "user", content: "<@U0BOT> ping" }]);
+    // The settings' transcript, not the request's raw text. The runner does not
+    // build one — the router does, from the session's store and name cache —
+    // and this is what proves it carries rather than reinvents.
+    expect(requests[0]?.messages).toEqual([{ role: "user", content: "@alice asks: @libero ping" }]);
+  });
+
+  it("does not put the raw request text in the transcript itself", async () => {
+    // The one way this could regress quietly: a runner that appended the ask to
+    // what it was handed would send it twice, and every assertion above would
+    // still pass.
+    const { client, requests } = fakeCompletion({ text: "ok" });
+    const runner = createTaskRunner({
+      completion: client,
+      transport: fakeTransport().transport
+    });
+
+    await runner(taskRequest("<@U0BOT> a very distinctive question"), {
+      ...SETTINGS,
+      messages: [{ role: "user", content: "@alice asks: @libero a very distinctive question" }]
+    });
+
+    expect(requests[0]?.messages).toHaveLength(1);
+    expect(JSON.stringify(requests[0]?.messages)).not.toContain("<@U0BOT>");
+  });
+
+  it("does not let the loop mutate the settings it was handed", async () => {
+    // `AgentTaskOptions.messages` is mutable and the loop appends to a copy of
+    // it — but only because the runner hands it a copy. Settings are shared
+    // across nothing today, and this is what keeps that true if they ever are.
+    const { client } = fakeCompletion({ text: "ok" });
+    const runner = createTaskRunner({
+      completion: client,
+      transport: fakeTransport().transport
+    });
+    const settings: TaskSettings = {
+      ...SETTINGS,
+      messages: [{ role: "user", content: "@alice asks: @libero ping" }]
+    };
+
+    await runner(taskRequest(), settings);
+
+    expect(settings.messages).toHaveLength(1);
   });
 
   it("offers the model exactly what the proxy listed", async () => {
@@ -316,7 +372,7 @@ describe("createMentionHandler", () => {
     });
 
     const reply = await runner(taskRequest(), {
-      model: MODEL,
+      ...SETTINGS,
       caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 0 }
     });
 
@@ -374,7 +430,7 @@ describe("createMentionHandler", () => {
     });
 
     await runner(taskRequest(), {
-      model: MODEL,
+      ...SETTINGS,
       caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxOutputTokensPerTurn: 512 }
     });
 

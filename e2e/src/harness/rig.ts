@@ -117,6 +117,14 @@ export interface RigOptions {
    */
   readonly approvals?: "cards" | "none";
   /**
+   * The workspace's directory, as ids to names, for the assembled transcript.
+   *
+   * Left unset by every case that is not about attribution: an author with no
+   * entry renders as their id, which is a readable transcript and a real state
+   * — a user who has left the workspace.
+   */
+  readonly users?: Record<string, string>;
+  /**
    * What the agent re-submits once a held call has been decided.
    *
    * The client re-sends the identical body plus the ticket, so anything else is
@@ -274,6 +282,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       completion: model.client,
       ...(wrapper !== undefined ? { wrapTransport: wrapper } : {}),
       ...(options.approvals === "none" ? { cards: false } : {}),
+      ...(options.users !== undefined ? { users: options.users } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.now !== undefined ? { now: options.now } : {})
     });

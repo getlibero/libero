@@ -24,7 +24,11 @@ import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/agent";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createMessageStoreOpener, createServer } from "./compose.js";
+import {
+  DEFAULT_HISTORY_BOUNDS,
+  createMessageStoreOpener,
+  createServer
+} from "./compose.js";
 
 const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
@@ -107,7 +111,11 @@ function rig() {
     }),
     completion,
     transport,
-    sheets: () => Promise.resolve({ model: "test-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS } }),
+    sheets: () => Promise.resolve({
+          model: "test-model",
+          caps: { ...DEFAULT_AGENT_LOOP_CAPS },
+          history: { ...DEFAULT_HISTORY_BOUNDS }
+        }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     logger
   });
@@ -358,7 +366,11 @@ describe("message intake", () => {
       },
       transport,
       sheets: () =>
-        Promise.resolve({ model: "test-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS } }),
+        Promise.resolve({
+          model: "test-model",
+          caps: { ...DEFAULT_AGENT_LOOP_CAPS },
+          history: { ...DEFAULT_HISTORY_BOUNDS }
+        }),
       store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
       logger
     });
