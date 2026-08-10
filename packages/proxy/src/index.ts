@@ -64,6 +64,20 @@ export type { HttpDispatcher, HttpDispatcherOptions } from "./http-dispatcher.js
 // somewhere that is not the client.
 export { MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "./mcp-protocol.js";
 
+// The fake upstream, exported for the e2e suite on the argument stub-slack.ts
+// makes: one recording upstream that the client's own tests already keep honest
+// beats a second one written against the same spec. It is the exception to the
+// paragraph above rather than a hole in it — a server, holding no vault, no
+// pool, and no client, which is what that rule is about.
+export { startFakeMcpServer } from "./mcp-fake-server.js";
+export type {
+  FakeCatalogTool,
+  FakeMcpServer,
+  FakeMcpServerOptions,
+  FakeReply,
+  FakeRequest
+} from "./mcp-fake-server.js";
+
 // `credentialHeader` and `injectCredential` are deliberately **not** exported.
 // They take a revealed credential value, and exporting them would make it
 // possible to attach one to a request without going through `callUpstream` —

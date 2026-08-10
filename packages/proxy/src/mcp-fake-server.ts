@@ -1,4 +1,16 @@
-// A fake MCP server, for the tests in this package.
+// An MCP server that is not one.
+//
+// **Shipped rather than kept in a test file**, for the reason
+// `packages/gateway/src/slack/stub-slack.ts` is: the e2e suite needs an upstream
+// that records what a credential-bearing request actually looked like, and it
+// should be a harness *over* this rather than a second implementation of it. A
+// second one would be a second place for the knobs below to quietly stop
+// matching what the client does.
+//
+// Exporting it widens nothing the barrel's doctrine protects. The reason
+// `McpClient` and the pool are not exported is that they are the things that
+// *send* a credential; this is a *server*, holds no `Vault`, no pool, and no
+// client, and can open nothing.
 //
 // **The package's first shared test helper, and deliberately so.** Every other
 // test file here declares its own fixtures, which is right when a fixture is
