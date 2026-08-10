@@ -175,14 +175,50 @@ whole model turn to be filed. The consequence is deliberate: message traffic
 defers eviction, so a chatty channel keeps a warm handle, which is the point of
 holding one.
 
+A session also holds a cache of display names, and that is what makes "resolved
+once per user per session" true: a forty-message transcript needs a name for
+every author and every `<@U…>` inside a message, which is dozens of asks for a
+handful of people. The session's lifetime is the whole invalidation policy — a
+name that changed is stale for at most one idle window, and there is no TTL or
+watcher to invent. The cost is that a user in ten channels is looked up ten
+times, which is the right trade at this size.
+
+### The transcript a task starts from
+
+Before the model is asked anything it is given the channel's recent messages,
+oldest first, each attributed to its author and with every `<@U…>` resolved to a
+name. Four things about that are decisions rather than mechanics.
+
+**It is the channel's recent messages, not the thread's.** A `TaskRequest`
+carries no Slack timestamp — `ts` and `thread_ts` are where a reply goes, which
+is the gateway's business — so narrowing to a thread is #66's, and a mention
+inside a long thread currently sees the channel around it.
+
+**It is one `user` message, and never the system prompt.** Channel text is
+written by whoever is in the channel; in `system` it would sit where the agent's
+own instructions are. The history is wrapped in a marked block that says it is
+context rather than instructions.
+
+**It is not a dialogue.** The agent's own replies are not stored, so history is
+one-sided — a labelled block of what people said is exactly as much as is true,
+and an assistant/user alternation reconstructed from half a conversation would
+be a lie the model reasons from.
+
+**It bounds itself.** Nothing in the agent package counts a transcript's tokens
+before sending it, so an oversized seed would fail at the provider rather than
+at a cap. `[llm] max_history_messages` and `max_history_chars` are the channel's
+— they spend its own budget and can widen nothing — and a 2,000-character
+per-message ceiling is this process's, so one wall of text cannot consume the
+whole budget.
+
 ### The team sheet, as this process reads it
 
 Each task resolves its channel's sheet — `$AGENT_CHANNELS_ROOT/<channel
-id>/channel.toml` — to a model and the four per-task caps, and runs on those.
-`[llm] model` wins over `AGENT_MODEL`; every cap in the schema has a default, so
-a channel whose sheet has no `[llm]` block still gets all four. `max_task_seconds`
-is seconds in the sheet and milliseconds in the loop, which is the one field that
-is a conversion rather than a rename.
+id>/channel.toml` — to a model, the four per-task caps, and the two context
+bounds, and runs on those. `[llm] model` wins over `AGENT_MODEL`; everything in
+the schema has a default, so a channel whose sheet has no `[llm]` block still
+gets all seven. `max_task_seconds` is seconds in the sheet and milliseconds in
+the loop, which is the one field that is a conversion rather than a rename.
 
 The sheet is read once per task, with no cache and no watcher, so an operator's
 edit lands on the next mention. And every failure to read one — missing,
@@ -290,6 +326,11 @@ brings it back once the environment is fixed.
 - `src/session/store.ts` — a channel's message store, gated on it having a
   sheet. Symmetric with `sheet.ts`, and total in the same way: it answers `null`
   rather than throwing, because `registry.open` is synchronous and uncaught.
+- `src/session/names.ts` — one display-name lookup per user per session. Takes
+  the lookup as a parameter rather than holding one, so nothing under
+  `session/` has to name a Slack type.
+- `src/session/context.ts` — the context assembler: a channel's recent messages
+  become the transcript a task starts from, attributed.
 - `src/session/router.ts` — request in, reply out: which session, what it waits
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend

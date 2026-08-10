@@ -126,7 +126,7 @@ app and read history anywhere the app is installed.
 | `chat:write` | Posting replies and approval cards, and editing its own messages — a card goes amber, then green or red, in place |
 | `channels:history` | Channel messages for recall and thread follow-ups. Without it the agent answers mentions and remembers nothing — the store stays empty |
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
-| `users:read` | Display names, so the model can address the right person — not wired up yet |
+| `users:read` | Display names, so the model can address the right person. Without it every author in the transcript is a raw `U…` id, and the agent logs `user_lookup_failed` with `missing_scope` |
 
 ### Event subscriptions
 
@@ -140,6 +140,13 @@ An ordinary message in a channel that has a team sheet is stored with its author
 timestamp and its text. A channel with no sheet is recorded nowhere: the agent is in most channels
 of a workspace and provisioned for few, and an unprovisioned one has no authorization behind it.
 Messages the agent posts itself are not stored either, so a transcript is what people said.
+
+Those messages are what a task starts from. Before the model is asked anything it is given the
+channel's recent conversation, each message attributed to its author (`@alice: …`) and each `<@U…>`
+resolved to a name, bounded by `[llm] max_history_messages` and `max_history_chars`. It is a
+channel's messages rather than a thread's — narrowing to the thread a mention sits in is its own
+issue. The block is clearly marked as context rather than instructions and never goes in the system
+prompt, because anyone in the channel can write it.
 
 Message events carry deletions and edits as a subtype rather than as their own events, and the
 design mirrors them: a message deleted in Slack is deleted from that channel's store, index

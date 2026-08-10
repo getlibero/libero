@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   MESSAGE_STORE_SCHEMA_VERSION,
-  SEARCH_MAX_LIMIT,
+  READ_MAX_LIMIT,
   SEARCH_MAX_TERMS,
   assertFts5,
   openMessageStore,
@@ -151,10 +151,11 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, searching, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
       "append",
       "close",
+      "recent",
       "remove",
       "replaceText",
       "search"
@@ -218,6 +219,124 @@ describe("storing a message", () => {
   });
 });
 
+describe("reading recent messages", () => {
+  // Real Slack timestamps here, not the short `1.1` the search tests use. The
+  // ordering claim is specifically about Slack's fixed-width format, and
+  // asserting it on `1.1`/`1.2` would prove something weaker than what ships.
+  const TS = {
+    first: "1758000000.000100",
+    second: "1758000060.000200",
+    third: "1758000120.000300",
+    fourth: "1758000180.000400"
+  };
+
+  function recent(limit = 10): string[] {
+    return store.recent(limit).map(hit => hit.ts);
+  }
+
+  it("returns the newest messages, oldest first", () => {
+    // Both halves matter and they pull in opposite directions: the *selection*
+    // is the tail, and the *order* it comes back in is reading order.
+    store.append(message(TS.first, "one"));
+    store.append(message(TS.second, "two"));
+    store.append(message(TS.third, "three"));
+
+    expect(recent(2)).toEqual([TS.second, TS.third]);
+  });
+
+  it("returns everything, oldest first, when there is less than the limit", () => {
+    store.append(message(TS.second, "two"));
+    store.append(message(TS.first, "one"));
+
+    expect(recent(10)).toEqual([TS.first, TS.second]);
+  });
+
+  it("orders by when a message was sent, not by when it was stored", () => {
+    // `at` is when this store learned of a message and `id` is insertion order;
+    // both diverge from send order the moment an event arrives late or is
+    // redelivered. A row inserted last but sent first belongs at the front.
+    store.append(message(TS.third, "sent last", { at: 1 }));
+    store.append(message(TS.first, "sent first", { at: 9_999 }));
+
+    expect(recent()).toEqual([TS.first, TS.third]);
+  });
+
+  it("orders a full Slack timestamp correctly as a string", () => {
+    // The assumption the statement rests on: ten digits of seconds, a dot, six
+    // more, so lexicographic and numeric order agree. These four differ only in
+    // the fractional part, which is where a naive numeric cast loses precision.
+    store.append(message(TS.fourth, "four"));
+    store.append(message(TS.second, "two"));
+    store.append(message(TS.third, "three"));
+    store.append(message(TS.first, "one"));
+
+    expect(recent()).toEqual([TS.first, TS.second, TS.third, TS.fourth]);
+  });
+
+  it("keeps every field, the way search does", () => {
+    const sent = message(TS.first, "we shipped it", {
+      threadTs: "1757999999.000000",
+      userId: "U0SAM",
+      displayName: "Sam",
+      at: 42
+    });
+    store.append(sent);
+
+    expect(store.recent(10)).toEqual([sent]);
+  });
+
+  it("returns nothing for an empty channel", () => {
+    expect(store.recent(10)).toEqual([]);
+  });
+
+  it("does not return a message that was removed", () => {
+    store.append(message(TS.first, "one"));
+    store.append(message(TS.second, "two"));
+    store.remove(TS.first);
+
+    expect(recent()).toEqual([TS.second]);
+  });
+
+  it("returns an edited message with its new text", () => {
+    store.append(message(TS.first, "the original"));
+    store.replaceText(TS.first, "the correction");
+
+    expect(store.recent(10).map(hit => hit.text)).toEqual(["the correction"]);
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["not a number", Number.NaN],
+    ["infinite", Number.POSITIVE_INFINITY]
+  ])("clamps a limit that is out of range: %s", (_name, limit) => {
+    store.append(message(TS.first, "one"));
+    store.append(message(TS.second, "two"));
+
+    expect(store.recent(limit).length).toBeGreaterThanOrEqual(1);
+    expect(store.recent(limit).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
+  });
+
+  it("caps the limit at the maximum", () => {
+    store.append(message(TS.first, "one"));
+
+    expect(store.recent(10_000).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
+  });
+
+  it("cannot reach another channel's store", () => {
+    // The same claim the search test makes, on the other read. A new read is
+    // exactly where a cross-channel query would appear.
+    mkdirSync(join(root, OTHER));
+    const other = openMessageStore({ channel: OTHER, root });
+    other.append(message(TS.first, "in another channel"));
+
+    expect(store.recent(10)).toEqual([]);
+    expect(other.recent(10).map(hit => hit.ts)).toEqual([TS.first]);
+
+    other.close();
+  });
+});
+
 describe("searching", () => {
   beforeEach(() => {
     store.append(message("1.1", "we decided to ship the vault on friday"));
@@ -263,11 +382,11 @@ describe("searching", () => {
     ["infinite", Number.POSITIVE_INFINITY]
   ])("clamps a limit that is out of range: %s", (_name, limit) => {
     expect(found("vault", limit).length).toBeGreaterThanOrEqual(1);
-    expect(found("vault", limit).length).toBeLessThanOrEqual(SEARCH_MAX_LIMIT);
+    expect(found("vault", limit).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
   });
 
   it("caps the limit at the maximum", () => {
-    expect(found("vault", 10_000).length).toBeLessThanOrEqual(SEARCH_MAX_LIMIT);
+    expect(found("vault", 10_000).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
   });
 
   // An empty MATCH is a syntax error in FTS5. Answering with no rows is the

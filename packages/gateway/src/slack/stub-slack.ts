@@ -19,7 +19,8 @@ import type {
   SlackEnvelope,
   SlackInteractionEnvelope,
   SlackPoster,
-  SocketSource
+  SocketSource,
+  UserDirectory
 } from "./types.js";
 
 export interface StubMentionFields {
@@ -192,6 +193,8 @@ export function blockActionsEnvelope(
 export interface StubSlack {
   source: SocketSource;
   poster: SlackPoster;
+  /** Who a user id is, from `StubSlackOptions.users`. */
+  users: UserDirectory;
   /** Delivers a raw envelope exactly as the socket would. Resolves once dispatched. */
   deliver(envelope: SlackEnvelope): Promise<void>;
   /** Builds a well-formed `app_mention` envelope and delivers it. */
@@ -219,6 +222,15 @@ export interface StubSlack {
   cardAt(messageTs: string): SlackCard | undefined;
   /** Every envelope that was acknowledged, in order. */
   readonly acked: Array<SlackEnvelope | SlackInteractionEnvelope>;
+  /**
+   * Every user id looked up, in order, including repeats.
+   *
+   * In order and unfiltered because the assertion this exists for is about
+   * *how many times*: a cache that resolves a name once per session and one
+   * that resolves it once per message return identical transcripts, and this
+   * array is the only thing that tells them apart.
+   */
+  readonly lookups: string[];
 }
 
 export interface StubSlackOptions {
@@ -234,6 +246,17 @@ export interface StubSlackOptions {
   cardPostFailure?: unknown;
   /** Thrown by every `updateCard`. */
   cardUpdateFailure?: unknown;
+  /**
+   * The workspace's directory, as ids to names. Anyone absent has no name.
+   *
+   * An id with no entry answers `undefined` rather than a plausible name, for
+   * the reason `updateCard` rejects an unknown ts: a stub that invented one
+   * would let a test pass while the real thing rendered something nobody is
+   * called. A departed user is a real state and this is how a test states it.
+   */
+  users?: Record<string, string>;
+  /** Thrown by every `displayName`, so a test can drive a failed lookup. */
+  userLookupFailure?: unknown;
 }
 
 export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
@@ -241,6 +264,7 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
   const cards: Array<PostedCard & { threadTs: string; card: SlackCard }> = [];
   const edits: Array<{ channelId: string; messageTs: string; card: SlackCard }> = [];
   const acked: Array<SlackEnvelope | SlackInteractionEnvelope> = [];
+  const lookups: string[] = [];
   const connectFailures = [...(options.connectFailures ?? [])];
 
   /** The card showing at each ts. Updated by a post and by every edit. */
@@ -321,9 +345,24 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
     }
   };
 
+  const users: UserDirectory = {
+    displayName(userId: string): Promise<string | undefined> {
+      // Recorded before the failure check, so a test asserting on a failing
+      // lookup can still see that it was attempted — and, more to the point,
+      // that a cache did not attempt it twice.
+      lookups.push(userId);
+      if (options.userLookupFailure !== undefined) {
+        return Promise.reject(options.userLookupFailure);
+      }
+      return Promise.resolve(options.users?.[userId]);
+    }
+  };
+
   return {
     source,
     poster,
+    users,
+    lookups,
     posted,
     cards,
     edits,

@@ -308,21 +308,37 @@ export interface MessageStore {
    *
    * **Takes text, never an FTS5 expression** — see `toMatchQuery`. An empty
    * query, or one that is all punctuation, returns no rows rather than
-   * throwing. `limit` is clamped to `SEARCH_MAX_LIMIT`.
+   * throwing. `limit` is clamped to `READ_MAX_LIMIT`.
    *
    * Returns order and not a score: bm25 is negative, which no caller expects,
    * and exposing it invites thresholding on an FTS5 implementation detail.
    */
   search(text: string, limit: number): readonly StoredMessage[];
+  /**
+   * The most recent `limit` messages in this channel, **oldest first**.
+   *
+   * The other read, and the one a transcript is built from (#67). It answers
+   * "what was said here lately" where `search` answers "what was said about
+   * this", and neither is the other with a different argument.
+   *
+   * Reading order rather than newest-first, deliberately. The statement takes
+   * the newest N — that is the only way to ask SQLite for a tail — and this
+   * reverses before returning, because descending is an implementation detail
+   * of "the newest N" and every caller renders a conversation forwards. A
+   * caller that had to reverse it would be a caller that could forget to.
+   *
+   * `limit` is clamped to `READ_MAX_LIMIT`. Fewer rows than asked for means
+   * the channel has no more, not that anything was dropped.
+   */
+  recent(limit: number): readonly StoredMessage[];
   close(): void;
 }
 
 /**
- * The most terms one query may carry, the longest it may be, and the most rows
- * it may return.
+ * The most terms one query may carry, and the longest it may be.
  *
  * Bounds on what a caller can make this process do rather than tuning, because
- * #64 feeds model-authored text through here. All three clamp silently, and the
+ * #64 feeds model-authored text through here. Both clamp silently, and the
  * direction is why that is safe: dropping terms from an AND *removes*
  * constraints, so a truncated query returns more of this channel's messages —
  * which the caller was already entitled to — and never a row from another one.
@@ -331,7 +347,24 @@ export interface MessageStore {
  */
 export const SEARCH_MAX_TERMS = 32;
 export const SEARCH_MAX_QUERY_CHARS = 1024;
-export const SEARCH_MAX_LIMIT = 50;
+
+/**
+ * The most rows any one read may return, whichever read it is.
+ *
+ * One ceiling for `search` and `recent` rather than two, because what it bounds
+ * is the same thing in both cases: how much of this file one call can pull into
+ * memory and hand to a caller that will put it in a model's context.
+ *
+ * **Keep this in step with `[llm] max_history_messages`'s upper bound in
+ * `packages/schema`.** That field is how an operator asks for more history, and
+ * a sheet permitted to name a number above this one would be silently clamped —
+ * which is the one place a silent clamp here would be surprising rather than
+ * benign, because it is an operator's stated intent rather than a model's
+ * argument. Schema is the base package and cannot import this, so the two are
+ * kept in step by hand, as `DEFAULT_AGENT_LOOP_CAPS` and the `[llm]` caps
+ * already are.
+ */
+export const READ_MAX_LIMIT = 200;
 
 /**
  * Plain text into an FTS5 MATCH expression, or undefined if there is nothing to
@@ -386,10 +419,10 @@ export function toMatchQuery(text: string): string | undefined {
   return terms.length === 0 ? undefined : terms.join(" ");
 }
 
-/** Clamps to `[1, SEARCH_MAX_LIMIT]`, and treats a non-number as 1. */
+/** Clamps to `[1, READ_MAX_LIMIT]`, and treats a non-number as 1. */
 function clampLimit(limit: number): number {
   if (!Number.isFinite(limit)) return 1;
-  return Math.max(1, Math.min(SEARCH_MAX_LIMIT, Math.trunc(limit)));
+  return Math.max(1, Math.min(READ_MAX_LIMIT, Math.trunc(limit)));
 }
 
 /**
@@ -542,6 +575,23 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
                 LIMIT ?) AS hit
            ON m.id = hit.hit_id
         ORDER BY hit.hit_rank`
+    ),
+    // DESC because the only way to ask SQLite for a tail is to sort backwards
+    // and take the head; `recent` reverses the rows before returning them.
+    //
+    // **Ordering on `ts` is ordering by when the message was sent, and it is
+    // correct as a string comparison.** A Slack ts is fixed-width — ten digits
+    // of seconds, a dot, six more — so lexicographic and numeric order agree,
+    // and will until the seconds field gains a digit in 2286. The two
+    // alternatives are both wrong: `id` is insertion order, which a redelivery
+    // or a slow event reorders, and `at` is when this store *learned* of a
+    // message, which is a different clock and diverges the moment anything
+    // backfills.
+    recent: db.prepare(
+      `SELECT ts, thread_ts, user_id, display_name, text, at
+         FROM message
+        ORDER BY ts DESC
+        LIMIT ?`
     )
   } satisfies Record<string, StatementSync>;
 
@@ -579,6 +629,14 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       if (query === undefined) return [];
       const rows = statements.search.all(query, clampLimit(limit)) as MessageRow[];
       return rows.map(toStoredMessage);
+    },
+
+    recent(limit) {
+      const rows = statements.recent.all(clampLimit(limit)) as MessageRow[];
+      // Newest-first out of SQLite, oldest-first out of here. `reverse` after
+      // the map rather than a second sort: the statement already ordered them
+      // and re-sorting would be a second opinion about what order means.
+      return rows.map(toStoredMessage).reverse();
     },
 
     close() {

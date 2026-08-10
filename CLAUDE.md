@@ -125,6 +125,44 @@ And **the message path logs nothing on the way through** — not the arrival, no
 an ordinary drop. Ids are legal in a log line, but one per message turns stdout
 into a record of who spoke in which channel and when.
 
+**#67 reads that store back, and the transcript's shape is the decision.**
+`apps/server/src/session/context.ts` turns a channel's recent messages into the
+one `user` message a task seeds from, each attributed (`@alice: …`) and each
+`<@U…>` resolved through the same cache. Four things there are settled.
+**Channel history never goes in the system prompt** — it is third-party text,
+and `system` is where the agent's own instructions live; it goes in a marked
+block that says it is context rather than instructions. **It is one message and
+not a reconstructed dialogue**, because the agent's own replies are not stored
+(`postThreadReply` returns nothing, deliberately) so history is one-sided and an
+assistant/user alternation would be a lie the model reasons from. **It is the
+channel's recent messages, not a thread's** — `TaskRequest` carries no Slack ts,
+which `handler.test.ts` argues is #66's question to reopen. And **the echo of
+the ask is excluded on exact `userId` + `text` equality**, because a mention
+arrives on both subscriptions and is usually already a row, with no id to match
+on.
+
+**Names resolve live and are cached per session**, at the `entries.delete`
+`registry.ts` reserved. `session/names.ts` caches the *promise*, not the value —
+ingest does not take the session mutex, so two messages from one new author
+genuinely overlap — and it caches the miss too, since a departed user has no
+name and will not grow one. The seam under `session/**` is
+`DisplayNameLookup`, a plain function, because that ESLint block admits no Slack
+type; the `UserDirectory` behind it is `web-api.ts`'s, on the same `WebClient`
+the posters use, and is wired in `compose.ts`. Ingest also writes the snapshot
+into `display_name`, which is a *different question* from the live resolver —
+"what were they called then" against "what are they called today" — and is the
+only attribution available to #64, which holds no Slack token.
+
+**The bound is two sheet fields and one constant.** `[llm]
+max_history_messages` and `max_history_chars` are the channel's, for the reason
+the four caps are: they spend its own budget and can widen nothing. The
+2,000-character per-message ceiling is the process's, for the reason
+`DEFAULT_UPSTREAM_TIMEOUT_MS` is. Nothing in `packages/agent` counts a
+transcript's tokens before sending, so without these an oversized seed fails at
+the provider rather than at a cap. `packages/memory` gained `recent(limit)` for
+this — ordered by `ts` (fixed-width, so lexicographic is chronological; `id` is
+arrival order and `at` is a different clock) and returned **oldest-first**.
+
 **The two halves meet for real in `e2e/` (#131, which absorbed #47).** The proxy
 runs as its **spawned built entrypoint**; the agent side runs **in-process**
 through `createServer` — the same call `apps/server/src/index.ts` makes, which

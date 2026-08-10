@@ -37,6 +37,7 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       remove: () => false,
       replaceText: () => false,
       search: () => [],
+      recent: () => [],
       close: () => {
         closed += 1;
       }
@@ -97,15 +98,120 @@ describe("createMessageIngest", () => {
     expect(recorded.appended[0]?.ts).toBe("1717171717.000300");
   });
 
-  it("leaves the display name unresolved", async () => {
-    // A snapshot of the author's name, and nothing here has one: resolving a
-    // user id is a Slack API call with a cache in front of it, which is #67's.
+  it("stores the author's name as a snapshot", async () => {
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+
+    await createMessageIngest({
+      sessions,
+      names: userId => Promise.resolve(userId === "U0ALICE" ? "alice" : undefined)
+    })(MESSAGE);
+
+    expect(recorded.appended[0]?.displayName).toBe("alice");
+  });
+
+  it("leaves the name null when no directory was composed", async () => {
+    // A front-end with nowhere to ask. The row is still stored — the snapshot
+    // is worth having and not worth a message.
     const recorded = recordingStore();
     const sessions = createSessionRegistry({ openStore: () => recorded.store });
 
     await createMessageIngest({ sessions })(MESSAGE);
 
     expect(recorded.appended[0]?.displayName).toBeNull();
+  });
+
+  it("stores the message when the lookup finds nobody", async () => {
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+
+    await createMessageIngest({ sessions, names: () => Promise.resolve(undefined) })(MESSAGE);
+
+    expect(recorded.appended).toHaveLength(1);
+    expect(recorded.appended[0]?.displayName).toBeNull();
+  });
+
+  it("stores the message when the lookup throws", async () => {
+    // The new failure mode on a path that could not fail before. Attribution is
+    // worth a round trip and never a message.
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+
+    await expect(
+      createMessageIngest({ sessions, names: () => Promise.reject(new Error("rate limited")) })(
+        MESSAGE
+      )
+    ).resolves.toBeUndefined();
+
+    expect(recorded.appended).toHaveLength(1);
+    expect(recorded.appended[0]?.displayName).toBeNull();
+  });
+
+  it("resolves a name once per author per session, not once per message", async () => {
+    // The acceptance criterion, on the write path. A busy channel is one author
+    // saying many things, and a lookup per message is a rate limit waiting to
+    // happen.
+    const asked: string[] = [];
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+    const ingest = createMessageIngest({
+      sessions,
+      names: userId => {
+        asked.push(userId);
+        return Promise.resolve("alice");
+      }
+    });
+
+    await ingest(MESSAGE);
+    await ingest({ ...MESSAGE, ts: "1717171717.000400" });
+    await ingest({ ...MESSAGE, ts: "1717171717.000500", userId: "U0BOB" });
+
+    expect(asked).toEqual(["U0ALICE", "U0BOB"]);
+  });
+
+  it("shares one in-flight lookup between messages that arrive together", async () => {
+    // Ingest does not take the session mutex, so two messages from one new
+    // author really do run concurrently. A cache of settled values would have
+    // both miss.
+    const asked: string[] = [];
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+    let release = (): void => {};
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const ingest = createMessageIngest({
+      sessions,
+      names: async userId => {
+        asked.push(userId);
+        await gate;
+        return "alice";
+      }
+    });
+
+    const both = Promise.all([ingest(MESSAGE), ingest({ ...MESSAGE, ts: "1717171717.000400" })]);
+    release();
+    await both;
+
+    expect(asked).toEqual(["U0ALICE"]);
+    expect(recorded.appended.map(message => message.displayName)).toEqual(["alice", "alice"]);
+  });
+
+  it("does not look anybody up for a channel with no store", async () => {
+    // Checked before the name is resolved, so an unprovisioned channel — which
+    // is most of a workspace — costs no Slack calls at all.
+    const asked: string[] = [];
+    const sessions = createSessionRegistry({ openStore: () => null });
+
+    await createMessageIngest({
+      sessions,
+      names: userId => {
+        asked.push(userId);
+        return Promise.resolve("alice");
+      }
+    })(MESSAGE);
+
+    expect(asked).toEqual([]);
   });
 
   it("stores a message in a channel with no session yet", async () => {
@@ -216,6 +322,7 @@ describe("createMessageIngest", () => {
         remove: () => false,
         replaceText: () => false,
         search: () => [],
+      recent: () => [],
         close: () => {}
       })
     });
@@ -246,6 +353,7 @@ describe("createMessageIngest", () => {
         remove: () => false,
         replaceText: () => false,
         search: () => [],
+      recent: () => [],
         close: () => {}
       })
     });

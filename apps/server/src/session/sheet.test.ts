@@ -9,7 +9,12 @@ import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { parseTeamSheet } from "@getlibero/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SHEET_FILENAME, createSheetResolver, settingsFrom } from "./sheet.js";
+import {
+  DEFAULT_HISTORY_BOUNDS,
+  SHEET_FILENAME,
+  createSheetResolver,
+  settingsFrom
+} from "./sheet.js";
 
 const MODEL = "process-wide-model";
 const CHANNEL = "C024BE91L";
@@ -24,6 +29,8 @@ max_tool_calls_per_task = 7
 max_task_seconds        = 30
 max_tokens_per_task     = 4000
 max_tokens_per_turn     = 1024
+max_history_messages    = 12
+max_history_chars       = 3000
 `;
 
 const NO_LLM_BLOCK = `
@@ -65,7 +72,7 @@ function sheetOf(text: string) {
 }
 
 describe("settingsFrom", () => {
-  it("maps the four caps field for field, seconds to milliseconds", () => {
+  it("maps the four caps and the two bounds field for field, seconds to milliseconds", () => {
     expect(settingsFrom(sheetOf(VALID), MODEL)).toEqual({
       model: "sheet-model",
       caps: {
@@ -75,18 +82,20 @@ describe("settingsFrom", () => {
         maxWallTimeMs: 30_000,
         maxTokens: 4000,
         maxOutputTokensPerTurn: 1024
-      }
+      },
+      history: { maxMessages: 12, maxChars: 3000 }
     });
   });
 
-  it("yields all four caps when the sheet has no [llm] block", () => {
-    // The schema prefaults the block, so resolution never has to invent a cap.
-    // Asserting equality with the constant also catches the schema's defaults
-    // and DEFAULT_AGENT_LOOP_CAPS drifting apart, which are kept in step by
-    // hand across a package boundary.
+  it("yields every cap and bound when the sheet has no [llm] block", () => {
+    // The schema prefaults the block, so resolution never has to invent one.
+    // Asserting equality with the constants also catches the schema's defaults
+    // drifting from DEFAULT_AGENT_LOOP_CAPS and DEFAULT_HISTORY_BOUNDS, both of
+    // which are kept in step by hand across a package boundary.
     expect(settingsFrom(sheetOf(NO_LLM_BLOCK), MODEL)).toEqual({
       model: MODEL,
-      caps: DEFAULT_AGENT_LOOP_CAPS
+      caps: DEFAULT_AGENT_LOOP_CAPS,
+      history: DEFAULT_HISTORY_BOUNDS
     });
   });
 
@@ -124,7 +133,8 @@ describe("createSheetResolver", () => {
         maxWallTimeMs: 30_000,
         maxTokens: 4000,
         maxOutputTokensPerTurn: 1024
-      }
+      },
+      history: { maxMessages: 12, maxChars: 3000 }
     });
   });
 
@@ -150,7 +160,8 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
-      caps: DEFAULT_AGENT_LOOP_CAPS
+      caps: DEFAULT_AGENT_LOOP_CAPS,
+      history: DEFAULT_HISTORY_BOUNDS
     });
     expect(captured.lines).toEqual([]);
   });
@@ -160,7 +171,8 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
-      caps: DEFAULT_AGENT_LOOP_CAPS
+      caps: DEFAULT_AGENT_LOOP_CAPS,
+      history: DEFAULT_HISTORY_BOUNDS
     });
   });
 
@@ -174,7 +186,8 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
-      caps: DEFAULT_AGENT_LOOP_CAPS
+      caps: DEFAULT_AGENT_LOOP_CAPS,
+      history: DEFAULT_HISTORY_BOUNDS
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({
@@ -207,7 +220,8 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
-      caps: DEFAULT_AGENT_LOOP_CAPS
+      caps: DEFAULT_AGENT_LOOP_CAPS,
+      history: DEFAULT_HISTORY_BOUNDS
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({ event: "team_sheet_unreadable", channel: CHANNEL })
@@ -229,7 +243,8 @@ describe("createSheetResolver", () => {
 
       await expect(resolve(channel)).resolves.toEqual({
         model: MODEL,
-        caps: DEFAULT_AGENT_LOOP_CAPS
+        caps: DEFAULT_AGENT_LOOP_CAPS,
+      history: DEFAULT_HISTORY_BOUNDS
       });
       expect(captured.lines).toContainEqual(
         expect.objectContaining({ event: "team_sheet_invalid", reason: "channel_id" })

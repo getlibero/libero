@@ -31,7 +31,8 @@ export interface LogFields {
    * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed".
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
    * "team_sheet_unreadable". Message store: "store_opened",
-   * "store_unavailable", "store_write_failed". Approvals: "decision",
+   * "store_unavailable", "store_write_failed". Attribution:
+   * "user_lookup_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".
    *
@@ -43,7 +44,11 @@ export interface LogFields {
   team?: string;
   /** Slack channel id — the same id a team sheet is keyed on. */
   channel?: string;
-  /** The Slack user who mentioned the app. An id, never a display name. */
+  /**
+   * A Slack user — who mentioned the app, who clicked, or who could not be
+   * looked up. **An id, never a display name**: a name is content in a way an
+   * id is not, being something a person chose to be called.
+   */
   user?: string;
   /** Slack's `event_id`. Stable across delivery retries, so a duplicate is greppable. */
   eventId?: string;

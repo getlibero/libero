@@ -28,12 +28,28 @@ import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { TeamSheet } from "@getlibero/schema";
 import { ChannelId, parseTeamSheet } from "@getlibero/schema";
-import type { TaskSettings } from "./types.js";
+import type { ChannelSettings } from "./types.js";
 
 /** The sheet's filename inside a channel's directory. */
 export const SHEET_FILENAME = "channel.toml";
 
-export type SheetResolver = (channel: string) => Promise<TaskSettings>;
+/**
+ * What a channel gets when no sheet resolved.
+ *
+ * Mirrors the `[llm] max_history_*` defaults in `packages/schema`, the way
+ * `DEFAULT_AGENT_LOOP_CAPS` mirrors the four caps beside them — and kept in step
+ * by hand for the same reason: schema is the base package and holds the values,
+ * but nothing here can reach a zod default without parsing a sheet that does
+ * not exist.
+ *
+ * Falling back to *some* history rather than none, deliberately. A channel
+ * whose sheet is missing or malformed still has a conversation, and answering
+ * it with no context is a visible downgrade for an operator's typo. Nothing
+ * here can widen anything — the proxy enforces the same file from its own copy.
+ */
+export const DEFAULT_HISTORY_BOUNDS = { maxMessages: 40, maxChars: 12_000 } as const;
+
+export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
 
 export interface SheetResolverOptions {
   /** The channels directory: one directory per channel, each with a sheet. */
@@ -55,7 +71,7 @@ export interface SheetResolverOptions {
  * the sheet because that is what an operator writes, milliseconds in the loop
  * because that is what `AbortSignal.timeout` takes.
  */
-export function settingsFrom(sheet: TeamSheet, fallbackModel: string): TaskSettings {
+export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSettings {
   return {
     model: sheet.llm.model ?? fallbackModel,
     caps: {
@@ -63,6 +79,12 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): TaskSetti
       maxWallTimeMs: sheet.llm.max_task_seconds * 1000,
       maxTokens: sheet.llm.max_tokens_per_task,
       maxOutputTokensPerTurn: sheet.llm.max_tokens_per_turn
+    },
+    // Renames, not conversions — unlike `max_task_seconds` — so the only thing
+    // this can get wrong is which field went where.
+    history: {
+      maxMessages: sheet.llm.max_history_messages,
+      maxChars: sheet.llm.max_history_chars
     }
   };
 }
@@ -86,15 +108,16 @@ function errnoOf(error: unknown): string | undefined {
 export function createSheetResolver(options: SheetResolverOptions): SheetResolver {
   const logger = options.logger ?? createSilentLogger();
 
-  const defaults = (): TaskSettings => ({
+  const defaults = (): ChannelSettings => ({
     model: options.model,
     // Spread: the constant is an exported mutable object, and handing the same
     // one to every channel is a caller away from one channel's edit becoming
     // every channel's.
-    caps: { ...DEFAULT_AGENT_LOOP_CAPS }
+    caps: { ...DEFAULT_AGENT_LOOP_CAPS },
+    history: { ...DEFAULT_HISTORY_BOUNDS }
   });
 
-  return async (channel: string): Promise<TaskSettings> => {
+  return async (channel: string): Promise<ChannelSettings> => {
     // Before the join, not after. This id becomes a path segment, and the rule
     // for what may be one is stated once in the schema's `ChannelId` — this is
     // the second place that needs the same answer, so it asks rather than

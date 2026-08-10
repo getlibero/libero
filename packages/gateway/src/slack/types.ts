@@ -5,11 +5,17 @@
 // are one of the paths a secret leaks, and this is the process that holds the
 // app and bot tokens.
 //
-// The adapter answers a mention, reports a click, and surfaces an ordinary
-// message, and nothing else. Sessions, the per-session mutex, attribution, the
-// live checklist, and the message store itself are above this package and are
-// not modelled here — what a `SlackMessage` is *for* does not appear in this
-// file, which is why it carries the wire's own fields and none of the store's.
+// The adapter answers a mention, reports a click, surfaces an ordinary message,
+// and says who a user id is, and nothing else. Sessions, the per-session mutex,
+// the transcript that attribution is rendered into, the live checklist, and the
+// message store itself are above this package and are not modelled here — what
+// a `SlackMessage` is *for* does not appear in this file, which is why it
+// carries the wire's own fields and none of the store's.
+//
+// The directory is the one read here, and it is here for the same reason the
+// posters are: it is a call on the bot token, and this is the package that
+// holds one. What a name is *used for* — a cache, a transcript, an `@alice:`
+// prefix — is #67's, above.
 //
 // The one import from the workspace is `@getlibero/schema`, and it is **type
 // only**: `ApprovalVerdict` is the exact wire vocabulary of the thing being
@@ -286,8 +292,37 @@ export interface CardPoster {
   updateCard(target: { channelId: string; messageTs: string; card: SlackCard }): Promise<void>;
 }
 
-/** What the Web API adapter and the stub both are. Consumers take a narrower view. */
+/** What the Web API adapter and the stub both post with. Consumers take a narrower view. */
 export type SlackPoster = MessagePoster & CardPoster;
+
+/**
+ * Who a Slack user id belongs to, as a name a person would recognize.
+ *
+ * The only read in this package — everything else here answers an event or
+ * sends a message. It is here rather than above because it is a Slack API call
+ * on the bot token, and this package is where that token's calls live.
+ *
+ * **Attribution, never authorization.** Nothing decides anything from a name:
+ * the channel comes from a certificate and a ticket is spent on a channel and an
+ * argument hash. A name is what makes a transcript readable, and a wrong one
+ * costs a reader nothing that matters.
+ */
+export interface UserDirectory {
+  /**
+   * This user's display name, or `undefined` when there is not one to have.
+   *
+   * `undefined` rather than a rejection, and rather than the id, for both of the
+   * ways this fails. A user who has left the workspace has no name and never
+   * will, and that is an answer rather than an error. And a lookup that failed
+   * — rate limited, offline, a missing `users:read` scope — must not cost a
+   * caller its task: attribution is worth a round trip and not an answer, so the
+   * caller substitutes what it likes and carries on.
+   *
+   * The caller decides what to render for `undefined`, because only it knows
+   * what an unnamed author should look like in the thing it is building.
+   */
+  displayName(userId: string): Promise<string | undefined>;
+}
 
 /** The adapter's lifecycle, and all of it. */
 export interface SlackGateway {

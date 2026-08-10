@@ -66,6 +66,13 @@ export interface AgentOptions {
    * real front-end shape, not a test switch — see `SlackSurfaceLike.cards`.
    */
   readonly cards?: boolean;
+  /**
+   * The workspace's directory, as ids to names.
+   *
+   * What the assembled transcript attributes messages to. An id with no entry
+   * has no name and renders as itself, which is a departed user.
+   */
+  readonly users?: Record<string, string>;
 }
 
 export interface AgentSide {
@@ -82,7 +89,7 @@ export interface AgentSide {
  * immediately.
  */
 export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promise<AgentSide> {
-  const slack = createStubSlack();
+  const slack = createStubSlack(options.users !== undefined ? { users: options.users } : {});
   const lines: Array<{ level: LogLevel; fields: LogFields }> = [];
   // Capturing rather than silent: what this side logged is a surface the canary
   // scan reads, and a silent logger would make that assertion vacuous.
@@ -111,7 +118,11 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       // composition reads its absence as "no one to ask" and wires no prompter,
       // which is the shape being tested. A stub that accepted cards and dropped
       // them would test nothing.
-      ...(options.cards === false ? {} : { cards: slack.poster })
+      ...(options.cards === false ? {} : { cards: slack.poster }),
+      // Always present. Unlike cards, a directory has no degraded mode worth a
+      // case: without one every author renders as an id, which is the same
+      // transcript with worse names.
+      users: slack.users
     }),
     completion: options.completion,
     transport,
