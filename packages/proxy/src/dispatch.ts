@@ -19,7 +19,7 @@
 // against a recording dispatcher — that a refused or held call leaves no trace
 // there — by putting listing traffic on the same seam.
 
-import type { BudgetSpend } from "./enforce.js";
+import type { BudgetSpend, CallLimits } from "./enforce.js";
 import type {
   McpServer,
   ResolvedToolCall,
@@ -148,9 +148,15 @@ export type Dispatch =
  * and would then send the call somewhere nothing approved. See the note on
  * `Decision` in ./enforce.ts. It also keeps this interface free of the sheet
  * store, so a dispatcher cannot read policy it has no business reading.
+ *
+ * `limits` arrives the same way and for the same reason — resolved once by the
+ * decision that authorized the call, rather than looked up here against a sheet
+ * that may have reloaded since. It holds what the *channel* set; the bound on
+ * bytes read off the wire is the deployment's and reaches the client through its
+ * own options, so nothing on this interface can raise it.
  */
 export interface ToolDispatcher {
-  dispatch(call: ResolvedToolCall, upstream: McpServer): Dispatch | Promise<Dispatch>;
+  dispatch(call: ResolvedToolCall, upstream: McpServer, limits: CallLimits): Dispatch | Promise<Dispatch>;
 }
 
 /**

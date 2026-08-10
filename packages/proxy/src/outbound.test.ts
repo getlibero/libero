@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_UPSTREAM_RESPONSE_BYTES,
   DEFAULT_UPSTREAM_TIMEOUT_MS,
   UpstreamError,
   callUpstream,
@@ -249,6 +250,14 @@ describe("the outbound call", () => {
     expect((thrown as UpstreamError).failure).toBe("timed_out");
   });
 
+  // A bodiless response has no stream at all, which the bounded read has to
+  // answer for explicitly now that it no longer goes through `response.text()`.
+  it("reads a bodiless response as the empty string", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof globalThis.fetch;
+    const response = await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    expect(response.body).toBe("");
+  });
+
   // A 404 from a tool is a result the model should see, not a transport
   // failure. `ToolResult.isError` draws that line; this must not throw.
   it("returns a non-2xx as an ordinary result", async () => {
@@ -307,6 +316,161 @@ describe("the outbound call", () => {
     expect(seen).not.toContain(VALUE);
     expect(seen).not.toContain("ghp_");
     expect((thrown as { cause?: unknown }).cause).toBeUndefined();
+  });
+});
+
+// Nothing bounded a response body until #151: `response.text()` read to
+// completion, so a fifty-megabyte answer was buffered, scanned by every
+// redaction needle, and handed on. These test the read itself — the mechanism.
+// That an oversized body produces the right *outcome* for a model and for a
+// catalog is http-dispatcher.test.ts's and mcp-catalog.test.ts's, over a real
+// socket.
+describe("the bounded body read", () => {
+  /** The bytes, handed over `size` at a time, so sequences straddle boundaries. */
+  function chunked(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
+    let offset = 0;
+    return new ReadableStream({
+      pull(controller) {
+        if (offset >= bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.subarray(offset, offset + size));
+        offset += size;
+      }
+    });
+  }
+
+  // The claim the whole cap rests on: under the limit this is `response.text()`,
+  // character for character. Asserted against a real `Response` rather than
+  // against a literal, so it is the platform's own answer being compared and not
+  // one written down by hand — and fed three bytes at a time, so the BOM, the
+  // multi-byte character, the surrogate pair and the invalid tail each land
+  // across a chunk boundary where a decoder without `{ stream: true }` would
+  // corrupt them.
+  it("decodes exactly as response.text() does, across chunk boundaries", async () => {
+    const bytes = new TextEncoder().encode('﻿{"prs":["✓","🚀","é"],"tail":"…"}');
+    const ragged = new Uint8Array(bytes.byteLength + 1);
+    ragged.set(bytes);
+    // A lone continuation byte: invalid UTF-8, which decodes to U+FFFD.
+    ragged[bytes.byteLength] = 0x80;
+
+    const expected = await new Response(ragged).text();
+    const fetch = vi.fn(async () => new Response(chunked(ragged, 3))) as unknown as typeof globalThis.fetch;
+
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      maxBodyBytes: 4096,
+      fetch
+    });
+
+    expect(response.body).toBe(expected);
+  });
+
+  it("keeps a body of exactly the limit", async () => {
+    const body = "x".repeat(64);
+    const { fetch } = recordingFetch(body);
+    const response = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      maxBodyBytes: 64,
+      fetch
+    });
+    expect(response.body).toBe(body);
+  });
+
+  it("refuses a body one byte over the limit", async () => {
+    const { fetch } = recordingFetch("x".repeat(65));
+    const thrown = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      maxBodyBytes: 64,
+      fetch
+    }).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(UpstreamError);
+    expect((thrown as UpstreamError).failure).toBe("too_large");
+  });
+
+  // The acceptance criterion, asserted as the mechanism rather than as a memory
+  // measurement: `process.memoryUsage` appears nowhere in this repo, it is at the
+  // mercy of when a collection happens to run, and a green assertion on it would
+  // not mean what the criterion says.
+  //
+  // The stream here is endless. That the test terminates at all is half the
+  // claim — a fifty-megabyte body is the case an upstream happened to send, and
+  // this is the case no upstream can escape — and the other half is that the
+  // source was asked for a number of chunks bounded by the *cap* rather than by
+  // the body, and then cancelled.
+  it("stops pulling and cancels rather than draining a body over the limit", async () => {
+    const CHUNK = 64 * 1024;
+    const LIMIT = 256 * 1024;
+    let produced = 0;
+    let cancelled = false;
+
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        produced += 1;
+        controller.enqueue(new Uint8Array(CHUNK));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    const fetch = vi.fn(async () => new Response(endless)) as unknown as typeof globalThis.fetch;
+
+    const thrown = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: undefined,
+      maxBodyBytes: LIMIT,
+      fetch
+    }).catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(UpstreamError);
+    expect((thrown as UpstreamError).failure).toBe("too_large");
+    // The transport was told to stop, rather than left to deliver a body into a
+    // buffer nobody will read.
+    expect(cancelled).toBe(true);
+    // Four chunks fill the limit and the fifth crosses it; the default queuing
+    // strategy may pull one ahead. The bound is the claim — the slack is for the
+    // strategy, not for the cap.
+    expect(produced).toBeLessThanOrEqual(8);
+  });
+
+  // The body is never decoded, so there is nothing to scrub — which means the
+  // one thing that must hold is that nothing of it reaches the error either.
+  it("relays nothing of an oversized body, not even in the error", async () => {
+    const { fetch } = recordingFetch(`{"leak":"${VALUE}","pad":"${"x".repeat(5000)}"}`);
+    const thrown = await callUpstream({
+      url: "http://u:1",
+      body: {},
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      maxBodyBytes: 512,
+      fetch
+    }).catch((error: unknown) => error);
+
+    expect((thrown as UpstreamError).failure).toBe("too_large");
+    const seen = `${String(thrown)} ${JSON.stringify(thrown, Object.getOwnPropertyNames(thrown))} ${(thrown as Error).stack ?? ""}`;
+    expect(seen).not.toContain(VALUE);
+    expect(seen).not.toContain("ghp_");
+  });
+
+  it("falls back to the process default when the caller names no limit", async () => {
+    const { fetch } = recordingFetch("{}");
+    await expect(
+      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch })
+    ).resolves.toMatchObject({ body: "{}" });
+    expect(DEFAULT_UPSTREAM_RESPONSE_BYTES).toBeGreaterThan(0);
   });
 });
 

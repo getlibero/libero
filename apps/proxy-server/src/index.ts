@@ -20,6 +20,7 @@ import {
   budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
+  maxResponseBytesFromEnv,
   portFromEnv,
   requiredEnv,
   vaultFileFromEnv,
@@ -72,7 +73,16 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // an upstream what it offers has no method that calls anything. Passing the
 // same object to both is what keeps the credential path single, since this is
 // still the only thing in the process holding a vault and a client pool.
-const dispatcher = createHttpDispatcher({ vault, logger });
+//
+// `maxResponseBytes` is read here rather than resolved per call, because it is
+// the deployment's rather than a channel's: it bounds this process's heap, which
+// every channel shares. The channel's own bound on a result rides on each
+// decision instead. See `maxResponseBytesFromEnv`.
+const dispatcher = createHttpDispatcher({
+  vault,
+  logger,
+  maxResponseBytes: maxResponseBytesFromEnv(process.env)
+});
 
 const server = createProxyServer({
   tls: loadTlsOptions({

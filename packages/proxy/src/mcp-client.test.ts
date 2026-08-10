@@ -3,6 +3,15 @@ import { type McpClient, createMcpClient } from "./mcp-client.js";
 import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import { MCP_PROTOCOL_VERSION, METHOD_NOT_FOUND } from "./mcp-protocol.js";
 import type { Secret } from "./vault.js";
+import type { CallLimits } from "./enforce.js";
+
+/**
+ * The channel's bound on a result, which every `callTool` now carries.
+ *
+ * Roomy on purpose: these cases are about the protocol and the transport, not
+ * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ */
+const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
 const VALUE = "ghp_live_token_do_not_log";
 
@@ -39,7 +48,7 @@ async function clientFor(
 describe("the round trip", () => {
   it("discovers, calls, and returns the result", async () => {
     const client = await clientFor();
-    const outcome = await client.callTool("list_prs", { repo: "libero" });
+    const outcome = await client.callTool("list_prs", { repo: "libero" }, LIMITS);
 
     expect(outcome).toEqual({ outcome: "called", result: { content: "called list_prs", isError: false } });
     expect(fake?.received.map(r => r.rpc?.method)).toEqual(["server/discover", "tools/call"]);
@@ -47,14 +56,14 @@ describe("the round trip", () => {
 
   it("reads an event-stream reply identically", async () => {
     const client = await clientFor({ framing: "sse" });
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
 
     expect(outcome).toEqual({ outcome: "called", result: { content: "called list_prs", isError: false } });
   });
 
   it("sends the transport's required headers", async () => {
     const client = await clientFor();
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     const call = fake?.callsTo("tools/call")[0];
     expect(call?.headers["mcp-method"]).toBe("tools/call");
@@ -67,8 +76,8 @@ describe("the round trip", () => {
   // does not change under a running process.
   it("discovers once across many calls", async () => {
     const client = await clientFor();
-    await client.callTool("list_prs", {});
-    await client.callTool("get_issue", {});
+    await client.callTool("list_prs", {}, LIMITS);
+    await client.callTool("get_issue", {}, LIMITS);
 
     expect(fake?.callsTo("server/discover")).toHaveLength(1);
     expect(fake?.callsTo("tools/call")).toHaveLength(2);
@@ -76,7 +85,7 @@ describe("the round trip", () => {
 
   it("discovers once for concurrent first calls", async () => {
     const client = await clientFor();
-    await Promise.all([client.callTool("a", {}), client.callTool("b", {}), client.callTool("c", {})]);
+    await Promise.all([client.callTool("a", {}, LIMITS), client.callTool("b", {}, LIMITS), client.callTool("c", {}, LIMITS)]);
 
     expect(fake?.callsTo("server/discover")).toHaveLength(1);
     expect(fake?.callsTo("tools/call")).toHaveLength(3);
@@ -87,7 +96,7 @@ describe("the credential", () => {
   // Positive first, so nothing below is vacuously true.
   it("reaches the upstream on every request", async () => {
     const client = await clientFor();
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     expect(fake?.received).not.toHaveLength(0);
     for (const request of fake?.received ?? []) {
@@ -97,7 +106,7 @@ describe("the credential", () => {
 
   it("never comes back in a result when the upstream echoes it", async () => {
     const client = await clientFor({ echoHeaders: "text" });
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
 
     const content = outcome.outcome === "called" ? outcome.result.content : "";
     expect(content).toContain("[redacted:github_service_account]");
@@ -110,7 +119,7 @@ describe("the credential", () => {
   // un-escaped on the way to the model.
   it("never comes back when the upstream echoes it JSON-escaped", async () => {
     const client = await clientFor({ echoHeaders: "json-escaped" });
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
 
     const content = outcome.outcome === "called" ? outcome.result.content : "";
     expect(content).toContain("[redacted:github_service_account]");
@@ -129,7 +138,7 @@ describe("the credential", () => {
         credentialName: "c",
         timeoutMs: 2000
       });
-      const outcome = await client.callTool("list_prs", {});
+      const outcome = await client.callTool("list_prs", {}, LIMITS);
 
       const content = outcome.outcome === "called" ? outcome.result.content : "";
       expect(content).not.toContain(value);
@@ -138,7 +147,7 @@ describe("the credential", () => {
 
   it("is scrubbed from a response header before anything reads it", async () => {
     const client = await clientFor({ echoIntoResponseHeader: true });
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
 
     // The call still works: the framing header is read, and reading it is what
     // makes redacting it matter.
@@ -151,7 +160,7 @@ describe("the credential", () => {
   // what stops the negatives below being vacuous.
   it("reaches the upstream on every request the handshake makes", async () => {
     const client = await clientFor({ protocol: "legacy" });
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     expect(fake?.received.map(r => r.rpc?.method)).toEqual([
       "server/discover",
@@ -173,7 +182,7 @@ describe("the credential", () => {
   // outcome, and none of it is the value.
   it("is never replayed as a session id", async () => {
     const client = await clientFor({ protocol: "legacy", echoAuthAsSessionId: true });
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     const replayed = fake?.callsTo("tools/call")[0]?.headers["mcp-session-id"] ?? "";
     expect(replayed).toBe("[redacted:github_service_account]");
@@ -202,7 +211,7 @@ describe("the credential", () => {
       timeoutMs: 2000
     });
 
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
     expect(outcome).toEqual({ outcome: "connect_failed", failure: "unsupported_protocol" });
     expect(JSON.stringify(outcome)).not.toContain("edge proxy");
     expect(JSON.stringify(outcome)).not.toContain(VALUE);
@@ -226,7 +235,7 @@ describe("the credential", () => {
         timeoutMs: 2000
       });
 
-      const outcome = await client.callTool("list_prs", {});
+      const outcome = await client.callTool("list_prs", {}, LIMITS);
       expect(JSON.stringify(outcome)).not.toContain(VALUE);
       await fake.close();
       fake = undefined;
@@ -251,7 +260,7 @@ describe("when discovery fails", () => {
       timeoutMs: 2000
     });
 
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
 
     expect(outcome).toEqual({ outcome: "connect_failed", failure: "unsupported_protocol" });
     // `connect_failed` has no `detail` field to put them in, which is the type
@@ -266,7 +275,7 @@ describe("when discovery fails", () => {
     fake.respond = () => ({ status: 503, raw: "" });
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     expect(fake.callsTo("tools/call")).toHaveLength(0);
   });
@@ -279,7 +288,7 @@ describe("when discovery fails", () => {
       timeoutMs: 2000
     });
 
-    expect(await client.callTool("list_prs", {})).toEqual({ outcome: "connect_failed", failure: "unreachable" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "connect_failed", failure: "unreachable" });
   });
 
   // A transient outage must not disable an upstream for the process lifetime,
@@ -290,9 +299,9 @@ describe("when discovery fails", () => {
     fake.respond = () => (failing ? { status: 503, raw: "" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect((await client.callTool("list_prs", {})).outcome).toBe("connect_failed");
+    expect((await client.callTool("list_prs", {}, LIMITS)).outcome).toBe("connect_failed");
     failing = false;
-    expect((await client.callTool("list_prs", {})).outcome).toBe("called");
+    expect((await client.callTool("list_prs", {}, LIMITS)).outcome).toBe("called");
   });
 });
 
@@ -300,7 +309,7 @@ describe("version negotiation", () => {
   it("fails closed against a server that speaks nothing we do", async () => {
     const client = await clientFor({ supportedVersions: ["2025-03-26", "2025-06-18"] });
 
-    expect(await client.callTool("list_prs", {})).toEqual({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
       outcome: "connect_failed",
       failure: "unsupported_protocol"
     });
@@ -317,7 +326,7 @@ describe("version negotiation", () => {
         : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
       outcome: "connect_failed",
       failure: "unsupported_protocol"
     });
@@ -329,7 +338,7 @@ describe("the ladder", () => {
   it("falls back to the handshake and completes the call", async () => {
     const client = await clientFor({ protocol: "legacy" });
 
-    expect(await client.callTool("list_prs", { repo: "libero" })).toEqual({
+    expect(await client.callTool("list_prs", { repo: "libero" }, LIMITS)).toEqual({
       outcome: "called",
       result: { content: "called list_prs", isError: false }
     });
@@ -349,7 +358,7 @@ describe("the ladder", () => {
   it.each(["rpc_error", "http_400", "http_404"] as const)("falls back whatever shape the refusal took (%s)", async refusal => {
     const client = await clientFor({ protocol: "legacy", discoverRefusal: refusal });
 
-    expect((await client.callTool("list_prs", {})).outcome).toBe("called");
+    expect((await client.callTool("list_prs", {}, LIMITS)).outcome).toBe("called");
     expect(fake?.callsTo("initialize")).toHaveLength(1);
   });
 
@@ -359,7 +368,7 @@ describe("the ladder", () => {
   // have been refused.
   it("speaks the version the server named, not the one it was pinned to", async () => {
     const client = await clientFor({ protocol: "legacy", legacyVersion: "2025-06-18" });
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     const call = fake?.callsTo("tools/call")[0];
     expect(call?.headers["mcp-protocol-version"]).toBe("2025-06-18");
@@ -370,7 +379,7 @@ describe("the ladder", () => {
 
   it("names no version on the request that establishes one", async () => {
     const client = await clientFor({ protocol: "legacy" });
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     expect("mcp-protocol-version" in (fake?.callsTo("initialize")[0]?.headers ?? {})).toBe(false);
   });
@@ -379,7 +388,7 @@ describe("the ladder", () => {
   // arrives, so a `tools/call` racing it is one the server may refuse.
   it("acknowledges the handshake before it calls anything, carrying the session", async () => {
     const client = await clientFor({ protocol: "legacy" });
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     const methods = fake?.received.map(r => r.rpc?.method) ?? [];
     expect(methods.indexOf("notifications/initialized")).toBeLessThan(methods.indexOf("tools/call"));
@@ -389,7 +398,7 @@ describe("the ladder", () => {
   it("reads the handshake over an event stream identically", async () => {
     const client = await clientFor({ protocol: "legacy", framing: "sse" });
 
-    expect((await client.callTool("list_prs", {})).outcome).toBe("called");
+    expect((await client.callTool("list_prs", {}, LIMITS)).outcome).toBe("called");
   });
 
   // A legacy server that assigns no session is an ordinary one, not a broken
@@ -397,7 +406,7 @@ describe("the ladder", () => {
   it("carries no session when the server assigned none", async () => {
     const client = await clientFor({ protocol: "legacy", sessions: false });
 
-    expect((await client.callTool("list_prs", {})).outcome).toBe("called");
+    expect((await client.callTool("list_prs", {}, LIMITS)).outcome).toBe("called");
     for (const request of fake?.received ?? []) {
       expect("mcp-session-id" in request.headers).toBe(false);
     }
@@ -405,8 +414,8 @@ describe("the ladder", () => {
 
   it("settles the protocol once and re-probes nothing", async () => {
     const client = await clientFor({ protocol: "legacy" });
-    await client.callTool("list_prs", {});
-    await client.callTool("get_issue", {});
+    await client.callTool("list_prs", {}, LIMITS);
+    await client.callTool("get_issue", {}, LIMITS);
 
     expect(fake?.callsTo("server/discover")).toHaveLength(1);
     expect(fake?.callsTo("initialize")).toHaveLength(1);
@@ -415,7 +424,7 @@ describe("the ladder", () => {
 
   it("runs the ladder once for concurrent first calls", async () => {
     const client = await clientFor({ protocol: "legacy" });
-    await Promise.all([client.callTool("a", {}), client.callTool("b", {}), client.callTool("c", {})]);
+    await Promise.all([client.callTool("a", {}, LIMITS), client.callTool("b", {}, LIMITS), client.callTool("c", {}, LIMITS)]);
 
     expect(fake?.callsTo("server/discover")).toHaveLength(1);
     expect(fake?.callsTo("initialize")).toHaveLength(1);
@@ -425,12 +434,12 @@ describe("the ladder", () => {
   it("reports which protocol it settled on", async () => {
     const legacy = await clientFor({ protocol: "legacy" });
     expect(legacy.protocol).toBeUndefined();
-    await legacy.callTool("list_prs", {});
+    await legacy.callTool("list_prs", {}, LIMITS);
     expect(legacy.protocol).toBe("legacy");
     await fake?.close();
 
     const stateless = await clientFor();
-    await stateless.callTool("list_prs", {});
+    await stateless.callTool("list_prs", {}, LIMITS);
     expect(stateless.protocol).toBe("stateless");
   });
 });
@@ -444,7 +453,7 @@ describe("when nothing answered the probe", () => {
     fake = await startFakeMcpServer({ protocol: "legacy", hangOn: "server/discover" });
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 150 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({ outcome: "connect_failed", failure: "timed_out" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "connect_failed", failure: "timed_out" });
     expect(fake.callsTo("initialize")).toHaveLength(0);
     expect(fake.received).toHaveLength(1);
   });
@@ -457,7 +466,7 @@ describe("when nothing answered the probe", () => {
       timeoutMs: 2000
     });
 
-    expect(await client.callTool("list_prs", {})).toEqual({ outcome: "connect_failed", failure: "unreachable" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "connect_failed", failure: "unreachable" });
   });
 
   it("never attempts the handshake against a redirect", async () => {
@@ -466,7 +475,7 @@ describe("when nothing answered the probe", () => {
       request.rpc?.method === "server/discover" ? { status: 307, headers: { location: "http://127.0.0.1:1/" } } : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({ outcome: "connect_failed", failure: "redirected" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "connect_failed", failure: "redirected" });
     expect(fake.callsTo("initialize")).toHaveLength(0);
   });
 
@@ -478,7 +487,7 @@ describe("when nothing answered the probe", () => {
     fake.respond = request => (request.rpc?.method === "server/discover" ? { raw: "<html>hello</html>" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({ outcome: "connect_failed", failure: "protocol_error" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "connect_failed", failure: "protocol_error" });
     expect(fake.callsTo("initialize")).toHaveLength(0);
   });
 });
@@ -498,7 +507,7 @@ describe("when the call fails", () => {
         : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
       outcome: "called",
       result: { content: "no such repo", isError: true }
     });
@@ -518,7 +527,7 @@ describe("when the call fails", () => {
         : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
       outcome: "call_failed",
       failure: "rpc_error",
       code: METHOD_NOT_FOUND,
@@ -531,7 +540,7 @@ describe("when the call fails", () => {
     fake.respond = request => (request.rpc?.method === "tools/call" ? { raw: "<html>502</html>" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
     expect(outcome).toMatchObject({ outcome: "call_failed", failure: "protocol_error" });
   });
 
@@ -540,7 +549,7 @@ describe("when the call fails", () => {
     fake.respond = request => (request.rpc?.method === "tools/call" ? { status: 429, raw: "slow down" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
       outcome: "call_failed",
       failure: "http_error",
       status: 429,
@@ -557,7 +566,7 @@ describe("when the call fails", () => {
       request.rpc?.method === "tools/call" ? { status: 500, raw: "x".repeat(100_000) } : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    const outcome = await client.callTool("list_prs", {});
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
 
     expect(outcome).toMatchObject({ outcome: "call_failed", failure: "http_error", status: 500 });
     expect(outcome.outcome === "call_failed" && (outcome.detail?.length ?? 0)).toBeLessThan(400);
@@ -582,7 +591,7 @@ describe("an upstream asking for more input", () => {
         : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({ outcome: "call_failed", failure: "input_required" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "call_failed", failure: "input_required" });
   });
 
   // Retrying is precisely how the round trip would be completed, so not
@@ -595,7 +604,7 @@ describe("an upstream asking for more input", () => {
         : null;
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    await client.callTool("list_prs", {});
+    await client.callTool("list_prs", {}, LIMITS);
 
     expect(fake.callsTo("tools/call")).toHaveLength(1);
   });
@@ -616,7 +625,7 @@ describe("what is never retried", () => {
       fake.respond = request => (request.rpc?.method === "tools/call" ? reply : null);
       const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-      await client.callTool("list_prs", {});
+      await client.callTool("list_prs", {}, LIMITS);
 
       expect(fake.callsTo("tools/call")).toHaveLength(1);
       await fake.close();
@@ -649,7 +658,7 @@ describe("when the session is lost", () => {
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
     expireOn(fake, 1);
 
-    expect((await client.callTool("list_prs", {})).outcome).toBe("called");
+    expect((await client.callTool("list_prs", {}, LIMITS)).outcome).toBe("called");
     expect(fake.callsTo("initialize")).toHaveLength(2);
     expect(fake.callsTo("tools/call")).toHaveLength(2);
 
@@ -662,7 +671,7 @@ describe("when the session is lost", () => {
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
     expireOn(fake, Number.MAX_SAFE_INTEGER);
 
-    expect(await client.callTool("list_prs", {})).toMatchObject({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toMatchObject({
       outcome: "call_failed",
       failure: "http_error",
       status: 404
@@ -681,7 +690,7 @@ describe("when the session is lost", () => {
     fake.respond = request => (request.rpc?.method === "tools/call" ? { status: 404, raw: "no such path" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toMatchObject({ failure: "http_error", status: 404 });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toMatchObject({ failure: "http_error", status: 404 });
     expect(fake.callsTo("tools/call")).toHaveLength(1);
     expect(fake.callsTo("initialize")).toHaveLength(1);
   });
@@ -691,7 +700,7 @@ describe("when the session is lost", () => {
     fake.respond = request => (request.rpc?.method === "initialize" ? { status: 404, raw: "" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {})).toEqual({
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
       outcome: "connect_failed",
       failure: "unsupported_protocol"
     });
@@ -705,13 +714,13 @@ describe("when the session is lost", () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect((await client.callTool("warm", {})).outcome).toBe("called");
+    expect((await client.callTool("warm", {}, LIMITS)).outcome).toBe("called");
     fake.expireSessions();
 
     const outcomes = await Promise.all([
-      client.callTool("a", {}),
-      client.callTool("b", {}),
-      client.callTool("c", {})
+      client.callTool("a", {}, LIMITS),
+      client.callTool("b", {}, LIMITS),
+      client.callTool("c", {}, LIMITS)
     ]);
     for (const outcome of outcomes) expect(outcome.outcome).toBe("called");
 

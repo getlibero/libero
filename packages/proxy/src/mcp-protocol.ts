@@ -661,8 +661,19 @@ function blockText(block: unknown): string | null {
  * audio, and binary resources need `ToolResult.content` to stop being a string,
  * which is a change across the schema, the agent, and every provider adapter.
  * That is a filed follow-up.
+ *
+ * **`maxChars` is required and has no default here.** It is the channel's, from
+ * `[llm] max_result_chars` and whatever the tool's own entry overrode it with,
+ * and a default in this signature is how a call site comes to spend a bound it
+ * did not choose — the argument `McpClient.listTools` already makes about its
+ * own two arguments. The companion bound, on the bytes read off the wire, is the
+ * deployment's and lives in ./outbound.ts; the two answer different questions
+ * for different owners and neither substitutes for the other.
  */
-export function toolResultText(result: Record<string, unknown>): { content: string; isError: boolean } | null {
+export function toolResultText(
+  result: Record<string, unknown>,
+  maxChars: number
+): { content: string; isError: boolean } | null {
   const blocks = result["content"];
   if (!Array.isArray(blocks)) return null;
 
@@ -678,11 +689,52 @@ export function toolResultText(result: Record<string, unknown>): { content: stri
 
   // Empty text rather than an empty array: a server that sends an empty text
   // block alongside structured content has still said nothing in text.
-  if (joined === "" && result["structuredContent"] !== undefined) {
-    return { content: JSON.stringify(result["structuredContent"]), isError };
-  }
+  //
+  // One exit rather than two, so the bound below covers the structured fallback
+  // as well. Before this it covered only the ordinary path, which is the branch
+  // an upstream would have picked to get around it.
+  const content =
+    joined === "" && result["structuredContent"] !== undefined
+      ? JSON.stringify(result["structuredContent"])
+      : joined;
 
-  return { content: joined, isError };
+  return { content: boundedResult(content, maxChars), isError };
+}
+
+/**
+ * Bound the one string a `ToolResult` carries, and say where it was cut.
+ *
+ * **Characters, not bytes.** Every bound in this module counts characters —
+ * `truncate`, `MAX_RELAYED_MESSAGE`, `MAX_LABEL`, `MAX_URI` — and so does
+ * `[llm] max_history_chars`, the sheet field this one sits beside. Slicing on
+ * bytes would also mean cutting mid-sequence, and `ToolResult.content` is a
+ * string that survives this function all the way to a provider. The audit row's
+ * `result_bytes` still counts bytes, and that is not an inconsistency: it
+ * answers a different question, existing to correlate with the next turn's input
+ * tokens, and tokenizers are byte-shaped.
+ *
+ * **The number recorded in the audit row is therefore the truncated length**,
+ * which is the right one for what that column is for: the next turn's input
+ * tokens are driven by what the model was handed, not by what the upstream sent.
+ * The original size is not lost — it is in the notice, which the model reads.
+ *
+ * The notice is added past the limit rather than fitted inside it, as
+ * `truncate`'s ellipsis already is. What the limit bounds is what the upstream
+ * said; the notice is this proxy's own and is a fixed shape under sixty
+ * characters. It says so in plain text rather than trailing off, because a
+ * silently short answer is one the model has no reason to doubt.
+ */
+function boundedResult(content: string, limit: number): string {
+  if (content.length <= limit) return content;
+
+  let kept = content.slice(0, limit);
+  // A cut that lands between a surrogate pair leaves a lone high surrogate,
+  // which is not a character and is not something to hand a provider. One code
+  // unit dropped, and only when the cut actually split one.
+  const last = kept.charCodeAt(kept.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) kept = kept.slice(0, -1);
+
+  return `${kept}\n[result truncated: ${String(kept.length)} of ${String(content.length)} characters]`;
 }
 
 /**

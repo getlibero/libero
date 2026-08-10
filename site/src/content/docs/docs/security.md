@@ -104,9 +104,16 @@ bound the exposure and keep it out of the decisions that matter:
 - **The bytes are bounded**: descriptions truncate, schemas are dropped unless they are a JSON
   object of the shape a provider will accept, and there are caps on how many tools and pages one
   server may contribute.
+- **A result is bounded twice, at two layers.** The proxy reads at most
+  `PROXY_MAX_RESPONSE_BYTES` off an upstream — four megabytes by default, a deployment setting —
+  and abandons the read past that, cancelling it undecoded so a hostile or broken server cannot
+  spend the proxy's memory without limit. What survives that is bounded again by the channel's
+  `[llm] max_result_chars` before it enters the model's context, truncated with a line that says
+  it was. The two are owned by different people on purpose: the first spends memory in a process
+  every channel shares, the second spends one channel's own token budget.
 
-Those caps limit how much a hostile server can spend of a channel's context. They are not a
-mitigation for what it says there. **What accepts that exposure is the act of naming the server in
+Those caps limit how much a hostile server can spend of a channel's context and of the proxy's
+memory. They are not a mitigation for what it says there. **What accepts that exposure is the act of naming the server in
 the team sheet**, which is an operator's decision and should be made the way any dependency is.
 
 ## What "not a mitigation" means here

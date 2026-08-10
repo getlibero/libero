@@ -416,14 +416,17 @@ describe("the multi-round-trip result", () => {
 });
 
 describe("mapping a tool result to text", () => {
+  /** Far above anything these cases produce, so the cap is out of the way. */
+  const ROOMY = 100_000;
+
   it("joins text blocks", () => {
     expect(
-      toolResultText({ content: [{ type: "text", text: "one" }, { type: "text", text: "two" }] })
+      toolResultText({ content: [{ type: "text", text: "one" }, { type: "text", text: "two" }] }, ROOMY)
     ).toEqual({ content: "one\ntwo", isError: false });
   });
 
   it("carries the tool's own error flag", () => {
-    expect(toolResultText({ content: [{ type: "text", text: "nope" }], isError: true })).toEqual({
+    expect(toolResultText({ content: [{ type: "text", text: "nope" }], isError: true }, ROOMY)).toEqual({
       content: "nope",
       isError: true
     });
@@ -434,7 +437,7 @@ describe("mapping a tool result to text", () => {
   // deliver something the model cannot use.
   it("names a binary block rather than inlining it", () => {
     const data = "A".repeat(8000);
-    const mapped = toolResultText({ content: [{ type: "image", data, mimeType: "image/png" }] });
+    const mapped = toolResultText({ content: [{ type: "image", data, mimeType: "image/png" }] }, ROOMY);
     expect(mapped?.content).toBe("[image omitted: image/png, 6 KB]");
     expect(mapped?.content).not.toContain("AAAA");
   });
@@ -449,28 +452,29 @@ describe("mapping a tool result to text", () => {
     [{ type: "resource_link", uri: "https://example.test/a" }, "[resource: https://example.test/a]"],
     [{ type: "hologram" }, "[unsupported content block: hologram]"]
   ])("renders %j", (block, expected) => {
-    expect(toolResultText({ content: [block] })?.content).toBe(expected);
+    expect(toolResultText({ content: [block] }, ROOMY)?.content).toBe(expected);
   });
 
   // Every label is upstream-authored text entering the model's context.
   it("truncates a hostile label rather than relaying a paragraph", () => {
-    const mapped = toolResultText({
-      content: [{ type: "image", data: "AAAA", mimeType: "image/png; ".repeat(500) }]
-    });
+    const mapped = toolResultText(
+      { content: [{ type: "image", data: "AAAA", mimeType: "image/png; ".repeat(500) }] },
+      ROOMY
+    );
     expect(mapped?.content.length).toBeLessThan(150);
   });
 
   // The spec tells servers to mirror structured content into a text block, so
   // reading both would hand the model a well-behaved server's answer twice.
   it("uses structuredContent only when there is no text", () => {
-    expect(toolResultText({ content: [], structuredContent: { total: 3 } })?.content).toBe('{"total":3}');
+    expect(toolResultText({ content: [], structuredContent: { total: 3 } }, ROOMY)?.content).toBe('{"total":3}');
     expect(
-      toolResultText({ content: [{ type: "text", text: "three" }], structuredContent: { total: 3 } })?.content
+      toolResultText({ content: [{ type: "text", text: "three" }], structuredContent: { total: 3 } }, ROOMY)?.content
     ).toBe("three");
   });
 
   it("maps an empty result to empty text rather than to a failure", () => {
-    expect(toolResultText({ content: [] })).toEqual({ content: "", isError: false });
+    expect(toolResultText({ content: [] }, ROOMY)).toEqual({ content: "", isError: false });
   });
 
   it.each([
@@ -480,7 +484,65 @@ describe("mapping a tool result to text", () => {
     ["a resource block with no resource", { content: [{ type: "resource" }] }],
     ["no content at all", {}]
   ])("refuses to read %s", (_label, result) => {
-    expect(toolResultText(result)).toBeNull();
+    expect(toolResultText(result, ROOMY)).toBeNull();
+  });
+});
+
+// The channel's half of #151. The bytes read off the wire are the deployment's
+// bound and live in ./outbound.ts; this is the bound on what a result may spend
+// of the channel's context, and it truncates rather than refusing because a
+// large answer is usually still a useful one.
+describe("bounding a tool result", () => {
+  const textOf = (text: string, limit: number): string =>
+    toolResultText({ content: [{ type: "text", text }] }, limit)?.content ?? "";
+
+  it("leaves a result under the limit untouched", () => {
+    expect(textOf("x".repeat(99), 100)).toBe("x".repeat(99));
+  });
+
+  it("leaves a result of exactly the limit untouched", () => {
+    expect(textOf("x".repeat(100), 100)).toBe("x".repeat(100));
+  });
+
+  // The notice names both numbers: the bound, so the model can tell this from a
+  // short answer, and the original size, so it can tell how much it is missing.
+  // The original is also the only place that number survives — the audit row
+  // records what was handed over, which is the truncated length.
+  it("truncates past the limit and says so", () => {
+    expect(textOf("x".repeat(5000), 100)).toBe(`${"x".repeat(100)}\n[result truncated: 100 of 5000 characters]`);
+  });
+
+  it("bounds the join, not each block", () => {
+    const mapped = toolResultText(
+      { content: [{ type: "text", text: "a".repeat(80) }, { type: "text", text: "b".repeat(80) }] },
+      100
+    );
+    // 80 + newline + 80 = 161 characters of content, cut at 100.
+    expect(mapped?.content).toContain("[result truncated: 100 of 161 characters]");
+  });
+
+  // The branch an upstream would have reached for otherwise: before the two
+  // returns were folded into one, the structured fallback was unbounded.
+  it("bounds the structuredContent fallback too", () => {
+    const mapped = toolResultText({ content: [], structuredContent: { pad: "y".repeat(5000) } }, 100);
+    expect(mapped?.content).toContain("[result truncated: 100 of ");
+    expect(mapped?.content.startsWith('{"pad":"yyy')).toBe(true);
+  });
+
+  it("carries the error flag through a truncation", () => {
+    const mapped = toolResultText({ content: [{ type: "text", text: "z".repeat(500) }], isError: true }, 10);
+    expect(mapped?.isError).toBe(true);
+    expect(mapped?.content).toContain("[result truncated:");
+  });
+
+  // A cut landing between a surrogate pair would leave a lone high surrogate,
+  // which is not a character and is what a provider answers 400 about.
+  it("never leaves a lone surrogate at the cut", () => {
+    // Each emoji is two code units, so an odd limit always splits one.
+    const content = textOf("🚀".repeat(50), 11);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(content)).toBe(false);
+    // The dropped unit is reported, so the notice never overstates what was kept.
+    expect(content).toContain("[result truncated: 10 of 100 characters]");
   });
 });
 

@@ -85,7 +85,13 @@ export type {
 // private is what makes "everything that sends a credential also scrubs the
 // reply" true by construction rather than by convention. Their tests import
 // them from ./outbound.js directly.
-export { DEFAULT_UPSTREAM_TIMEOUT_MS, UpstreamError, callUpstream, destinationHost } from "./outbound.js";
+export {
+  DEFAULT_UPSTREAM_RESPONSE_BYTES,
+  DEFAULT_UPSTREAM_TIMEOUT_MS,
+  UpstreamError,
+  callUpstream,
+  destinationHost
+} from "./outbound.js";
 export type { AuthScheme, UpstreamFailure, UpstreamRequest, UpstreamResponse } from "./outbound.js";
 
 export { RedactionError, redactSecrets, redactionMarker } from "./redact.js";
@@ -109,7 +115,7 @@ export {
   resolveApproval,
   upstreamKey
 } from "./enforce.js";
-export type { BudgetSpend, Decision, EnforcementInput, PermittedToolSource } from "./enforce.js";
+export type { BudgetSpend, CallLimits, Decision, EnforcementInput, PermittedToolSource } from "./enforce.js";
 
 // The approval broker's ticket store. `createApprovalsRoute` is deliberately
 // **not** exported, as `createSpendRoute` is not: both are composed inside

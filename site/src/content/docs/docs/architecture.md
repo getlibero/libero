@@ -93,7 +93,7 @@ There is no retention command and there will not be a delete-based one; when the
 
 **The arguments themselves are not stored, only their hash.** Redacting them would need the credential values, and neither the route nor the writer holds one — that is what makes the rest of this design checkable. Storing arguments redacted against a set the writer cannot see would be worse than storing none, because a column labelled redacted gets believed.
 
-**There is no per-call token count, because there is no such quantity.** Tokens are spent by model turns, not by tool calls; the meter records the real numbers per turn. The audit row carries the size of the result the proxy handed back, which it observes directly and which is the largest driver of the *next* turn's input tokens. To ask what a request cost, join on the task id: turn ids are `<task>.<n>`.
+**There is no per-call token count, because there is no such quantity.** Tokens are spent by model turns, not by tool calls; the meter records the real numbers per turn. The audit row carries the size of the result the proxy handed back, which it observes directly and which is the largest driver of the *next* turn's input tokens. Handed back is the operative word: where a result was truncated at the channel's `max_result_chars`, the number recorded is the truncated one, because it exists to predict what the next turn will read rather than to describe what the upstream sent. To ask what a request cost, join on the task id: turn ids are `<task>.<n>`.
 
 ## The team sheet
 

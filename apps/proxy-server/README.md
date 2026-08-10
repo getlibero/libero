@@ -34,6 +34,25 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_AUDIT_DB` | — | the append-only audit log |
 | `PROXY_HOST` | `127.0.0.1` | empty means the default; compose sets `0.0.0.0`, on a bridge that publishes no ports |
 | `PROXY_PORT` | `8443` | |
+| `PROXY_MAX_RESPONSE_BYTES` | `4194304` | how much of an upstream's answer to hold before abandoning it |
+
+`PROXY_MAX_RESPONSE_BYTES` is the one knob here that is a capacity decision
+rather than an address. Past it a response is abandoned mid-read — the reader is
+cancelled, nothing is decoded, and the call comes back as `too_large` — which is
+what stops one upstream from spending this process's memory without limit.
+
+It is deliberately **not** a team sheet field, unlike the companion bound on how
+much of a result reaches the model (`[llm] max_result_chars`). That one is
+charged against a channel's own token budget, so a channel raising it spends only
+its own; this one buys memory in a process every channel shares. And it is
+deliberately not hardcoded: the operator who sized the container is the one who
+should say how much of it a response may occupy. There is no upper bound for the
+same reason — you own the heap.
+
+Raising it costs more than the number says. Budget roughly three to five times
+its value per concurrent call: the decoded string, the redaction pass's output
+copy, and the parsed object graph all exist at once. Four megabytes is
+comfortably above any real `tools/list` catalog and any ordinary tool answer.
 
 Everything without a default is required, and a missing one stops the process at
 startup rather than degrading. For the TLS paths the reason is that a proxy

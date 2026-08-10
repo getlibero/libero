@@ -64,8 +64,10 @@ import {
   toolsCallRequest,
   toolsListRequest
 } from "./mcp-protocol.js";
+import type { CallLimits } from "./enforce.js";
 import {
   type AuthScheme,
+  MAX_CONTROL_BODY_BYTES,
   SESSION_TERMINATION_TIMEOUT_MS,
   type UpstreamFailure,
   type UpstreamMethod,
@@ -144,7 +146,19 @@ export type McpListOutcome =
     };
 
 export interface McpClient {
-  callTool(tool: string, args: Readonly<Record<string, unknown>>): Promise<McpOutcome>;
+  /**
+   * One `tools/call`.
+   *
+   * `limits` is the channel's, resolved by the decision that authorized this
+   * call — see `CallLimits` in ./enforce.ts. Required for the reason
+   * `listTools`'s two arguments are: a default here is a bound spent by a call
+   * site that did not choose it.
+   */
+  callTool(
+    tool: string,
+    args: Readonly<Record<string, unknown>>,
+    limits: CallLimits
+  ): Promise<McpOutcome>;
   /**
    * One page of this server's catalog, from `cursor` or from the beginning.
    *
@@ -173,6 +187,19 @@ export interface McpClientOptions {
   readonly secret: Secret | undefined;
   readonly credentialName?: string;
   readonly timeoutMs?: number;
+  /**
+   * How many bytes of a response to hold before abandoning it. Absent means
+   * `DEFAULT_UPSTREAM_RESPONSE_BYTES`.
+   *
+   * Per client rather than per call, which is the right shape *because* it is a
+   * deployment setting: it is identical for every channel this proxy serves, so
+   * there is nothing for two channels sharing a pooled client to disagree about.
+   * A per-channel bound could not live here — the pool hands one client to every
+   * channel naming the same upstream — and would have to be threaded per call
+   * like `CallLimits` is. It is not one, deliberately: the heap it spends belongs
+   * to the process.
+   */
+  readonly maxResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -255,8 +282,12 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     readonly method?: UpstreamMethod;
     readonly body?: unknown;
     readonly timeoutMs?: number;
+    readonly maxBodyBytes?: number;
   }): Promise<UpstreamResponse> => {
     const timeoutMs = call.timeoutMs ?? options.timeoutMs;
+    // The client's configured bound unless the caller named a tighter one, which
+    // only the control-plane requests do. Same shape as `timeoutMs` above.
+    const maxBodyBytes = call.maxBodyBytes ?? options.maxResponseBytes;
     return callUpstream({
       url: options.url,
       headers: call.headers,
@@ -266,6 +297,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       ...("body" in call ? { body: call.body } : {}),
       ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(maxBodyBytes !== undefined ? { maxBodyBytes } : {}),
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
     });
   };
@@ -273,7 +305,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
   /**
    * The version probe, resolved to the three answers the ladder distinguishes.
    *
-   * The two `failed` rows that are *not* transport failures are decisions worth
+   * The `failed` rows that are *not* transport failures are decisions worth
    * stating. A well-formed request answered 200 with bytes that are not MCP is
    * a broken server or an edge proxy rather than an old one — falling back
    * there spends a second round trip on something that has already shown it is
@@ -281,6 +313,11 @@ export function createMcpClient(options: McpClientOptions): McpClient {
    * a `2026-07-28` method, and then advertised no stateless revision has
    * *answered successfully*; that is a version disagreement rather than an
    * error, so it is not a trigger.
+   *
+   * `too_large` joins them on the first of those arguments. The probe is sent
+   * under `MAX_CONTROL_BODY_BYTES`, which is far above any list of protocol
+   * revisions, so a server that overruns it is not one whose answer would have
+   * been readable at any other rung of the ladder.
    */
   const discover = async (): Promise<Probe> => {
     const id = nextId++;
@@ -292,7 +329,8 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       // refusal, which is exactly the trigger below.
       response = await send({
         headers: requestHeaders({ dialect: "stateless", version: MCP_PROTOCOL_VERSION }, "server/discover"),
-        body: discoverRequest(id)
+        body: discoverRequest(id),
+        maxBodyBytes: MAX_CONTROL_BODY_BYTES
       });
     } catch (error) {
       // `UpstreamError` only. A `RedactionError` — the proxy unable to
@@ -333,7 +371,11 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     const id = nextId++;
     let response: UpstreamResponse;
     try {
-      response = await send({ headers: initializeHeaders(), body: initializeRequest(id) });
+      response = await send({
+        headers: initializeHeaders(),
+        body: initializeRequest(id),
+        maxBodyBytes: MAX_CONTROL_BODY_BYTES
+      });
     } catch (error) {
       if (!(error instanceof UpstreamError)) throw error;
       return { ok: false, failure: error.failure };
@@ -359,7 +401,8 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     try {
       ack = await send({
         headers: requestHeaders(wireOf(next), "notifications/initialized"),
-        body: initializedNotification()
+        body: initializedNotification(),
+        maxBodyBytes: MAX_CONTROL_BODY_BYTES
       });
     } catch (error) {
       if (!(error instanceof UpstreamError)) throw error;
@@ -453,7 +496,8 @@ export function createMcpClient(options: McpClientOptions): McpClient {
   const attempt = async (
     at: Mode,
     tool: string,
-    args: Readonly<Record<string, unknown>>
+    args: Readonly<Record<string, unknown>>,
+    limits: CallLimits
   ): Promise<Attempt<McpOutcome>> => {
     const id = nextId++;
     const dialect: McpDialect = at.kind === "stateless" ? "stateless" : "legacy";
@@ -513,7 +557,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       return { kind: "answered", outcome: { outcome: "call_failed", failure: "input_required" } };
     }
 
-    const mapped = toolResultText(parsed.result);
+    const mapped = toolResultText(parsed.result, limits.maxResultChars);
     if (mapped === null) {
       return {
         kind: "answered",
@@ -596,11 +640,11 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       return mode === undefined ? undefined : mode.kind === "stateless" ? "stateless" : "legacy";
     },
 
-    async callTool(tool, args) {
+    async callTool(tool, args, limits) {
       const ready = await ensureOpen();
       if (!ready.ok) return { outcome: "connect_failed", failure: ready.failure };
 
-      const first = await attempt(ready.mode, tool, args);
+      const first = await attempt(ready.mode, tool, args, limits);
       if (first.kind === "answered") return first.outcome;
 
       const reopened = await reopenSession(first.generation);
@@ -610,7 +654,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       // of the retry budget, spent here, with no counter to get wrong and no
       // branch that can lead back. A server that has forgotten every session
       // answers the model with the plain 404 the second attempt produced.
-      return (await attempt(reopened.mode, tool, args)).outcome;
+      return (await attempt(reopened.mode, tool, args, limits)).outcome;
     },
 
     async listTools(cursor, timeoutMs) {
@@ -653,7 +697,8 @@ export function createMcpClient(options: McpClientOptions): McpClient {
         await send({
           method: "DELETE",
           headers: sessionTerminationHeaders(at.sessionId, at.version),
-          timeoutMs: SESSION_TERMINATION_TIMEOUT_MS
+          timeoutMs: SESSION_TERMINATION_TIMEOUT_MS,
+          maxBodyBytes: MAX_CONTROL_BODY_BYTES
         });
       } catch {
         // Nothing is read off the thrown value, per the rule in ./outbound.ts.

@@ -3,6 +3,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import { type HttpUpstream, createMcpPool } from "./mcp-pool.js";
 import type { Secret } from "./vault.js";
+import type { CallLimits } from "./enforce.js";
+
+/**
+ * The channel's bound on a result, which every `callTool` now carries.
+ *
+ * Roomy on purpose: these cases are about the protocol and the transport, not
+ * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ */
+const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
 const VALUE = "ghp_live_token_do_not_log";
 
@@ -53,8 +62,8 @@ describe("one client per upstream", () => {
     expect(a).toBe(b);
     expect(pool.size).toBe(1);
 
-    await a?.callTool("list_prs", {});
-    await b?.callTool("get_issue", {});
+    await a?.callTool("list_prs", {}, LIMITS);
+    await b?.callTool("get_issue", {}, LIMITS);
     expect(fake.callsTo("server/discover")).toHaveLength(1);
   });
 
@@ -123,7 +132,7 @@ describe("closing", () => {
           upstreamOf({ name: "s", transport: "http", url: server.url, credential: "c" }),
           secretOf(VALUE)
         );
-        expect(await client?.callTool("list_prs", {})).toMatchObject({ outcome: "called" });
+        expect(await client?.callTool("list_prs", {}, LIMITS)).toMatchObject({ outcome: "called" });
       }
 
       await pool.close();
@@ -150,7 +159,7 @@ describe("closing", () => {
       const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
       for (const server of [stateless, sessionless]) {
         const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), undefined);
-        expect(await client?.callTool("list_prs", {})).toMatchObject({ outcome: "called" });
+        expect(await client?.callTool("list_prs", {}, LIMITS)).toMatchObject({ outcome: "called" });
       }
 
       await pool.close();
@@ -171,7 +180,7 @@ describe("closing", () => {
     const server = await startFakeMcpServer({ protocol: "legacy" });
     const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
     const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), undefined);
-    expect(await client?.callTool("list_prs", {})).toMatchObject({ outcome: "called" });
+    expect(await client?.callTool("list_prs", {}, LIMITS)).toMatchObject({ outcome: "called" });
 
     await server.close();
 
@@ -186,7 +195,7 @@ describe("closing", () => {
     try {
       const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
       const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), undefined);
-      expect(await client?.callTool("list_prs", {})).toMatchObject({ outcome: "called" });
+      expect(await client?.callTool("list_prs", {}, LIMITS)).toMatchObject({ outcome: "called" });
 
       server.respond = request => (request.method === "DELETE" ? { hang: true } : null);
       const started = Date.now();

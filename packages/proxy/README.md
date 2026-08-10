@@ -148,9 +148,9 @@ Nothing at runtime but `@getlibero/schema`, which fixes the shape of every
 error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
-Still to come, each with its own issue: the egress allowlist (#73), the audit
-log's read path (#98), and a bound on tool-result size (#151).
-`http-dispatcher.ts` marks where the egress check slots in.
+Still to come, each with its own issue: the egress allowlist (#73) and the audit
+log's read path (#98). `http-dispatcher.ts` marks where the egress check slots
+in.
 
 The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and
 `.github/workflows/mcp-spec-watch.yml` opens an issue when the specification
@@ -233,6 +233,7 @@ and logs one `catalog_unavailable` line with a closed `reason`:
 | handshake or listing failed | the `McpFailure`, plus a `status` |
 | answer was not a `tools/list` | `protocol_error` |
 | 5s budget or 5-page walk ran out | `budget_exhausted` / `truncated` |
+| body past `PROXY_MAX_RESPONSE_BYTES` | `too_large` |
 
 That is safe because a listing is not the enforcement: a missing schema costs
 the model accuracy, never the channel a permission. The one thing that does not
@@ -251,6 +252,51 @@ channel whose sheet names it. **The caps bound the blast radius; they are not a
 mitigation for tool poisoning.** Nothing here reads a description, because a
 rule that did would be a rule the upstream phrases around. What accepts the
 exposure is the team sheet naming the server.
+
+### Two bounds on a response, owned by two different people
+
+Those caps bound what reaches the model's *context*. They do nothing about what
+the proxy *buffers*, which is a separate question with a separate answer (#151),
+and the two bounds that answer it are split by which principal owns the resource
+each spends.
+
+**The wire bound** is `PROXY_MAX_RESPONSE_BYTES`, a deployment setting
+defaulting to 4 MiB. `callUpstream` reads a response incrementally and abandons
+it past the bound: the reader is cancelled, nothing is decoded, and the call
+fails with `too_large`. It is not a team sheet field, because the heap it spends
+belongs to the process and is shared by every channel the proxy serves — a sheet
+able to raise it would be one channel degrading service for all of them. It is
+not hardcoded either, on `PROXY_HOST`'s argument: the operator who sized the
+container is the one who should say how much of it a response may occupy. There
+is no ceiling, because that operator is the principal who owns the heap.
+
+**The result bound** is `[llm] max_result_chars`, a team sheet field defaulting
+to 32,768 characters, overridable per tool on `[[mcp_server.tool]]`. Past it the
+result is truncated and carries `[result truncated: N of M characters]`. It is a
+sheet field for the reason `max_history_chars` is: it is charged against the
+channel's own `max_tokens_per_task`, so a channel raising it spends only its own
+budget. Two entries naming one tool resolve most-restrictive-wins, as `approval`
+does.
+
+They are layered, not alternatives. The wire bound sits well above the result
+bound so an ordinary large answer — a wide file listing, a long diff — is
+truncated and says so, and only a pathological one is refused outright. A
+handshake gets neither: `MAX_CONTROL_BODY_BYTES` (64 KiB) covers the version
+probe, the legacy `initialize`, and the session `DELETE`, none of which anyone
+reads at length.
+
+A `tools/list` past the wire bound is **refused rather than truncated**, and
+that asymmetry is worth stating: a tool result cut at a cap is a short answer
+that admits it, but half a JSON-RPC envelope is not a short catalog — it is an
+unparseable one. So an oversized listing takes the path a malformed listing
+already takes, degrading to the thin entries the sheet wrote plus one
+`catalog_unavailable` line.
+
+The audit row's `result_bytes` records the length **after** truncation, which is
+what that column is for: it exists to correlate with the next turn's input
+tokens, and those are driven by what the model was handed rather than by what the
+upstream sent. The original size is not lost — it is in the notice the model
+reads.
 
 Answers are cached per `(upstream, wanted tools)` for five minutes, thirty
 seconds on a failure or a partial walk, and single-flighted — so a client

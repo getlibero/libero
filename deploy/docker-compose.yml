@@ -120,6 +120,17 @@ services:
       # ports. Outside compose the default is 127.0.0.1.
       PROXY_HOST: 0.0.0.0
       PROXY_PORT: 8443
+      # How much of an upstream's answer this process will hold before
+      # abandoning it. Size it against the container's memory limit, not against
+      # what an upstream returns: budget three to five times this value per
+      # concurrent call, because the decoded string, the redaction pass's copy,
+      # and the parsed object graph all exist at once.
+      #
+      # Not a team sheet field, and that is a boundary rather than a filing
+      # choice — this heap is shared by every channel the proxy serves. What a
+      # channel *can* set is how much of a result reaches its model, in
+      # [llm] max_result_chars.
+      PROXY_MAX_RESPONSE_BYTES: 4194304
       PROXY_TLS_CERT: /etc/libero/certs/proxy/server.pem
       PROXY_TLS_KEY: /etc/libero/certs/proxy/server.key
       # Client certs are verified against this CA and nothing else. A client

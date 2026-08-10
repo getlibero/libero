@@ -35,6 +35,7 @@
 
 import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
 import type { Dispatch, ToolCatalog, ToolDispatcher } from "./dispatch.js";
+import type { CallLimits } from "./enforce.js";
 import { createSilentLogger, type Logger } from "./log.js";
 import { type ClientLease, createMcpCatalog } from "./mcp-catalog.js";
 import type { McpFailure, McpOutcome } from "./mcp-client.js";
@@ -61,6 +62,15 @@ export interface HttpDispatcherOptions {
   /** Injected transport, for tests. Defaults to Node's built-in `fetch`. */
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
+  /**
+   * The deployment's bound on a response body, from `PROXY_MAX_RESPONSE_BYTES`.
+   * Absent means `DEFAULT_UPSTREAM_RESPONSE_BYTES`.
+   *
+   * Here beside `timeoutMs` rather than anywhere a sheet can reach, because it
+   * bounds this process's heap rather than a channel's spend. See the note on
+   * `McpPoolOptions`.
+   */
+  readonly maxResponseBytes?: number;
   readonly logger?: Logger;
   /**
    * The catalog cache's clock, for tests.
@@ -109,9 +119,17 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
     // No upstream bytes, ever. A failed handshake is as likely to be answered
     // by an auth proxy's error page as by anything MCP, and an error page is
     // where a reflected credential lives. The type has no `detail` to relay.
-    return outcome.failure === "unsupported_protocol"
-      ? "The tool server does not speak a version of MCP this proxy supports. The call was not made."
-      : `The tool server could not be reached: ${outcome.failure}. The call was not made.`;
+    if (outcome.failure === "unsupported_protocol") {
+      return "The tool server does not speak a version of MCP this proxy supports. The call was not made.";
+    }
+    // Its own sentence rather than the "could not be reached" one below, which
+    // would be false: the server answered, at length. Reachable because a
+    // handshake runs under `MAX_CONTROL_BODY_BYTES` and `discover` reports an
+    // overrun as an ordinary failure.
+    if (outcome.failure === "too_large") {
+      return "The tool server's handshake was larger than this proxy will accept. The call was not made.";
+    }
+    return `The tool server could not be reached: ${outcome.failure}. The call was not made.`;
   }
 
   switch (outcome.failure) {
@@ -129,9 +147,21 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
       // Without this case the default below would claim the call was made,
       // which is wrong in both clauses.
       return "The proxy is shutting down. The call was not completed.";
+    case "too_large":
+      // The default below is wrong in its second clause here: an answer did come
+      // back, and this proxy declined to hold it. Saying which is what lets a
+      // model narrow its next request rather than retry the same one — and it is
+      // the only account of the response anyone gets, since a body past the cap
+      // is dropped undecoded and there is nothing of it to relay.
+      return "The tool server's answer was larger than this proxy will accept. The call was made and the answer was discarded.";
     default:
       // The wording the placeholder path used, kept verbatim: it is accurate
       // for a timeout, an unreachable host, and a refused redirect alike.
+      //
+      // A `default` rather than an exhaustive switch, and the cost is real: a
+      // new `McpFailure` member compiles straight through to this sentence, so
+      // adding one means checking whether both of its clauses are true. They
+      // were not for `closed` or for `too_large`, which is why each has a case.
       return `The tool did not answer: ${outcome.failure}. The call was made and no result came back.`;
   }
 }
@@ -148,6 +178,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
   const pool: McpPool = createMcpPool({
     scheme: SCHEME,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.maxResponseBytes !== undefined ? { maxResponseBytes: options.maxResponseBytes } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
   });
 
@@ -201,7 +232,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       return catalog.describe(upstream, wanted);
     },
 
-    async dispatch(call: ResolvedToolCall, upstream: McpServer): Promise<Dispatch> {
+    async dispatch(call: ResolvedToolCall, upstream: McpServer, limits: CallLimits): Promise<Dispatch> {
       // Not built rather than not allowed. A stdio upstream needs a process
       // pool and a sandbox, which is a filed follow-up; answering `unavailable`
       // keeps it readable apart from a refusal.
@@ -261,7 +292,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       }
 
       try {
-        const outcome = await client.callTool(call.tool, call.arguments);
+        const outcome = await client.callTool(call.tool, call.arguments, limits);
         // Read after the call, when the ladder has run. The protocol is settled
         // for the client's life, so there is no read-after-write hazard here.
         const protocol = client.protocol;

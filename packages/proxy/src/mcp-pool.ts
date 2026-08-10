@@ -17,6 +17,14 @@
 // ending one is a request. Every termination runs concurrently under a short
 // budget of its own, so a wedged upstream costs shutdown one timeout rather
 // than one per upstream — see `SESSION_TERMINATION_TIMEOUT_MS`.
+//
+// **`maxResponseBytes` is configured here, and a per-channel bound could not
+// be.** It is the deployment's — `PROXY_MAX_RESPONSE_BYTES` — so it is the same
+// number for every channel, and there is nothing for the two channels sharing
+// the client above to disagree about. The obvious wrong edit is to move a
+// channel's bound here alongside it: that would hand whichever channel opened
+// the client first the say over every other channel's calls. The channel's own
+// bound on a result travels per call instead, on `CallLimits`.
 
 import type { McpServer } from "@getlibero/schema";
 import { upstreamKey } from "./enforce.js";
@@ -52,6 +60,8 @@ export interface McpPool {
 export interface McpPoolOptions {
   readonly scheme: AuthScheme;
   readonly timeoutMs?: number;
+  /** The deployment's bound on a response body. Absent means the process default. */
+  readonly maxResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -77,6 +87,7 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
         secret,
         ...(upstream.credential !== undefined ? { credentialName: upstream.credential } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.maxResponseBytes !== undefined ? { maxResponseBytes: options.maxResponseBytes } : {}),
         ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
       });
       clients.set(key, client);

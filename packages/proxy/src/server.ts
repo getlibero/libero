@@ -588,7 +588,7 @@ export function createProxyServer(options: ProxyServerOptions): Server {
 
     // The upstream comes off the decision, not from a second lookup: the entry
     // that authorized the call is the entry the call goes to. See `Decision`.
-    const dispatched = await options.dispatcher.dispatch(call, decision.upstream);
+    const dispatched = await options.dispatcher.dispatch(call, decision.upstream, decision.limits);
     switch (dispatched.outcome) {
       case "ran":
         await audit({
