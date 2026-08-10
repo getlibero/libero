@@ -13,10 +13,10 @@
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  CANARY,
   CHANNEL,
   auditRows,
   calls,
+  expectCanaryReachedUpstream,
   expectNoCanary,
   rigOf,
   says,
@@ -83,7 +83,7 @@ it(
     // The positive control. Without this, every assertion below passes just as
     // well on a run where no credential was ever resolved — which is the one
     // failure a leak suite must not report as a pass.
-    expect(upstream.callsTo("tools/call")[0]?.authorization).toBe(`Bearer ${CANARY}`);
+    expectCanaryReachedUpstream(upstream);
 
     // And the credential is on no surface this process can see.
     expectNoCanary(surfaces());

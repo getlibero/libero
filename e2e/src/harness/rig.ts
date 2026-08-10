@@ -23,7 +23,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FakeCatalogTool, FakeMcpServer } from "@getlibero/proxy";
-import type { CompletionResponse } from "@getlibero/agent";
 import type { Scheduler } from "@getlibero/gateway";
 import { CANARY, CANARY_CREDENTIAL, surface } from "./canary.js";
 import type { Surface } from "./canary.js";
@@ -34,7 +33,7 @@ import type { Certs } from "./certs.js";
 import { tempChannelsRoot } from "./channels.js";
 import type { ChannelsRoot, SheetSpec } from "./channels.js";
 import { scriptedModel } from "./model.js";
-import type { ModelTurnHook, ScriptedModel } from "./model.js";
+import type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
 import { spawnProxy } from "./proxy-process.js";
 import type { ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
@@ -78,8 +77,14 @@ export interface RigOptions {
    * are ESM bindings, so nothing in this process can reach them.
    */
   readonly nodeArgs?: readonly string[];
-  /** The model's turns, in order. Running past the end throws. */
-  readonly script?: readonly CompletionResponse[];
+  /**
+   * The model's turns, in order. Running past the end throws.
+   *
+   * An entry is usually a constant — `calls`, `says` — and may be a function of
+   * the request when the answer depends on what the model was handed, which is
+   * what `relays` is.
+   */
+  readonly script?: readonly ScriptTurn[];
   /**
    * Fired as the model is asked for each turn, with the 1-based turn number.
    *

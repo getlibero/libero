@@ -4,7 +4,7 @@
 // else; the modules below are separate because they hold separate arguments,
 // not because a case is meant to compose them by hand.
 
-export { CANARY, CANARY_CREDENTIAL, expectNoCanary, surface } from "./canary.js";
+export { CANARY, CANARY_CREDENTIAL, expectCanaryReachedUpstream, expectNoCanary, surface } from "./canary.js";
 export type { Surface } from "./canary.js";
 
 export { createCleanup, guarded } from "./cleanup.js";
@@ -21,8 +21,8 @@ export { breakRedaction } from "./mutate.js";
 export { rawClient } from "./client.js";
 export type { RawClient, RawRequest, RawResponse } from "./client.js";
 
-export { calls, says, scriptedModel } from "./model.js";
-export type { ModelTurnHook, ScriptedModel } from "./model.js";
+export { calls, relays, says, scriptedModel } from "./model.js";
+export type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
 
 export { spawnProxy } from "./proxy-process.js";
 export type { ProxyEnv, ProxyProcess } from "./proxy-process.js";
