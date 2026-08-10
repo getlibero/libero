@@ -39,7 +39,7 @@ export type { UpstreamOptions } from "./upstream.js";
 export { auditRows, lastAuditId, spendFor } from "./records.js";
 export type { AuditRow } from "./records.js";
 
-export { recording, replayingSpendReports, withoutSpendReports } from "./transport.js";
+export { mutatingResubmission, recording, replayingSpendReports, withoutSpendReports } from "./transport.js";
 export type { RecordingTransport } from "./transport.js";
 
 export { writeVault } from "./vault.js";

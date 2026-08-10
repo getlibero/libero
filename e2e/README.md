@@ -181,6 +181,31 @@ really asserting is a claim about processes: the proxy has no admin route, so
 a reset is a second process against the same file, and WAL plus an uncached
 meter is what makes it land on the running proxy's next call.
 
+**Driving a human's click needs three things, and the rig has all of them.**
+`agent.slack.deliverMention` does not resolve while a call is held, so a case
+holds the promise, waits for `agent.slack.cards` to fill, and then delivers a
+decision. The ticket id is the proxy's — read it off the `held` audit row it
+wrote before it answered, which is also how a case can assert the button
+carries that same id rather than one the agent invented. `agent.slack.cardAt`
+is the card showing now, which is the assertion most cases want ("it is green,
+and it names the approver").
+
+**The approval clock is one-sided, and a case has to say which half it moved.**
+`startRig({ scheduler })` reaches the approval prompter and nothing else
+(`compose.ts` routes it there deliberately), so a manual scheduler's single
+pending timer is the hold's deadline and firing it is the agent giving up on
+its wait. It does not move the *proxy's* clock: `APPROVAL_TTL_MS` is a module
+constant in a spawned process, so its ticket is still alive and a re-submission
+comes back `approval_pending` rather than `approval_expired`. That is the right
+thing to assert — abandoning a wait converts nothing — and the true timeout is
+covered in `packages/proxy/src/approvals.test.ts` with an injected clock.
+
+**`resubmission: { arguments }` is approve-then-mutate.** The client re-submits
+the identical body plus the ticket, by design, so an agent that swaps the
+arguments after a human has looked at them is a compromised one and lives on
+the wire like the spend knobs. The proxy answers `approval_mismatch` on the
+argument hash, and deliberately does not spend the ticket.
+
 **A front-end with no card path is a real shape, not a test mode.**
 `startRig({ approvals: "none" })` composes with no prompter, because
 `SlackSurfaceLike.cards` is optional and its absence means "no one to ask". A
@@ -300,6 +325,8 @@ outlive the run.
   back on: a tool result and a tool description.
 - `src/exceed-budget.test.ts` — #134, both meters at their boundary, and the
   operator's reset against a running proxy.
+- `src/destructive-call.test.ts` — #135, the approval broker's two halves
+  meeting: a click that runs a call, and four ways of not having one.
 - `src/unlisted-tool.test.ts` · `src/identity.test.ts` — #133, through the agent
   and around it.
 

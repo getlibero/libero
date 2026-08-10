@@ -89,7 +89,8 @@ argument. It is the exception to the barrel's "no client, no pool" doctrine
 rather than a hole in it: a server holds no vault and can open nothing.
 `e2e/` is also the one package the agent/proxy import ban does not cover —
 `scripts/boundary-check.sh` does not scan it, and its header says why.
-`e2e/README.md` is the harness API, and the place #135 should start.
+`e2e/README.md` is the harness API. With #135 the suite covers all four of
+phase 1's definition-of-done properties, one file each.
 
 **#134 is the budget half, and its shape is the asymmetry between the two
 meters.** `e2e/src/exceed-budget.test.ts` puts each at its `>=` boundary — a
@@ -116,6 +117,22 @@ redaction gutted, the way `redaction-detector.test.ts` does for a tool result.
 A third case asks for the credential by name through every listed tool and
 asserts the arguments reached the upstream verbatim: the proxy is not a template
 engine, and the only place a name becomes a value is `injectCredential`.
+
+**#135 is the approval half, and it is the first place the broker's two ends
+meet.** `e2e/src/destructive-call.test.ts` holds a call the *heuristic* caught —
+`delete_branch`, with no `approval` in the sheet — and shows the click travelling
+Slack interaction → decision route → ticket store → re-submission, with the
+approver's Slack id on the `ran` row and three rows sharing one ticket. The four
+ways of not having a click each cost the attacker nothing: a deny, an agent that
+abandons its wait (the ticket is undecided, so `approval_pending`), an agent that
+mutates the arguments after the human looked (`approval_mismatch` on the hash,
+and the ticket is not spent), and a model that writes its own approval — a
+fabricated `approve_ticket` refused before the proxy, and forged fields in the
+arguments that change nothing, because a ticket is read from the request and
+never from what the model wrote.
+
+The clock there is one-sided and the file says so: only the agent's scheduler is
+injectable, so a true `approval_expired` stays `approvals.test.ts`'s to prove.
 
 **The agent calls tools, through the proxy and only through it.**
 `packages/agent/src/proxy/` is the client (#109): an mTLS transport over
