@@ -16,6 +16,8 @@ export type { Certs, MintOptions } from "./certs.js";
 export { tempChannelsRoot } from "./channels.js";
 export type { ChannelsRoot, SheetSpec, SheetTool } from "./channels.js";
 
+export { breakRedaction } from "./mutate.js";
+
 export { calls, says, scriptedModel } from "./model.js";
 export type { ScriptedModel } from "./model.js";
 

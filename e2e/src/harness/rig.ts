@@ -40,6 +40,7 @@ import type { ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
+import type { UpstreamOptions } from "./upstream.js";
 import { withoutSpendReports } from "./transport.js";
 import { writeVault } from "./vault.js";
 
@@ -61,8 +62,22 @@ export interface RigOptions {
    * which is exactly the "revoked channel" case.
    */
   readonly sheets?: Readonly<Record<string, SheetInput>>;
-  /** What the upstream publishes from `tools/list`. */
+  /** What the upstream publishes from `tools/list`. Shorthand for `upstream.catalog`. */
   readonly catalog?: readonly FakeCatalogTool[];
+  /**
+   * The fake upstream's own options — `echoHeaders`, `hangOn`, `pageSize`, and
+   * the rest of `FakeMcpServerOptions`. `catalog` above wins if both set it.
+   */
+  readonly upstream?: UpstreamOptions;
+  /**
+   * Extra arguments for the spawned proxy's `node`, before the entrypoint.
+   *
+   * The seam a mutation case needs: `["--import", hook]` registers a module
+   * loader hook inside the proxy process, which is the only way to break one of
+   * its passes from out here — the proxy is a separate process and its imports
+   * are ESM bindings, so nothing in this process can reach them.
+   */
+  readonly nodeArgs?: readonly string[];
   /** The model's turns, in order. Running past the end throws. */
   readonly script?: readonly CompletionResponse[];
   readonly scheduler?: Scheduler;
@@ -154,10 +169,10 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       ...(options.rawCns !== undefined ? { rawCns: options.rawCns } : {})
     });
 
-    const upstream = await startUpstream(
-      cleanup,
-      options.catalog !== undefined ? { catalog: options.catalog } : {}
-    );
+    const upstream = await startUpstream(cleanup, {
+      ...options.upstream,
+      ...(options.catalog !== undefined ? { catalog: options.catalog } : {})
+    });
 
     const channelsRoot = tempChannelsRoot(cleanup);
     const sheets = options.sheets ?? { [CHANNEL]: DEFAULT_SHEET };
@@ -181,7 +196,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       tlsCert: certs.serverCert,
       tlsKey: certs.serverKey,
       tlsCa: certs.caPath
-    });
+    }, options.nodeArgs ?? []);
 
     const model = scriptedModel(options.script ?? []);
     const agent = await startAgent(cleanup, {

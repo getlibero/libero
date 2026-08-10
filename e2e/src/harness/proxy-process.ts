@@ -70,9 +70,13 @@ function entrypoint(): string {
  * sleeping is also what makes a startup failure a readable error instead of a
  * connection refused several seconds later.
  */
-export async function spawnProxy(cleanup: Cleanup, env: ProxyEnv): Promise<ProxyProcess> {
+export async function spawnProxy(
+  cleanup: Cleanup,
+  env: ProxyEnv,
+  nodeArgs: readonly string[] = []
+): Promise<ProxyProcess> {
   const lines: string[] = [];
-  const child: ProxyChild = spawn(process.execPath, [entrypoint()], {
+  const child: ProxyChild = spawn(process.execPath, [...nodeArgs, entrypoint()], {
     env: {
       PATH: process.env.PATH ?? "",
       PROXY_HOST: "127.0.0.1",

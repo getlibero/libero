@@ -152,6 +152,26 @@ than posting into a stub that swallows it.
 `src/harness-knobs.test.ts` pins both, so a case built on either is testing the
 property it means to rather than a seam that quietly did nothing.
 
+**You can break the proxy on purpose, and you should.** A leak test that has
+never seen a leak is a test that passes. `breakRedaction(cleanup)` writes a
+module loader hook, and `startRig({ nodeArgs: ["--import", hook] })` registers it
+inside the spawned proxy, where it rewrites `redactSecrets` into the identity
+function as Node loads it. Combined with `upstream: { echoHeaders: "text" }` —
+which makes the upstream reflect its `Authorization` header into the tool
+result — that is a real, complete leak: the credential lands verbatim in the
+model's transcript.
+
+`src/redaction-detector.test.ts` runs that scenario twice, as shipped and
+gutted, and requires `expectNoCanary` to pass the first and **throw** the
+second. It is the answer to "would this suite notice?", which no negative
+assertion can answer about itself.
+
+A loader hook rather than a stub because the proxy is a separate process and its
+imports are ESM bindings — nothing in the test process can reach them, and the
+launch is the only seam there is. It patches compiled output, so the hook throws
+if its needle no longer matches; a mutation that silently applied to nothing
+would be the exact failure it exists to prevent.
+
 **Some attacks cannot go through the agent at all.** `createProxyToolClient`
 sends no `channel` field and cannot be made to — `ToolCall` is strict, so a body
 carrying one is refused by the proxy rather than stripped — and it will only
