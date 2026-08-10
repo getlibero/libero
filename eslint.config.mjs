@@ -362,5 +362,51 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    // The message store is a leaf, and this block is what keeps it one.
+    //
+    // It holds channel content, and #64 has not decided who reads it: the proxy,
+    // opening store.db as a second reader, or the gateway, answering a callback.
+    // Both are live, so this package has to be importable from either side —
+    // which means it may name neither. The concrete hazard is transitive: a
+    // Logger imported from the gateway would, the day #64 chooses the direct
+    // read, put the Slack SDK into the proxy's image through an edge no import
+    // in the proxy names. packages/memory/src/log.ts duplicates an interface
+    // rather than importing one for exactly this reason.
+    //
+    // Wider than PROXY_IMPORT_BAN rather than a member of it, so this is its own
+    // block. Note the config's rule at the top of this file: no-restricted-imports
+    // is replaced wholesale by the last matching block, and no earlier block
+    // matches packages/memory/**, so nothing is being overridden here.
+    //
+    // @getlibero/schema is deliberately not banned. ChannelId is the one rule
+    // about channel ids, stated once, and a store that re-implemented it would
+    // be the hole that file exists to close.
+    files: ["packages/memory/**/*.{ts,mts,cts,js,mjs,cjs}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "@getlibero/proxy",
+                "@getlibero/proxy/*",
+                "@getlibero/gateway",
+                "@getlibero/gateway/*",
+                "@getlibero/agent",
+                "@getlibero/agent/*",
+                "**/packages/proxy/**",
+                "**/packages/gateway/**",
+                "**/packages/agent/**"
+              ],
+              message:
+                "The message store is a leaf: it holds channel content and either service may end up reading it (#64), so it may depend on neither. Its Logger is duplicated in src/log.ts on purpose."
+            }
+          ]
+        }
+      ]
+    }
   }
 );

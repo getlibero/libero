@@ -10,7 +10,7 @@
   },
   "homepage": "https://getlibero.com",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24.0.0"
   },
   "packageManager": "pnpm@9.15.0",
   "scripts": {

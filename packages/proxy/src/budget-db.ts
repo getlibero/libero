@@ -53,9 +53,11 @@
 // `node:sqlite` rather than a driver from npm. It is built in, so the proxy
 // gains no dependency and the license gate has nothing new to check — and this
 // package's dependency list is itself a security property (see ./server.ts).
-// It is unflagged from Node 22.13, which is the floor this repo now states, and
-// still stability 1.1: the API may move, and the whole surface used here is
-// `DatabaseSync`, `prepare`, `run`, `get`, `all`, and `exec`.
+// It is unflagged from Node 22.13, which was this repo's floor when the meter
+// landed; the floor is now Node 24, moved for `packages/memory`, whose FTS5
+// index `node:sqlite` could not create before 22.16. It is a release candidate
+// from 24.15 and experimental below that: the API may still move, and the whole
+// surface used here is `DatabaseSync`, `prepare`, `run`, `get`, `all`, `exec`.
 
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";

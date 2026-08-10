@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pnpm install                          # Node 22.13+, pnpm 9+
+pnpm install                          # Node 24+, pnpm 9+
 pnpm -r build                         # tsc per package
 pnpm typecheck                        # tsc --noEmit per package
 pnpm lint                             # eslint . (includes the agent→proxy import ban)
@@ -59,7 +59,26 @@ since #126 an approval card it can render and a click it can decode),
 `apps/server` (the gateway + agent process — env parsing, the mention handler,
 lifecycle), `packages/cli` (placeholder npm release), `design/` (the design
 system — plain CSS, no TypeScript), and `site/` (getlibero.com).
-`packages/memory` is a README stub. `e2e/` is the security suite's rig (#131).
+`packages/memory` (the per-channel message store — one SQLite file per channel,
+an FTS5 index over it, and the delete and edit paths that keep the index in step;
+nothing writes to one yet, because the gateway subscribes to no ordinary message
+events). `e2e/` is the security suite's rig (#131).
+
+**`packages/memory` is a leaf, and an ESLint block on `packages/memory/**` keeps
+it one.** It may not import the proxy, the gateway, or the agent, because #64 has
+not decided whether the reader of `store.db` is the proxy opening it as a second
+process or the gateway answering a callback — so it has to be importable from
+either side. `src/log.ts` duplicating a `Logger` interface is the visible cost,
+and the hazard it avoids is transitive: a gateway import would put the Slack SDK
+into the proxy's image the day #64 chooses the direct read. Two things there are
+decisions rather than mechanics. **The tokenizer is `porter unicode61
+remove_diacritics 2`**, chosen once because it is baked into the index — without
+stemming, an AND of the terms in "what did we decide about the vault" does not
+match "we decided to ship the vault", which is the first question #64 would ask.
+And **`search` takes text, never an FTS5 expression**: MATCH is a query language
+where a bare `AND` is a syntax error, a trailing `*` is a prefix query, and
+`text:vault` is a column filter that parses and runs, so `toMatchQuery` quotes
+every whitespace chunk and is deliberately absent from the barrel.
 
 **The two halves meet for real in `e2e/` (#131, which absorbed #47).** The proxy
 runs as its **spawned built entrypoint**; the agent side runs **in-process**
@@ -496,9 +515,14 @@ These are load-bearing, not stylistic:
   sheets authorize — revocation is removing a channel's sheet, not a CRL.
 - **One SQLite file per channel is the isolation boundary** for anything holding
   channel *content* — messages, memory. No schema or query there should be able
-  to join across channels. `packages/memory` is the next one, and it keeps the
-  strict reading: a factory that takes one channel id and no API that can ask
-  for a second.
+  to join across channels. `packages/memory` is where that reading is built, and
+  it is strict twice over (#63): there is **no `channel` column** — the file is
+  the channel, so there is no column a statement could forget to filter on — and
+  **no operation takes a channel id**, so `openMessageStore` closes over one file
+  and a cross-channel query is not something `MessageStore` can express. That is
+  a shape the type system has rather than a rule a reviewer applies, which is
+  why `store-db.ts` needs no equivalent of the proxy's per-statement
+  `WHERE channel = ?` check.
 
   **The line is whose data it is and who reads it, not how much of it there
   is.** Content belongs to a channel's members and is read on their behalf, so a
@@ -589,9 +613,14 @@ by `.github/workflows/pages.yml`. Like `design/`, it is **outside the pnpm
 workspace**: it has its own `pnpm-workspace.yaml`, its own lockfile, and its own
 CI job, so Astro's dependency tree never reaches `pnpm -r` or the core license
 gate. Run everything from inside `site/` (`pnpm install`, `pnpm dev`,
-`pnpm build`, `pnpm check`). It needs **Node 22.12+** — Astro 7's floor; the
-core packages sit just above it at **22.13**, which is where `node:sqlite`
-stopped needing `--experimental-sqlite`.
+`pnpm build`, `pnpm check`). It needs **Node 22.12+** — Astro 7's floor. The
+core packages are now two majors above that, at **24**, and the gap is
+deliberate: `site/` is outside the workspace and has no reason to follow. The
+core floor moved for `packages/memory`, whose full-text index needs SQLite's
+FTS5 — `node:sqlite` was compiled without it until 22.16, so the old 22.13 floor
+(where `node:sqlite` stopped needing `--experimental-sqlite`) would have let a
+conforming install fail at runtime with `no such module: fts5`. Node 24 is the
+LTS above that line.
 
 - Marketing pages are `src/pages/`; docs are `src/content/docs/docs/` and serve
   at `/docs/*` because the marketing pages own the root.

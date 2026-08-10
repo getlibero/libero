@@ -90,8 +90,10 @@ The last two are the gates from [Ground rules that CI enforces](#ground-rules-th
 Both run the same script CI runs, so a failure is reproducible in a terminal
 rather than only on a push.
 
-Node 22.13+, pnpm 9+ — 22.13 because the budget meter uses the built-in `node:sqlite`, which needs
-a flag below that. The e2e harness (mock Slack + mock MCP server) lands in `e2e/` with phase 1.
+Node 24+, pnpm 9+ — Node 24 because the message store's full-text index needs SQLite's FTS5, and
+the built-in `node:sqlite` was compiled without it until 22.16. (22.13 was the old floor, for a
+different reason: below that `node:sqlite` needed `--experimental-sqlite`.) The e2e harness (mock
+Slack + mock MCP server) lands in `e2e/` with phase 1.
 
 ### Getting pnpm
 
