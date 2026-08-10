@@ -2,8 +2,10 @@
 // mention in, hold, amber card, click (or deadline), terminal card, ticket on
 // the re-submission, one real tool result in the model's transcript, reply in
 // the thread. Everything between the stub socket and the fake transport is the
-// production wiring — the same composition index.ts builds, minus the
-// environment.
+// production wiring — `createServer` from compose.ts, the same call index.ts
+// makes, minus the environment. Not a restatement of it: if that graph changes
+// and this file needs no edit, it is because there was nothing here to keep in
+// step.
 //
 // This is #127's acceptance suite. The pieces are each tested alone in
 // approvals/, session/, and packages/agent; what only this file can catch is a
@@ -11,17 +13,12 @@
 // repainted after the reply, a queued mention running during a hold.
 
 import type { CompletionResponse } from "@getlibero/agent";
-import { DEFAULT_AGENT_LOOP_CAPS, createProxyApprovalsClient } from "@getlibero/agent";
+import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/agent";
 import type { Scheduler } from "@getlibero/gateway";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
 import { describe, expect, it, vi } from "vitest";
-import { createDecisionHandler } from "./approvals/decisions.js";
-import { createHeldCallPrompter } from "./approvals/prompter.js";
-import { createApprovalRegistry } from "./approvals/registry.js";
-import { createMentionHandler } from "./handler.js";
-import { createChannelRouter } from "./session/router.js";
-import { createTaskRunner } from "./session/task.js";
+import { createServer } from "./compose.js";
 
 const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
@@ -119,15 +116,14 @@ const refusedWith = (reason: string): ProxyResponse => ({
 });
 
 /**
- * The production composition over the stubs: gateway → handler → router → task,
- * with the completion client scripted per test. One tool-calling task is turn 1
- * `tool_use` then turn 2 text; a mention whose text asks for no tool answers in
- * one turn.
+ * The production composition over the stubs: `createServer` from compose.ts —
+ * the same call index.ts makes — with the completion client scripted per test.
+ * One tool-calling task is turn 1 `tool_use` then turn 2 text; a mention whose
+ * text asks for no tool answers in one turn.
  */
 function rig(redeemed: () => ProxyResponse) {
   const slack = createStubSlack();
   const clock = manualClock();
-  const registry = createApprovalRegistry();
   const proxy = fakeProxy(redeemed);
   const logger = createSilentLogger();
 
@@ -155,29 +151,27 @@ function rig(redeemed: () => ProxyResponse) {
     }
   };
 
-  const gateway = createGateway({
-    source: slack.source,
-    poster: slack.poster,
-    handler: createMentionHandler(
-      createChannelRouter({
-        sheets: () => Promise.resolve({ model: "test-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS } }),
-        task: createTaskRunner({ completion, transport: proxy.transport, logger }),
+  // `createServer` is the composition index.ts runs, and this is the whole of
+  // what differs: the surface is built over the stub rather than over a socket
+  // and a Web API client. `slack.poster` fills both slots because `SlackPoster`
+  // is `MessagePoster & CardPoster`.
+  const { gateway, registry } = createServer({
+    slack: ({ handler, onDecision }) => ({
+      gateway: createGateway({
+        source: slack.source,
+        poster: slack.poster,
+        handler,
+        onDecision,
         logger
       }),
-      createHeldCallPrompter({
-        cards: slack.poster,
-        registry,
-        logger,
-        now: () => NOW,
-        scheduler: clock.scheduler
-      })
-    ),
-    onDecision: createDecisionHandler({
-      registry,
-      approvals: createProxyApprovalsClient({ transport: proxy.transport }),
-      logger
+      cards: slack.poster
     }),
-    logger
+    completion,
+    transport: proxy.transport,
+    sheets: () => Promise.resolve({ model: "test-model", caps: { ...DEFAULT_AGENT_LOOP_CAPS } }),
+    logger,
+    now: () => NOW,
+    scheduler: clock.scheduler
   });
 
   return { slack, clock, registry, proxy, modelSaw, gateway };
