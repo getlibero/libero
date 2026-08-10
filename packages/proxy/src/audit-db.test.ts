@@ -99,6 +99,27 @@ describe("appending", () => {
     ]);
   });
 
+  // The row a decided call leaves when the handler failed before it could answer
+  // (#124). Its result columns are null because the proxy could not measure a
+  // result, not because there was none — and it can carry a ticket and an
+  // approver, because a human can have approved the call that then went
+  // unanswered.
+  it("writes a call the proxy never answered, with or without an approval", () => {
+    db.append(record({ outcome: "unanswered" }));
+    db.append(record({ outcome: "unanswered", approver: "U0BOSS", ticket: "tk-4" }));
+
+    expect(rows(file)).toHaveLength(2);
+    expect(rows(file)[0]).toMatchObject({
+      outcome: "unanswered",
+      refusal_reason: null,
+      result_bytes: null,
+      result_is_error: null,
+      approver: null,
+      ticket: null
+    });
+    expect(rows(file)[1]).toMatchObject({ outcome: "unanswered", approver: "U0BOSS", ticket: "tk-4" });
+  });
+
   // NULL and not 0. A refused call has no result, and a 0 would read as a tool
   // that ran and returned nothing.
   it("leaves the result columns null when the call did not run", () => {
@@ -350,6 +371,85 @@ function writeV1File(path: string, count: number): void {
   }
 }
 
+/**
+ * The version 2 schema, verbatim as it shipped. A frozen fixture on V1_SCHEMA's
+ * argument, and frozen for the same reason: v2 is now a shape on operators'
+ * disks that can never change again.
+ *
+ * It differs from v1 by the three broker outcomes and the `ticket` column, and
+ * from v3 by nothing but the CHECK — which is exactly what the block below is
+ * for. A v2 file copied with v1's assumptions would still pass every row and
+ * column assertion and silently lose every ticket.
+ */
+const V2_SCHEMA = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_call_audit (
+  id               INTEGER PRIMARY KEY,
+  at               INTEGER NOT NULL,
+  channel          TEXT    NOT NULL,
+  requesting_user  TEXT    NOT NULL,
+  task             TEXT    NOT NULL,
+  request_id       TEXT    NOT NULL,
+  call_id          TEXT    NOT NULL,
+  server           TEXT    NOT NULL,
+  tool             TEXT    NOT NULL,
+  arguments_sha256 TEXT    NOT NULL,
+  outcome          TEXT    NOT NULL CHECK (outcome IN
+                     ('ran', 'held', 'refused', 'unavailable', 'approved', 'denied', 'expired')),
+  refusal_reason   TEXT,
+  result_bytes     INTEGER,
+  result_is_error  INTEGER,
+  approver         TEXT,
+  ticket           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_at ON tool_call_audit (channel, at);
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_task ON tool_call_audit (channel, task);
+CREATE INDEX IF NOT EXISTS tool_call_audit_ticket ON tool_call_audit (ticket) WHERE ticket IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_update
+BEFORE UPDATE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_delete
+BEFORE DELETE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+`;
+
+/**
+ * A version 2 file with `count` rows in it, every one carrying a ticket.
+ *
+ * Every row, rather than some: the column exists to tie an approval's lifecycle
+ * together, and a fixture where it were mostly null would let a migration that
+ * dropped it look almost right.
+ */
+function writeV2File(path: string, count: number): void {
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("PRAGMA journal_mode = WAL");
+    raw.exec(V2_SCHEMA);
+    raw.prepare("INSERT INTO schema_version (version) VALUES (2)").run();
+    const insert = raw.prepare(
+      `INSERT INTO tool_call_audit
+         (at, channel, requesting_user, task, request_id, call_id, server, tool,
+          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error, approver, ticket)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (let n = 1; n <= count; n += 1) {
+      insert.run(NOON + n, CHANNEL, "U0ALICE", `t-${n}`, `r-${n}`, `toolu_${n}`, "github", "merge_pr", "c".repeat(64), "ran", null, 10, 0, "U0BOSS", `tk-${n}`);
+    }
+  } finally {
+    raw.close();
+  }
+}
+
 /** What SQLite says a table is, normalised for the quoting a RENAME leaves. */
 function tableSql(path: string, table: string): string {
   const raw = new DatabaseSync(path);
@@ -387,9 +487,24 @@ describe("migrating a version 1 file", () => {
       const after = rows(old);
       expect(after.map(row => row.id)).toEqual([1, 2, 3]);
       expect(after.map(row => row.task)).toEqual(before.map(row => row.task));
-      // Every v1 column survives untouched; the new one is null on old rows.
+      // Every v1 column survives untouched; the one v1 lacked is null on old rows.
       expect(after[0]).toEqual({ ...before[0], ticket: null });
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The regression test for "one rebuild, not a ladder". A v1 file reaches the
+  // current version in a single pass rather than being copied once per version
+  // it skipped — which is what lets `auditTableDdl` stay the only copy of the
+  // columns, since a ladder would need a frozen intermediate DDL to build.
+  it("reaches the current version in one rebuild, whatever it skipped", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(versionOf(old)).toBe(3);
+      expect(tableSql(old, "tool_call_audit_rebuilt")).toBe("");
+      expect(rows(old)).toHaveLength(3);
     } finally {
       migrated.close();
     }
@@ -449,7 +564,7 @@ describe("migrating a version 1 file", () => {
     const before = rows(old);
     const blocker = new DatabaseSync(old);
     try {
-      blocker.exec("CREATE TABLE tool_call_audit_v2 (id INTEGER PRIMARY KEY)");
+      blocker.exec("CREATE TABLE tool_call_audit_rebuilt (id INTEGER PRIMARY KEY)");
     } finally {
       blocker.close();
     }
@@ -476,7 +591,7 @@ describe("migrating a version 1 file", () => {
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
       expect(rows(old)).toHaveLength(3);
       // The scratch table is gone rather than left beside the real one.
-      expect(tableSql(old, "tool_call_audit_v2")).toBe("");
+      expect(tableSql(old, "tool_call_audit_rebuilt")).toBe("");
     } finally {
       second.close();
     }
@@ -514,6 +629,122 @@ describe("migrating a version 1 file", () => {
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
       migrated.append(record({ outcome: "expired", ticket: "tk-9" }));
       expect(rows(old).at(-1)).toMatchObject({ outcome: "expired", ticket: "tk-9" });
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
+describe("migrating a version 2 file", () => {
+  let old: string;
+
+  beforeEach(() => {
+    old = join(dir, "v2.db");
+    writeV2File(old, 3);
+  });
+
+  // The highest-value case in this file, and the one the rebuild's column check
+  // exists for. v2 and v3 differ in no column, so a rebuild that assumed the
+  // oldest source shape would copy NULL over every ticket — passing the row
+  // count, the ids, the order, and every other column while quietly severing
+  // every approval from the call it authorized.
+  it("keeps every row, its id, its order, and its ticket", () => {
+    const before = rows(old);
+    const migrated = openAuditDb({ file: old });
+    try {
+      const after = rows(old);
+      expect(after).toEqual(before);
+      expect(after.map(row => row.ticket)).toEqual(["tk-1", "tk-2", "tk-3"]);
+      expect(after.map(row => row.approver)).toEqual(["U0BOSS", "U0BOSS", "U0BOSS"]);
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("accepts an outcome the old constraint refused, and only afterwards", () => {
+    const raw = new DatabaseSync(old);
+    try {
+      expect(() =>
+        raw.exec(
+          `INSERT INTO tool_call_audit
+             (at, channel, requesting_user, task, request_id, call_id, server, tool,
+              arguments_sha256, outcome)
+           VALUES (${NOON}, '${CHANNEL}', 'U0ALICE', 't-x', 'r-x', 'toolu_x', 'github', 'merge_pr',
+                   '${"d".repeat(64)}', 'unanswered')`
+        )
+      ).toThrow();
+    } finally {
+      raw.close();
+    }
+
+    const migrated = openAuditDb({ file: old });
+    try {
+      migrated.append(record({ outcome: "unanswered", approver: "U0BOSS", ticket: "tk-1" }));
+      expect(rows(old).at(-1)).toMatchObject({ outcome: "unanswered", approver: "U0BOSS", ticket: "tk-1" });
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("puts the append-only triggers back", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      const raw = new DatabaseSync(old);
+      try {
+        expect(() => raw.exec("UPDATE tool_call_audit SET tool = 'x'")).toThrow(/append-only/);
+        expect(() => raw.exec("DELETE FROM tool_call_audit")).toThrow(/append-only/);
+      } finally {
+        raw.close();
+      }
+      expect(rows(old)).toHaveLength(3);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("builds the same table a new file gets", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      const rebuilt = tableSql(old, "tool_call_audit");
+      expect(rebuilt).toContain("unanswered");
+      expect(rebuilt).toBe(tableSql(file, "tool_call_audit"));
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("runs once and is a no-op on every open after it", () => {
+    openAuditDb({ file: old }).close();
+    const sqlAfterFirst = tableSql(old, "tool_call_audit");
+
+    const second = openAuditDb({ file: old });
+    try {
+      expect(tableSql(old, "tool_call_audit")).toBe(sqlAfterFirst);
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(rows(old)).toHaveLength(3);
+      expect(tableSql(old, "tool_call_audit_rebuilt")).toBe("");
+    } finally {
+      second.close();
+    }
+  });
+
+  // `schema_version` carries no triggers, so an operator can delete the stamp
+  // from a file that has rows in it. This is the case that makes the rebuild ask
+  // `PRAGMA table_info` rather than branch on the version number: with no stamp
+  // to read, the table itself is the only thing that knows it has tickets.
+  it("keeps the tickets in a file whose version row was deleted", () => {
+    const raw = new DatabaseSync(old);
+    try {
+      raw.exec("DELETE FROM schema_version");
+    } finally {
+      raw.close();
+    }
+
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(rows(old).map(row => row.ticket)).toEqual(["tk-1", "tk-2", "tk-3"]);
     } finally {
       migrated.close();
     }

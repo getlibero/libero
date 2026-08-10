@@ -17,7 +17,7 @@
 //
 // "Once the file is open" is doing real work in that sentence, and #125 is why.
 // Widening the outcome vocabulary meant rebuilding the table, and SQLite cannot
-// alter a CHECK constraint in place, so `migrateV1ToV2` below drops the two
+// alter a CHECK constraint in place, so `rebuildAuditTable` below drops the two
 // triggers, drops the table, and renames a copy over it. That is the one moment
 // the append-only property is deliberately switched off, and it is confined to
 // a single function that runs inside one transaction before `append` has been
@@ -25,6 +25,10 @@
 // has one statement; the open path may rebuild, once, transactionally, and puts
 // the triggers back.** A DROP or an UPDATE anywhere else in this module is a
 // review failure exactly as it was.
+//
+// #124 widened the vocabulary a second time, which is why that function is named
+// for what it does rather than for the versions it spans: there is one rebuild
+// procedure and `migrate` picks the source it runs against.
 //
 // One table with a channel column, on the argument ./budget-db.ts makes at
 // length: the line is whose data it is and who reads it. An audit log is
@@ -106,29 +110,39 @@ import type { Logger } from "./log.js";
  * an incident review with a gap it has no way to notice.
  *
  * Version 2 widened the outcome vocabulary for the approval broker (#125) and
- * added the `ticket` column. A file from the past now has exactly one path
- * forward — see `migrate` at the bottom of this file — and what makes that safe
- * is that the change is a *widening*: v2 accepts every outcome v1 did, so no
- * existing row can fail the new constraint and the copy cannot be rejected.
- * That property is worth checking before adding a version 3; a migration that
- * can reject a row is a different kind of thing and needs a different answer to
- * "what happens to the rows that fail".
+ * added the `ticket` column. Version 3 widened it again, by one member:
+ * `unanswered`, the row a decided call leaves when the handler failed before it
+ * could answer (#124). No column changed.
  *
- * A file from the future is still a startup failure, and now so is a file from
- * a past this build has no migration from.
+ * Both are *widenings*, and that is the property each version has to establish
+ * for itself rather than inherit: v3 accepts every outcome v2 did, so no
+ * existing row can fail the new constraint and the copy cannot be rejected. A
+ * migration that *can* reject a row is a different kind of thing and needs a
+ * different answer to "what happens to the rows that fail" — check this before
+ * adding a version 4, and if that version adds a column rather than a value,
+ * `rebuildAuditTable` is where every older source has to be given something for
+ * it.
+ *
+ * A file from the future is still a startup failure, and so is a file from a
+ * past this build has no migration from.
  */
-export const AUDIT_SCHEMA_VERSION = 2;
+export const AUDIT_SCHEMA_VERSION = 3;
 
 /**
  * The table, parameterised on its name.
  *
- * One source for the DDL, because `migrateV1ToV2` has to build a table that is
- * *identical* to the one a fresh file gets and then rename it into place. Two
+ * One source for the DDL, because `rebuildAuditTable` has to build a table that
+ * is *identical* to the one a fresh file gets and then rename it into place. Two
  * copies of these columns would agree on the day they were written and drift on
  * some later one, and the failure would be a database whose shape depends on how
  * old it is — which is the thing a schema version exists to make impossible.
  * There is a test that opens a created file and a migrated one and compares what
  * SQLite says the table is.
+ *
+ * This is by construction *the table this build writes*, never a past one, and
+ * that is what decides the shape of `migrate`: a genuine version ladder would
+ * need a frozen v2 literal beside this one, which is the second copy this
+ * comment exists to prevent.
  *
  * The argument is always a module-private literal. It is never input, and it
  * cannot be: nothing outside this file can call this.
@@ -146,7 +160,8 @@ CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
   tool             TEXT    NOT NULL,
   arguments_sha256 TEXT    NOT NULL,
   outcome          TEXT    NOT NULL CHECK (outcome IN
-                     ('ran', 'held', 'refused', 'unavailable', 'approved', 'denied', 'expired')),
+                     ('ran', 'held', 'refused', 'unavailable', 'unanswered',
+                      'approved', 'denied', 'expired')),
   refusal_reason   TEXT,
   result_bytes     INTEGER,
   result_is_error  INTEGER,
@@ -296,13 +311,42 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
 }
 
 /**
- * v1 → v2: `approved`, `denied`, and `expired` join the outcome vocabulary, and
- * rows gain the ticket that ties an approval's lifecycle together.
+ * Does the table have this column? Structural, from SQLite's own catalogue.
  *
- * The repository's first migration, so what it establishes matters as much as
- * what it does. SQLite cannot alter a CHECK constraint in place, so widening one
- * is create-new / copy / drop / rename — the procedure the SQLite manual gives
- * for every otherwise-unsupported change.
+ * `PRAGMA table_info` answers a structural question with a structural API, which
+ * is what separates it from the move `migrate` rejects below: sniffing a *CHECK
+ * constraint* out of `sqlite_master.sql` with a substring test is guessing at
+ * SQL text, and this is asking SQLite what the columns are.
+ *
+ * The table name is a module-private literal at every call site, as it is for
+ * `auditTableDdl`, and cannot be input.
+ */
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some(entry => entry["name"] === column);
+}
+
+/**
+ * Rebuild the audit table into the shape this build writes, keeping every row.
+ *
+ * One procedure rather than one per version pair, and the reason is
+ * `auditTableDdl`: it is by construction the *current* table, so a
+ * `migrateV2ToV3` could not build a v2 table to hand to a `migrateV1ToV2`
+ * without a frozen v2 DDL literal — the second copy of the columns that
+ * `auditTableDdl`'s doc exists to prevent, and one no test could catch drifting,
+ * because the test that compares a migrated file to a created one only knows
+ * about current. A ladder would also rebuild a v1 file twice, switching the
+ * append-only property off twice, to produce an intermediate discarded
+ * immediately. So `migrate` fans in here instead, and this function's only
+ * concern is what the *source* table can give it.
+ *
+ * Today that is one column. **v1 has no `ticket` and v2 and v3 differ in no
+ * column at all** — v3 is a pure CHECK widening — so the copy takes `ticket`
+ * when the old table has one and `NULL` when it does not. Asking the table
+ * rather than the version number is what makes the no-stamp case below safe.
+ *
+ * SQLite cannot alter a CHECK constraint in place, so widening one is
+ * create-new / copy / drop / rename — the procedure the SQLite manual gives for
+ * every otherwise-unsupported change.
  *
  * **All of it is one transaction**, including the version stamp the caller would
  * otherwise write afterwards. SQLite's DDL is transactional, so a crash at any
@@ -323,36 +367,45 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
  * audit CLI bookmarks; letting SQLite reassign rowids would silently renumber
  * history.
  *
- * **No row can fail the new constraint**, because v2's vocabulary is a strict
- * superset of v1's. That is what makes this a widening rather than a data
- * question, and it is the property `AUDIT_SCHEMA_VERSION`'s doc asks a future
- * migration to check for itself.
+ * **No row can fail the new constraint**, because each version's vocabulary is a
+ * strict superset of the one before it. That is what makes this a widening
+ * rather than a data question, and it is the property `AUDIT_SCHEMA_VERSION`'s
+ * doc asks each new version to check for itself.
+ *
+ * The scratch table is named for what it is rather than for a version. A
+ * `tool_call_audit_v2` would have to be renamed — here and in the two tests that
+ * assert it is gone afterwards — every time the version moves, and would be
+ * actively misleading while building a v3.
  *
  * No `PRAGMA foreign_keys` dance — the manual's procedure begins by disabling
  * them and there is not one in either database here. No `VACUUM`: the rebuild
  * leaves free pages behind, and reclaiming them means rewriting the whole file
  * at startup for a log this module has already decided not to optimise for size.
  */
-function migrateV1ToV2(db: DatabaseSync): void {
+function rebuildAuditTable(db: DatabaseSync): void {
+  // Read before the transaction opens: it is a question about the table as it
+  // stands, and the answer decides one expression in the copy below.
+  const ticket = hasColumn(db, "tool_call_audit", "ticket") ? "ticket" : "NULL";
+
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.exec(auditTableDdl("tool_call_audit_v2", false));
+    db.exec(auditTableDdl("tool_call_audit_rebuilt", false));
     db.exec(`
-      INSERT INTO tool_call_audit_v2
+      INSERT INTO tool_call_audit_rebuilt
         (id, at, channel, requesting_user, task, request_id, call_id, server, tool,
          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
          approver, ticket)
       SELECT
          id, at, channel, requesting_user, task, request_id, call_id, server, tool,
          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
-         approver, NULL
+         approver, ${ticket}
         FROM tool_call_audit
        ORDER BY id
     `);
     db.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_update");
     db.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_delete");
     db.exec("DROP TABLE tool_call_audit");
-    db.exec("ALTER TABLE tool_call_audit_v2 RENAME TO tool_call_audit");
+    db.exec("ALTER TABLE tool_call_audit_rebuilt RENAME TO tool_call_audit");
     db.exec(auditIndexDdl);
     db.exec(auditTriggerDdl);
     db.exec("DELETE FROM schema_version");
@@ -368,24 +421,33 @@ function migrateV1ToV2(db: DatabaseSync): void {
  * Bring the file to the version this build writes, or refuse to start.
  *
  * A version we do not recognise still means refusing to start, as ./budget-db.ts
- * does and for the same reason. What changes is that one version we *do*
- * recognise now has a way forward.
+ * does and for the same reason. What changes is that the versions we *do*
+ * recognise have a way forward — and they all take the same one, because
+ * `rebuildAuditTable` asks the table what it can give rather than being told by
+ * a version number. Adding version 4 to this list is the whole of adding a
+ * migration from it, provided that version is a widening.
  *
  * **The absent-row case runs the rebuild too**, which is deliberate rather than
  * lazy. `db.exec(SCHEMA)` and the version stamp are two commits, so a process
- * that died between them left a file holding a v1 table and no version row —
- * and stamping that v2 without looking would produce a database that accepts
- * every write until the first `denied` row and then fails a CHECK nobody
- * expects. On a file this build just created the rebuild copies zero rows and
- * costs a handful of DDL statements once, at startup. The alternative is
- * sniffing the constraint out of `sqlite_master.sql` with a substring test,
- * which is a clever way to be wrong later.
+ * that died between them left a file holding an older table and no version row —
+ * and stamping that current without looking would produce a database that
+ * accepts every write until the first row using a value the old CHECK never had,
+ * and then fails a constraint nobody expects. On a file this build just created
+ * the rebuild copies zero rows and costs a handful of DDL statements once, at
+ * startup. The alternative is sniffing the constraint out of `sqlite_master.sql`
+ * with a substring test, which is a clever way to be wrong later.
+ *
+ * That case is also why the rebuild reads `PRAGMA table_info` rather than
+ * branching on the version here. `schema_version` carries no triggers, so an
+ * operator can delete the stamp from a file that has rows in it — and a rebuild
+ * that assumed the oldest shape would silently null every `ticket` in the one
+ * file an operator cannot reconstruct.
  */
 function migrate(db: DatabaseSync, file: string): void {
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
   if (row !== undefined && row.version === AUDIT_SCHEMA_VERSION) return;
-  if (row === undefined || row.version === 1) {
-    migrateV1ToV2(db);
+  if (row === undefined || row.version === 1 || row.version === 2) {
+    rebuildAuditTable(db);
     return;
   }
   throw new Error(

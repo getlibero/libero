@@ -591,9 +591,49 @@ as an attachment's left border, and every state also names itself in text so the
 card is correct with no colour at all.
 
 Tickets are in memory, so a proxy restart drops pending approvals and they
-degrade to expiry. `audit.db` is at schema version 2 with the repository's first
-migration (#125), and its vocabulary now carries `approved`, `denied`, and
-`expired` plus a `ticket` column joining an approval's rows.
+degrade to expiry. `audit.db` is at schema version 3, and its vocabulary carries
+`approved`, `denied`, and `expired` plus a `ticket` column joining an approval's
+rows (#125), and `unanswered` (#124).
+
+**#124 makes "every decided call leaves exactly one row" total, and the two
+decisions are the word and where the catch opens.** The row was written after
+dispatch — the only place `result_bytes` exists — so anything throwing between
+the meter write and it escaped to the outer handler's catch, which holds no
+per-call state, and left a metered and possibly-executed call unrecorded. A
+`RedactionError` on the result's way back was the live path, and the test that
+covered it *encoded* the gap. The fix is a `try`/`catch` **inside `callTool`**,
+opening after the `audit` closure's `const` — coverage is identical to opening
+at the decision, and opening earlier would let the catch reach `audit` in its
+TDZ and mask the real failure — and rethrowing, so the 500 is byte-for-byte
+unchanged.
+
+**The word is `unanswered`, and `failed` was rejected on a test that already
+existed.** `audit.test.ts` asserts the vocabulary refuses `"failed"` and
+`"error"`, under "including the tool's own error flag", because
+`outcome` is not a success/failure flag — `resultIsError` is the separate
+question. `unanswered` also says only what is known: it asserts nothing about
+whether the upstream acted, so `ran` undercounts upstream effects by exactly
+these rows.
+
+**The one-row guard is a flag set on *entry* to the `audit` closure, not on
+success**, and that is a correctness requirement rather than a preference:
+`append` can succeed and the closure still throw afterwards, since `logger.log`
+writes to a stream and can fail on EPIPE — a success flag would then file a
+second row for a call that already has one. Entry is safe because the closure is
+called at most once per request: every call site is followed by a `return` in a
+mutually exclusive branch. The fallback append is itself wrapped and its throw
+swallowed, the only swallow in the file, because `audit_write_failed` is already
+logged and the 500 is about the original failure.
+
+**The migration is a fan-in, not a ladder.** `auditTableDdl` is by construction
+*the table this build writes*, so a real v1→v2→v3 ladder would need a frozen v2
+DDL literal beside it — the second copy of the columns that parameterised DDL
+exists to prevent, and one no test could catch drifting. So `migrateV1ToV2`
+became `rebuildAuditTable`, which asks `PRAGMA table_info` which columns the old
+table can give rather than being told by a version number. That is also what
+makes the no-stamp case safe: `schema_version` carries no triggers, so an
+operator can delete the stamp from a v2 file with rows in it, and a rebuild
+assuming the oldest shape would silently null every `ticket`.
 
 **The docs moved.** `site/src/content/docs/docs/architecture.md` is the
 specification and is far ahead of the implementation — treat it as the design
