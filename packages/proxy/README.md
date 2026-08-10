@@ -48,13 +48,16 @@ credential injection into outbound HTTP calls, and an MCP client that speaks the
   the audit table is an INSERT — the rest of the module's SQL is the
   `schema_version` bookkeeping every database here carries, plus the one
   migration below.
-  The file is at schema version 2, and version 1 files are migrated in place on
-  first open. SQLite cannot widen a CHECK constraint, so the migration rebuilds
-  the table — the repository's first, and the one moment the append-only
-  triggers are deliberately dropped. It runs inside a single transaction that
-  also carries the version stamp, so a crash anywhere in it rolls back to an
-  untouched version 1 file. What made it safe to write at all is that version 2
-  only *widens*: no existing row can fail the new constraint.
+  The file is at schema version 3, and version 1 and 2 files are migrated in
+  place on first open. SQLite cannot widen a CHECK constraint, so the migration
+  rebuilds the table — the one moment the append-only triggers are deliberately
+  dropped. It runs inside a single transaction that also carries the version
+  stamp, so a crash anywhere in it rolls back to an untouched older file. What
+  made it safe to write at all is that every version so far only *widens*: no
+  existing row can fail the new constraint. There is one rebuild rather than a
+  ladder — it asks the old table which columns it has rather than being told by
+  a version number — because the DDL in the module is by construction the
+  *current* table, and a ladder would need a frozen copy of each past one.
   Append-only comes from `BEFORE UPDATE`/`BEFORE DELETE` triggers that
   `RAISE(ABORT)` — SQLite has no roles and no grants, so the write-only
   interface and the file's permissions are defence in depth around those rather

@@ -332,20 +332,28 @@ export function createProxyServer(options: ProxyServerOptions): Server {
    * and the way that is true is that the only call to `options.dispatcher`
    * sits inside the `allow` branch.
    *
-   * Every call this route *decides* leaves an audit row — served, held, refused,
-   * or permitted-with-no-upstream. Three things reach this process and leave
-   * none, each with a log line and none with a row, because none of them has a
-   * decided call to describe:
+   * **Every call this route decides leaves exactly one audit row**, and that is
+   * now total over the region below rather than true of the paths that worked.
+   * Served, held, refused, permitted-with-no-upstream — and `unanswered` when
+   * the handler threw before it could answer at all, written from the catch that
+   * wraps everything downstream of the decision (#124). The rule holds in both
+   * directions: no decided call escapes without a row, and none gets two.
+   *
+   * What leaves no row is what arrives *before* a decision, because until then
+   * there is no call to describe:
    *
    *   - A body that fails `ToolCall.safeParse` (`tool_call_malformed`). There is
    *     no server, tool, task or requesting user to record. A row of nulls would
    *     be worse than the line: it would be counted.
    *   - A body over `MAX_BODY_BYTES`, rejected before it is parsed.
-   *   - Anything reaching the outer handler's catch (`handler_failed`). This is
-   *     the uncomfortable one and is stated rather than hidden: it can fire
-   *     after `recordToolCall` below, so a call can be metered and never
-   *     audited. Closing that means restructuring where the row is built, and
-   *     it is not done here (#124).
+   *   - A throw out of `options.sheets.resolve`, `options.spend.read`, or
+   *     `hashArguments` — everything above `decideFromState`. These reach the
+   *     outer handler's catch (`handler_failed`) with a log line and no row, and
+   *     that is the rule rather than a gap: nothing has been decided, nothing was
+   *     metered, and no upstream was reached.
+   *
+   * The decision is what makes a row's subject exist, which is why the catch
+   * opens where it does and not higher.
    */
   const callTool = async (ctx: RequestContext): Promise<RouteResponse> => {
     // Strict, so a body asserting a channel fails here rather than having the
@@ -411,6 +419,13 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     const decision = decideFromState(state, call, spend);
 
     /**
+     * Whether `audit` below was entered, read only by the catch at the bottom of
+     * this handler. The argument for entry rather than success is at the
+     * assignment, because that is the line a later edit would move.
+     */
+    let audited = false;
+
+    /**
      * Record what happened to this call: a durable row, then the log line.
      *
      * **The row is written first, and a failure to write it fails the request.**
@@ -434,6 +449,12 @@ export function createProxyServer(options: ProxyServerOptions): Server {
      * failures — leaving only "the disk filled between the meter write and this
      * one", where refusing to serve is the right answer anyway.
      *
+     * A throw on the way *to* this call — out of the meter, the broker, or the
+     * dispatcher — no longer costs the row at all. The catch below writes an
+     * `unanswered` one instead, so the residual above is now the only way a
+     * decided call goes unrecorded, and it is a write failure rather than a
+     * structural gap.
+     *
      * Row first, log line second: a line asserting an outcome that no durable
      * write recorded is the one ordering that can lie about this.
      */
@@ -441,11 +462,27 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       readonly outcome: AuditOutcome;
       readonly reason?: RefusalReason;
       readonly result?: ToolResult;
-      /** Present on a `ran` row that a human's approval let through. */
+      /** Present on a `ran` or `unanswered` row a human's approval let through. */
       readonly approver?: string;
       /** Present on every row for a call that passed through the broker. */
       readonly ticket?: string;
     }): Promise<void> => {
+      // Set on *entry*, not on success, and the difference is load-bearing: this
+      // flag is what the catch below reads to decide whether the call still needs
+      // a row, and "we got here" is the only answer that is safe in both
+      // directions. `append` can succeed and this function still throw
+      // afterwards — `logger.log` writes to a stream and can fail on EPIPE — and
+      // a success flag would then let the catch append a *second* row for a call
+      // that already has one, breaking the invariant everything downstream
+      // counts on. Set on entry, the worst case is a row that was never written
+      // because the write itself is what failed, which is the case where a
+      // second attempt would fail identically and has already been logged.
+      //
+      // Safe because this closure is called at most once per request: every call
+      // site is immediately followed by a `return` in a mutually exclusive
+      // branch, and the dispatch switch is exhaustive.
+      audited = true;
+
       try {
         await options.audit.append({
           at: now(),
@@ -505,24 +542,6 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       });
     };
 
-    // A refusal is refused whether or not a ticket came with it, and it is
-    // refused *before* the ticket is touched. That ordering is what stops an
-    // operator's edit during the hold from costing the human a second click:
-    // the approval survives a refusal and can still be redeemed once the sheet
-    // is fixed, inside the window.
-    if (decision.outcome === "refuse") {
-      // Awaited before the answer is composed. A fire-and-forget here would
-      // look correct and would defeat the whole of the argument above.
-      await audit({
-        outcome: "refused",
-        reason: decision.refusal.reason,
-        ...(ticket !== undefined ? { ticket } : {})
-      });
-      // A refusal is a served request, not an error: 200 with the structured
-      // shape. The agent relays it to the channel and carries on.
-      return ok({ outcome: "refused", id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
-    }
-
     /**
      * Who approved this call, for the `ran` row. Set only by a redemption.
      *
@@ -531,99 +550,181 @@ export function createProxyServer(options: ProxyServerOptions): Server {
      * "asserted by the agent and read by a decision" combination
      * `requestingUser`'s doc forbids. It comes from the ticket, which the
      * decision route wrote from a click the gateway observed.
+     *
+     * Declared out here rather than beside the redemption that sets it, so the
+     * catch below can read it. That is the case worth having it for: a human
+     * approved the call, the ticket was spent, and the proxy then answered
+     * nothing.
      */
     let approver: string | undefined;
 
-    if (ticket === undefined) {
-      // A first submission. A hold mints a ticket and asks; anything else falls
-      // through to the serve path exactly as it always did.
-      if (decision.outcome === "hold") {
-        const minted = approvals.mint(call, argumentsSha256);
-        await audit({ outcome: "held", reason: decision.refusal.reason, ticket: minted.id });
-        return ok({
-          outcome: "held",
-          id: call.id,
-          refusal: decision.refusal,
-          ticket: { id: minted.id, expiresAt: minted.expiresAt }
-        } satisfies ToolCallResponse);
-      }
-    } else {
-      const redeemed = approvals.redeem(ctx.channel, ticket, call, argumentsSha256);
-      if (redeemed.outcome !== "redeemed") {
-        const refusal = approvalRefusal(redeemed.outcome, call);
-        // An expiry is a terminal fact about a ticket that no other request
-        // will record, so it gets its own outcome — once, whoever observes it
-        // first. Everything else here is an ordinary refusal: a denied ticket
-        // already has its `denied` row, written by the decision route.
-        await audit({
-          outcome: redeemed.outcome === "expired" && redeemed.firstObserved ? "expired" : "refused",
-          reason: refusal.reason,
-          ticket
-        });
-        return ok({ outcome: "refused", id: call.id, refusal } satisfies ToolCallResponse);
-      }
-      approver = redeemed.ticket.approver ?? undefined;
-    }
-
-    // Falling through means one of two things: a first submission the sheet
-    // allows outright, or a re-submission whose ticket was just spent. A third
-    // case is possible and deliberately handled here rather than refused — the
-    // operator set `approval = "none"` during the hold, so the decision is now
-    // `allow` and the call runs on its own merits. The ticket is spent anyway,
-    // because it named this exact call and leaving it live would let a second
-    // re-submission run a second one, and the `ran` row still records the
-    // approver: a human did approve it, and an operator reconstructing the
-    // incident wants to know.
-
-    // Counted at the moment the proxy commits to serving, not once the upstream
-    // has answered. A crash between here and the reply loses the result, not
-    // the count, and over-counting a call that then failed is the direction
-    // that fails closed.
-    //
-    // A meter that cannot write must not serve. This is deliberately not
-    // wrapped: a throw becomes the handler's 500 and the dispatcher below is
-    // never reached, because a served call that went uncounted is an unmetered
-    // one — the exact state `assertServableComposition` exists to prevent.
-    await options.spend.recordToolCall(ctx.channel);
-
-    // The upstream comes off the decision, not from a second lookup: the entry
-    // that authorized the call is the entry the call goes to. See `Decision`.
-    const dispatched = await options.dispatcher.dispatch(call, decision.upstream, decision.limits);
-    switch (dispatched.outcome) {
-      case "ran":
-        await audit({
-          outcome: "ran",
-          result: dispatched.result,
-          ...(approver !== undefined ? { approver } : {}),
-          ...(ticket !== undefined ? { ticket } : {})
-        });
-        return ok({ outcome: "ran", id: call.id, result: dispatched.result } satisfies ToolCallResponse);
-      case "refused":
-        // Refused while serving rather than before: the vault could not resolve
-        // a credential the sheet names (#51). The ticket is on the row because
-        // it was spent — the approval is gone and the call did not run, which
-        // is a thing an operator reading the lifecycle needs to see.
+    /**
+     * Everything downstream of the decision, so nothing downstream of it can
+     * fail without leaving a row (#124).
+     *
+     * The row this catch writes is `unanswered`: the call was decided, it was
+     * metered, it may have reached the upstream, and the handler then threw
+     * before it could answer. The word claims nothing more than that, because
+     * nothing more is known — and the realistic cause is a failure on the
+     * result's way back, by which time the tool has already run.
+     *
+     * **It opens here and not higher.** Above `decideFromState` there is no
+     * decided call, so a row would assert an outcome for something nothing
+     * decided; and it opens *after* the closure above rather than beside the
+     * decision so the catch cannot reach `audit` in its temporal dead zone and
+     * mask the real failure with a `ReferenceError`. Coverage is the same either
+     * way — a function expression cannot throw.
+     *
+     * **It covers the meter write and the broker, not just the dispatcher.**
+     * There is no statement at all between `recordToolCall` and `dispatch`, so
+     * that window is empty by construction; what covering more buys is the
+     * approval branches, which are in memory today and are the likeliest place
+     * for someone to add an `await` later.
+     *
+     * **`catch` and not `finally`.** A `finally` cannot tell whether it is
+     * unwinding, so the day someone adds an early `return` that legitimately
+     * writes no row, it would file an `unanswered` one for a call that was
+     * answered fine — a lie in a table nobody can amend. And a throw inside a
+     * `finally` *replaces* the exception in flight, which is the masking this is
+     * trying to avoid.
+     *
+     * **The catch cannot reach the result**, because `dispatched` is scoped
+     * inside. That is deliberate rather than incidental: on a `RedactionError`
+     * the result is bytes nobody could scrub, so the row is *unable* to measure
+     * them rather than declining to.
+     */
+    try {
+      // A refusal is refused whether or not a ticket came with it, and it is
+      // refused *before* the ticket is touched. That ordering is what stops an
+      // operator's edit during the hold from costing the human a second click:
+      // the approval survives a refusal and can still be redeemed once the sheet
+      // is fixed, inside the window.
+      if (decision.outcome === "refuse") {
+        // Awaited before the answer is composed. A fire-and-forget here would
+        // look correct and would defeat the whole of the argument above.
         await audit({
           outcome: "refused",
-          reason: dispatched.refusal.reason,
+          reason: decision.refusal.reason,
           ...(ticket !== undefined ? { ticket } : {})
         });
-        return ok({
-          outcome: "refused",
-          id: call.id,
-          refusal: dispatched.refusal
-        } satisfies ToolCallResponse);
-      case "unavailable":
-        await audit({ outcome: "unavailable", ...(ticket !== undefined ? { ticket } : {}) });
-        return {
-          status: PROXY_ERROR_STATUS.not_implemented,
-          body: proxyError(
-            "not_implemented",
-            "the call is permitted, and this proxy has no upstream to serve it",
-            ctx.requestId,
-            ctx.channel
-          )
-        };
+        // A refusal is a served request, not an error: 200 with the structured
+        // shape. The agent relays it to the channel and carries on.
+        return ok({ outcome: "refused", id: call.id, refusal: decision.refusal } satisfies ToolCallResponse);
+      }
+
+      if (ticket === undefined) {
+        // A first submission. A hold mints a ticket and asks; anything else falls
+        // through to the serve path exactly as it always did.
+        if (decision.outcome === "hold") {
+          const minted = approvals.mint(call, argumentsSha256);
+          await audit({ outcome: "held", reason: decision.refusal.reason, ticket: minted.id });
+          return ok({
+            outcome: "held",
+            id: call.id,
+            refusal: decision.refusal,
+            ticket: { id: minted.id, expiresAt: minted.expiresAt }
+          } satisfies ToolCallResponse);
+        }
+      } else {
+        const redeemed = approvals.redeem(ctx.channel, ticket, call, argumentsSha256);
+        if (redeemed.outcome !== "redeemed") {
+          const refusal = approvalRefusal(redeemed.outcome, call);
+          // An expiry is a terminal fact about a ticket that no other request
+          // will record, so it gets its own outcome — once, whoever observes it
+          // first. Everything else here is an ordinary refusal: a denied ticket
+          // already has its `denied` row, written by the decision route.
+          await audit({
+            outcome: redeemed.outcome === "expired" && redeemed.firstObserved ? "expired" : "refused",
+            reason: refusal.reason,
+            ticket
+          });
+          return ok({ outcome: "refused", id: call.id, refusal } satisfies ToolCallResponse);
+        }
+        approver = redeemed.ticket.approver ?? undefined;
+      }
+
+      // Falling through means one of two things: a first submission the sheet
+      // allows outright, or a re-submission whose ticket was just spent. A third
+      // case is possible and deliberately handled here rather than refused — the
+      // operator set `approval = "none"` during the hold, so the decision is now
+      // `allow` and the call runs on its own merits. The ticket is spent anyway,
+      // because it named this exact call and leaving it live would let a second
+      // re-submission run a second one, and the `ran` row still records the
+      // approver: a human did approve it, and an operator reconstructing the
+      // incident wants to know.
+
+      // Counted at the moment the proxy commits to serving, not once the upstream
+      // has answered. A crash between here and the reply loses the result, not
+      // the count, and over-counting a call that then failed is the direction
+      // that fails closed.
+      //
+      // A meter that cannot write must not serve. This is deliberately not
+      // wrapped in anything that swallows: a throw becomes the handler's 500 and
+      // the dispatcher below is never reached, because a served call that went
+      // uncounted is an unmetered one — the exact state
+      // `assertServableComposition` exists to prevent. The catch around it
+      // records that the call went unanswered; it does not let it be served.
+      await options.spend.recordToolCall(ctx.channel);
+
+      // The upstream comes off the decision, not from a second lookup: the entry
+      // that authorized the call is the entry the call goes to. See `Decision`.
+      const dispatched = await options.dispatcher.dispatch(call, decision.upstream, decision.limits);
+      switch (dispatched.outcome) {
+        case "ran":
+          await audit({
+            outcome: "ran",
+            result: dispatched.result,
+            ...(approver !== undefined ? { approver } : {}),
+            ...(ticket !== undefined ? { ticket } : {})
+          });
+          return ok({ outcome: "ran", id: call.id, result: dispatched.result } satisfies ToolCallResponse);
+        case "refused":
+          // Refused while serving rather than before: the vault could not resolve
+          // a credential the sheet names (#51). The ticket is on the row because
+          // it was spent — the approval is gone and the call did not run, which
+          // is a thing an operator reading the lifecycle needs to see.
+          await audit({
+            outcome: "refused",
+            reason: dispatched.refusal.reason,
+            ...(ticket !== undefined ? { ticket } : {})
+          });
+          return ok({
+            outcome: "refused",
+            id: call.id,
+            refusal: dispatched.refusal
+          } satisfies ToolCallResponse);
+        case "unavailable":
+          await audit({ outcome: "unavailable", ...(ticket !== undefined ? { ticket } : {}) });
+          return {
+            status: PROXY_ERROR_STATUS.not_implemented,
+            body: proxyError(
+              "not_implemented",
+              "the call is permitted, and this proxy has no upstream to serve it",
+              ctx.requestId,
+              ctx.channel
+            )
+          };
+      }
+    } catch (error) {
+      if (!audited) {
+        try {
+          await audit({
+            outcome: "unanswered",
+            ...(approver !== undefined ? { approver } : {}),
+            ...(ticket !== undefined ? { ticket } : {})
+          });
+        } catch {
+          // The only swallow in this file, and it is the narrow one: the audit
+          // write is what failed, `audit` has already logged
+          // `audit_write_failed`, and rethrowing from here would replace the
+          // failure the 500 is actually about with the failure to record it.
+          // The thrown value is not read, as everywhere else on this path.
+        }
+      }
+      // Unchanged from here: the outer handler logs `handler_failed` and answers
+      // 500. Two lines now correlate by `requestId` — that one, and the
+      // `tool_call` line the row above carries.
+      throw error;
     }
   };
 

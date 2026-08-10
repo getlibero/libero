@@ -927,6 +927,7 @@ describe("the durable audit record", () => {
   // of them with no record.
   it("answers 500 and no tool-call response when the row cannot be written", async () => {
     const lines: string[] = [];
+    let appends = 0;
     const failing = createProxyServer({
       tls: loadTlsOptions({
         cert: join(certs, "proxy", "server.pem"),
@@ -939,6 +940,7 @@ describe("the durable audit record", () => {
       catalog: createUnavailableCatalog(),
       audit: {
         append: () => {
+          appends += 1;
           throw new Error("ghp_credential_shaped_value");
         }
       },
@@ -966,6 +968,13 @@ describe("the durable audit record", () => {
       // credential.
       expect(lines.join("")).toContain("audit_write_failed");
       expect(lines.join("")).not.toContain("ghp_");
+
+      // The direct test of the flag the #124 catch reads, and the reason it is
+      // set on *entry* rather than on success. The `ran` write threw, so the
+      // catch runs — and it must recognise that the failure it is handling *is*
+      // the audit write and not try a second one. One attempt, one log line.
+      expect(appends).toBe(1);
+      expect(lines.filter(line => line.includes("audit_write_failed"))).toHaveLength(1);
     } finally {
       failing.closeAllConnections();
       await new Promise<void>(resolve => failing.close(() => resolve()));
@@ -2041,11 +2050,16 @@ describe("a permitted call with no upstream", () => {
     expect(ProxyError.parse(response.body).error.code).toBe("not_implemented");
   });
 
-  // The fail-closed criterion, over the whole chain rather than link by link:
-  // a redaction that could not be performed must produce no response at all,
-  // not a served one carrying bytes nobody could scrub.
-  it("answers 500 and no upstream bytes when redaction fails", async () => {
+  // Two claims in one case, because they are in tension and the fix for #124 is
+  // the resolution. The fail-closed criterion, over the whole chain rather than
+  // link by link: a redaction that could not be performed must produce no
+  // response at all, not a served one carrying bytes nobody could scrub. And the
+  // accountability one: a call that got that far was metered and reached the
+  // dispatcher, so it must leave a row saying the proxy never answered it —
+  // this is the live path that used to leave none.
+  it("answers 500 with no upstream bytes when redaction fails, and records the call it never answered", async () => {
     const lines: string[] = [];
+    const before = lastAuditId(bareAuditFile);
     const throwing = createProxyServer({
       tls: loadTlsOptions({
         cert: join(certs, "proxy", "server.pem"),
@@ -2060,8 +2074,7 @@ describe("a permitted call with no upstream", () => {
         }
       },
       catalog: createUnavailableCatalog(),
-      // The throw is upstream of the audit call, so there is no row to make.
-      audit: discardingAuditWriter(),
+      audit: createSqliteAuditWriter({ db: bareAuditDb }),
       logger: createJsonLogger(line => lines.push(line))
     });
     const throwingPort = await new Promise<number>(resolve => {
@@ -2080,11 +2093,75 @@ describe("a permitted call with no upstream", () => {
       expect(response.status).toBe(500);
       expect(ProxyError.parse(response.body).error.code).toBe("internal");
       // Not a 200 with a result, and not a refusal — nothing was denied and
-      // nothing was served.
+      // nothing was served. The outcome exists in the log, not in the answer.
       expect(JSON.stringify(response.body)).not.toContain("outcome");
       expect(lines.map(line => JSON.parse(line) as { event: string })).toContainEqual(
         expect.objectContaining({ event: "handler_failed" })
       );
+
+      // Exactly one, asserted by length rather than by shape: the whole point of
+      // the flag the catch reads is that a call cannot come out of here with two.
+      const written = auditRows(bareAuditFile, before);
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatchObject({
+        call_id: "toolu_09",
+        outcome: "unanswered",
+        refusal_reason: null,
+        // Null because the result could not be measured, not because there was
+        // none: these are the bytes the redaction failed on.
+        result_bytes: null,
+        result_is_error: null
+      });
+    } finally {
+      throwing.closeAllConnections();
+      await new Promise<void>(resolve => throwing.close(() => resolve()));
+    }
+  });
+
+  // Criterion 2 of #124. The meter is the one write that must precede serving,
+  // so a meter that throws must both refuse the call and leave the row — and
+  // nothing may reach the upstream.
+  it("records a call whose meter write failed, and dispatches nothing", async () => {
+    const before = lastAuditId(bareAuditFile);
+    const dispatcher = recordingDispatcher();
+    const throwing = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      spend: {
+        read: channel => meter.read(channel),
+        recordToolCall: () => {
+          throw new Error("disk full");
+        },
+        recordTokens: () => ({ outcome: "recorded" })
+      },
+      dispatcher,
+      catalog: createUnavailableCatalog(),
+      audit: createSqliteAuditWriter({ db: bareAuditDb }),
+      logger: createJsonLogger(() => {})
+    });
+    const throwingPort = await new Promise<number>(resolve => {
+      throwing.listen(0, "127.0.0.1", () => resolve((throwing.address() as AddressInfo).port));
+    });
+
+    try {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, CHANNEL),
+        "POST",
+        throwingPort,
+        JSON.stringify(asked({ id: "toolu_10", server: "github", tool: "list_prs" }))
+      );
+
+      expect(response.status).toBe(500);
+      expect(dispatcher.seen).toEqual([]);
+
+      const written = auditRows(bareAuditFile, before);
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatchObject({ call_id: "toolu_10", outcome: "unanswered" });
     } finally {
       throwing.closeAllConnections();
       await new Promise<void>(resolve => throwing.close(() => resolve()));
@@ -2258,6 +2335,81 @@ describe("the approval broker", () => {
       await send("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
 
       expect((await meter.read(CHANNEL)).toolCalls).toBe(before + 1);
+    });
+  });
+
+  // The worst case #124 has to cover, and its own server because the dispatcher
+  // has to throw for the whole lifecycle rather than for one call: a human
+  // looked at a destructive call and approved it, the ticket was spent, the
+  // upstream may well have acted, and the proxy then failed before it could
+  // answer. The `unanswered` row must carry both the ticket and the approver, or
+  // an operator reconstructing the incident sees an approval whose call simply
+  // vanished.
+  describe("an approved call the proxy then fails to answer", () => {
+    let failing: Server;
+    let failingPort: number;
+    let failingAuditDir: string;
+    let failingAuditFile: string;
+    let failingAuditDb: AuditDb;
+
+    beforeAll(async () => {
+      failingAuditDir = mkdtempSync(join(tmpdir(), "libero-proxy-approval-fail-"));
+      failingAuditFile = join(failingAuditDir, "audit.db");
+      failingAuditDb = openAuditDb({ file: failingAuditFile });
+
+      failing = createProxyServer({
+        tls: loadTlsOptions({
+          cert: join(certs, "proxy", "server.pem"),
+          key: join(certs, "proxy", "server.key"),
+          ca: join(certs, "ca.pem")
+        }),
+        sheets,
+        spend: meter,
+        // Always, which is harmless: the hold and the decision never reach a
+        // dispatcher, so only the re-submission can provoke this.
+        dispatcher: {
+          dispatch: () => {
+            throw new RedactionError("empty_value");
+          }
+        },
+        catalog: createUnavailableCatalog(),
+        audit: createSqliteAuditWriter({ db: failingAuditDb }),
+        logger: createJsonLogger(() => {})
+      });
+      await new Promise<void>(resolve => {
+        failing.listen(0, "127.0.0.1", () => {
+          failingPort = (failing.address() as AddressInfo).port;
+          resolve();
+        });
+      });
+    });
+
+    afterAll(async () => {
+      failing.closeAllConnections();
+      await new Promise<void>(resolve => failing.close(() => resolve()));
+      failingAuditDb.close();
+      rmSync(failingAuditDir, { recursive: true, force: true });
+    });
+
+    it("records the unanswered call against its ticket and its approver", async () => {
+      const before = lastAuditId(failingAuditFile);
+      const to = (path: string, body: unknown): Promise<Response> =>
+        call(path, clientCert(certs, CHANNEL), "POST", failingPort, JSON.stringify(body));
+
+      const held = await to("/v1/tools/call", HELD_CALL);
+      const ticket = (held.body as { ticket: { id: string } }).ticket;
+      await to("/v1/approvals", { ticket: ticket.id, decision: "approve", approver: "U0BOSS" });
+
+      const served = await to("/v1/tools/call", { ...HELD_CALL, ticket: ticket.id });
+
+      expect(served.status).toBe(500);
+      expect(ToolCallResponse.safeParse(served.body).success).toBe(false);
+      // Three rows, one ticket, and the last of them is the one this is about.
+      expect(auditRows(failingAuditFile, before).map(row => [row.outcome, row.approver, row.ticket])).toEqual([
+        ["held", null, ticket.id],
+        ["approved", "U0BOSS", ticket.id],
+        ["unanswered", "U0BOSS", ticket.id]
+      ]);
     });
   });
 

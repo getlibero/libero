@@ -27,10 +27,21 @@ import type { RefusalReason } from "./refusal.js";
  * What the proxy did with a call.
  *
  * The first three are `ToolCallResponse`'s discriminator, so a log line, the
- * answer the agent got, and the row all say the same word. `unavailable` is the
- * fourth: a call the sheet permitted that this proxy had no upstream to serve,
- * which is a 501 rather than a `ToolCallResponse` and still a thing that
- * happened.
+ * answer the agent got, and the row all say the same word.
+ *
+ * `unavailable` and `unanswered` are the proxy's own, and neither has a wire
+ * counterpart. `unavailable` is a call the sheet permitted that this proxy had
+ * no upstream to serve, which is a 501 rather than a `ToolCallResponse` and
+ * still a thing that happened.
+ *
+ * `unanswered` is the one the proxy writes about *itself*: the call was decided
+ * and metered, the handler then threw, and the agent got a 500 rather than any
+ * answer at all. **It asserts nothing about whether the upstream acted**, and
+ * that is the honest content of the word rather than a hedge — the realistic
+ * cause is a failure on the result's way back, by which time the tool has run.
+ * So `ran` undercounts upstream effects by exactly the `unanswered` rows, which
+ * is what an incident review needs the word for. There is no wire counterpart
+ * because there was no answer to carry one.
  *
  * The last three are the approval broker's, and they are the only outcomes in
  * this table that no `/v1/tools/call` request produced: `approved` and `denied`
@@ -58,6 +69,7 @@ export const AuditOutcome = z.enum([
   "held",
   "refused",
   "unavailable",
+  "unanswered",
   "approved",
   "denied",
   "expired"
@@ -106,19 +118,29 @@ export interface AuditRecord {
    *
    * To ask what a request cost, join on `task`: the meter's turn ids are
    * `<task>.<n>`.
+   *
+   * **Absent does not mean "did not run".** On an `unanswered` row both this and
+   * `resultIsError` are absent because the proxy could not measure a result, not
+   * because there was none — the bytes it failed on are bytes nobody could
+   * scrub. A reader summing this column is summing served calls; a reader asking
+   * what the upstream did has to count `unanswered` separately.
    */
   readonly resultBytes?: number;
   /**
    * Whether the tool reported its own failure. Distinct from `outcome`, which is
    * the proxy's verdict: a call the proxy served perfectly can carry a 404 from
    * the tool, and collapsing the two would make `ran` mean "ran successfully".
+   *
+   * Absent on an `unanswered` row, for the reason above rather than as a `false`.
    */
   readonly resultIsError?: boolean;
   /**
    * The human who decided a held call, as the gateway observed them.
    *
    * On the `approved` or `denied` row the decision route writes, and again on
-   * the `ran` row of the call that approval let through. It cannot be
+   * the `ran` row of the call that approval let through — or on its `unanswered`
+   * row, which is the case worth having the field for: a human approved a call,
+   * the ticket was spent, and the proxy then answered nothing. It cannot be
    * back-filled onto the `held` row — the table refuses UPDATE — which is why a
    * decision is a new row rather than an amendment to the one it answers.
    *
@@ -137,7 +159,9 @@ export interface AuditRecord {
    * The approval ticket this row belongs to, when the call passed through the
    * broker: on the `held` row that minted it, on the `approved` or `denied` row
    * that decided it, on the `expired` row that observed it dead, and on the
-   * `ran` row that spent it.
+   * `ran` — or `unanswered` — row that spent it. A ticket is spent by the
+   * re-submission rather than by the answer, so a lifecycle stays joined even
+   * when the last request in it failed.
    *
    * The correlation key, and the reason it is a column rather than a join on
    * something already here: `callId` is model-authored and a retry reuses it, so

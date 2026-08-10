@@ -115,6 +115,12 @@ export interface LogFields {
    * one. The audit log's vocabulary, of which the first four are also the
    * wire's, so a log line and the response a client got say the same word.
    *
+   * `unanswered` is the one member no client ever sees, because there was no
+   * answer to carry it: the call was decided and metered and the handler then
+   * threw, so what the client got was the 500 `handler_failed` describes. A line
+   * with this outcome and a `handler_failed` line sharing a `requestId` are the
+   * two halves of one failure.
+   *
    * Written as the schema's type rather than repeated here, which makes the two
    * agreeing a compile error rather than a review question — ./server.ts types
    * its audit closure on the same union and passes the value to both.

@@ -115,8 +115,10 @@ docker compose run --rm proxy node dist/budget.js prune
 
 ## The audit log
 
-`PROXY_AUDIT_DB` is one row per decided tool call — served, held, refused, or
-permitted with no upstream — appended and never rewritten. Required with no
+`PROXY_AUDIT_DB` is one row per decided tool call — served, held, refused,
+permitted with no upstream, or decided and then never answered because the
+handler failed — appended and never rewritten. Exactly one row per decided call,
+in both directions: none escapes without one, and none gets two. Required with no
 default, and opened before anything binds, on the same argument as the budget
 with the failure mode turned quiet: a file under a path nobody meant produces a
 deployment that looks audited and has nothing to show when someone finally
