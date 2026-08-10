@@ -75,6 +75,28 @@ export interface HeldToolCall {
  */
 export type HeldCallPrompter = (held: HeldToolCall, signal?: AbortSignal) => Promise<void>;
 
+/**
+ * A call refused here rather than by the proxy, because the name the model used
+ * decoded to no `(server, tool)` pair.
+ *
+ * There is no `(server, tool)` on it — that is the whole condition — and no
+ * arguments either: what an operator needs is that a name was tried and which
+ * one, and the arguments of a call that was never made are the model's own
+ * text with nothing to correlate them against.
+ *
+ * `name` is **model-authored text**, the only field on this object that did not
+ * originate in this system. It is a value here rather than a sentence so that a
+ * consumer puts it in a structured field and never interpolates it into a
+ * message.
+ */
+export interface UnmappedToolCall {
+  /** The flat name as the model emitted it. Model-authored; see above. */
+  readonly name: string;
+  /** Attribution, as it would have gone on the wire call. Never a gate. */
+  readonly requestingUser: string;
+  readonly taskId: string;
+}
+
 export interface ProxyToolClientOptions {
   transport: ProxyTransport;
   /** Whose certificate every request presents. Fixed for the life of this object. */
@@ -86,13 +108,32 @@ export interface ProxyToolClientOptions {
    * with its ticket, whatever the wait's outcome; see `execute`.
    */
   onHeld?: HeldCallPrompter;
+  /**
+   * Told about a call refused here rather than by the proxy. Absent, nothing
+   * records it — which is what every caller did before #170, and still the
+   * right default for a caller with nowhere to put it.
+   *
+   * A callback rather than a logger because this package has no way to log and
+   * should not gain one: `./spend.ts` argues that for the sibling client in
+   * this directory, and it is why `spend_reported` is a word in `apps/server`
+   * rather than in the client that provokes it. The composer also holds what a
+   * line wants and this object does not — the channel, and the front-end's own
+   * trace id.
+   *
+   * **It must not throw.** Nothing catches it: `execute` would propagate, and
+   * the loop would turn a refusal that was working correctly into an error
+   * result. Catching here is worse than the throw, for the reason `onTurn`
+   * gives in ../loop/types.ts — this file cannot log, so a swallowed failure
+   * vanishes rather than being reported.
+   */
+  onUnmappedCall?: (call: UnmappedToolCall) => void;
 }
 
 /** Both halves, so a caller cannot wire one to the proxy and the other to a stub. */
 export interface ProxyToolClient extends ToolSource, ToolExecutor {}
 
 export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToolClient {
-  const { transport, channel, onHeld } = options;
+  const { transport, channel, onHeld, onUnmappedCall } = options;
   let byModelName = new Map<string, MappedTool>();
 
   /** One submission: POST the body, insist on an answer that parses. */
@@ -171,9 +212,21 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
       const mapped = byModelName.get(call.name);
       if (mapped === undefined) {
         // Not a pair, so there is nothing to send. A model that invented a name
-        // — or called one from a listing that has since changed — is told so
-        // and may try something else; the proxy is not asked about a tool it
-        // never published.
+        // is told so and may try something else; the proxy is not asked about a
+        // tool it never published.
+        //
+        // Reported before it is returned, because otherwise this is the one
+        // refusal in the system that only the model ever sees: the proxy never
+        // saw the call and rightly writes no audit row, so without this a model
+        // can probe fifty names and the audit log shows a task that made no
+        // tool calls (#170). The listing is fetched once per task on a client
+        // built for that task, so a name outside the map is invented rather
+        // than stale — which is what makes this worth a line at all.
+        onUnmappedCall?.({
+          name: call.name,
+          requestingUser: attribution.requestingUser,
+          taskId: attribution.taskId
+        });
         return {
           content: `\`${call.name}\` is not a tool this channel permits. The call was not made.`,
           isError: true

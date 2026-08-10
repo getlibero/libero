@@ -27,7 +27,7 @@ export interface LogFields {
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
    * "reconnecting", "disconnected", "auth_rejected", "stopping". Dispatch:
    * "mention", "replied", "ignored", "handler_failed", "post_failed". Tools:
-   * "task", "tools_unavailable". Spend: "spend_reported",
+   * "task", "tools_unavailable", "tool_not_permitted". Spend: "spend_reported",
    * "spend_report_failed". Sessions: "queued", "session_evicted",
    * "team_sheet_invalid", "team_sheet_unreadable". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
@@ -148,6 +148,24 @@ export interface LogFields {
    * records the proxy writes for the same task (#97).
    */
   task?: string;
+  /**
+   * The flat tool name a model called, on a call refused before the proxy was
+   * asked — `tool_not_permitted` and nothing else (#170).
+   *
+   * **The one field in this vocabulary whose value the model wrote.** Every
+   * other field here is an id this system or Slack minted; this is text that
+   * arrived in a completion, and it is a named field precisely so it can never
+   * be interpolated into a message. A reviewer adding a second model-authored
+   * field should expect to argue for it: the two rules at the top of this file
+   * are about what a line may not carry, and this is the one line where the
+   * value is not ours to vouch for.
+   *
+   * Not content, in the sense the second rule means: a name the model invented
+   * is not a message a channel's members wrote. It is here because "what did
+   * that task try to call" has no other answer — the proxy never saw the call
+   * and writes no audit row for it, correctly.
+   */
+  tool?: string;
 }
 
 export interface Logger {

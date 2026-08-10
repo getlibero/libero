@@ -128,6 +128,17 @@ which is what keeps names stable across sessions now that a listing carries more
 than the sheet: an upstream that reorders its catalog changes a description, not
 a name.
 
+A name with no pair is refused without sending anything, and since #170 the
+client *reports* that through an optional `onUnmappedCall` — the only record of
+it, since the proxy never saw the call and rightly writes no audit row.
+`apps/server` turns it into a `warn`/`tool_not_permitted` line, which is where a
+model enumerating tool names becomes visible to an operator. It is a callback
+rather than a logger because `packages/agent` has no way to log and should not
+gain one — `proxy/spend.ts` argues that for the sibling client, and it is why
+`spend_reported` is a word in `apps/server` rather than in the client that
+provokes it. The name is model-authored text, so it travels as a value and
+`LogFields.tool` is the one field in that vocabulary this system did not write.
+
 **The listing carries real tool definitions (#129).** `GET /v1/tools` asks each
 upstream the channel's sheet names for its `tools/list`, keeps the entries the
 sheet named, and publishes an optional `description` and `inputSchema` beside

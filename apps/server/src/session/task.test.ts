@@ -323,6 +323,49 @@ describe("createMentionHandler", () => {
     expect(reply?.text).toMatch(/tool call cap/);
   });
 
+  // The refusal the proxy never sees, and therefore never audits. Without this
+  // line a model can probe name after name and the audit log shows a task that
+  // made no tool calls at all (#170).
+  it("logs a tool call refused before the proxy was asked", async () => {
+    const captured = capturingLogger();
+    const runner = createTaskRunner({
+      completion: {
+        complete: (): Promise<CompletionResponse> =>
+          Promise.resolve({
+            text: "",
+            toolCalls: [{ id: "call-1", name: "force_push", arguments: { repo: "libero" } }],
+            stopReason: "tool_use",
+            usage: { inputTokens: 11, outputTokens: 7 }
+          })
+      },
+      transport: fakeTransport({ tools: () => LISTED }).transport,
+      logger: captured.logger
+    });
+
+    // One call, so the model answering with the same invented name every turn
+    // ends the task rather than probing forever.
+    await runner(taskRequest(), {
+      ...SETTINGS,
+      caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 1 }
+    });
+
+    const line = captured.lines.find(entry => entry.event === "tool_not_permitted");
+    expect(line).toMatchObject({
+      // Nothing is broken, but nothing designed this either — which is the one
+      // level between the `task` line and `tools_unavailable`.
+      level: "warn",
+      channel: "C024BE91L",
+      eventId: "Ev0PV52K25",
+      user: "U024BE7LH",
+      // The name the model wrote, as a value. A line that interpolated it into
+      // a message would be putting model-authored text into a log sentence.
+      tool: "force_push"
+    });
+    // The join key: the same root the task's own line and its spend reports
+    // carry, so one grep gathers everything a task did.
+    expect(line?.task).toBe(captured.lines.find(entry => entry.event === "task")?.task);
+  });
+
   it("takes the per-turn output ceiling from the caps it was handed", async () => {
     const { client, requests } = fakeCompletion({ text: "ok" });
     const runner = createTaskRunner({

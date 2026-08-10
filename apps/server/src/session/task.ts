@@ -179,7 +179,30 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     const tools = createProxyToolClient({
       transport: options.transport,
       channel,
-      ...(request.onHeld !== undefined ? { onHeld: request.onHeld } : {})
+      ...(request.onHeld !== undefined ? { onHeld: request.onHeld } : {}),
+      // A tool call the client refused before the proxy was asked. It is logged
+      // here rather than there because that package has no way to log and
+      // should not gain one — the same split `reportSpend` below runs on — and
+      // because the channel and the front-end's trace id are in scope here and
+      // not in a client pinned to one task.
+      //
+      // `warn`, not `info`: nothing is broken, but nothing designed this
+      // either. A model naming a tool this channel was never given is either a
+      // confused turn or the cheapest probe there is, and the operator reading
+      // the audit log sees neither — the proxy never saw the call.
+      //
+      // The name is model-authored text, so it goes in `tool` as a value and is
+      // never part of a message. See the field's own comment in
+      // @getlibero/gateway.
+      onUnmappedCall: ({ name, requestingUser, taskId }) =>
+        logger.log("warn", {
+          event: "tool_not_permitted",
+          channel,
+          eventId: request.traceId,
+          task: taskId,
+          user: requestingUser,
+          tool: name
+        })
     });
 
     // Same channel, same certificate, and pinned the same way: what a task cost

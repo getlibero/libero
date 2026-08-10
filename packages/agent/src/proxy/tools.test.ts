@@ -9,7 +9,12 @@ import { ToolCall as WireToolCall } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import type { ToolCall } from "../completion/types.js";
 import type { ToolCallAttribution } from "../loop/types.js";
-import { createProxyToolClient, type HeldCallPrompter, type HeldToolCall } from "./tools.js";
+import {
+  createProxyToolClient,
+  type HeldCallPrompter,
+  type HeldToolCall,
+  type UnmappedToolCall
+} from "./tools.js";
 import { ProxyClientError, type ProxyRequest, type ProxyResponse, type ProxyTransport } from "./transport.js";
 
 const CHANNEL = "C024BE91L";
@@ -509,6 +514,104 @@ describe("a name the model made up", () => {
 
     expect(result.isError).toBe(true);
     expect(fake.sent).toEqual([]);
+  });
+});
+
+// Without this the refusal is the one in the system only the model ever sees:
+// the proxy never saw the call and writes no audit row for it, correctly. A
+// model can otherwise probe fifty names against a task that looks, from the
+// audit log, like it made no tool calls at all (#170).
+describe("reporting a name the model made up", () => {
+  /** As `ready`, plus the reporting seam and what it collected. */
+  async function watching(): Promise<{
+    client: ReturnType<typeof createProxyToolClient>;
+    sent: ProxyRequest[];
+    reported: UnmappedToolCall[];
+  }> {
+    const fake = fakeTransport();
+    const reported: UnmappedToolCall[] = [];
+    const client = createProxyToolClient({
+      transport: fake.transport,
+      channel: CHANNEL,
+      onUnmappedCall: unmapped => void reported.push(unmapped)
+    });
+    await client.list();
+    return { client, sent: fake.sent, reported };
+  }
+
+  it("reports the name and the attribution, once", async () => {
+    const { client, reported } = await watching();
+
+    await client.execute(call("force_push", { repo: "libero" }), ATTRIBUTION);
+
+    expect(reported).toEqual([
+      {
+        name: "force_push",
+        requestingUser: ATTRIBUTION.requestingUser,
+        taskId: ATTRIBUTION.taskId
+      }
+    ]);
+  });
+
+  // Every probe, not the first one — the shape of the attack is the fiftieth
+  // name, so a report that deduplicated would hide exactly what it exists for.
+  it("reports every attempt", async () => {
+    const { client, reported } = await watching();
+
+    for (const invented of ["github.list_prs", "github__list_prs", "force_push", "force_push"]) {
+      await client.execute(call(invented), ATTRIBUTION);
+    }
+
+    expect(reported.map(unmapped => unmapped.name)).toEqual([
+      "github.list_prs",
+      "github__list_prs",
+      "force_push",
+      "force_push"
+    ]);
+  });
+
+  // This records what the proxy never saw. A call it did see is its own to
+  // audit, and reporting it here would double-count one refusal across two
+  // systems that are supposed to be describing different things.
+  it("says nothing about a call the proxy answered", async () => {
+    const fake = fakeTransport({
+      call: () => ({
+        status: 200,
+        body: {
+          outcome: "refused",
+          id: "call-1",
+          refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" }
+        }
+      })
+    });
+    const reported: UnmappedToolCall[] = [];
+    const client = createProxyToolClient({
+      transport: fake.transport,
+      channel: CHANNEL,
+      onUnmappedCall: unmapped => void reported.push(unmapped)
+    });
+    await client.list();
+
+    const ran = await client.execute(call("list_prs"), ATTRIBUTION);
+    const refused = await client.execute(call("merge_pr"), ATTRIBUTION);
+
+    expect(ran.isError).toBe(true);
+    expect(refused.isError).toBe(true);
+    expect(reported).toEqual([]);
+  });
+
+  // A front-end with nowhere to put the line is the pre-#170 composition, and
+  // it must still refuse identically: this seam records, and never decides.
+  it("changes nothing when no one is listening", async () => {
+    const { client, sent } = await ready();
+
+    const result = await client.execute(call("force_push"), ATTRIBUTION);
+
+    expect(result).toEqual({
+      content: "`force_push` is not a tool this channel permits. The call was not made.",
+      isError: true
+    });
+    expect(sent).toHaveLength(1);
   });
 });
 
