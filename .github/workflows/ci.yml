@@ -16,7 +16,12 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # Pinned to the major, not to a patch, but the major matters: the
+          # message store needs FTS5, and `node:sqlite` gained it in 22.16 and
+          # 24.0. `node-version: 22` resolved to a 22.x past 22.16, so CI would
+          # have passed while the stated floor of 22.13 failed on an operator's
+          # machine with `no such module: fts5`.
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build

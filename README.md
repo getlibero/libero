@@ -60,7 +60,7 @@ packages/schema    zod schemas — single source of truth for team sheets, audit
 packages/gateway   Slack adapter — Socket Mode, mention intake, approval-card rendering
 packages/agent     provider-agnostic agent loop + the proxy client
 packages/proxy     credential vault, team-sheet enforcement, HITL broker, budgets, audit
-packages/memory    stub — per-channel SQLite memory lands here (FTS5 + sqlite-vec)
+packages/memory    per-channel SQLite message store with FTS5 (sqlite-vec recall is phase 2)
 packages/cli       @getlibero/cli — the only npm-published package (placeholder release)
 apps/server        composes gateway + agent + the channel router (service 1)
 apps/proxy-server  composes proxy (service 2)

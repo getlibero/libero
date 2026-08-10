@@ -122,7 +122,7 @@ app and read history anywhere the app is installed.
 | --- | --- |
 | `app_mentions:read` | Receiving the mention that starts a task |
 | `chat:write` | Posting replies and approval cards, and editing its own messages — a card goes amber, then green or red, in place |
-| `channels:history` | Channel messages for recall and thread follow-ups — the message store is phase 2 and not built yet |
+| `channels:history` | Channel messages for recall and thread follow-ups — the store exists, but nothing subscribes to these events yet, so nothing fills it |
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
 | `users:read` | Display names, so the model can address the right person — not wired up yet |
 
@@ -136,8 +136,8 @@ app and read history anywhere the app is installed.
 
 Message events carry deletions as a subtype rather than as their own event, and the design
 mirrors them: a message deleted in Slack is deleted from that channel's store, index included, so
-Slack retention is respected rather than quietly outlived. Today the adapter ignores subtypes —
-the mirroring lands with the message store, in phase 2.
+Slack retention is respected rather than quietly outlived. The store's half of that is built — a
+delete takes its index entry with it. The adapter still ignores subtypes, so nothing calls it yet.
 
 ### Interactivity
 
@@ -220,10 +220,11 @@ Nothing in it is a secret either: names, ids, and a hash of the model's argument
 value and never a credential. A proxy that cannot write this file refuses the call it could not
 record rather than serving it unrecorded.
 
-The meter uses Node's built-in `node:sqlite` — no dependency, no native build — which needs Node
-22.13 or newer and is still marked experimental, so some Node versions print an
-`ExperimentalWarning` for it at startup. If that is noise in your log collector, set
-`NODE_OPTIONS: --disable-warning=ExperimentalWarning` on the proxy service.
+The meter uses Node's built-in `node:sqlite` — no dependency, no native build. Both services need
+Node 24 or newer: the message store's full-text index needs SQLite's FTS5, and `node:sqlite` was
+compiled without it until 22.16. `node:sqlite` became a release candidate in 24.15; below that it
+prints an `ExperimentalWarning` at startup. If that is noise in your log collector, either move to
+24.15+ or set `NODE_OPTIONS: --disable-warning=ExperimentalWarning` on the service.
 
 Team sheet edits are picked up on file change. An invalid sheet is rejected and the previous valid
 version stays active, so a bad edit degrades to "no change" rather than "no enforcement".
