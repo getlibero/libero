@@ -246,4 +246,18 @@ brings it back once the environment is fixed.
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend
   client per task, both pinned to the request's channel.
-- `src/index.ts` — composition and lifecycle, and nothing else.
+- `src/compose.ts` — the wiring, as a function of its dependencies:
+  `createServer(deps)` returns a gateway that has not connected. It holds no
+  environment, no token, and no default that could stand in for one. This is the
+  package's entry point (`main`/`exports`), because it is the half another
+  process can compose; `dist/index.js` is reached by path.
+- `src/index.ts` — the environment and the lifecycle. Reads the variables,
+  builds the adapters, calls `createServer`, connects, stops cleanly. Running it
+  is a side effect of importing it, which is why it is not what the package
+  exports.
+
+  The split is what lets the e2e suite (`e2e/`) and `held-call.test.ts` run the
+  *production* composition rather than a restatement of it — the Slack surface
+  arrives as a factory, so a test passes one over `createStubSlack` and gets the
+  same graph. What stays here is what belongs to a process: the tokens, and an
+  `onFatal` that exits.

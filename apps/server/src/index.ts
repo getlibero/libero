@@ -1,11 +1,13 @@
 // The gateway + agent process.
 //
-// Composition only: read the environment, build the completion client and the
-// handler, connect, stop cleanly. Everything it does lives in
-// @getlibero/gateway and @getlibero/agent — and the environment rules in
-// env.ts, the Slack mapping in handler.ts, the sessions and the loop under
-// session/ — where they are testable without a socket, a provider, or a
-// process.
+// The environment and the lifecycle, and nothing else: read the variables,
+// build the adapters, hand them to `createServer`, connect, stop cleanly. The
+// wiring those dependencies get plugged into is compose.ts, which holds no
+// environment and starts nothing — so the same graph this process runs is the
+// one the tests run. Everything it does lives in @getlibero/gateway and
+// @getlibero/agent — and the environment rules in env.ts, the Slack mapping in
+// handler.ts, the sessions and the loop under session/ — where they are
+// testable without a socket, a provider, or a process.
 //
 // Sessions are in memory and nothing here is durable. A restart drops every
 // session, which costs nothing today: a session holds a queue and a timestamp,
@@ -16,15 +18,9 @@
 // mutual-TLS call to the tool proxy service, which owns every credential and
 // decides every call from the channel's team sheet.
 
-import {
-  createCompletionClient,
-  createProxyApprovalsClient,
-  createProxyTransport
-} from "@getlibero/agent";
+import { createCompletionClient, createProxyTransport } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
-import { createDecisionHandler } from "./approvals/decisions.js";
-import { createHeldCallPrompter } from "./approvals/prompter.js";
-import { createApprovalRegistry } from "./approvals/registry.js";
+import { createServer } from "./compose.js";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
@@ -32,10 +28,7 @@ import {
   proxyConfigFromEnv,
   slackTokensFromEnv
 } from "./env.js";
-import { createMentionHandler } from "./handler.js";
-import { createChannelRouter } from "./session/router.js";
 import { createSheetResolver } from "./session/sheet.js";
-import { createTaskRunner } from "./session/task.js";
 
 const logger = createJsonLogger();
 
@@ -57,50 +50,33 @@ const transport = createProxyTransport(proxyConfigFromEnv(process.env));
 // the way out, because the prompter listens on this same signal.
 const tasks = new AbortController();
 
-// The approval broker's client side: one registry of waits at process scope,
-// one decisions client over the same transport every tool call takes. The
-// channel a decision is relayed on comes from the waiting entry, which got it
-// from the mention's certificate-backed session — never from the click.
-const registry = createApprovalRegistry();
-const approvals = createProxyApprovalsClient({ transport });
-
-const surface = createSlackSurface({
-  appToken,
-  botToken,
-  // The prompter needs the surface's card poster and the surface needs the
-  // handler, so the handler closes over a binding assigned just below. Safe:
-  // nothing dispatches a mention before `start()`, and `handleMention` exists
-  // the moment this module finishes evaluating.
-  handler: mention => handleMention(mention),
-  // A click becomes a settled wait by way of the proxy — see
-  // approvals/decisions.ts for the ordering and what each answer means.
-  onDecision: createDecisionHandler({ registry, approvals, logger }),
-  logger,
-  // The socket died for a reason retrying cannot fix — a revoked or rotated
-  // token. Exiting is the honest outcome: the alternative is a process that is
-  // up, healthy to every probe, and will never answer another mention. Under
-  // compose, `restart: unless-stopped` picks it back up, which is what makes a
-  // rotated token recover on its own once the environment is fixed.
-  onFatal: error => {
-    logger.log("error", { event: "gateway_dead", reason: error.reason });
-    process.exit(1);
-  }
+const { gateway } = createServer({
+  // The one thing this process supplies that a test does not: the real socket
+  // and the real Web API client, built from the two tokens. `onFatal` stays
+  // here with them, because what it does is exit.
+  slack: ({ handler, onDecision }) =>
+    createSlackSurface({
+      appToken,
+      botToken,
+      handler,
+      onDecision,
+      logger,
+      // The socket died for a reason retrying cannot fix — a revoked or rotated
+      // token. Exiting is the honest outcome: the alternative is a process that
+      // is up, healthy to every probe, and will never answer another mention.
+      // Under compose, `restart: unless-stopped` picks it back up, which is what
+      // makes a rotated token recover on its own once the environment is fixed.
+      onFatal: error => {
+        logger.log("error", { event: "gateway_dead", reason: error.reason });
+        process.exit(1);
+      }
+    }),
+  completion,
+  transport,
+  sheets: createSheetResolver({ root: channelsRoot, model, logger }),
+  signal: tasks.signal,
+  logger
 });
-const gateway = surface.gateway;
-
-// Slack in, request out, and everything below that mapping is transport
-// neutral: the router serializes per channel, the resolver reads that
-// channel's sheet, the runner runs one task on what the sheet said. The
-// prompter factory rides the same seam the reply does — the mention's channel
-// and thread are captured in handler.ts, and the router sees a closure.
-const handleMention = createMentionHandler(
-  createChannelRouter({
-    sheets: createSheetResolver({ root: channelsRoot, model, logger }),
-    task: createTaskRunner({ completion, transport, signal: tasks.signal, logger }),
-    logger
-  }),
-  createHeldCallPrompter({ cards: surface.cards, registry, logger })
-);
 
 // Rejects on credentials Slack will never accept — which is a startup failure,
 // not something to retry.
