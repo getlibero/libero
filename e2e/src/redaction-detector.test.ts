@@ -21,6 +21,7 @@ import {
   breakRedaction,
   calls,
   createCleanup,
+  expectCanaryReachedUpstream,
   expectNoCanary,
   rigOf,
   says,
@@ -69,7 +70,7 @@ function asShipped(): void {
       // The attempt was real: the credential did reach the upstream, and the
       // upstream did reflect it. Without this the case proves only that nothing
       // happened.
-      expect(upstream.callsTo("tools/call")[0]?.authorization).toBe(`Bearer ${CANARY}`);
+      expectCanaryReachedUpstream(upstream);
 
       // And what came back names the credential instead of carrying it. The
       // marker is asserted rather than only the absence, because a result that

@@ -34,6 +34,37 @@ export function calls(name: string, args: Record<string, unknown>, id = "call-1"
 }
 
 /**
+ * One turn of a script: an answer, or a function of the request that produced it.
+ *
+ * The function form exists for one shape and should stay rare — a model whose
+ * answer depends on what it was handed. Everything else is a constant, because
+ * a scripted attacker that computes its own turns is a program, and a program
+ * is harder to read than the sequence it stands for.
+ */
+export type ScriptTurn = CompletionResponse | ((request: CompletionRequest) => CompletionResponse);
+
+/**
+ * One turn's answer: post every tool result it was given, verbatim.
+ *
+ * The compromised model, doing the most damaging honest thing available to it —
+ * relaying what the proxy handed it straight into the channel. It is how a leak
+ * becomes public rather than merely present, and it makes the thread reply a
+ * real surface for the canary scan instead of a fixed string the case wrote.
+ *
+ * What has to appear in that reply is the redaction marker: the model relayed
+ * everything, and everything was a name.
+ */
+export function relays(): ScriptTurn {
+  return request =>
+    says(
+      request.messages
+        .filter(message => message.role === "tool")
+        .map(message => message.content)
+        .join("\n")
+    );
+}
+
+/**
  * Fired as the model is asked for a turn, with the 1-based turn number.
  *
  * The seam a mid-flight mutation needs, and the reason it is here rather than
@@ -57,7 +88,7 @@ export type ModelTurnHook = (turn: number) => void;
  * plausible: a task that took more turns than the case scripted has stopped
  * being the scenario under test, and the error says which turn it was.
  */
-export function scriptedModel(script: readonly CompletionResponse[], onTurn?: ModelTurnHook): ScriptedModel {
+export function scriptedModel(script: readonly ScriptTurn[], onTurn?: ModelTurnHook): ScriptedModel {
   const seen: CompletionRequest[] = [];
   return {
     seen,
@@ -72,7 +103,9 @@ export function scriptedModel(script: readonly CompletionResponse[], onTurn?: Mo
         // loop acts on that answer. A throw here propagates for the same
         // reason running off the end does: the scenario stopped being itself.
         onTurn?.(seen.length);
-        return Promise.resolve(next);
+        // And the turn is built after the hook, so a computed answer sees the
+        // world the hook left rather than the one it found.
+        return Promise.resolve(typeof next === "function" ? next(request) : next);
       }
     }
   };

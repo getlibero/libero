@@ -89,7 +89,19 @@ argument. It is the exception to the barrel's "no client, no pool" doctrine
 rather than a hole in it: a server holds no vault and can open nothing.
 `e2e/` is also the one package the agent/proxy import ban does not cover —
 `scripts/boundary-check.sh` does not scan it, and its header says why.
-`e2e/README.md` is the harness API, and the place #132–#135 should start.
+`e2e/README.md` is the harness API, and the place #134–#135 should start.
+
+**#132 is the exfiltration half, and it attacks two paths rather than one.**
+`e2e/src/exfiltration.test.ts` runs the credential back through a tool *result*
+(the `json-escaped` spelling #149 was about, plus the response headers) and
+through a tool *description*, which is the worse leak: upstream-authored text
+enters the model's context on every turn, so a reflected credential there leaks
+repeatedly. Both are covered by the one scrub in `callUpstream`, which is a
+property of today's code rather than a law — so the listing case is re-run with
+redaction gutted, the way `redaction-detector.test.ts` does for a tool result.
+A third case asks for the credential by name through every listed tool and
+asserts the arguments reached the upstream verbatim: the proxy is not a template
+engine, and the only place a name becomes a value is `injectCredential`.
 
 **The agent calls tools, through the proxy and only through it.**
 `packages/agent/src/proxy/` is the client (#109): an mTLS transport over

@@ -107,7 +107,20 @@ piece of it.
 assertion also passes on a run where no credential was ever resolved — which is
 the one failure a leak suite must never report as a pass. Assert that the canary
 *did* arrive at the upstream as `Bearer <canary>`, then assert it reached nothing
-else. `src/smoke.test.ts` does both, in that order.
+else. `expectCanaryReachedUpstream(upstream)` is that first half, and
+`src/smoke.test.ts` does both, in that order. Its second argument is the
+JSON-RPC method to look on, because the credential goes out on more than one
+kind of request: a case attacking the **listing** is controlled by
+`tools/list`, not by a call that may never have happened.
+
+**The listing is a leak surface too, and the worse one.** A tool `description`
+and `inputSchema` are upstream-authored text that enters the model's context on
+every turn, so an upstream that reflects its `Authorization` into a description
+leaks a credential repeatedly rather than once. Today the same scrub covers it —
+the catalog walk goes through `callUpstream` like everything else — but that is
+a property of the current code rather than a law, which is why
+`src/exfiltration.test.ts` attacks the listing path separately from the
+tool-result path, and re-runs the listing case with redaction gutted.
 
 **One string appears in three places.** A channel id is the client certificate's
 subject (`CN=channel:<id>`) and filename, the directory holding that channel's
@@ -200,6 +213,15 @@ The trust anchor is not one of the knobs. The CA the *server* is verified
 against is always the rig's, whichever client certificate is being presented;
 swap both and the case fails at its own end of the handshake, proving nothing.
 
+**A model that answers with what it was handed is `relays()`.** A script entry
+is normally a constant — `calls`, `says` — and may instead be a function of the
+`CompletionRequest` that provoked it (`ScriptTurn`). `relays()` is the one such
+entry that exists: it answers with every tool message in the request, so a
+compromised model posts its whole tool result into the channel. Use it when the
+thread reply has to be a real surface for the canary scan rather than a fixed
+string the case wrote. A computed turn is resolved *after* `onModelTurn` fires,
+so it sees whatever that hook changed.
+
 **A side effect that has to land mid-task goes on the model, not the upstream.**
 `startRig({ onModelTurn })` fires as the model is asked for each turn, and the
 loop lists tools once before its first turn — so a hook on turn 1 is provably
@@ -255,6 +277,8 @@ outlive the run.
 - `src/harness/records.ts` — reading the audit log and the meter back.
 - `src/harness/cleanup.ts` — the teardown stack.
 - `src/smoke.test.ts` — the rig proving itself.
+- `src/exfiltration.test.ts` — #132, over both paths a credential could come
+  back on: a tool result and a tool description.
 - `src/unlisted-tool.test.ts` · `src/identity.test.ts` — #133, through the agent
   and around it.
 
