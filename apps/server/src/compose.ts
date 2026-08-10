@@ -87,6 +87,15 @@ export interface ServerDeps {
   readonly scheduler?: Scheduler;
 }
 
+// Re-exported because this file is the package's entry point and a composition
+// root cannot call `createServer` without building a `sheets` — index.ts does
+// exactly this. Kept to the dependencies a caller must construct: the router,
+// the task runner, and the handler are wired below and are nobody else's to
+// build.
+export { createSheetResolver } from "./session/sheet.js";
+export type { SheetResolver } from "./session/sheet.js";
+export type { SessionKey, TaskRequest, TaskReply, TaskSettings } from "./session/types.js";
+
 export interface Server {
   readonly gateway: SlackGateway;
   /**

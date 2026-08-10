@@ -56,6 +56,31 @@ importers:
         specifier: ^22.20.1
         version: 22.20.1
 
+  e2e:
+    dependencies:
+      '@getlibero/agent':
+        specifier: workspace:*
+        version: link:../packages/agent
+      '@getlibero/gateway':
+        specifier: workspace:*
+        version: link:../packages/gateway
+      '@getlibero/proxy':
+        specifier: workspace:*
+        version: link:../packages/proxy
+      '@getlibero/proxy-server':
+        specifier: workspace:*
+        version: link:../apps/proxy-server
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../packages/schema
+      '@getlibero/server':
+        specifier: workspace:*
+        version: link:../apps/server
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+
   packages/agent:
     dependencies:
       '@anthropic-ai/sdk':

@@ -68,7 +68,7 @@ deploy/            docker-compose + optional LiteLLM sidecar
 channels/example/  documented starter team sheet
 design/            design system — tokens, component CSS, brand SVGs, reference page
 site/              getlibero.com — Astro + Starlight; outside the pnpm workspace
-e2e/               empty — mock Slack + mock MCP harness and the security suite land here
+e2e/               the security suite: both halves composed, driven by a scripted model
 ```
 
 **Package boundary rule:** `agent` may never import `proxy`. The only path from agent to tools is the network call. This is enforced by lint + CI, not convention.

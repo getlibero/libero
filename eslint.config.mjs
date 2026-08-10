@@ -317,5 +317,50 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    // The e2e suite composes both sides of the boundary, which is what it is
+    // for — so PROXY_IMPORT_BAN is deliberately absent here, and
+    // scripts/boundary-check.sh deliberately does not scan e2e/. This is the
+    // one package where naming the proxy from a file that also drives the agent
+    // is the intended arrangement.
+    //
+    // What it may not do is reach the two things the suite claims to fake. The
+    // suite's whole premise is that Slack and the model are the only fakes and
+    // everything between them is real; a file here that opened a socket or
+    // called a provider would make that premise false while every test still
+    // passed, and would do it by adding an import rather than by changing an
+    // assertion.
+    files: ["e2e/**/*.{ts,mts,cts,js,mjs,cjs}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@slack/*"],
+              message:
+                "The e2e suite drives the gateway through createStubSlack. A Slack SDK here would reach slack.com from a test that claims to need no workspace."
+            },
+            {
+              group: ["@anthropic-ai/*", "openai", "openai/*"],
+              message:
+                "The e2e suite's model is a scripted CompletionClient. A provider SDK here would spend real tokens from a test that claims to need no model."
+            }
+          ],
+          paths: [
+            {
+              // Banning the SDKs alone does not close this: the factory is
+              // re-exported from @getlibero/agent, so a real provider client is
+              // reachable without any file here naming a provider.
+              name: "@getlibero/agent",
+              importNames: ["createCompletionClient"],
+              message:
+                "The e2e suite's model is a scripted CompletionClient — see e2e/src/harness/model.ts. createCompletionClient builds a real one and would reach a provider with a real key."
+            }
+          ]
+        }
+      ]
+    }
   }
 );
