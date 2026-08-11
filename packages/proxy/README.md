@@ -118,15 +118,21 @@ reveals a credential and the one that scrubs the reply.
   class and the numeric code and never a message — except the one relay that was
   always upstream text and has always been scrubbed.
 
-  Four of its options invert an SDK default and each would fail quietly if
+  Five of its options invert an SDK default and each would fail quietly if
   dropped, so each has a test that fails without it: `versionNegotiation:
   { mode: "auto" }` (the SDK defaults to the legacy handshake with no probe),
   `inputRequired: { autoFulfill: false }` (it defaults to *on*, which would let
   an upstream drive elicitation and sampling from inside an ordinary
-  `tools/call`), `reconnectionOptions.maxRetries: 0`, and the absence of an
-  `authProvider` — without one the OAuth paths are unreachable rather than
-  merely unused. `toolDefinition` on every `callTool` disables the SDK's
-  header-mismatch recovery, which would re-POST an identical call.
+  `tools/call`), `supportedProtocolVersions` (the SDK's own list reaches back to
+  the HTTP+SSE revisions this proxy fails closed on — their results arrive on
+  the listen stream the guarded fetch answers 405, so accepting the handshake
+  makes every call a timeout), `reconnectionOptions.maxRetries: 0`, and the
+  absence of an `authProvider` — without one the OAuth paths are unreachable
+  rather than merely unused. A `tools/call` goes out as a raw `request` against
+  a permissive envelope rather than through `callTool`, so the SDK's
+  header-mismatch recovery — which would re-POST an identical call — has no
+  code path to run on, and one forward-revision content block costs a
+  placeholder rather than the whole answer.
 
   Replays exactly one signal, on the legacy path only: a 404 answering a request
   that carried a session id, which is the spec's way of saying the session is

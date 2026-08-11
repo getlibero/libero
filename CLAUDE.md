@@ -295,10 +295,11 @@ headers anyway, declining SEP-2243's optional allowance for older clients. The
 official SDK mirrors only on a modern connection, which is equally correct. Both
 ends are within spec and nothing between them worked, which is why the codec is
 **vendored** at `packages/proxy/src/vendor/` and why the headers are derived on
-*both* eras rather than only the legacy one: `callTool` hands the SDK a
-declaration-free `toolDefinition` to disable its re-POST recovery, so the SDK's
-own mirroring has nothing to work from either. Filed upstream as
-`modelcontextprotocol/typescript-sdk#2639`.
+*both* eras rather than only the legacy one: the SDK's mirroring lives in
+`callTool`, which this client does not use — a `tools/call` goes out as a raw
+`request` so the re-POST recovery has no code path to run on — so its mirroring
+never runs. The derived headers ride the SDK's per-message `headers` option.
+Filed upstream as `modelcontextprotocol/typescript-sdk#2639`.
 
 **The declarations are scanned from the raw schema, before bounding**, and that
 ordering is load-bearing. The bounding rules decide what may enter a *model's*
@@ -306,7 +307,15 @@ context — a schema over `MAX_TOOL_SCHEMA_BYTES` or one whose type is not
 `object` is dropped and the tool published thin — and none of that bears on
 which arguments a server wants in headers. Read off the published schema, a tool
 too large to show the model would silently lose its headers and have every call
-refused at the far end, with nothing in the log naming why.
+refused at the far end, with nothing in the log naming why. The cost of the
+ordering is that the scan is the one consumer of bytes nothing has bounded, and
+the vendored `visit` recurses per nesting level — so `declarationsIn` guards it,
+and a schema the scan cannot survive declares nothing, exactly as one it will
+not vouch for. Unguarded, the `RangeError` escaped the degrade-to-thin contract
+(a 500 for the channel's whole listing), and on the call path was answered "the
+call was made and no result came back" with a `ran` audit row for a call never
+dispatched — the dispatcher now gives `definitionFor` its own catch for the
+same reason.
 
 **What #130 changed most is the docs.**
 GitHub's hosted server is `https://api.githubcopilot.com/mcp/`, and
@@ -459,10 +468,15 @@ naming one server with different tool lists reading each other's answer — was
 about sharing a *conclusion* drawn under someone else's question; per-name facts
 cannot disagree, since a catalog is the server's and `upstreamKey` already
 separates credentials. What did have to change is that **`MAX_DESCRIBED_TOOLS`
-became a budget the caller subtracts from**: the cap bounds what enters a
-model's context and definitions are re-sent every turn, so it has to hold across
-the *answer* rather than across one walk, or a caller asking for thirty names and
-then for all of them carries thirty remembered plus a fresh hundred.
+became a budget the caller subtracts from — and a cap `assemble` applies**: the
+cap bounds what enters a model's context and definitions are re-sent every turn,
+so it has to hold across the *answer* rather than across one walk, or a caller
+asking for thirty names and then for all of them carries thirty remembered plus
+a fresh hundred. The budget alone was not enough, because resolutions merge
+across *questions* too: two narrow asks can together settle more names than the
+cap, and a later wide ask finds everything fresh and walks nothing — so the
+bound is applied where every path returns, in the sheet's order, making what
+survives the cut the operator's priority rather than the upstream's.
 
 **#151 bounds a response, and the decision is that there are two bounds owned by
 two different principals.** Those listing caps bound what reaches the *model*;
@@ -544,15 +558,25 @@ the way in. That is what keeps "`connect_failed` relays no upstream bytes" a
 property of the code rather than a hope about someone else's error-message
 discipline.
 
-**Four options invert an SDK default** and each would fail quietly if dropped, so
+**Five options invert an SDK default** and each would fail quietly if dropped, so
 each has a test that fails without it: `versionNegotiation: { mode: "auto" }`
 (the SDK defaults to the legacy handshake with no probe),
 `inputRequired: { autoFulfill: false }` (it defaults to **on**, which would let
 an upstream drive elicitation and sampling from inside an ordinary `tools/call`),
+`supportedProtocolVersions` (the SDK's own list reaches back to `2024-11-05` and
+`2024-10-07`, the HTTP+SSE revisions whose results arrive on the GET stream the
+guarded fetch answers 405 — accepting that handshake makes every call a
+thirty-second timeout with a wrong word at the end),
 `reconnectionOptions.maxRetries: 0`, and no `authProvider` — without one the
-OAuth paths are unreachable rather than merely unused. `toolDefinition` on every
-`callTool` disables the header-mismatch recovery that would re-POST an identical
-call.
+OAuth paths are unreachable rather than merely unused. A `tools/call` goes out
+as a raw `request` against a permissive envelope rather than through `callTool`,
+and both halves are wanted: the header-mismatch recovery that would re-POST an
+identical call has no code path to run on, and the specification's closed
+content union does not fail a whole call over one forward-revision block —
+`blockText`'s placeholder branch stays reachable on the legacy era. The same
+envelope argument puts `nextCursor` on `z.unknown()`: serializers that spell an
+absent field `null` are commonplace, and the cursor's reading is
+`parseToolsList`'s.
 
 **Two things the SDK swallows on the connect path but propagates on the call
 path**, which is why the guarded fetch records what it refused where `connect`
@@ -561,7 +585,24 @@ refused destination all collapse into "could not agree a version" — and a
 `RedactionError` stops failing closed, degrading from a constant 500 into a
 cheerful error result. The phase flag on the same holder is what restores
 `MAX_CONTROL_BODY_BYTES`: a `fetch` has no call sites to choose a bound at, so
-the connection answers per request instead.
+the connection answers per request instead — except the termination `DELETE`,
+which is bounded **by its verb**, because the flag is shared with every
+in-flight call on the session and a `close()` that flipped it would cut a
+legitimate answer off mid-read as `too_large`.
+
+**Three behaviours the adapter had to rebuild rather than inherit**, found by
+review of the stack. The guarded fetch forwards `init.signal` into
+`callUpstream`, joined with the timeout via `AbortSignal.any` — the SDK cancels
+through the signal it hands its fetch (its per-request timeout,
+`transport.close()`, the termination racing shutdown), and dropping it left
+every such abort settling a promise while the socket ran to the full 30s,
+holding the event loop past `docker stop`'s SIGKILL window. `ensureOpen`
+consults `reopening`, because a session-loss reopen clears `session` before its
+handshake resolves and a fresh call arriving in that window would start a
+second full ladder, orphaning the loser's session at the upstream. And
+`failureText` has an `unauthorized` case on the *call* branch too — a revoked
+token surfaces as a 401 to the reopen's re-initialize, where the default's
+"the call was made" is false in both clauses.
 
 **`McpFailure` gained `unauthorized`** because the SDK settles the protocol in
 one round trip and treats a 401 there as final. Telling an operator their server
