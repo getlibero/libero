@@ -276,6 +276,32 @@ describe("the outbound call", () => {
     expect(DEFAULT_UPSTREAM_TIMEOUT_MS).toBeGreaterThan(0);
   });
 
+  // The SDK cancels through the signal it hands its fetch — its per-request
+  // timeout, transport.close(), a session termination racing shutdown. Dropping
+  // it would let every such abort settle the caller's promise while the socket
+  // runs on to the full default timeout, holding the event loop open past the
+  // ten seconds a `docker stop` allows before SIGKILL.
+  it("joins the caller's signal with the timeout rather than replacing it", async () => {
+    const { calls, fetch } = recordingFetch();
+    const controller = new AbortController();
+    await callUpstream({
+      url: "http://u:1",
+      body: "{}",
+      scheme: "bearer",
+      secret: undefined,
+      signal: controller.signal,
+      fetch
+    });
+
+    const wire = calls[0]?.init.signal;
+    // A joined signal, not the caller's own — the timeout still applies.
+    expect(wire).toBeInstanceOf(AbortSignal);
+    expect(wire).not.toBe(controller.signal);
+    expect(wire?.aborted).toBe(false);
+    controller.abort();
+    expect(wire?.aborted).toBe(true);
+  });
+
   it("reports a timeout as a timeout", async () => {
     const fetch = (async () => {
       const error = new Error("aborted");
@@ -850,6 +876,22 @@ describe("the guarded fetch", () => {
 
     expect(text).not.toContain(VALUE);
     expect(text).toContain("[redacted:github_pat]");
+  });
+
+  it("forwards the SDK's abort signal to the wire", async () => {
+    const { calls, fetch } = recordingFetch();
+    const controller = new AbortController();
+    await guarded({ fetch })("http://mcp-github:3001/mcp", {
+      method: "POST",
+      body: "{}",
+      signal: controller.signal
+    });
+
+    const wire = calls[0]?.init.signal;
+    expect(wire).toBeInstanceOf(AbortSignal);
+    expect(wire?.aborted).toBe(false);
+    controller.abort();
+    expect(wire?.aborted).toBe(true);
   });
 
   it("reports an oversized answer as too_large rather than as a transport failure", async () => {

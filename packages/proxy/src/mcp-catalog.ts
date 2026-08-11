@@ -345,12 +345,29 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
     return fresh;
   };
 
-  /** The answer, assembled from what is settled. Wanted order, published only. */
-  const assemble = (entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
+  /**
+   * The answer, assembled from what is settled. Wanted order, published only.
+   *
+   * **The cap is applied here as well as in the walk, and here is the one that
+   * holds.** The walk's budget bounds what one question adds, but resolutions
+   * merge across questions — a listing that walked a hundred and a call path
+   * that walked fifty more leave the entry holding both, so the next wide ask
+   * finds everything fresh and walks nothing. Every path returns through this
+   * function, which is what makes it the place the answer's bound is a
+   * property rather than an accounting hope. Wanted order is the sheet's
+   * order, so what survives the cut is the operator's priority, not the
+   * upstream's.
+   */
+  const assemble = (upstream: McpServer, entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
     const answer = new Map<string, UpstreamToolDescription>();
     for (const name of wanted) {
       const resolution = entry.resolved.get(name);
-      if (resolution?.published != null) answer.set(name, resolution.published);
+      if (resolution?.published == null) continue;
+      if (answer.size >= MAX_DESCRIBED_TOOLS) {
+        unavailable(upstream, "truncated", { described: answer.size });
+        break;
+      }
+      answer.set(name, resolution.published);
     }
     return answer;
   };
@@ -402,13 +419,13 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
 
     // The whole point of the restructure: a tool the listing route already
     // walked for costs the call path nothing — no lease, no request, no log.
-    if (missing.size === 0) return assemble(entry, wanted);
+    if (missing.size === 0) return assemble(upstream, entry, wanted);
 
     const key = walkKey(upstream, missing);
     const inFlight = walking.get(key);
     if (inFlight !== undefined) {
       await inFlight;
-      return assemble(entry, wanted);
+      return assemble(upstream, entry, wanted);
     }
 
     const started = (async (): Promise<void> => {
@@ -433,7 +450,7 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
 
     walking.set(key, started);
     await started;
-    return assemble(entry, wanted);
+    return assemble(upstream, entry, wanted);
   };
 
   return {

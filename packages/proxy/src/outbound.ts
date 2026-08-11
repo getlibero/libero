@@ -272,6 +272,15 @@ export interface UpstreamRequest {
   readonly credentialName?: string;
   readonly timeoutMs?: number;
   /**
+   * The caller's abort, joined with the timeout rather than replacing it. The
+   * MCP SDK cancels through the signal it hands its `fetch` — its per-request
+   * timeout, `transport.close()`, a session termination racing shutdown — and
+   * dropping it here would leave every such abort a bookkeeping fiction: the
+   * caller's promise settles while the socket runs on to the full timeout,
+   * holding the event loop open past the window a `docker stop` allows.
+   */
+  readonly signal?: AbortSignal;
+  /**
    * How many bytes of the response body to hold before abandoning it. Absent
    * means `DEFAULT_UPSTREAM_RESPONSE_BYTES`.
    *
@@ -406,7 +415,8 @@ async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit:
  * a fixed ceiling rather than one read from the team sheet: per-task wall time
  * is the agent loop's cap and the budget meter's business (#38), while this is
  * the proxy refusing to hold a socket open forever, which is not a policy an
- * operator should be able to raise from a sheet.
+ * operator should be able to raise from a sheet. A caller's `signal` joins it
+ * via `AbortSignal.any` — it can only end a request sooner, never extend one.
  *
  * Throws `UpstreamError` for transport failures and returns non-2xx responses
  * as ordinary results — a 404 from a tool is something the model should see and
@@ -465,7 +475,13 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
       // `manual` hands back the 3xx itself, so the check below is a status
       // code. The response is refused unread either way.
       redirect: "manual",
-      signal: AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS)
+      signal:
+        request.signal === undefined
+          ? AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS)
+          : AbortSignal.any([
+              AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS),
+              request.signal
+            ])
     });
   } catch (error) {
     // The only thing read off the thrown value is whether it was the abort.
@@ -686,6 +702,8 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
       url: String(url),
       method,
       ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      // `RequestInit.signal` admits `null`; both absences mean the same thing.
+      ...(init?.signal != null ? { signal: init.signal } : {}),
       headers: headersToRecord(init?.headers),
       scheme: options.scheme,
       secret: options.secret,
