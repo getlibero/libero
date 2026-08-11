@@ -1,0 +1,82 @@
+# EXPERIMENT — NOT FOR MERGE.
+#
+# e2e is 49s of the build job's 73s test step, and it spends them alone: it
+# depends on every package, so `pnpm -r` schedules it last and the runner's
+# other cores idle through it. Its `test` script carries
+# `--no-file-parallelism`, added in the rig's first commit with no stated
+# reason.
+#
+# The obvious reason does not apply. `spawnProxy` sets `PROXY_PORT: "0"` and
+# says so in a comment — the OS chooses the port precisely so that nothing
+# "has to reserve a port and race everything else on the host". Locally the
+# suite goes 16.5s -> 4.0s with the flag removed and passes.
+#
+# Local is not the question. A ten-core laptop is not a four-core runner, and
+# different scheduling is exactly what surfaces a race. This workflow is the
+# question: ten independent runs on the hardware CI actually uses, plus one
+# serial control on the same runner class so the comparison is like for like.
+#
+# A flaky security suite is worse than a slow one, so the bar is ten green runs
+# rather than one. Read the summary table, then delete this file — the branch it
+# lives on is not meant to merge.
+name: Experiment — e2e file parallelism
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  parallel:
+    strategy:
+      # Every attempt runs even after one fails. A single red cell is the most
+      # informative outcome this experiment can produce and must not cancel the
+      # evidence for how often it happens.
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        # e2e spawns the proxy's built entrypoint, so dist has to exist.
+        run: pnpm -r build
+      - name: e2e, file parallelism ON
+        run: |
+          echo "cores: $(nproc)"
+          start=$(date +%s)
+          pnpm --filter @getlibero/e2e test
+          status=$?
+          echo "attempt ${{ matrix.attempt }}: $(( $(date +%s) - start ))s, exit $status"
+          exit $status
+
+  serial-control:
+    # The same work with the flag restored, on the same runner class, so the
+    # speed claim is measured against this hardware rather than against a
+    # laptop. Also the control for the experiment itself: if this one is flaky
+    # too, parallelism is not what the flake is about.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: e2e, file parallelism OFF
+        run: |
+          echo "cores: $(nproc)"
+          start=$(date +%s)
+          pnpm --filter @getlibero/e2e exec vitest run --exclude '**/dist/**' --no-file-parallelism
+          status=$?
+          echo "serial control: $(( $(date +%s) - start ))s, exit $status"
+          exit $status
