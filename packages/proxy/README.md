@@ -232,6 +232,37 @@ resolves from the channel's team sheet with the rest of policy, at decision
 time, so an operator changes it with a sheet edit rather than an agent release.
 `apps/proxy-server/README.md` documents loading secrets into the vault.
 
+### The soft limit
+
+`[budget] warn_at` is a **fraction** of each hard limit rather than a pair of
+absolute soft values (#99). The contradiction then has nowhere to live: a soft
+limit above the hard one it belongs to is unsayable rather than validated, which
+is why the field needs no cross-field refinement — and a fraction follows an edit
+to `daily_tokens` where an absolute pair goes stale silently. `1` is excluded,
+because a warning delivered at the moment the meter is spent is the refusal said
+twice; `0` is off.
+
+`crossedThreshold` sits beside `exhaustedLimit` and runs **after** it, which is
+the acceptance criterion rather than a preference: a channel crossing both in one
+call is refused, and a refusal carries no warning.
+
+**The claim is durable and belongs to the meter.** `budget_warning (channel, day,
+budget_limit)` with `ON CONFLICT DO NOTHING` is what makes "once a day" hold
+under concurrency — per *limit*, because two limits are two facts — and
+`clearDay` clears it, so an operator's reset re-arms the warning. It needed **no
+`BUDGET_SCHEMA_VERSION` bump**: that stamp guards the shape of the *counters* and
+this table holds none, so a build without it reads and writes every number
+identically and simply never warns.
+
+`Decision.warning` is on `allow` **and** `hold` — an approved call is served from
+a `hold`, so a warning only on `allow` would be one no approved call ever carried
+— and it is `BudgetWarning | null` rather than optional, so a server composing an
+answer has to say what it did with it. The claim is taken on the `ran` branch of
+the dispatch switch and not beside `recordToolCall`: a call that came back
+`refused` or `unavailable` has nowhere to put a notice, and claiming earlier
+would burn the channel's one warning of the day on an answer that cannot carry
+it.
+
 ## Built-in tools
 
 Not every permitted call goes to an upstream. `search_channel_history` is served
@@ -301,6 +332,24 @@ the hold beats a click that preceded it. And it **cannot mint or redeem** a
 ticket: it closes over `ApprovalDecider`, so a route that could manufacture an
 approval for a call of its choosing does not exist. Both are enforced by the
 import bans in `eslint.config.mjs`, not just asserted here.
+
+**Channel scoping is the map's shape.** Tickets are keyed by channel and then by
+id, so a lookup cannot reach another channel's — which is why a foreign ticket
+and a nonexistent one are one answer rather than two made to look alike.
+
+### The destructive-verb heuristic barely fires on GitHub
+
+`DESTRUCTIVE_VERBS` is delete, drop, transfer, deploy, and it holds a tool whose
+sheet entry says nothing either way. Measured against GitHub's real catalog,
+`merge_pull_request`, `push_files`, `create_or_update_file`, `issue_write` and
+`pull_request_review_write` contain none of those words and so default to running
+unreviewed; `delete_file` is the one it catches.
+
+That is the heuristic behaving as designed — it is a default for the entry nobody
+thought about, not a classifier — but it is worth knowing before trusting it. The
+starter sheet says so in a comment and the docs say so in a table, because a
+starter showing only the caught case would teach the wrong lesson. A tool that
+must be reviewed gets `approval = "required"` in the sheet.
 
 Two gates, deliberately. `/v1/tools` keeps an unlisted tool out of the model's
 context; `/v1/tools/call` is what actually enforces, and it holds on its own —
@@ -393,9 +442,39 @@ tokens, and those are driven by what the model was handed rather than by what th
 upstream sent. The original size is not lost — it is in the notice the model
 reads.
 
-Answers are cached per `(upstream, wanted tools)` for five minutes, thirty
-seconds on a failure or a partial walk, and single-flighted — so a client
-polling the route does not become credentialed load on someone else's server.
+Answers are cached for five minutes, thirty seconds on a failure or a partial
+walk, and single-flighted — so a client polling the route does not become
+credentialed load on someone else's server.
+
+**The key is `upstreamKey` alone, and that changed in #188.** It used to be
+`(upstream, exact sorted wanted-set)`, which made it a cache of *answers to one
+question* rather than of a catalog. That was right while the only caller was this
+route and wrong the moment a call wanted one tool's `x-mcp-header` declarations:
+a one-name question is a different key and therefore a guaranteed miss — a
+five-page walk under a five-second budget, per call, against an upstream walked
+seconds ago.
+
+The entry now holds **per-name resolutions**, where `published: null` means
+*walked and confirmed absent*. That is a different fact from not-yet-asked and
+has to be storable, or a sheet naming a tool the upstream does not offer re-walks
+it forever. Freshness is per name, because a walk is per name.
+
+The old key protected something real and it survives: its hazard was two channels
+naming one server with different tool lists reading each other's answer, which
+was about sharing a *conclusion* drawn under someone else's question. Per-name
+facts cannot disagree — a catalog is the server's, and `upstreamKey` already
+separates credentials.
+
+What did have to change with it is that **`MAX_DESCRIBED_TOOLS` is both a budget
+the caller subtracts from and a cap `assemble` applies.** The cap bounds what
+enters a model's context, and definitions are re-sent every turn, so it has to
+hold across the *answer* rather than across one walk — otherwise a caller asking
+for thirty names and then for all of them carries thirty remembered plus a fresh
+hundred. The budget alone was not enough either, because resolutions merge across
+questions: two narrow asks can together settle more names than the cap, and a
+later wide ask then finds everything fresh and walks nothing. So the bound is
+applied where every path returns, in the sheet's order — which makes what
+survives the cut the operator's priority rather than the upstream's.
 
 `createListingRoute` closes over `ToolCatalog`, whose only method describes. The
 dispatcher — the seam that runs something — is not in scope, and
@@ -407,6 +486,56 @@ A refusal is a served request: HTTP 200 with `{ outcome: "refused" | "held",
 refusal }`. `ProxyError` stays what it was, the shape of a request that could
 not be answered at all. A channel with no team sheet gets an empty listing and
 a refusal on every call — which is what revoking a channel looks like.
+
+## The audit log's write discipline
+
+One table, a `channel` column, and the only statement that touches it is an
+INSERT. Append-only is enforced by `BEFORE UPDATE` and `BEFORE DELETE` triggers
+that `RAISE(ABORT)`: SQLite has neither roles nor grants, so "no UPDATE/DELETE
+for the service role" cannot be built as the architecture words it. The
+write-only interface the server closes over and the file's permissions are
+defence in depth around the triggers, not the mechanism. A failed audit write
+**refuses the call** rather than serving it unrecorded.
+
+**Every decided call leaves exactly one row, and that is total** (#124). The row
+is written after dispatch — the only place `result_bytes` exists — so anything
+throwing in between used to escape to the outer handler's catch, which holds no
+per-call state, and left a metered and possibly-executed call unrecorded. A
+`RedactionError` on the result's way back was the live path, and the test that
+covered it *encoded* the gap. The fix is a `try`/`catch` inside `callTool`,
+opening **after** the `audit` closure's `const` — coverage is identical to
+opening at the decision, and opening earlier would let the catch reach `audit` in
+its temporal dead zone and mask the real failure — and rethrowing, so the 500 is
+byte-for-byte unchanged.
+
+**The word is `unanswered`, and `failed` was rejected on a test that already
+existed.** `audit.test.ts` asserts the vocabulary refuses `"failed"` and
+`"error"` under "including the tool's own error flag", because `outcome` is not a
+success/failure flag — `resultIsError` is the separate question. `unanswered`
+also says only what is known: it asserts nothing about whether the upstream
+acted, so `ran` undercounts upstream effects by exactly these rows.
+
+**The one-row guard is a flag set on *entry* to the `audit` closure, not on
+success.** `append` can succeed and the closure still throw afterwards, since
+`logger.log` writes to a stream and can fail on EPIPE — a success flag would then
+file a second row for a call that already has one. Entry is safe because the
+closure is called at most once per request: every call site is followed by a
+`return` in a mutually exclusive branch. The fallback append is itself wrapped
+and its throw swallowed, the only swallow in the file, because
+`audit_write_failed` is already logged and the 500 is about the original failure.
+
+**The migration is a fan-in, not a ladder.** `auditTableDdl` is by construction
+*the table this build writes*, so a real v1→v2→v3 ladder would need a frozen v2
+DDL literal beside it — the second copy of the columns that parameterised DDL
+exists to prevent, and one no test could catch drifting. `rebuildAuditTable` asks
+`PRAGMA table_info` which columns the old table can give rather than being told
+by a version number. That is also what makes the no-stamp case safe:
+`schema_version` carries no triggers, so an operator can delete the stamp from a
+v2 file with rows in it, and a rebuild assuming the oldest shape would silently
+null every `ticket`.
+
+There is no retention command and a delete-based one should not be added;
+rotation is the shape.
 
 ## Certificates
 

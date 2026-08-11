@@ -38,6 +38,24 @@ All three are clamped to `READ_MAX_LIMIT`, which is one ceiling rather than
 three because what it bounds is the same thing every time: how much of this file
 a single call can pull into a model's context.
 
+### `search` takes text, and the index has a tokenizer
+
+Two decisions sit under `search`, and both are the kind that are cheap now and
+expensive later.
+
+**It takes text, never an FTS5 expression.** MATCH is a query language: a bare
+`AND` is a syntax error, a trailing `*` is a prefix query, and `text:vault` is a
+column filter that parses and runs. A caller passing a user's words straight
+through would hand a stranger a query language. `toMatchQuery` quotes every
+whitespace chunk and is deliberately absent from the barrel, so the only way to
+reach it is to edit this package.
+
+**The tokenizer is `porter unicode61 remove_diacritics 2`**, and it is chosen
+once because it is baked into the index — changing it means rebuilding every
+channel's file. Without stemming, an AND of the terms in "what did we decide
+about the vault" does not match "we decided to ship the vault", which is the
+first question the proxy's `search_channel_history` built-in (#64) would ask.
+
 ## The isolation boundary
 
 CLAUDE.md's one-file-per-channel rule is narrowed for operator-facing data — the
