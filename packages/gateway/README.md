@@ -75,9 +75,8 @@ message and a self-threaded one indistinguishable, and the layer above needs tha
 difference to decide whether a message is a reply to anything.
 
 **Subtypes are an allowlist**: absent, `thread_broadcast`, and `file_share`.
-`message_changed` and `message_deleted` are dropped under their own reason code
-rather than silently, because they are the landing site for deletion mirroring
-(#177) — the store already has `remove` and `replaceText` waiting for them.
+`message_changed` and `message_deleted` answer `message_edit`, which is the one
+ignore code that is a handoff rather than a drop — see the next section.
 
 **A mention arrives on both subscriptions**, with a *different* `event_id` on
 each, so nothing downstream can tell the pair apart by id. The gateway therefore
@@ -95,6 +94,46 @@ to `message.threadTs` and **never `?? ts`** — so the adapter still cannot star
 thread on a message nobody addressed it in. An answered message logs `follow_up`,
 not `replied`; nothing else on that path logs at all, because one line per
 message would turn stdout into a record of who spoke in which channel and when.
+
+### Deletions and edits ride the same subscription
+
+Slack carries a deletion and an edit as subtypes of `message` rather than as
+events of their own, so #177 added no subscription and no listener. `toMessage`
+answers `message_edit` for the two of them, and `dispatchMessage` reads that code
+and hands the envelope to `toRevision` — one seam, decided by the normalizer that
+already knows what a new message is.
+
+`toRevision` is a third normalizer rather than a widening of the second, because
+a `SlackRevision` shares almost no field with a `SlackMessage`: what it carries
+is the identity of the message being revised and, for an edit, the text that
+replaces it. **`ts` is the revised message's, never the event's own** —
+`deleted_ts` on a deletion, the nested `message.ts` on an edit, and both differ
+from the envelope's `ts`, which is when the change happened.
+
+Three things it decides:
+
+- **Deletions are read permissively, edits strictly.** A dropped deletion leaves
+  text its author retracted in a file the model reads on every turn; a deletion
+  passed on for a message the store never held is a no-op, since `remove`
+  answers false. Only the edit can write, so only the edit carries a filter.
+- **A tombstone is a deletion.** Slack sends `message_changed` with a nested
+  `subtype: "tombstone"` when the deleted message was a thread parent with
+  replies. Read as an edit, it would overwrite the stored text with Slack's
+  placeholder and leave the row standing.
+- **An app's own edit is dropped on `bot_id`** — volume, not correctness. A
+  bot's message is never stored, so its ts matches nothing, but the live
+  checklist edits its card on every step and each one arrives here.
+
+What is deliberately *not* restated in `revision.ts` is `ALLOWED_SUBTYPES`. The
+store holds exactly the messages that passed it and both operations key on `ts`,
+so the store's own contents are the filter; a second copy of that policy is one
+that goes out of step, and out of step means an edit to a stored `file_share`
+silently not mirrored.
+
+`onRevision` is optional and independent of `onMessage`: they arrive together but
+a process may compose either alone. Nothing logs on the way through, for the
+reason the message path gives — a line per revision is a record of who retracted
+what and when. Only a handler that throws gets one, as `revision_failed`.
 
 ## What does not exist yet
 

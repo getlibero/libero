@@ -256,6 +256,32 @@ seconds. Two idempotency mechanisms that can disagree is the thing to avoid, and
 the reason `seen` exists at all (nothing downstream of a *mention* is idempotent)
 does not apply here.
 
+### A message can leave again
+
+Slack delivers a deletion and an edit on the same subscription, as subtypes of
+`message`, so they arrive on the same path and land on the same session — which
+is what puts the delete on the file handle the append opened rather than on a
+second one. `createRevisionIngest` is the mirror: `remove(ts)` for a deletion,
+`replaceText(ts, text)` for an edit, index entry included either way. It takes no
+router and no card poster, because nothing here is answered and nothing is
+posted. It does not take the mutex, for the reason the append does not.
+
+**An edit is not a way into the store.** `replaceText` answers false for a ts the
+store never held, and that is left as a no-op rather than turned into an insert.
+The rows are the messages the message path agreed to record, and inserting here
+would be a second write door with none of that path's filters — an app's own
+message, a `channel_join`, any declined subtype, all recordable by being edited
+afterwards. It reads honestly too: a channel provisioned today has no history
+from last week, and back-filling one message out of it because somebody fixed a
+typo is an arbitrary transcript rather than a fuller one.
+
+One ordering limit is stated rather than implied. The store is keyed on `ts` and
+holds no tombstone, so a deletion that arrived *before* the message it deletes
+would find nothing and the message would then be filed by the later event. Slack
+sends a message before its own revision, so this needs a redelivery to reorder
+them; closing it means a second table every read would have to consult, and that
+trade is not phase 1's.
+
 ### Follow-ups in a thread the agent is working in
 
 A reply in a thread the agent has already worked in reaches it **with no
@@ -443,9 +469,10 @@ brings it back once the environment is fixed.
   and a reply goes back; a second front-end writes its own version of exactly
   this file.
 - `src/ingest.ts` — the other half of that seam, and the shorter one: a
-  `SlackMessage` becomes a row in its channel's store. Out here rather than
-  under `session/` because it names both a Slack type and a session, which is
-  the pair the ESLint rule forbids in one file.
+  `SlackMessage` becomes a row in its channel's store, and a `SlackRevision`
+  deletes or reindexes one. Out here rather than under `session/` because it
+  names both a Slack type and a session, which is the pair the ESLint rule
+  forbids in one file.
 - `src/session/types.ts` — what everything below the adapter works in:
   `SessionKey`, `TaskRequest`, `TaskSettings`. No Slack type appears in it, and
   an ESLint rule on `src/session/**` is what keeps that true.

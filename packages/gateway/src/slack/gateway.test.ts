@@ -23,9 +23,11 @@ import type {
   MentionHandler,
   MessageHandler,
   MessagePoster,
+  RevisionHandler,
   SlackDecision,
   SlackMention,
-  SlackMessage
+  SlackMessage,
+  SlackRevision
 } from "./types.js";
 
 const BACKOFF = { baseMs: 1_000, maxMs: 30_000, resetAfterMs: 60_000 };
@@ -812,6 +814,215 @@ describe("createGateway", () => {
       await slack.deliverMessage();
 
       expect(seen).toHaveLength(0);
+    });
+  });
+
+  describe("deletions and edits", () => {
+    /** Records every revision the gateway hands down. */
+    function recordingMirror(): { onRevision: RevisionHandler; seen: SlackRevision[] } {
+      const seen: SlackRevision[] = [];
+      return {
+        seen,
+        onRevision: revision => {
+          seen.push(revision);
+          return Promise.resolve();
+        }
+      };
+    }
+
+    it("routes a deletion and an edit off the message subscription", async () => {
+      // One subscription carries all three. What decides where an envelope goes
+      // is `toMessage`'s answer, so this also proves the two paths do not
+      // overlap: neither revision reaches `onMessage`.
+      const slack = createStubSlack();
+      const { onRevision, seen } = recordingMirror();
+      const messages: SlackMessage[] = [];
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage: message => {
+          messages.push(message);
+          return Promise.resolve(undefined);
+        },
+        onRevision
+      });
+
+      await gateway.start();
+      await slack.deliverRevision({ kind: "deleted", channelId: "C0OPS", ts: "1717171717.000300" });
+      await slack.deliverRevision({
+        kind: "edited",
+        channelId: "C0OPS",
+        ts: "1717171717.000400",
+        text: "the deploy went out at five"
+      });
+
+      expect(seen).toEqual([
+        {
+          kind: "deleted",
+          teamId: "T00000000",
+          channelId: "C0OPS",
+          ts: "1717171717.000300",
+          eventId: "Ev00000003"
+        },
+        {
+          kind: "edited",
+          teamId: "T00000000",
+          channelId: "C0OPS",
+          ts: "1717171717.000400",
+          text: "the deploy went out at five",
+          eventId: "Ev00000003"
+        }
+      ]);
+      expect(messages).toHaveLength(0);
+    });
+
+    it("acknowledges a revision exactly once, before the handler runs", async () => {
+      // The ack happens in `dispatchMessage`, before the envelope's kind is
+      // known — the only order Slack's three-second window allows. The count is
+      // the assertion: a revision path that acked again would ack an envelope
+      // Slack has already stopped waiting on.
+      const order: string[] = [];
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onRevision: () => {
+          order.push("handler");
+          return Promise.resolve();
+        }
+      });
+
+      await gateway.start();
+      await slack.deliverRevision();
+
+      expect(order).toEqual(["handler"]);
+      expect(slack.acked).toHaveLength(1);
+    });
+
+    it("mirrors revisions for a process that composed no message handler", async () => {
+      // The two are independent options over one subscription. Reading the
+      // message handler's absence as "nothing to do here" would leave a store
+      // filing messages it can never let go of.
+      const slack = createStubSlack();
+      const { onRevision, seen } = recordingMirror();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onRevision
+      });
+
+      await gateway.start();
+      await slack.deliverRevision();
+
+      expect(seen).toHaveLength(1);
+    });
+
+    it("acknowledges and drops a revision when nothing composed a handler", async () => {
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onMessage: () => Promise.resolve(undefined)
+      });
+
+      await gateway.start();
+      await slack.deliverRevision();
+
+      expect(slack.acked).toHaveLength(1);
+    });
+
+    it("survives a mirror that throws, and mirrors the next revision", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const seen: string[] = [];
+      let first = true;
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onRevision: revision => {
+          if (first) {
+            first = false;
+            return Promise.reject(new Error("the store is gone"));
+          }
+          seen.push(revision.ts);
+          return Promise.resolve();
+        },
+        logger
+      });
+
+      await gateway.start();
+      await slack.deliverRevision({ ts: "1717171717.000300" });
+      await slack.deliverRevision({ ts: "1717171717.000400" });
+
+      expect(seen).toEqual(["1717171717.000400"]);
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          event: "revision_failed",
+          revision: "deleted",
+          reason: "Error"
+        })
+      );
+    });
+
+    it("stops mirroring once the gateway has stopped", async () => {
+      const slack = createStubSlack();
+      const { onRevision, seen } = recordingMirror();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onRevision
+      });
+
+      await gateway.start();
+      await gateway.stop();
+      await slack.deliverRevision();
+
+      expect(seen).toHaveLength(0);
+    });
+
+    it("says nothing on stdout about a revision that landed", async () => {
+      // The message path's rule, and it binds harder here: a line per revision
+      // would be a running record of who retracted what and when, built out of
+      // ids that are each individually fine to log.
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onRevision: () => Promise.resolve(),
+        logger
+      });
+
+      await gateway.start();
+      const before = lines.length;
+      await slack.deliverRevision({ kind: "deleted" });
+      await slack.deliverRevision({ kind: "edited", text: "the deploy went out at five" });
+
+      expect(lines.slice(before)).toEqual([]);
+    });
+
+    it("never writes an edit's text to a log line", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onRevision: () => Promise.reject(new Error("the store is gone")),
+        logger
+      });
+
+      await gateway.start();
+      await slack.deliverRevision({ kind: "edited", text: "sk-live-000-do-not-log-me" });
+
+      expect(JSON.stringify(lines)).not.toContain("sk-live-000-do-not-log-me");
     });
   });
 

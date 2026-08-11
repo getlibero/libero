@@ -25,6 +25,7 @@ import type {
   Logger,
   MentionHandler,
   MessageHandler,
+  RevisionHandler,
   Scheduler,
   SlackGateway,
   UserDirectory
@@ -36,7 +37,7 @@ import { createChecklistReporter } from "./checklist/checklist.js";
 import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
-import { createMessageIngest } from "./ingest.js";
+import { createMessageIngest, createRevisionIngest } from "./ingest.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import { createSessionRegistry } from "./session/registry.js";
 import { createChannelRouter } from "./session/router.js";
@@ -102,6 +103,13 @@ export type SlackSurfaceFactory = (wiring: {
    * than making every implementer handle its absence.
    */
   readonly onMessage: MessageHandler;
+  /**
+   * Where a deletion or an edit goes. Always passed, on `onMessage`'s terms and
+   * for a sharper reason: the two arrive on one subscription, so a surface that
+   * took the first without the second would be a surface that files messages
+   * and never lets one go.
+   */
+  readonly onRevision: RevisionHandler;
 }) => SlackSurfaceLike;
 
 export interface ServerDeps {
@@ -263,6 +271,13 @@ export function createServer(deps: ServerDeps): Server {
     ...clock
   });
 
+  // The other half of the same subscription, on the same sessions — so a
+  // deletion reaches the file the append opened rather than a second handle on
+  // it. It needs neither the router nor the card poster: nothing is answered and
+  // nothing is posted, which is why it is built here in one line rather than
+  // knotted into the closures above.
+  const revisions = createRevisionIngest({ sessions, logger });
+
   const surface = deps.slack({
     // The prompter needs the surface's card poster and the surface needs the
     // handler, so the handler closes over a binding assigned just below. Safe:
@@ -274,7 +289,8 @@ export function createServer(deps: ServerDeps): Server {
     onDecision: createDecisionHandler({ registry, approvals, logger }),
     // Built above, over the same closure trick: it reaches the prompter, which
     // reaches this surface's cards.
-    onMessage: ingest
+    onMessage: ingest,
+    onRevision: revisions
   });
 
   // `now` and `scheduler` reach the prompter and nothing else. They are the

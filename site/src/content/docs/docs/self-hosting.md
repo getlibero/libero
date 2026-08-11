@@ -166,12 +166,17 @@ After the agent has worked in a thread, a reply there reaches it with **no menti
 Everywhere else in the channel still needs a mention. A follow-up is an ordinary task: same model,
 same caps, same daily budget, same enforcement at the proxy.
 
-Message events carry deletions and edits as a subtype rather than as their own events, and the
-design mirrors them: a message deleted in Slack is deleted from that channel's store, index
-included, so Slack retention is respected rather than quietly outlived. Both halves of that are
-built in the store — a delete takes its index entry with it, and an edit updates the index in step.
-The adapter recognizes the two subtypes and drops them today with their own reason code; wiring
-them onto the store is its own issue.
+Message events carry deletions and edits as a subtype rather than as their own events, and both are
+mirrored. A message deleted in Slack is deleted from that channel's store, index entry included, so
+Slack retention is respected rather than quietly outlived — including when the deleted message was a
+thread parent, which Slack reports as a change to a placeholder rather than as a deletion. A message
+edited in Slack has its new text stored and reindexed, and the text it replaced stops being
+findable: someone who pastes a key and edits it out thirty seconds later has retracted it from the
+transcript the model is given, not just from the channel.
+
+An edit to a message the store never held does nothing. Nothing is back-filled through this path —
+what the store holds is what was recorded as it happened, so a channel provisioned today has no
+history from last week and an edit does not invent one.
 
 ### Interactivity
 

@@ -99,13 +99,16 @@ function rig() {
   const { gateway } = createServer({
     // The whole of what differs from index.ts: the surface is built over the
     // stub rather than over a socket and a Web API client.
-    slack: ({ handler, onDecision, onMessage }) => ({
+    slack: ({ handler, onDecision, onMessage, onRevision }) => ({
       gateway: createGateway({
         source: slack.source,
         poster: slack.poster,
         handler,
         onDecision,
         onMessage,
+        // Wired even though nothing here delivers a revision, so this rig stays
+        // the production composition rather than a subset of it.
+        onRevision,
         logger
       }),
       cards: slack.poster
@@ -284,8 +287,9 @@ describe("message intake", () => {
       subtype: "channel_join",
       text: "someone joined"
     });
-    // #177's, and dropped here on purpose rather than mirrored onto the store's
-    // `remove` and `replaceText`.
+    // A revision is not a new message, and the assertion is that it writes no
+    // row here. What it *does* write is #177's, and is revision-intake.test.ts's
+    // — this one only proves the message path does not treat one as an arrival.
     await slack.deliverMessage({
       channelId: CHANNEL,
       ts: "1717171717.000600",

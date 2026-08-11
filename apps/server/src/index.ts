@@ -62,7 +62,7 @@ const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
   // here with them, because what it does is exit.
-  slack: ({ handler, onDecision, onMessage }) =>
+  slack: ({ handler, onDecision, onMessage, onRevision }) =>
     // `createSlackSurface` returns `users` alongside `gateway` and `cards`, and
     // the whole object is what `SlackSurfaceLike` reads — so the directory is
     // wired by returning it rather than by naming it here.
@@ -72,6 +72,7 @@ const { gateway } = createServer({
       handler,
       onDecision,
       onMessage,
+      onRevision,
       logger,
       // The socket died for a reason retrying cannot fix — a revoked or rotated
       // token. Exiting is the honest outcome: the alternative is a process that

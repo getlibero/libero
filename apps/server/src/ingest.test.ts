@@ -2,10 +2,16 @@
 // this file decides is the mapping and the mutex, not SQLite. store.test.ts
 // drives a real file; message-intake.test.ts drives the whole path.
 
-import type { LogFields, LogLevel, Logger, SlackMessage } from "@getlibero/gateway";
+import type {
+  LogFields,
+  LogLevel,
+  Logger,
+  SlackMessage,
+  SlackRevision
+} from "@getlibero/gateway";
 import type { MessageStore, StoredMessage } from "@getlibero/memory";
 import { describe, expect, it } from "vitest";
-import { createMessageIngest } from "./ingest.js";
+import { createMessageIngest, createRevisionIngest } from "./ingest.js";
 import { createSessionRegistry } from "./session/registry.js";
 import type { SessionRegistry } from "./session/registry.js";
 import type { ChannelRouter } from "./session/router.js";
@@ -600,5 +606,170 @@ describe("answering a follow-up", () => {
 
     expect(targets).toEqual([{ channelId: "C024BE91L", threadTs: THREAD }]);
     expect(router.seen[0]?.onHeld).toBeDefined();
+  });
+});
+
+describe("createRevisionIngest", () => {
+  const DELETION: SlackRevision = {
+    kind: "deleted",
+    teamId: "T024BE7LD",
+    channelId: "C024BE91L",
+    ts: "1717171717.000300",
+    eventId: "Ev0REVISION"
+  };
+
+  const EDIT: SlackRevision = {
+    kind: "edited",
+    teamId: "T024BE7LD",
+    channelId: "C024BE91L",
+    ts: "1717171717.000300",
+    text: "the deploy went out at five",
+    eventId: "Ev0REVISION"
+  };
+
+  /** A store that records which operation it was asked for, and with what. */
+  function mirroringStore(answer = true): {
+    store: MessageStore;
+    appended: StoredMessage[];
+    removed: string[];
+    replaced: Array<[string, string]>;
+  } {
+    const appended: StoredMessage[] = [];
+    const removed: string[] = [];
+    const replaced: Array<[string, string]> = [];
+    return {
+      appended,
+      removed,
+      replaced,
+      store: {
+        append: message => {
+          appended.push(message);
+          return true;
+        },
+        remove: ts => {
+          removed.push(ts);
+          return answer;
+        },
+        replaceText: (ts, text) => {
+          replaced.push([ts, text]);
+          return answer;
+        },
+        search: () => [],
+        recent: () => [],
+        recentInThread: () => [],
+        close: () => {}
+      }
+    };
+  }
+
+  it("removes on a deletion and reindexes on an edit", async () => {
+    const mirror = mirroringStore();
+    const sessions = createSessionRegistry({ openStore: () => mirror.store });
+    const ingest = createRevisionIngest({ sessions });
+
+    await ingest(DELETION);
+    await ingest(EDIT);
+
+    expect(mirror.removed).toEqual(["1717171717.000300"]);
+    expect(mirror.replaced).toEqual([["1717171717.000300", "the deploy went out at five"]]);
+  });
+
+  it("does not insert a message the store never held", async () => {
+    // The decision #177 asked for. `replaceText` answering false is left alone:
+    // the rows are what the message path agreed to record, and an insert here
+    // would be a second write door with none of that path's filters.
+    const captured = capturingLogger();
+    const mirror = mirroringStore(false);
+    const sessions = createSessionRegistry({ openStore: () => mirror.store });
+    const ingest = createRevisionIngest({ sessions, logger: captured.logger });
+
+    await expect(ingest(EDIT)).resolves.toBeUndefined();
+    await expect(ingest(DELETION)).resolves.toBeUndefined();
+
+    // The assertion that matters: neither revision reached `append`, so a false
+    // answer stayed a no-op rather than becoming a row.
+    expect(mirror.appended).toEqual([]);
+    expect(captured.lines).toEqual([]);
+  });
+
+  it("does nothing, quietly, for a channel with no store", async () => {
+    const captured = capturingLogger();
+    const sessions = createSessionRegistry({ openStore: () => null });
+
+    await expect(
+      createRevisionIngest({ sessions, logger: captured.logger })(DELETION)
+    ).resolves.toBeUndefined();
+    expect(captured.lines).toEqual([]);
+  });
+
+  it("shares the session the append opened rather than a second handle", async () => {
+    // One file per channel, and one handle on it. A revision that opened its own
+    // would be a second connection writing where the first one is.
+    let opens = 0;
+    const mirror = mirroringStore();
+    const sessions = createSessionRegistry({
+      openStore: () => {
+        opens += 1;
+        return mirror.store;
+      }
+    });
+
+    await createMessageIngest({ sessions })(MESSAGE);
+    await createRevisionIngest({ sessions })(DELETION);
+
+    expect(opens).toBe(1);
+  });
+
+  it("loses one revision and stays up when the store throws", async () => {
+    const captured = capturingLogger();
+    const sessions = createSessionRegistry({
+      openStore: () => ({
+        append: () => true,
+        remove: () => {
+          throw new TypeError("disk went away");
+        },
+        replaceText: () => false,
+        search: () => [],
+        recent: () => [],
+        recentInThread: () => [],
+        close: () => {}
+      })
+    });
+
+    await expect(
+      createRevisionIngest({ sessions, logger: captured.logger })(DELETION)
+    ).resolves.toBeUndefined();
+
+    expect(captured.lines).toEqual([
+      {
+        level: "error",
+        event: "store_write_failed",
+        channel: "C024BE91L",
+        eventId: "Ev0REVISION",
+        revision: "deleted",
+        reason: "TypeError"
+      }
+    ]);
+  });
+
+  it("puts an edit's text in no log line", async () => {
+    const captured = capturingLogger();
+    const sessions = createSessionRegistry({
+      openStore: () => ({
+        append: () => true,
+        remove: () => false,
+        replaceText: () => {
+          throw new Error("update failed on: the deploy went out at five");
+        },
+        search: () => [],
+        recent: () => [],
+        recentInThread: () => [],
+        close: () => {}
+      })
+    });
+
+    await createRevisionIngest({ sessions, logger: captured.logger })(EDIT);
+
+    expect(JSON.stringify(captured.lines)).not.toContain("the deploy went out at five");
   });
 });

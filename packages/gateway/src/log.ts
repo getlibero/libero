@@ -27,7 +27,7 @@ export interface LogFields {
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
    * "identified", "reconnecting", "disconnected", "auth_rejected", "stopping".
    * Dispatch: "mention", "replied", "follow_up", "ignored", "handler_failed",
-   * "post_failed", "message_failed". Tools: "task", "tools_unavailable",
+   * "post_failed", "message_failed", "revision_failed". Tools: "task", "tools_unavailable",
    * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed",
    * "budget_warning".
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
@@ -104,6 +104,17 @@ export interface LogFields {
    * appears on stdout without being declared anywhere.
    */
   file?: string;
+  /**
+   * Which kind of revision a line is about: `deleted` or `edited`.
+   *
+   * A code from a two-member closed set, and content in neither direction — it
+   * says that a message was retracted or rewritten, never what it said. It is
+   * its own field rather than folded into `reason` because the two answer
+   * different questions on the same line: `revision` is what was being
+   * mirrored, `reason` is why it did not land, and an operator asking whether
+   * deletions specifically are failing needs to grep for one without the other.
+   */
+  revision?: string;
   /** Why something was ignored or failed. A code, not prose, and never an SDK message. */
   reason?: string;
   /**

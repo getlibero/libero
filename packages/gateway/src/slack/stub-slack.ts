@@ -64,6 +64,26 @@ export interface StubMessageFields {
   eventId: string;
 }
 
+export interface StubRevisionFields {
+  teamId: string;
+  channelId: string;
+  /**
+   * Which kind of revision to build. `tombstone` is the third wire shape rather
+   * than a third kind: Slack sends it as a `message_changed` when the deleted
+   * message was a thread parent with replies, and `toRevision` reads it as a
+   * deletion. It is expressible here because a stub that could not build one
+   * would leave that translation untested.
+   */
+  kind: "deleted" | "edited" | "tombstone";
+  /** The revised message's ts — what the store keys on. Not the event's own. */
+  ts: string;
+  /** An edit's new text. Ignored for the two deletion shapes. */
+  text: string;
+  /** Present on an app's edit of its own message. Set it to build one to drop. */
+  botId?: string;
+  eventId: string;
+}
+
 export interface StubDecisionFields {
   teamId: string;
   channelId: string;
@@ -147,6 +167,78 @@ export function messageEnvelope(
   };
 }
 
+const DEFAULT_REVISION: StubRevisionFields = {
+  teamId: "T00000000",
+  channelId: "C00000000",
+  kind: "deleted",
+  // DEFAULT_MESSAGE's ts, so a test that stores a message and then revises it
+  // does not have to restate the identity that ties the two together.
+  ts: "1717171717.000300",
+  text: "the deploy went out at five",
+  eventId: "Ev00000003"
+};
+
+/**
+ * The envelope shape Slack sends for a deletion or an edit, built from fields.
+ *
+ * Three shapes and not two, and the differences are the whole reason this is a
+ * builder rather than a literal in each test: a deletion names its target in
+ * `deleted_ts` on the outer event, while an edit and a tombstone nest a whole
+ * message under `message` and name it there. The outer `ts` is the revision's
+ * own time in every case and is deliberately a different value, so a normalizer
+ * that read it instead fails a test rather than passing one.
+ */
+export function revisionEnvelope(
+  fields: Partial<StubRevisionFields> = {},
+  ack: () => Promise<void> = () => Promise.resolve()
+): SlackEnvelope {
+  const merged = { ...DEFAULT_REVISION, ...fields };
+  // The revision's own ts. Never the revised message's — see above.
+  const eventTs = "1717171718.000000";
+  const nested = {
+    type: "message",
+    user: "U00000000",
+    ts: merged.ts,
+    ...(merged.botId !== undefined ? { bot_id: merged.botId } : {})
+  };
+  return {
+    ack,
+    event:
+      merged.kind === "deleted"
+        ? {
+            type: "message",
+            subtype: "message_deleted",
+            channel: merged.channelId,
+            channel_type: "channel",
+            hidden: true,
+            deleted_ts: merged.ts,
+            ts: eventTs
+          }
+        : {
+            type: "message",
+            subtype: "message_changed",
+            channel: merged.channelId,
+            channel_type: "channel",
+            hidden: true,
+            ts: eventTs,
+            message:
+              merged.kind === "tombstone"
+                ? {
+                    ...nested,
+                    subtype: "tombstone",
+                    user: "USLACKBOT",
+                    text: "This message was deleted."
+                  }
+                : { ...nested, text: merged.text, edited: { user: "U00000000", ts: eventTs } }
+          },
+    body: {
+      team_id: merged.teamId,
+      event_id: merged.eventId,
+      type: "event_callback"
+    }
+  };
+}
+
 const DEFAULT_DECISION: StubDecisionFields = {
   teamId: "T00000000",
   channelId: "C00000000",
@@ -215,6 +307,14 @@ export interface StubSlack {
   deliverMention(fields?: Partial<StubMentionFields>): Promise<void>;
   /** Builds a `message` envelope and delivers it on the message listener. */
   deliverMessage(fields?: Partial<StubMessageFields>): Promise<void>;
+  /**
+   * Builds a revision envelope and delivers it **on the message listener**.
+   *
+   * The same listener a message takes, because that is the one Slack sends it
+   * to — a stub that gave revisions a socket slot of their own would let a
+   * gateway pass its tests while subscribing to an event that does not exist.
+   */
+  deliverRevision(fields?: Partial<StubRevisionFields>): Promise<void>;
   /** Delivers a raw interactive envelope exactly as the socket would. */
   deliverInteraction(envelope: SlackInteractionEnvelope): Promise<void>;
   /** Builds a well-formed `block_actions` envelope and delivers it. */
@@ -414,6 +514,13 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
     },
     async deliverMessage(fields: Partial<StubMessageFields> = {}): Promise<void> {
       const envelope = messageEnvelope(fields, () => {
+        acked.push(envelope);
+        return Promise.resolve();
+      });
+      await messageListener?.(envelope);
+    },
+    async deliverRevision(fields: Partial<StubRevisionFields> = {}): Promise<void> {
+      const envelope = revisionEnvelope(fields, () => {
         acked.push(envelope);
         return Promise.resolve();
       });
