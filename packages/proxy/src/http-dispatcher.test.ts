@@ -324,11 +324,18 @@ describe("a schema too deep to scan for header declarations", () => {
   // RangeError surfaced here and was answered "the call was made and no
   // result came back" with a `ran` audit row, for a call never dispatched.
   it("still dispatches the call, without mirrored headers", async () => {
-    let nested: Record<string, unknown> = { type: "string" };
-    for (let i = 0; i < 60_000; i += 1) nested = { type: "object", properties: { a: nested } };
-    fake = await startFakeMcpServer({
-      catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema: nested }]
-    });
+    // Raw bytes, not a catalog object — the fake's own JSON.stringify would
+    // overflow first on a small-stacked CI worker; mcp-catalog.test.ts's twin
+    // case says the whole of it.
+    const depth = 60_000;
+    const deep = '{"type":"object","properties":{"a":'.repeat(depth) + '{"type":"string"}' + "}}".repeat(depth);
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            raw: `{"jsonrpc":"2.0","id":${String(request.rpc.id ?? 0)},"result":{"resultType":"complete","ttlMs":0,"cacheScope":"public","tools":[{"name":"list_prs","description":"Lists PRs.","inputSchema":${deep}}]}}`
+          }
+        : null;
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);

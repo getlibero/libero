@@ -182,11 +182,20 @@ describe("what an upstream is allowed to say", () => {
   // escapes the degrade-to-thin contract and turns one hostile upstream into
   // a 500 for the channel's whole listing.
   it("survives a schema nested too deep to scan, and publishes the tool thin", async () => {
-    let nested: Record<string, unknown> = { type: "string" };
-    for (let i = 0; i < 60_000; i += 1) nested = { type: "object", properties: { a: nested } };
-    fake = await startFakeMcpServer({
-      catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema: nested }]
-    });
+    // Served as raw bytes rather than through the fake's catalog: JSON.parse
+    // keeps its continuation state on the heap, but JSON.stringify recurses on
+    // the call stack — a deep *object* in the catalog would blow up the fake's
+    // own serializer on a small-stacked CI worker before the guard under test
+    // ever ran, and how deep "too deep" is would depend on the runner.
+    const depth = 60_000;
+    const deep = '{"type":"object","properties":{"a":'.repeat(depth) + '{"type":"string"}' + "}}".repeat(depth);
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            raw: `{"jsonrpc":"2.0","id":${String(request.rpc.id ?? 0)},"result":{"resultType":"complete","ttlMs":0,"cacheScope":"public","tools":[{"name":"list_prs","description":"Lists PRs.","inputSchema":${deep}}]}}`
+          }
+        : null;
     const { describe: ask } = harnessFor();
 
     // Thin, not absent, and above all: answered. The description survives; the
