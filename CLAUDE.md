@@ -291,9 +291,9 @@ those argument values into `Mcp-Param-{name}` request headers. This client does
 not, so GitHub answers `-32020` to essentially every tool call. Everything
 before that step works against the live server and is proven by
 `e2e/src/github-live.test.ts`: the ladder, the legacy `2025-11-25` handshake,
-the credential, the real catalog. See the MCP client section below for why the
-fix is not simply "write the mirroring" — the hand-rolled-vs-SDK decision is
-being re-opened first, and these two questions are coupled.
+the credential, the real catalog. The fix is not "write the mirroring": #185
+re-ran the hand-rolled-vs-SDK decision on #130's evidence and chose to adopt
+the official client; #188 is that implementation and is what completes #130.
 
 **What #130 changed most is the docs.**
 GitHub's hosted server is `https://api.githubcopilot.com/mcp/`, and
@@ -479,32 +479,31 @@ upstream's client, `mcp-pool.ts` keys one client per `(transport, url,
 credential)` triple — the same `upstreamKey` enforcement compares, exported
 rather than restated so the two cannot drift.
 
-The client is hand-rolled rather than the SDK, and the reason is the custody
-argument rather than dependency count: the credential must not be revealed
-outside `callUpstream`, or "redaction is total because sending is centralised"
-becomes "because we wrapped it carefully" in the process holding every
-credential.
+The client is hand-rolled, and **#185 decided to replace it with
+`@modelcontextprotocol/client` 2.0.0; #188 is the implementation.** The
+hand-roll's stated reason was custody — the belief that the SDK's transport
+owned its own `fetch`, so the credential would be revealed outside
+`callUpstream`. #130 established that is false (`fetch?: FetchLike`, used for
+every request including the auth paths), and its stated cost model was wrong by
+construction: `mcp-spec-watch.yml` triggers on revision tags, and the gap #130
+hit — `x-mcp-header`, which GitHub enforces at `2025-11-25` — is
+within-revision, so the watch structurally could not have fired. What tipped
+the re-run decision was the recurring costs: OAuth is wanted near-term and the
+spec keeps moving, and both are costs the hand-roll pays forever.
 
-**Both halves of that record are now known to be wrong on the facts, and #130
-is what found out.** The premise was that `StreamableHTTPClientTransport` owns
-its own `fetch`; it takes one — `fetch?: FetchLike`, "used for all network
-requests", including the OAuth paths — so `callUpstream` could be the injected
-fetch and the custody argument is recoverable rather than lost. And the stated
-cost, "one pinned constant and `.github/workflows/mcp-spec-watch.yml`", was an
-underestimate by construction: that workflow triggers on *revision tags*, and
-the gap #130 hit is a **within-revision** feature (`x-mcp-header`) that GitHub
-enforces at `2025-11-25`, a revision we already claim to speak. It could not
-have fired. We also send no `Mcp-Method` or `Mcp-Name`, which are MUST-level for
-`2026-07-28`.
-
-So the principle stands and the cost model does not. Adopting the SDK is being
-re-evaluated on that evidence rather than defended or assumed — it is a
-phase-scale call touching the pool's `(transport, url, credential)` isolation
-keying, the `READABLE_RESPONSE_HEADERS` allowlist (which would have to widen
-from two headers to whatever the SDK reads, all still scrubbed), and a
-dependency tree inside the credential-holding process. **Do not implement more
-protocol here until that is decided**; the two questions are coupled and the
-second one is the larger.
+The full evidence — the 13-package MIT/ISC dependency audit, the `FetchLike`
+spike (all six custody assertions pass, including `Mcp-Param-*` derivation and
+a positive control), and the pool-isolation answer (`upstreamKey` keying
+survives; the pool holds SDK clients) — is the recommendation comment on #185.
+The conditions the implementation must carry are #188's acceptance criteria;
+the four that are easiest to lose: `versionNegotiation: { mode: "auto" }`
+(the SDK defaults to legacy-first), `toolDefinition` on every `callTool` (it
+disables the `-32020` re-POST, one write must not become two), a vendored
+`Mcp-Param` codec applied via per-call `options.headers` on legacy-era
+connections (GitHub enforces the headers where the SDK does not mirror them),
+and no `authProvider` until OAuth is designed vault-first (without one, the
+OAuth paths are provably unreachable). **Do not implement more protocol in the
+hand-rolled client**; a gap found there is an argument for finishing #188.
 
 Three behaviours there are decisions rather than mechanics. **A server naming no
 version we speak fails closed** with no `tools/call` sent, rather than being

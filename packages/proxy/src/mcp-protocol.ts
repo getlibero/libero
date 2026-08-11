@@ -5,21 +5,18 @@
 // custody, so the rules can be tested exhaustively without standing anything
 // up, and a reviewer reading the custody file is not also reading a parser.
 //
-// **Hand-rolled rather than taken from `@modelcontextprotocol/sdk`, and the
-// reason is structural rather than about dependency count.** The SDK's
-// streamable-HTTP transport owns its own `fetch` and builds its own headers, so
-// the credential would be revealed and attached outside `callUpstream` — which
-// is exactly the argument outbound.ts:15-27 makes for why redaction is total.
-// A wrapper could restore it, but the guarantee would go from "true by
-// construction, checkable with one grep" to "true because we wrapped it
-// carefully", in the process that holds every tool credential. The SDK also
-// brings express, hono, jose, and cross-spawn into that process's install tree,
-// which ./server.ts's dependency rule exists to prevent.
-//
-// The cost of that choice is that this repo owns a moving protocol. It is paid
-// for by keeping the version constants below in one place and by
-// .github/workflows/mcp-spec-watch.yml, which opens an issue when the spec
-// publishes a revision past the one pinned here.
+// **Hand-rolled, and now on the way out (#185/#188).** The original reason was
+// custody: the belief that the SDK's streamable-HTTP transport owned its own
+// `fetch`, so the credential would be revealed outside `callUpstream`. #130
+// established that is false — `StreamableHTTPClientTransport` takes
+// `fetch?: FetchLike`, used for all network requests, so `callUpstream` can be
+// the injected fetch and the custody argument survives adoption. The stated
+// cost model was also wrong by construction: mcp-spec-watch.yml triggers on
+// revision tags and structurally cannot see within-revision features, which is
+// exactly the gap (`x-mcp-header`) that #130 hit. #185 re-ran the decision on
+// that evidence and chose to adopt `@modelcontextprotocol/client` 2.0.0; #188
+// is the implementation. Do not extend this module's protocol coverage — a gap
+// found here is an argument for finishing #188, not for another function.
 //
 // **Two dialects, and the split is a transport difference rather than a flag.**
 // `2026-07-28` is stateless: a request carries its own version and capabilities
