@@ -36,7 +36,13 @@ import type { SlackEnvelope, SlackMessage } from "./types.js";
  */
 const ALLOWED_SUBTYPES: ReadonlySet<string> = new Set(["thread_broadcast", "file_share"]);
 
-/** The subtypes that carry an edit or a deletion, rather than a new message. */
+/**
+ * The subtypes that carry an edit or a deletion, rather than a new message.
+ *
+ * Named here and read by `revision.ts` through the `message_edit` code rather
+ * than as a shared set, so this file goes on being the only one that decides
+ * whether a `message` payload is a new message.
+ */
 const REVISION_SUBTYPES: ReadonlySet<string> = new Set(["message_changed", "message_deleted"]);
 
 /**
@@ -81,11 +87,12 @@ export type MessageIgnoreReason =
   /**
    * An edit or a deletion of a message already recorded.
    *
-   * Its own reason rather than `message_subtype`, because it is the one drop
-   * here that is work deferred rather than content declined: the store has
-   * `remove` and `replaceText` waiting for it, and mirroring these onto them is
-   * #177. A distinct code is what makes "how often does this actually happen in
-   * this workspace" a grep rather than a guess.
+   * Its own reason rather than `message_subtype`, because it is the one answer
+   * here that is a handoff rather than a drop: `dispatchMessage` reads this code
+   * and passes the envelope to `toRevision`, which normalizes it onto the
+   * store's `remove` and `replaceText` (#177). Keeping the two normalizers apart
+   * rather than widening this one is what lets each file stay the whole account
+   * of a payload — a revision shares almost no field with a message.
    */
   | "message_edit"
   /** A join, a topic change, a pinned item — a system event, not a message. */

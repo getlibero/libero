@@ -1,5 +1,6 @@
 // The message path: a `SlackMessage` becomes a `StoredMessage`, and sometimes a
-// `TaskRequest`.
+// `TaskRequest`. Its second half is the revision path, where a `SlackRevision`
+// becomes a delete or a reindex against the same store.
 //
 // The sibling of handler.ts, and here for the same reason. It names both a
 // Slack type and a session, which is exactly the pair `src/session/**`'s ESLint
@@ -21,8 +22,10 @@
 import type {
   Logger,
   MessageHandler,
+  RevisionHandler,
   SlackMessage,
-  SlackReply
+  SlackReply,
+  SlackRevision
 } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { HeldCallPrompter } from "@getlibero/agent";
@@ -216,5 +219,85 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
     });
 
     return reply === undefined ? undefined : { text: reply.text };
+  };
+}
+
+export interface RevisionIngestOptions {
+  /**
+   * The same registry the message ingest was built on, and it has to be: a
+   * revision opens the session that holds the channel's store handle, and a
+   * second registry would open the same file twice.
+   */
+  sessions: SessionRegistry;
+  logger?: Logger;
+}
+
+/**
+ * Wraps the session registry as the handler the gateway hands revisions to.
+ *
+ * Slack retention is the whole point. A message deleted in Slack is deleted
+ * here, index entry included, and an edited one is reindexed — so what the store
+ * holds is what the channel still holds, rather than a copy that quietly
+ * outlives it. The store's half was built in #63; this is the events reaching
+ * it.
+ *
+ * **An edit is not a way into the store.** `replaceText` answers false for a ts
+ * the store does not hold and that is left as a no-op, deliberately, rather than
+ * being turned into an insert. The store's rows are the messages the message
+ * path agreed to record, and inserting on an edit would be a second write door
+ * with none of the first one's filters — an app's own message, a `channel_join`,
+ * a subtype the store declined, all of them recordable by being edited
+ * afterwards. It also has an honest reading: a channel provisioned today has no
+ * history from last week, and back-filling one message out of that week because
+ * somebody fixed a typo in it is an arbitrary transcript rather than a fuller
+ * one. The same answer for a deletion, for the simpler reason that there is
+ * nothing to delete.
+ *
+ * **It does not take the session's mutex**, for the reason the message ingest
+ * gives: the mutex serializes model turns, and this is one synchronous
+ * statement whose concurrency control is SQLite's own.
+ *
+ * One ordering limit is worth stating rather than implying. The store is keyed
+ * on `ts` and holds no tombstone, so a deletion that somehow arrived before the
+ * message it deletes would find nothing and the message would then be stored by
+ * the later event. Slack delivers a message before its own revision, so this
+ * needs a redelivery to reorder them; the cost of closing it is a second table
+ * that every read would have to consult, and that trade is not phase 1's.
+ */
+export function createRevisionIngest(options: RevisionIngestOptions): RevisionHandler {
+  const logger = options.logger ?? createSilentLogger();
+
+  return (revision: SlackRevision): Promise<void> => {
+    const session = options.sessions.open({
+      workspace: revision.teamId,
+      channel: revision.channelId
+    });
+
+    // No store: no team sheet, or the file could not be opened. Said once when
+    // the session was created, and silent per revision after that. A channel
+    // that records nothing has nothing to retract.
+    if (session.store === null) return Promise.resolve();
+
+    try {
+      // The return value is deliberately unused. False means the store never
+      // held this ts, which is the ordinary case for any channel provisioned
+      // after the conversation started — see above.
+      if (revision.kind === "deleted") session.store.remove(revision.ts);
+      else session.store.replaceText(revision.ts, revision.text);
+    } catch (error) {
+      // One revision lost and the process carries on, exactly as a failed
+      // append loses one message. It is worth a line where the append's is,
+      // because the consequence outlives the event: a delete that did not land
+      // leaves retracted text in a file that the context assembler reads on
+      // every turn, and nothing will try again.
+      logger.log("error", {
+        event: "store_write_failed",
+        channel: revision.channelId,
+        eventId: revision.eventId,
+        revision: revision.kind,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+    }
+    return Promise.resolve();
   };
 }

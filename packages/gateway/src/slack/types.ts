@@ -5,8 +5,9 @@
 // are one of the paths a secret leaks, and this is the process that holds the
 // app and bot tokens.
 //
-// The adapter answers a mention, reports a click, surfaces an ordinary message,
-// and says who a user id is, and nothing else. Sessions, the per-session mutex,
+// The adapter answers a mention, reports a click, surfaces an ordinary message
+// and the later deletion or edit of one, and says who a user id is, and nothing
+// else. Sessions, the per-session mutex,
 // the transcript that attribution is rendered into, the live checklist, and the
 // message store itself are above this package and are not modelled here — what
 // a `SlackMessage` is *for* does not appear in this file, which is why it
@@ -96,6 +97,57 @@ export interface SlackMessage {
    */
   mentionsApp: boolean;
 }
+
+/**
+ * A message already recorded, deleted or edited by its author.
+ *
+ * Its own type rather than a `SlackMessage` with a flag, because almost none of
+ * a message's fields survive: what a revision carries is the identity of the
+ * row it revises and, for an edit, the text that replaces it. There is no
+ * `userId` — the author of the *change* is not something the payload reliably
+ * carries, and the store keys on `ts` alone — and no `threadTs`, because a
+ * revision does not move a message between threads.
+ *
+ * `ts` is the **revised message's** ts, never the revision event's own. The two
+ * are different values on the wire (`deleted_ts` and the nested `message.ts`
+ * against the envelope's `ts`), and mirroring the wrong one would target a row
+ * that does not exist while leaving the retracted text in place.
+ */
+export type SlackRevision = SlackDeletion | SlackEdit;
+
+/** A message deleted in Slack. The store's row and its index entry both go. */
+export interface SlackDeletion {
+  kind: "deleted";
+  teamId: string;
+  channelId: string;
+  /** The deleted message's ts. */
+  ts: string;
+  /** Slack's `event_id` for the revision itself. */
+  eventId: string;
+}
+
+/** A message whose author changed its text. */
+export interface SlackEdit {
+  kind: "edited";
+  teamId: string;
+  channelId: string;
+  /** The edited message's ts — unchanged by the edit, which is why it is the key. */
+  ts: string;
+  /** The text as it now stands. What replaces the stored text, in full. */
+  text: string;
+  /** Slack's `event_id` for the revision itself. */
+  eventId: string;
+}
+
+/**
+ * A revision in, and nothing out.
+ *
+ * `Promise<void>` for `DecisionHandler`'s reason turned around: there is no
+ * reply a channel could want here. Someone who deletes a message is not asking
+ * to be told about it, and an edit answered in the thread would announce the
+ * retraction the author was undoing.
+ */
+export type RevisionHandler = (revision: SlackRevision) => Promise<void>;
 
 /** What the handler wants posted. A reply always lands in `threadTs`. */
 export interface SlackReply {

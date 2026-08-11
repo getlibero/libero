@@ -18,6 +18,7 @@ import type { BackoffPolicy } from "./backoff.js";
 import { toDecision } from "./decision.js";
 import { toMention } from "./mention.js";
 import { toMessage } from "./message.js";
+import { toRevision } from "./revision.js";
 import { GatewayError } from "./types.js";
 import type {
   AppIdentity,
@@ -25,6 +26,7 @@ import type {
   MentionHandler,
   MessageHandler,
   MessagePoster,
+  RevisionHandler,
   SlackEnvelope,
   SlackGateway,
   SlackInteractionEnvelope,
@@ -72,6 +74,15 @@ export interface GatewayOptions {
    */
   onMessage?: MessageHandler;
   /**
+   * A message already recorded was deleted or edited by its author.
+   *
+   * Optional on `onMessage`'s terms, and independent of it: the two arrive on
+   * one subscription but a process can compose either alone. Absent, a revision
+   * is acked and dropped — which means a store that has one is a store keeping
+   * text its author retracted, so a composing app with a store passes both.
+   */
+  onRevision?: RevisionHandler;
+  /**
    * Who this app is, asked once before the socket comes up.
    *
    * Optional, and its absence is a degradation rather than a failure: without
@@ -118,7 +129,8 @@ function reasonOf(error: unknown): string {
 }
 
 export function createGateway(options: GatewayOptions): SlackGateway {
-  const { source, poster, handler, onDecision, onMessage, identity, onFatal } = options;
+  const { source, poster, handler, onDecision, onMessage, onRevision, identity, onFatal } =
+    options;
   const logger = options.logger ?? createSilentLogger();
   const policy = options.backoff ?? DEFAULT_BACKOFF;
   const schedule = options.scheduler ?? defaultScheduler;
@@ -362,6 +374,12 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   /**
    * A message in, and — since #66 — sometimes a reply back into its thread.
    *
+   * Since #177 it is also the fan-out point for revisions. Slack carries a
+   * deletion and an edit as subtypes of this same event rather than as events of
+   * their own, so one subscription and one listener deliver all three, and where
+   * an envelope goes is decided by `toMessage`'s answer rather than by a second
+   * subscription.
+   *
    * Still the quietest of the three paths. It logs nothing on the way through
    * and nothing for an ordinary drop: no `message` line, no `ignored` line for
    * a subtype or a bot, and nothing at all for the overwhelming majority that
@@ -395,10 +413,19 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       return;
     }
     if (state !== "running") return;
-    if (onMessage === undefined) return;
 
     const result = toMessage(envelope, appUserId);
-    if ("ignored" in result) return;
+    if ("ignored" in result) {
+      // The one ignore code that is a handoff. `toMessage` recognizes the two
+      // revision subtypes and declines them as new messages; what they are
+      // instead is `toRevision`'s to say. Everything else here stays silent.
+      if (result.ignored === "message_edit") await dispatchRevision(envelope);
+      return;
+    }
+    // After the normalization rather than before it, so a process composing a
+    // revision handler and no message handler still mirrors deletions. The
+    // decode is pure and costs a process with neither nothing that matters.
+    if (onMessage === undefined) return;
     const message = result.message;
 
     const startedAt = now();
@@ -466,6 +493,42 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       threadTs: message.threadTs,
       durationMs: now() - startedAt
     });
+  }
+
+  /**
+   * A deletion or an edit in, and nothing out.
+   *
+   * Reached from `dispatchMessage` rather than registered as a listener, and it
+   * therefore **does not ack** — the envelope was acknowledged before its kind
+   * was known, which is the only order Slack's three-second window allows. A
+   * second ack here would be an ack of an envelope already acked.
+   *
+   * As quiet as the message path and for the same reason: a line per revision
+   * would be a running record of who retracted what and when, assembled out of
+   * ids that are individually fine. Only a handler that threw gets one, and the
+   * layer that owns the store logs its own failure with more to say.
+   */
+  async function dispatchRevision(envelope: SlackEnvelope): Promise<void> {
+    if (onRevision === undefined) return;
+
+    const result = toRevision(envelope);
+    if ("ignored" in result) return;
+    const revision = result.revision;
+
+    try {
+      await onRevision(revision);
+    } catch (error) {
+      // One revision lost and the socket stays up, exactly as a failed handler
+      // loses one message. Nothing is posted: a channel that deleted a message
+      // does not want to be told about it in the channel.
+      logger.log("error", {
+        event: "revision_failed",
+        channel: revision.channelId,
+        eventId: revision.eventId,
+        revision: revision.kind,
+        reason: reasonOf(error)
+      });
+    }
   }
 
   /**

@@ -11,9 +11,12 @@ export type {
   MessageHandler,
   MessagePoster,
   PostedCard,
+  RevisionHandler,
   SlackBlock,
   SlackCard,
   SlackDecision,
+  SlackDeletion,
+  SlackEdit,
   SlackEnvelope,
   SlackGateway,
   SlackInteractionEnvelope,
@@ -21,6 +24,7 @@ export type {
   SlackMessage,
   SlackPoster,
   SlackReply,
+  SlackRevision,
   SocketSource,
   UserDirectory
 } from "./slack/types.js";
@@ -30,6 +34,9 @@ export type { IgnoreReason, MentionResult } from "./slack/mention.js";
 
 export { mentionsApp, toMessage } from "./slack/message.js";
 export type { MessageIgnoreReason, MessageResult } from "./slack/message.js";
+
+export { toRevision } from "./slack/revision.js";
+export type { RevisionIgnoreReason, RevisionResult } from "./slack/revision.js";
 
 export { toDecision } from "./slack/decision.js";
 export type { DecisionIgnoreReason, DecisionResult } from "./slack/decision.js";
@@ -76,12 +83,14 @@ export {
   appMentionEnvelope,
   blockActionsEnvelope,
   createStubSlack,
-  messageEnvelope
+  messageEnvelope,
+  revisionEnvelope
 } from "./slack/stub-slack.js";
 export type {
   StubDecisionFields,
   StubMentionFields,
   StubMessageFields,
+  StubRevisionFields,
   StubSlack,
   StubSlackOptions
 } from "./slack/stub-slack.js";

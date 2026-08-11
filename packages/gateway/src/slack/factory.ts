@@ -17,6 +17,7 @@ import type {
   GatewayError,
   MentionHandler,
   MessageHandler,
+  RevisionHandler,
   SlackGateway,
   UserDirectory
 } from "./types.js";
@@ -32,6 +33,8 @@ export interface SlackGatewayConfig {
   onDecision?: DecisionHandler;
   /** An ordinary message arrived. See `GatewayOptions.onMessage`. */
   onMessage?: MessageHandler;
+  /** A recorded message was deleted or edited. See `GatewayOptions.onRevision`. */
+  onRevision?: RevisionHandler;
   /** Defaults to JSON lines on stdout. */
   logger?: Logger;
   backoff?: BackoffPolicy;
@@ -94,6 +97,7 @@ export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
     // `undefined` for an optional property.
     ...(config.onDecision !== undefined ? { onDecision: config.onDecision } : {}),
     ...(config.onMessage !== undefined ? { onMessage: config.onMessage } : {}),
+    ...(config.onRevision !== undefined ? { onRevision: config.onRevision } : {}),
     ...(config.backoff !== undefined ? { backoff: config.backoff } : {}),
     ...(config.onFatal !== undefined ? { onFatal: config.onFatal } : {}),
     ...(config.scheduler !== undefined ? { scheduler: config.scheduler } : {})

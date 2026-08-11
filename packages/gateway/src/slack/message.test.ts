@@ -131,10 +131,12 @@ describe("toMessage", () => {
   it.each([["message_changed"], ["message_deleted"]])(
     "reports %s as an edit rather than as an unwanted subtype",
     subtype => {
-      // Its own code because it is work deferred rather than content declined:
-      // the store has `remove` and `replaceText` waiting, and mirroring onto
-      // them is #177. The distinct reason is what makes "how often does this
-      // happen here" a grep.
+      // Its own code because it is a handoff rather than a drop: since #177
+      // `dispatchMessage` reads exactly this answer and passes the envelope to
+      // `toRevision`, which mirrors it onto the store's `remove` and
+      // `replaceText`. Folding it into `message_subtype` would silently stop
+      // deletions being mirrored, so this assertion is load-bearing rather than
+      // descriptive.
       expect(ignoredOf(toMessage(envelope({ subtype })))).toBe("message_edit");
     }
   );

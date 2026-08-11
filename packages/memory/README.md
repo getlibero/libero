@@ -111,11 +111,17 @@ a build without it at open, naming the floor rather than letting SQLite report
 
 ## What is not here
 
-The mirroring of Slack deletions and edits onto `remove` and `replaceText` is
-#177: `message_changed` and `message_deleted` reach the process today and are
-dropped with their own reason code, so the two paths built here are still
-unused. Layers 2 and 3 of the spec (`MEMORY.md` curation, sqlite-vec recall) are
-phase 2.
+Layers 2 and 3 of the spec (`MEMORY.md` curation, sqlite-vec recall) are
+phase 2. Slack deletion and edit mirroring is no longer among them: #177 wired
+`message_deleted` and `message_changed` onto `remove` and `replaceText`, through
+`toRevision` in the gateway and `createRevisionIngest` in `apps/server`.
+
+One rule that belongs here rather than there, because it is about what this
+store is: **an edit is not a way in.** `replaceText` answers false for a ts the
+file does not hold and the caller leaves it at that. Turning it into an insert
+would make a second write door with none of the first one's filters — an app's
+own message, a `channel_join`, any subtype the allowlist declined, all
+recordable by being edited afterwards.
 
 One thing about the file's location moved with #176 and is worth knowing before
 you write a second caller. `openMessageStore` still creates no directory, but
