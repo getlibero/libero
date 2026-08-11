@@ -40,7 +40,7 @@ export type { BudgetCliResult } from "./budget-cli.js";
 export { spawnProxy } from "./proxy-process.js";
 export type { ProxyEnv, ProxyProcess } from "./proxy-process.js";
 
-export { startAgent } from "./agent.js";
+export { approvalCardOf, startAgent } from "./agent.js";
 export type { AgentOptions, AgentSide } from "./agent.js";
 
 export { authorizationsSeen, startUpstream } from "./upstream.js";

@@ -32,7 +32,7 @@
 
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import type { Scheduler } from "@getlibero/gateway";
-import { CHANNEL, auditRows, calls, rigOf, says, startRig } from "./harness/index.js";
+import { CHANNEL, approvalCardOf, auditRows, calls, rigOf, says, startRig } from "./harness/index.js";
 import type { AuditRow, Rig } from "./harness/index.js";
 
 const SETUP_MS = 60_000;
@@ -139,12 +139,12 @@ function describeClickRunsIt(): void {
 
       const pending = agent.slack.deliverMention(mention("Ev00000060"));
       await vi.waitFor(() => {
-        expect(agent.slack.cards).toHaveLength(1);
+        expect(approvalCardOf(agent)).toBeDefined();
       });
 
       // Amber, in the thread, while nothing has happened: no reply yet, and —
       // the assertion this whole file exists for — no request at the upstream.
-      const card = agent.slack.cards[0];
+      const card = approvalCardOf(agent);
       expect(card?.card.color).toBe(AMBER);
       expect(card?.threadTs).toBe("1758000000.000100");
       expect(agent.slack.posted).toHaveLength(0);
@@ -218,9 +218,9 @@ function describeDenyStopsIt(): void {
 
       const pending = agent.slack.deliverMention(mention("Ev00000061"));
       await vi.waitFor(() => {
-        expect(agent.slack.cards).toHaveLength(1);
+        expect(approvalCardOf(agent)).toBeDefined();
       });
-      const card = agent.slack.cards[0];
+      const card = approvalCardOf(agent);
 
       await agent.slack.deliverDecision({
         teamId: "T024BE7LD",
@@ -275,7 +275,7 @@ function describeAbandonedWait(): void {
 
       const pending = agent.slack.deliverMention(mention("Ev00000062"));
       await vi.waitFor(() => {
-        expect(agent.slack.cards).toHaveLength(1);
+        expect(approvalCardOf(agent)).toBeDefined();
       });
 
       // Nobody clicks, and the wait ends anyway. The client re-submits with the
@@ -293,7 +293,7 @@ function describeAbandonedWait(): void {
       const rows = auditRows(auditDb);
       expect(rows.map(row => row.outcome)).toEqual(["held", "refused"]);
       expect(rows[1]).toMatchObject({ refusal_reason: "approval_pending" });
-      expect(agent.slack.cardAt(agent.slack.cards[0]?.messageTs ?? "")?.color).toBe(RED);
+      expect(agent.slack.cardAt(approvalCardOf(agent)?.messageTs ?? "")?.color).toBe(RED);
 
       expect(JSON.stringify(model.seen)).toContain("has not been decided");
       expect(agent.slack.posted).toHaveLength(1);
@@ -326,13 +326,13 @@ function describeApproveThenMutate(): void {
 
       const pending = agent.slack.deliverMention(mention("Ev00000063"));
       await vi.waitFor(() => {
-        expect(agent.slack.cards).toHaveLength(1);
+        expect(approvalCardOf(agent)).toBeDefined();
       });
 
       // What the human was shown is the call the model actually made. The
       // mutation lands after this, on the one submission where the ticket's
       // argument hash is the only thing in the way.
-      expect(JSON.stringify(agent.slack.cards[0]?.card)).toContain("topic");
+      expect(JSON.stringify(approvalCardOf(agent)?.card)).toContain("topic");
 
       await agent.slack.deliverDecision({
         teamId: "T024BE7LD",
@@ -340,7 +340,7 @@ function describeApproveThenMutate(): void {
         userId: APPROVER,
         ticketId: heldTicket(auditRows(auditDb)),
         verdict: "approve",
-        messageTs: agent.slack.cards[0]?.messageTs ?? "",
+        messageTs: approvalCardOf(agent)?.messageTs ?? "",
         threadTs: "1758000000.000100"
       });
       await pending;
@@ -398,7 +398,7 @@ function describeModelWritesItsOwnApproval(): void {
 
       const pending = agent.slack.deliverMention(mention("Ev00000064"));
       await vi.waitFor(() => {
-        expect(agent.slack.cards).toHaveLength(1);
+        expect(approvalCardOf(agent)).toBeDefined();
       });
       clock.fire();
       await pending;

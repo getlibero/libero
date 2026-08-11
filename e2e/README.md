@@ -246,12 +246,24 @@ meter is what makes it land on the running proxy's next call.
 
 **Driving a human's click needs three things, and the rig has all of them.**
 `agent.slack.deliverMention` does not resolve while a call is held, so a case
-holds the promise, waits for `agent.slack.cards` to fill, and then delivers a
-decision. The ticket id is the proxy's — read it off the `held` audit row it
+holds the promise, waits for `approvalCardOf(agent)` to appear, and then delivers
+a decision. The ticket id is the proxy's — read it off the `held` audit row it
 wrote before it answered, which is also how a case can assert the button
 carries that same id rather than one the agent invented. `agent.slack.cardAt`
 is the card showing now, which is the assertion most cases want ("it is green,
 and it names the approver").
+
+**Use `approvalCardOf`, never `slack.cards[0]`.** Since #68 a tool-calling task
+also posts a live checklist, so a thread that holds a call has two cards in it
+and which one is first is a race — the checklist is posted from the loop and the
+approval card from the tool client. `approvalCardOf` picks by the actions block,
+which is exact rather than a heuristic: only the amber card draws buttons, and a
+checklist has no interactive element in any state.
+
+**Green now means the call ran** (#143). An approve repaints the card to an
+uncoloured `running` face and it goes green only when the re-submission answers,
+so a case asserting green is asserting an execution. An approved call the proxy
+then refuses goes red and still names the approver.
 
 **The approval clock is one-sided, and a case has to say which half it moved.**
 `startRig({ scheduler })` reaches the approval prompter and nothing else

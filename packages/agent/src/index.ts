@@ -31,6 +31,8 @@ export type {
   AgentTaskOptions,
   AgentTaskResult,
   ToolCallAttribution,
+  ToolCallState,
+  ToolCallStep,
   ToolExecutor,
   ToolResult,
   ToolSource

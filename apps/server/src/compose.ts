@@ -32,6 +32,7 @@ import type {
 import { createSilentLogger } from "@getlibero/gateway";
 import { createDecisionHandler } from "./approvals/decisions.js";
 import { createHeldCallPrompter } from "./approvals/prompter.js";
+import { createChecklistReporter } from "./checklist/checklist.js";
 import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
@@ -257,6 +258,7 @@ export function createServer(deps: ServerDeps): Server {
     names,
     route,
     onHeld: target => prompter?.(target),
+    checklist: target => checklists?.(target),
     logger,
     ...clock
   });
@@ -291,12 +293,26 @@ export function createServer(deps: ServerDeps): Server {
           ...(deps.scheduler !== undefined ? { scheduler: deps.scheduler } : {})
         });
 
+  // The checklist rides the same card poster, and degrades the same way: a
+  // front-end with nowhere to put a card runs tasks that post only their answer,
+  // which is what every front-end did before #68.
+  //
+  // **`deps.scheduler` deliberately does not reach it**, which is the rule
+  // stated just above turned on a second consumer: that scheduler is the
+  // approval deadline's, and a test firing the next pending timer to expire a
+  // ticket must not find an edit floor in the queue instead. The floor is a
+  // duration rather than a moment and nothing outside this file asserts on it,
+  // so the real timer is right here and `checklist.test.ts` injects its own.
+  const checklists =
+    cards === undefined ? undefined : createChecklistReporter({ cards, logger });
+
   // Slack in, request out, and everything below that mapping is transport
   // neutral: the router serializes per channel, the resolver reads that
   // channel's sheet, the runner runs one task on what the sheet said. The
-  // prompter factory rides the same seam the reply does — the mention's channel
-  // and thread are captured in handler.ts, and the router sees a closure.
-  const handleMention = createMentionHandler(route, prompter);
+  // prompter and checklist factories ride the same seam the reply does — the
+  // mention's channel and thread are captured in handler.ts, and the router sees
+  // two closures.
+  const handleMention = createMentionHandler(route, prompter, checklists);
 
   return { gateway: surface.gateway, registry };
 }

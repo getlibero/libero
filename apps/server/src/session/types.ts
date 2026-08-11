@@ -15,6 +15,7 @@
 // carries.
 
 import type { AgentLoopCaps, CompletionMessage, HeldCallPrompter } from "@getlibero/agent";
+import type { ChecklistReporter } from "../checklist/checklist.js";
 
 /**
  * Which session a request belongs to.
@@ -96,6 +97,20 @@ export interface TaskRequest {
    * behaviour, and still the right one for a front-end with no one to ask.
    */
   readonly onHeld?: HeldCallPrompter;
+  /**
+   * Where this task reports its progress, if the front-end gave it somewhere.
+   *
+   * `onHeld`'s shape and `onHeld`'s argument: the front-end that built the
+   * request already decided where a checklist goes — a message in the mention's
+   * thread — and this layer cannot see how. The type names nothing Slack-shaped,
+   * which is what lets it cross into a directory whose ESLint block admits no
+   * Slack type.
+   *
+   * Absent, a task runs exactly as it did before #68 and posts nothing but its
+   * answer. That is still right for a front-end with no message to edit — a CLI,
+   * an HTTP request/response.
+   */
+  readonly checklist?: ChecklistReporter;
 }
 
 /** What goes back to whoever asked. `undefined` from a runner posts nothing. */

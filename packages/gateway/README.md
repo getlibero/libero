@@ -79,9 +79,11 @@ that is already awaiting the decision. That is why `updateCard` takes a whole
 freshly rendered card: nothing here keeps mutable card state between calls.
 
 
-Sessions, the per-session mutex, display-name attribution, the live-updating
-checklist message, and the FTS message store are the channel router's, and are
-not here. The router landed in `apps/server/src/session/` (#65) and serializes a
+Sessions, the per-session mutex, display-name attribution, and the FTS message
+store are the channel router's, and are not here. So is the live checklist's
+lifetime: `checklist-card.ts` renders one from whole state the way
+`approval-card.ts` does, and the coalescing that keeps a twenty-call task to a
+handful of edits lives in `apps/server`, where the clock is. The router landed in `apps/server/src/session/` (#65) and serializes a
 channel's mentions **above** this package: the gateway goes on dispatching
 concurrently, because it acknowledges an inbound event within about three
 seconds or Slack redelivers it, and a mention waiting its turn must not hold
@@ -97,7 +99,8 @@ for that reason.
 | `slack/message.ts` | One envelope to a `SlackMessage`, on the same terms. Keeps the raw `thread_ts`, which is the whole reason it is not `mention.ts` |
 | `slack/decision.ts` | One `block_actions` payload to a `SlackDecision`, on the same terms |
 | `slack/approval-ids.ts` | The two action ids and the verdict each means, read both directions |
-| `slack/approval-card.ts` | The card renderer. Pure, and the three status colours live here |
+| `slack/approval-card.ts` | The approval card renderer. Pure, and the three status colours live here |
+| `slack/checklist-card.ts` | The live checklist renderer. Pure, whole state in, one card out |
 | `slack/gateway.ts` | Dispatch and the reconnect supervisor. No Slack SDK in it |
 | `slack/backoff.ts` | The reconnect policy, as arithmetic |
 | `slack/socket-mode.ts` | The inbound adapter. Holds the app token |
@@ -152,6 +155,16 @@ colour into a message — so every state also names itself in the blocks and in
 `fallback`. A card with no colour at all is still correct, which is what makes it
 correct in a push notification, to a screen reader, and on the day attachments
 go away.
+
+**`SlackCard.color` is optional, and absence is the in-flight face** (#68, #143).
+A checklist mid-task, and an approved call whose re-submission has not answered
+yet, are none of the three: not executed, not waiting on a human, not blocked.
+Rather than widen amber to mean "unsettled" — which would make the one colour
+that means *click this* also mean *nothing to do* — those states carry no colour
+and Slack draws its own default border. It reads as *not a status yet*, which is
+what in-flight is, and the colour arrives with the terminal repaint. That is only
+safe because of the paragraph above: a card is already required to be legible
+with no colour at all.
 
 Two consequences worth stating: arguments rendered onto a card are escaped
 before they reach a block, because that field carries model-authored text onto

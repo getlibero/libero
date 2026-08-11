@@ -26,6 +26,7 @@
 
 import type { MentionHandler, SlackMention, SlackReply } from "@getlibero/gateway";
 import type { HeldCallPrompterFactory } from "./approvals/prompter.js";
+import type { ChecklistReporterFactory } from "./checklist/checklist.js";
 import type { ChannelRouter } from "./session/router.js";
 
 /**
@@ -45,7 +46,8 @@ import type { ChannelRouter } from "./session/router.js";
  */
 export function createMentionHandler(
   route: ChannelRouter,
-  prompter?: HeldCallPrompterFactory
+  prompter?: HeldCallPrompterFactory,
+  checklists?: ChecklistReporterFactory
 ): MentionHandler {
   return async (mention: SlackMention): Promise<SlackReply | undefined> => {
     const reply = await route({
@@ -65,6 +67,12 @@ export function createMentionHandler(
       traceId: mention.eventId,
       ...(prompter !== undefined
         ? { onHeld: prompter({ channelId: mention.channelId, threadTs: mention.threadTs }) }
+        : {}),
+      // The checklist goes in the same thread the answer will, and is built per
+      // mention for the prompter's reason: one card belongs to one task, and a
+      // factory shared across tasks would be one card shared across them.
+      ...(checklists !== undefined
+        ? { checklist: checklists({ channelId: mention.channelId, threadTs: mention.threadTs }) }
         : {})
     });
 
