@@ -138,10 +138,10 @@ credential = "github_service_account"
 # …tools…
 ```
 
-One credential, however many blocks. Give them different `name`s: two blocks *may* share a name —
-that is how a long tool list gets split — but only if every block carrying a given tool agrees on
-the upstream, and these two do not point at the same url. Sharing a name here would refuse the call
-as `server_ambiguous`.
+One credential, however many blocks. Give each block a different `name`. Two blocks *may* share a
+name — that is how a long tool list gets split — but only if every block carrying a given tool
+agrees on the upstream, and these two do not point at the same url. Sharing a name here would
+refuse the call as `server_ambiguous`.
 
 The model sees the bare tool name, `list_pull_requests`, not `github__list_pull_requests`. The
 server name only enters the model-facing name when two servers publish the same tool.
