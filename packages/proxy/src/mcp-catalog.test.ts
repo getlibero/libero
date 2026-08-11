@@ -495,4 +495,34 @@ describe("what one upstream is already known to offer", () => {
 
     expect(described.size).toBeLessThanOrEqual(MAX_DESCRIBED_TOOLS);
   });
+
+  // The walk's budget bounds what one question adds, but resolutions merge
+  // across questions: two narrow asks can together settle more names than the
+  // cap, and a later wide ask then finds everything fresh and walks nothing.
+  // The cap has to hold on the assembled answer itself, or the fully-cached
+  // path — the cheapest one — is the one path that can exceed it.
+  it("holds the cap when the whole answer is already cached", async () => {
+    const catalog = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_unused, index) => ({
+      name: `tool_${String(index)}`,
+      description: "listed",
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({ catalog, pageSize: null });
+    const { describe: ask, lines } = harnessFor();
+    const upstream = serverAt(fake.url);
+    const every = catalog.map(tool => tool.name);
+
+    await ask(upstream, every.slice(0, MAX_DESCRIBED_TOOLS));
+    await ask(upstream, every.slice(MAX_DESCRIBED_TOOLS));
+    const walksSoFar = fake.callsTo("tools/list").length;
+    const described = await ask(upstream, every);
+
+    expect(described.size).toBe(MAX_DESCRIBED_TOOLS);
+    // Wanted order is the sheet's order, so the operator's first hundred win.
+    expect(described.has("tool_0")).toBe(true);
+    expect(described.has(`tool_${String(MAX_DESCRIBED_TOOLS + 19)}`)).toBe(false);
+    // The wide ask was served from the cache — the cap did not force a re-walk.
+    expect(fake.callsTo("tools/list")).toHaveLength(walksSoFar);
+    expect(lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === "truncated")).toBe(true);
+  });
 });
