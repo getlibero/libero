@@ -9,7 +9,7 @@ import type { CallLimits } from "./enforce.js";
  * The channel's bound on a result, which every `callTool` now carries.
  *
  * Roomy on purpose: these cases are about the protocol and the transport, not
- * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ * about truncation. The bound's own behaviour is mcp-bounds.test.ts's.
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 import { createJsonLogger } from "./log.js";
@@ -314,6 +314,53 @@ describe("an upstream asking for more input", () => {
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("does not answer for a channel");
     expect(lines.join("")).toContain("mcp_input_required");
+  });
+});
+
+describe("a schema too deep to scan for header declarations", () => {
+  // The call-path half of the catalog's degrade rule. A definition the catalog
+  // could not produce is a thin catalog, not a failed call — the call still
+  // goes out, with no mirrored headers. Before the guard, the scan's
+  // RangeError surfaced here and was answered "the call was made and no
+  // result came back" with a `ran` audit row, for a call never dispatched.
+  it("still dispatches the call, without mirrored headers", async () => {
+    let nested: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 60_000; i += 1) nested = { type: "object", properties: { a: nested } };
+    fake = await startFakeMcpServer({
+      catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema: nested }]
+    });
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    expect(result.outcome === "ran" && result.result.isError).toBe(false);
+    expect(result.outcome === "ran" && result.result.content).toBe("called list_prs");
+  });
+});
+
+describe("a credential revoked mid-session", () => {
+  // `unauthorized` is reachable on the call path, not only at connect: the
+  // upstream forgets the session, the reopen's re-initialize is answered 401.
+  // The default sentence's clauses are both false here — the 404 precedes
+  // dispatch, so the tool never ran — and the wording matches the connect-time
+  // case because the operator's fix is the same either way.
+  it("says the credential was rejected, not that the call was made", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+
+    const warm = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    expect(warm.outcome === "ran" && warm.result.isError).toBe(false);
+
+    fake.expireSessions();
+    fake.respond = request =>
+      request.rpc?.method === "initialize" ? { status: 401, raw: "token revoked" } : null;
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    const content = result.outcome === "ran" ? result.result.content : "";
+
+    expect(result.outcome === "ran" && result.result.isError).toBe(true);
+    expect(content).toBe("The tool server rejected this proxy's credential for it. The call was not made.");
+    expect(content).not.toContain("token revoked");
   });
 });
 

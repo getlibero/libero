@@ -247,7 +247,7 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * One tool's two describing fields, or nothing worth publishing.
    *
    * A description truncates and a schema does not, which is the split
-   * `mcp-protocol.ts` argues. A rejected schema is logged with its reason
+   * `mcp-bounds.ts` argues. A rejected schema is logged with its reason
    * because an operator asking why one tool is thin has no other way to find
    * out; a truncated description is not an event, because truncation is the
    * designed behaviour rather than a fault.
@@ -406,18 +406,50 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * intermediary note says infrastructure on an older negotiated revision SHOULD
    * reject a request carrying header values it cannot validate. Headers go only
    * to a server that asked for them in its own schema.
+   *
+   * **The scan is guarded, because it runs on the raw schema.** The vendored
+   * `visit` recurses per nesting level with no depth bound, and this is the one
+   * consumer that feeds it bytes nothing has bounded yet — deliberately, since
+   * reading declarations off the *published* schema would silently strip a
+   * large tool's headers (see `boundedEntry`). Tens of thousands of levels fit
+   * inside the response bound, and the resulting `RangeError` is neither a
+   * `RedactionError` nor an `McpListOutcome`: unguarded, it would escape the
+   * degrade-to-thin contract and turn one hostile upstream into a 500 for the
+   * channel's whole listing. A schema the scan cannot survive declares nothing,
+   * exactly as one it will not vouch for.
    */
   const declarationsIn = (rawSchema: unknown): readonly XMcpHeaderDeclaration[] => {
-    const scan = scanXMcpHeaderDeclarations(rawSchema);
-    return scan.valid ? scan.declarations : [];
+    try {
+      const scan = scanXMcpHeaderDeclarations(rawSchema);
+      return scan.valid ? scan.declarations : [];
+    } catch {
+      return [];
+    }
   };
 
-  /** The answer, assembled from what is settled. Wanted order, published only. */
-  const assemble = (entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
+  /**
+   * The answer, assembled from what is settled. Wanted order, published only.
+   *
+   * **The cap is applied here as well as in the walk, and here is the one that
+   * holds.** The walk's budget bounds what one question adds, but resolutions
+   * merge across questions — a listing that walked a hundred and a call path
+   * that walked fifty more leave the entry holding both, so the next wide ask
+   * finds everything fresh and walks nothing. Every path returns through this
+   * function, which is what makes it the place the answer's bound is a
+   * property rather than an accounting hope. Wanted order is the sheet's
+   * order, so what survives the cut is the operator's priority, not the
+   * upstream's.
+   */
+  const assemble = (upstream: McpServer, entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
     const answer = new Map<string, UpstreamToolDescription>();
     for (const name of wanted) {
       const resolution = entry.resolved.get(name);
-      if (resolution?.published != null) answer.set(name, resolution.published);
+      if (resolution?.published == null) continue;
+      if (answer.size >= MAX_DESCRIBED_TOOLS) {
+        unavailable(upstream, "truncated", { described: answer.size });
+        break;
+      }
+      answer.set(name, resolution.published);
     }
     return answer;
   };
@@ -474,13 +506,13 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
 
     // The whole point of the restructure: a tool the listing route already
     // walked for costs the call path nothing — no lease, no request, no log.
-    if (missing.size === 0) return assemble(entry, wanted);
+    if (missing.size === 0) return assemble(upstream, entry, wanted);
 
     const key = walkKey(upstream, missing);
     const inFlight = walking.get(key);
     if (inFlight !== undefined) {
       await inFlight;
-      return assemble(entry, wanted);
+      return assemble(upstream, entry, wanted);
     }
 
     const started = (async (): Promise<void> => {
@@ -505,7 +537,7 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
 
     walking.set(key, started);
     await started;
-    return assemble(entry, wanted);
+    return assemble(upstream, entry, wanted);
   };
 
   return {

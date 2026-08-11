@@ -272,6 +272,15 @@ export interface UpstreamRequest {
   readonly credentialName?: string;
   readonly timeoutMs?: number;
   /**
+   * The caller's abort, joined with the timeout rather than replacing it. The
+   * MCP SDK cancels through the signal it hands its `fetch` — its per-request
+   * timeout, `transport.close()`, a session termination racing shutdown — and
+   * dropping it here would leave every such abort a bookkeeping fiction: the
+   * caller's promise settles while the socket runs on to the full timeout,
+   * holding the event loop open past the window a `docker stop` allows.
+   */
+  readonly signal?: AbortSignal;
+  /**
    * How many bytes of the response body to hold before abandoning it. Absent
    * means `DEFAULT_UPSTREAM_RESPONSE_BYTES`.
    *
@@ -286,7 +295,7 @@ export interface UpstreamRequest {
    *
    * That is the whole of the split this file cares about. The companion bound —
    * how much of a *result* reaches the model — is the channel's own token spend
-   * and does live in the sheet; it is applied in ./mcp-protocol.ts, and nothing
+   * and does live in the sheet; it is applied in ./mcp-bounds.ts, and nothing
    * here knows about it.
    */
   readonly maxBodyBytes?: number;
@@ -406,7 +415,8 @@ async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit:
  * a fixed ceiling rather than one read from the team sheet: per-task wall time
  * is the agent loop's cap and the budget meter's business (#38), while this is
  * the proxy refusing to hold a socket open forever, which is not a policy an
- * operator should be able to raise from a sheet.
+ * operator should be able to raise from a sheet. A caller's `signal` joins it
+ * via `AbortSignal.any` — it can only end a request sooner, never extend one.
  *
  * Throws `UpstreamError` for transport failures and returns non-2xx responses
  * as ordinary results — a 404 from a tool is something the model should see and
@@ -465,7 +475,13 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
       // `manual` hands back the 3xx itself, so the check below is a status
       // code. The response is refused unread either way.
       redirect: "manual",
-      signal: AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS)
+      signal:
+        request.signal === undefined
+          ? AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS)
+          : AbortSignal.any([
+              AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS),
+              request.signal
+            ])
     });
   } catch (error) {
     // The only thing read off the thrown value is whether it was the abort.
@@ -605,9 +621,12 @@ export interface GuardedFetchOptions {
    * A `fetch` has no call sites to choose at: every request arrives through the
    * one function. It cannot tell a handshake from a call either, short of
    * parsing the body it is carrying. So the caller — which knows exactly which
-   * phase its connection is in — answers the question per request instead.
+   * phase its connection is in — answers the question per request instead, and
+   * is handed the verb, which is the one phase marker the request itself
+   * carries: a `DELETE` is always session termination, whatever phase the
+   * connection believes it is in.
    */
-  readonly maxBodyBytes?: number | (() => number);
+  readonly maxBodyBytes?: number | ((method: UpstreamMethod) => number);
   /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
   readonly fetch?: typeof globalThis.fetch;
 }
@@ -680,12 +699,14 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
       throw new UpstreamError("redirected");
     }
 
-    const bound = typeof options.maxBodyBytes === "function" ? options.maxBodyBytes() : options.maxBodyBytes;
+    const bound = typeof options.maxBodyBytes === "function" ? options.maxBodyBytes(method) : options.maxBodyBytes;
 
     const response = await callUpstream({
       url: String(url),
       method,
       ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      // `RequestInit.signal` admits `null`; both absences mean the same thing.
+      ...(init?.signal != null ? { signal: init.signal } : {}),
       headers: headersToRecord(init?.headers),
       scheme: options.scheme,
       secret: options.secret,

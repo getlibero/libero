@@ -14,7 +14,7 @@ import type { UpstreamCallDefinition } from "./dispatch.js";
  * The channel's bound on a result, which every `callTool` now carries.
  *
  * Roomy on purpose: these cases are about the protocol and the transport, not
- * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ * about truncation. The bound's own behaviour is mcp-bounds.test.ts's.
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
@@ -324,6 +324,22 @@ describe("version negotiation", () => {
     expect(fake?.callsTo("tools/call")).toHaveLength(0);
   });
 
+  // The SDK's own legacy list reaches back to the HTTP+SSE revisions, whose
+  // results arrive on the standalone GET stream the guarded fetch answers 405 —
+  // so accepting this handshake would make every call a thirty-second timeout
+  // with a wrong word at the end. The hand-rolled client failed closed on
+  // exactly this list; `supportedProtocolVersions` is what keeps the SDK doing
+  // the same, and this is the test that fails without it.
+  it.each(["2024-11-05", "2024-10-07"])("fails closed on the HTTP+SSE era (%s) rather than calling into a void", async version => {
+    const client = await clientFor({ protocol: "legacy", legacyVersion: version });
+
+    expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
+      outcome: "connect_failed",
+      failure: "unsupported_protocol"
+    });
+    expect(fake?.callsTo("tools/call")).toHaveLength(0);
+  });
+
   // A server that refused the probe and then refused the handshake has said it
   // twice, and there is no third rung.
   it("names a server that answers neither rung as unsupported", async () => {
@@ -531,6 +547,38 @@ describe("when the call fails", () => {
       outcome: "called",
       result: { content: "no such repo", isError: true }
     });
+  });
+
+  // The permissive `CallEnvelope` is what keeps this reaching `blockText`'s
+  // placeholder branch: with no caller schema the SDK validates the result
+  // against the specification's closed content union, and one forward-revision
+  // block beside ordinary text would fail the entire call — losing an answer
+  // the upstream actually returned. Legacy era; the modern era validates
+  // spec-first above any caller schema, the same narrowing the catalog pins.
+  it("renders an unrecognized content block as a placeholder rather than failing the call", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    fake.respond = request =>
+      request.rpc?.method === "tools/call"
+        ? {
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: {
+                content: [
+                  { type: "text", text: "the answer" },
+                  { type: "hologram", uri: "mcp://clip" }
+                ]
+              }
+            }
+          }
+        : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+    expect(outcome.outcome).toBe("called");
+    const content = outcome.outcome === "called" ? outcome.result.content : "";
+    expect(content).toContain("the answer");
+    expect(content).toContain("[unsupported content block: hologram]");
   });
 
   it("relays a JSON-RPC error with its code", async () => {
@@ -742,6 +790,35 @@ describe("when the session is lost", () => {
     expect(fake.callsTo("initialize")).toHaveLength(1);
   });
 
+  // The reopen clears `session` before its handshake resolves, and that window
+  // is one `ensureOpen` has to know about: a fresh call arriving inside it sees
+  // neither a session nor an `opening` and would start a second full ladder —
+  // a `server/discover` against a server already known to be legacy — racing
+  // the reopen, with the loser's session dropped unterminated at the upstream.
+  it("rides a reopen in flight rather than starting a second ladder", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    expect((await client.callTool("warm", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
+    fake.expireSessions();
+
+    // Fired the moment the reopen's `initialize` is on the wire — exactly the
+    // window where `session` is cleared and only `reopening` knows better.
+    let straggler: ReturnType<McpClient["callTool"]> | undefined;
+    fake.respond = request => {
+      if (request.rpc?.method === "initialize" && straggler === undefined) {
+        straggler = client.callTool("b", {}, LIMITS, NO_HEADERS);
+      }
+      return null;
+    };
+
+    expect((await client.callTool("a", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
+    expect((await straggler)?.outcome).toBe("called");
+    // One probe at first contact, and no second: the straggler rode the reopen.
+    expect(fake.callsTo("server/discover")).toHaveLength(1);
+    expect(fake.callsTo("initialize")).toHaveLength(2);
+  });
+
   // The generation check and the single flight, together. Round-trip count is
   // the visible half; the half that matters is that a straggler's 404 does not
   // invalidate a session two other calls were about to use.
@@ -782,6 +859,30 @@ describe("listing an upstream's catalog", () => {
       await fake.close();
       fake = undefined;
     }
+  });
+
+  // Serializers that spell an absent field `null` are commonplace — Go's
+  // encoding/json without omitempty, most Java frameworks — and a page refused
+  // over its cursor blanks the catalog of every tool on it. `CatalogPage`
+  // vouches for the envelope only; the cursor's reading is `parseToolsList`'s,
+  // which treats anything but a non-empty string as end-of-pagination.
+  it("treats a null cursor as end-of-pagination rather than refusing the page", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: { tools: [{ name: "list_prs", description: "Lists PRs." }], nextCursor: null }
+            }
+          }
+        : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    const outcome = await client.listTools(undefined, undefined);
+    expect(outcome).toMatchObject({ outcome: "listed", nextCursor: null });
+    expect(outcome.outcome === "listed" && outcome.tools.map(tool => tool.name)).toEqual(["list_prs"]);
   });
 
   it("names no tool in the transport headers, because a listing names none", async () => {
@@ -998,10 +1099,11 @@ describe("mirroring an argument into a request header", () => {
   });
 
   // A modern connection needs them from the same place, and the reason is not
-  // obvious: `callTool` hands the SDK a declaration-free `toolDefinition` to
-  // disable its re-POST recovery, and the SDK mirrors from the definition it is
-  // given — so its own mirroring has nothing to work from and sends nothing.
-  // One derivation, both eras. This case is what caught that.
+  // obvious: the SDK's mirroring lives in `callTool`, which this client does
+  // not use — a `tools/call` goes out as a raw `request` so the re-POST
+  // recovery has no code path to run on — so its mirroring never runs and
+  // would send nothing. One derivation, both eras. This case is what caught
+  // that.
   it("sends them on a modern connection too, where the SDK's own mirroring cannot", async () => {
     fake = await startFakeMcpServer({ protocol: "stateless", catalog: ANNOTATED, requireParamHeaders: true });
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });

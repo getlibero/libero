@@ -174,6 +174,26 @@ describe("what an upstream is allowed to say", () => {
     ).toBe(true);
   });
 
+  // The vendored header scan recurses per nesting level with no depth bound,
+  // and it runs on the *raw* schema — deliberately, so a large tool keeps its
+  // headers — which makes it the one consumer of bytes nothing has bounded
+  // yet. Tens of thousands of levels fit inside the response bound, and the
+  // RangeError is neither a RedactionError nor an outcome: unguarded, it
+  // escapes the degrade-to-thin contract and turns one hostile upstream into
+  // a 500 for the channel's whole listing.
+  it("survives a schema nested too deep to scan, and publishes the tool thin", async () => {
+    let nested: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 60_000; i += 1) nested = { type: "object", properties: { a: nested } };
+    fake = await startFakeMcpServer({
+      catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema: nested }]
+    });
+    const { describe: ask } = harnessFor();
+
+    // Thin, not absent, and above all: answered. The description survives; the
+    // schema is over the publish bound anyway and is dropped on its own rule.
+    expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({ description: "Lists PRs." });
+  });
+
   it("drops a schema too large to publish", async () => {
     fake = await startFakeMcpServer({
       catalog: [{ name: "list_prs", inputSchema: { type: "object", note: "x".repeat(9000) } }]
@@ -549,5 +569,35 @@ describe("what one upstream is already known to offer", () => {
     const described = await ask(upstream, every);
 
     expect(described.size).toBeLessThanOrEqual(MAX_DESCRIBED_TOOLS);
+  });
+
+  // The walk's budget bounds what one question adds, but resolutions merge
+  // across questions: two narrow asks can together settle more names than the
+  // cap, and a later wide ask then finds everything fresh and walks nothing.
+  // The cap has to hold on the assembled answer itself, or the fully-cached
+  // path — the cheapest one — is the one path that can exceed it.
+  it("holds the cap when the whole answer is already cached", async () => {
+    const catalog = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_unused, index) => ({
+      name: `tool_${String(index)}`,
+      description: "listed",
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({ catalog, pageSize: null });
+    const { describe: ask, lines } = harnessFor();
+    const upstream = serverAt(fake.url);
+    const every = catalog.map(tool => tool.name);
+
+    await ask(upstream, every.slice(0, MAX_DESCRIBED_TOOLS));
+    await ask(upstream, every.slice(MAX_DESCRIBED_TOOLS));
+    const walksSoFar = fake.callsTo("tools/list").length;
+    const described = await ask(upstream, every);
+
+    expect(described.size).toBe(MAX_DESCRIBED_TOOLS);
+    // Wanted order is the sheet's order, so the operator's first hundred win.
+    expect(described.has("tool_0")).toBe(true);
+    expect(described.has(`tool_${String(MAX_DESCRIBED_TOOLS + 19)}`)).toBe(false);
+    // The wide ask was served from the cache — the cap did not force a re-walk.
+    expect(fake.callsTo("tools/list")).toHaveLength(walksSoFar);
+    expect(lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === "truncated")).toBe(true);
   });
 });

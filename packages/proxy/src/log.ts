@@ -108,7 +108,7 @@ export interface LogFields {
    * would make this a cardinality problem; this is the proxy's own branch, and
    * the branch has two arms.
    *
-   * Written as ./mcp-protocol.ts's type rather than repeated here, for the
+   * Written as ./mcp-client.ts's type rather than repeated here, for the
    * reason `outcome` below is written as the schema's.
    */
   protocol?: McpDialect;
