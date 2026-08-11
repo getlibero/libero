@@ -113,6 +113,13 @@ pnpm -r build
 LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec vitest run src/github-live.test.ts
 ```
 
+Its positive control has a different shape from the rest of the suite's, and
+that is the point: there is no recording upstream to read a header off, so the
+control is that GitHub answered with data an anonymous caller cannot get — a
+merged pull request's title, which the request did not carry. Pick a fragment
+GitHub will not transform: it HTML-escapes what it returns, so a fragment
+containing an apostrophe fails on a call that in fact completed.
+
 The token is planted through `startRig({ credentials })`, which is the **only**
 sanctioned use of that option and the one documented exception to
 `harness/vault.ts`'s rule that a rig plants a canary and never a plausible
@@ -121,8 +128,9 @@ token. The canary is still there; nothing in that file names it.
 `src/github.test.ts` is the half CI runs: the same three claims against the fake
 configured to present the shape the real server does — a refused
 `server/discover` and the legacy `initialize` fallback, a session id it must
-carry, SSE framing, a paged catalog, and a description long enough to be
-truncated. That last one is not decoration. The proxy used to append its
+carry, SSE framing, a paged catalog, `x-mcp-header` annotations it *enforces*
+(`requireParamHeaders`, so a client that sends no `Mcp-Param-*` gets the `-32020`
+GitHub gives), and a description long enough to be truncated. That last one is not decoration. The proxy used to append its
 ellipsis *past* `MAX_TOOL_DESCRIPTION`, which is the same constant
 `PermittedTool.description` parses against, so any upstream with a description
 over 1,024 characters produced a listing the agent rejected as

@@ -40,7 +40,7 @@ What exists is most of the tool proxy: mutual TLS, per-channel identity taken fr
 
 The end-to-end security suite is written (#41). It runs the proxy as its real built entrypoint and the agent side in process, fakes exactly two things — the Slack socket and the model — and attacks all four of phase 1's definition-of-done properties, one file each: a prompt-injected agent cannot exfiltrate a secret, call an unlisted tool, exceed its budget, or act destructively without a human click.
 
-The gaps that matter. There is no real MCP server behind the dispatcher yet (#39), so the served-call path is proven against a fake rather than a real tool — which is the one that keeps this from being ready to deploy. The soft in-thread budget warning is not built, so a hard limit refuses rather than warns. Channel history is stored and read back into a task's context, but the agent cannot search it on demand yet (#64).
+The gaps that matter. GitHub is behind the dispatcher and the governed path completes against it for real (#130) — allowlist, approval, budget, call, redaction, audit — so the served-call path is no longer proven only against a fake. What keeps this from being ready to deploy is narrower now: `deploy/docker-compose.yml` builds both images from paths that do not exist (#86), so `docker compose up` fails on a clean checkout. The soft in-thread budget warning is not built, so a hard limit refuses rather than warns. Channel history is stored and read back into a task's context, but the agent cannot search it on demand yet (#64).
 
 See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
