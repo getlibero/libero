@@ -34,7 +34,8 @@ Slack (Socket Mode)
    └─ <channel>/channel.toml                          │
         (team sheet, git-managed)                     ▼
                                               sandbox runner
-   agent state root (writable, agent only)    (containerized code exec)
+   agent state root (agent writes; proxy      (containerized code exec)
+   reads store.db read-only)
    └─ <channel>/
       ├─ store.db     (SQLite+FTS5+sqlite-vec)
       ├─ MEMORY.md    (agent-curated)
@@ -47,9 +48,29 @@ channels directory and it is where the proxy reads its authorization from, so an
 agent able to write there could rewrite a `channel.toml` — and the proxy
 re-reads the sheet per call, which makes that a compromised agent widening its
 own permissions. The channels root stays read-only to both services and
-everything the agent writes goes to a root only it mounts. `store.db` is the
+everything the agent writes goes to a root only it writes. `store.db` is the
 first thing on that side; `MEMORY.md` and `skills/` join it in phase 2 for the
 same reason.
+
+**The proxy reads `store.db`, and only that.** `search_channel_history` is
+served by the proxy, so the proxy mounts the agent's state root and opens each
+channel's store read-only — a separate opener with `search` and `close` on it
+and no way to write, stamp a version, or migrate. It is the one direction across
+that line, and it does not weaken the argument above: the hazard is an agent
+writing where the proxy reads *authorization*, and the store is neither the
+channels root nor authorization. The mount is read-write at the filesystem level
+because a SQLite WAL reader creates the `-shm` and `-wal` sidecars; the
+read-only-ness is a property of every connection the proxy opens.
+
+The alternative — the proxy calling back into the gateway to run the search —
+was rejected. It needs the first inbound listener on the process whose
+compromise this design is written to survive, and it does not protect what it
+appears to: the proxy legitimately serves every channel, so the gateway has no
+independent way to know the proxy is entitled to the one it names. A compromised
+proxy reads everything either way, one hop later. Reading the file directly
+keeps *one file per channel is the isolation boundary* a structural fact — the
+opener closes over one file, there is no channel column, and no operation takes
+a channel id — rather than a promise made by the less-trusted process.
 
 The proxy is a separate OS process listening only on localhost/private network with mutual TLS between services. The agent authenticates to the proxy per-channel: one client certificate per channel, subject `CN=channel:<id>`, and that certificate is the only place the proxy reads a channel identity from — never a header, query parameter, or body field, because the process on the other end runs the model and anything the model can influence is not a boundary. Certificates authenticate; team sheets authorize. There is no revocation list: removing a channel's sheet removes its permissions on the next call, and a stale certificate is left holding nothing. That is revocation for a channel being retired, not for a leaked key — a certificate whose channel is still in use holds whatever that channel's sheet allows, and re-minting does not invalidate the old one, because both carry the same CN. Pinning a channel's key in its team sheet is the intended fix and is not built yet. The proxy resolves which credentials and tools that channel's team sheet permits. Compromise of the agent process (prompt injection, malicious skill, model misbehavior) yields no tool credentials and only the tool surface that channel's team sheet allows, with every call audited. Those are model-level cases, and none of them reaches certificate selection: which channel a task runs as is derived from the Slack event, not from anything the model produces. Full compromise of the process is wider, because it holds one certificate per channel it serves — the union of those channels' tool surfaces, though still no tool credentials, since none are in that process. What is in it is the Slack app and bot tokens and the model provider key, which the gateway and the loop cannot run without; a leak there lets an attacker speak as the app and spend against the provider, and reaches no tool the proxy guards. See the [security model](/docs/security#which-secrets-are-where).
 
@@ -105,7 +126,7 @@ Team-sheet changes are picked up on file change (watched and validated against t
 
 One SQLite database per channel, and the file-per-channel layout *is* the isolation boundary — there is no query path that can join across channels.
 
-- **Layer 1:** full message history with FTS5 for "what did we decide about X" search, exposed to the agent as a `search_channel_history` built-in (proxied like everything else).
+- **Layer 1:** full message history with FTS5 for "what did we decide about X" search, exposed to the agent as a `search_channel_history` built-in (proxied like everything else). **A built-in is not a bypass**: it is granted by a `[[builtin]]` block in the channel's team sheet, refused when the sheet omits it, held when the sheet asks for a click, charged to the channel's daily meter, and written to the audit log under the reserved server name `libero`. The only thing that differs from an MCP tool is where the call goes once all of that has passed. Its scope is the calling channel and there is no argument for naming another — the channel comes from the client certificate, and the tool's input schema has no field for one.
 - **Layer 2:** `MEMORY.md`, agent-curated via a post-reply inner-loop turn: the model gets one extra call with `memory_append` / `memory_replace` tools and instructions to persist only durable team facts. Writes go through the memory package with file locking and size caps.
 - **Layer 3:** semantic recall via sqlite-vec embeddings over curated facts and thread summaries — same database file, same isolation.
 

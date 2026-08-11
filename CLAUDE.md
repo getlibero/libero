@@ -64,16 +64,17 @@ the message ingest and the follow-up route, lifecycle),
 `design/` (the design system — plain CSS, no TypeScript), and `site/`
 (getlibero.com).
 `packages/memory` (the per-channel message store — one SQLite file per channel,
-an FTS5 index over it, and the delete and edit paths that keep the index in
-step). `e2e/` is the security suite's rig (#131).
+an FTS5 index over it, the delete and edit paths that keep the index in step, and
+since #64 a read-only opener the proxy uses). `e2e/` is the security suite's rig
+(#131).
 
 **`packages/memory` is a leaf, and an ESLint block on `packages/memory/**` keeps
-it one.** It may not import the proxy, the gateway, or the agent, because #64 has
-not decided whether the reader of `store.db` is the proxy opening it as a second
-process or the gateway answering a callback — so it has to be importable from
-either side. `src/log.ts` duplicating a `Logger` interface is the visible cost,
-and the hazard it avoids is transitive: a gateway import would put the Slack SDK
-into the proxy's image the day #64 chooses the direct read. Two things there are
+it one.** It may not import the proxy, the gateway, or the agent, because both
+services open these files — the gateway writes every inbound message and, since
+#64, the proxy reads one back — so it has to be importable from either side.
+`src/log.ts` duplicating a `Logger` interface is the visible cost, and the hazard
+it avoids is transitive and now live rather than prospective: a gateway import
+would put the Slack SDK into the proxy's image through an edge that exists today. Two things there are
 decisions rather than mechanics. **The tokenizer is `porter unicode61
 remove_diacritics 2`**, chosen once because it is baked into the index — without
 stemming, an AND of the terms in "what did we decide about the vault" does not
@@ -126,6 +127,72 @@ own identity and it survives a restart. Concretely, `seen` is FIFO-bounded at
 And **the message path logs nothing on the way through** — not the arrival, not
 an ordinary drop. Ids are legal in a log line, but one per message turns stdout
 into a record of who spoke in which channel and when.
+
+**#64 closed the store's open question: the proxy reads `store.db` itself.**
+`search_channel_history` is served by the proxy through `openMessageReader` —
+a second opener in `store-db.ts`, `readOnly`, no DDL, no version stamp, `search`
+and `close` and nothing else — under its own `PROXY_STORE_ROOT` pointing at the
+directory the gateway writes. The callback branch was rejected on two grounds:
+it has no target (there is no `.listen()` anywhere on the agent side, so it means
+building the first inbound listener on the process whose compromise the design
+survives), and it does not buy what it appears to — the proxy serves every
+channel, so the gateway has no independent way to know it is entitled to the one
+it names, and a compromised proxy reads everything either way one hop later. The
+direct read keeps *one file per channel is the isolation boundary* structural:
+the opener closes over one file, there is no `channel` column, no operation takes
+a channel id. **The mount is read-write even though every open is read-only** —
+a WAL reader creates the `-shm`/`-wal` sidecars, so `:ro` fails at the first
+search; the read-only-ness is `{ readOnly: true }`, `openAuditReader`'s posture.
+The memory package stays a leaf and the ESLint block stays, now guarding a live
+import edge rather than a prospective one.
+
+**The sheet grants it through a new top-level `[[builtin]]`, and the enum is why
+that block exists.** `transport = "builtin"` under `[[mcp_server]]` would need
+three refinements to stop the sheet expressing nonsense, and the decisive one is
+the tool name: under `[[mcp_server.tool]]` it is `ResourceName` for every server
+in the file, so a typo parses, lists as permitted, and is refused at dispatch —
+a sheet saying a tool is allowed and a proxy saying it is not. `BuiltinEntry`
+sits beside `ToolEntry` and is structurally assignable to it, which is what lets
+`resolveApproval` and `resolveLimits` take it unchanged. `libero` is the wire
+`server` name and is reserved: an `[[mcp_server]]` claiming it is a parse error,
+because `decide` matches the name before it consults a transport.
+
+**`Decision` carries a `Target` now, and that is the shape holding "a built-in is
+not a bypass".** `{kind:"mcp", upstream}` or `{kind:"builtin", tool}`, both out of
+the same `decide`, so the only way to reach a built-in is to have been through
+the gate. `decideBuiltin` is the same five steps minus `server_ambiguous` — one
+provider, no disagreement possible — calling the *same* `exhaustedLimit`,
+`resolveLimits` and `resolveApproval` rather than copies. `createToolDispatcher`
+in `dispatch.ts` is the only thing that narrows: `HttpDispatcher` became an
+`McpToolDispatcher` taking an `McpServer`, `BuiltinDispatcher` takes a
+`BuiltinToolName`, so the arm with the vault and the pool cannot be handed a
+built-in and the arm with a path to channel messages cannot be handed an
+upstream. It is provisional only when both arms are, because a real built-in
+still spends a channel's meter. `catalog` stays the `HttpDispatcher`:
+`describe` asks an *upstream*, and a built-in has nobody to ask.
+
+Three things in the executor are decisions. **The reader opens per call** — no
+DDL, one statement, cheaper than the audit and meter writes bracketing it — because
+a pool costs an eviction policy and open handles across every channel the process
+has served, which is worse for the process holding every tool credential.
+**Bad arguments are a `ran` result with `isError`, not a refusal**: `ToolRefusal`
+is a closed set of governance decisions with no free-text member, and MCP servers
+answer the same way. **The result bound drops whole messages** rather than cutting
+one — a dropped entry is a short answer that admits it, a cut entry is half a
+sentence attributed by name to a real person. An unreadable store rethrows: `server.ts`
+writes the `unanswered` row and answers 500, honest where `unavailable` would claim
+no built-in exists.
+
+`builtins.ts` is definitions only and `builtin-dispatcher.ts` is the executor,
+with `listing-route.ts` newly banned from the second — the
+`ToolCatalog`/`ToolDispatcher` split one file over. A built-in's description is
+this build's own, so it is the one listing row that cannot arrive thin, and it is
+checked against `MAX_TOOL_DESCRIPTION` at module load for #130's reason.
+`e2e/src/channel-history.test.ts` is the security half, and its trap is worth
+knowing: an assertion against the whole transcript is answered by #67's
+`<channel-history>` seed block rather than by the tool, so `toolResults` narrows
+to the tool result. That is also the honest account of what the built-in adds —
+the assembler seeds the last few messages, the tool reaches the rest.
 
 **#67 reads that store back, and the transcript's shape is the decision.**
 `apps/server/src/session/context.ts` turns a channel's recent messages into the
@@ -1010,6 +1077,14 @@ These are load-bearing, not stylistic:
   that the channel exists, so the sheet check is explicit in
   `apps/server/src/session/store.ts`. A second caller of `openMessageStore` that
   skipped it would be inventing a channel with no authorization behind it.
+
+  Since #64 the proxy mounts that same root as `PROXY_STORE_ROOT` and reads it
+  through `openMessageReader` — read-only, `search` and `close` only. That is one
+  direction across the line and does not weaken the rule above: the hazard is the
+  agent writing where the proxy reads *authorization*, and the store is neither
+  the channels root nor authorization. `openMessageReader` is where a second
+  caller's review goes now, and it needs no sheet check because it creates
+  nothing — a channel with no store is `null` rather than an invented one.
 
   **The line is whose data it is and who reads it, not how much of it there
   is.** Content belongs to a channel's members and is read on their behalf, so a
