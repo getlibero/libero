@@ -72,7 +72,18 @@ const GITHUB_URL = "https://api.githubcopilot.com/mcp/x/pull_requests/readonly";
  * echo of the arguments.
  */
 const PR = { owner: "getlibero", repo: "libero", pullNumber: 184 } as const;
-const PR_TITLE_FRAGMENT = "the audit log's read path";
+
+/**
+ * A fragment of that pull request's title, chosen to survive the round trip.
+ *
+ * **No apostrophe, deliberately.** GitHub's MCP server HTML-escapes text it
+ * returns, so the real title comes back as `the audit log&#39;s read path` — a
+ * transformation nothing in this proxy performs and nothing in the assertion
+ * should have to know about. The first version of this case used the possessive
+ * and failed on a call that had in fact completed, which is the most misleading
+ * way for a control to break.
+ */
+const PR_TITLE_FRAGMENT = "read path (#98)";
 
 const SETUP_MS = 60_000;
 const CASE_MS = 60_000;
