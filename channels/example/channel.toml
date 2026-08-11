@@ -49,6 +49,13 @@ daily_tool_calls = 400
 cache_read_weight  = 0.1
 cache_write_weight = 1.25
 
+# The soft limit: how far into either budget this channel gets before it is told
+# once, in its thread, that it is close. The call that carries the notice still
+# runs — only the hard limits above stop anything. A fraction rather than a pair
+# of numbers, so there is no way to write a warning that fires after the refusal
+# it exists to precede; set it to 0 to turn the warning off.
+warn_at = 0.8
+
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
 # can reach: /x/<toolset> picks the toolset and a trailing /readonly drops every

@@ -845,6 +845,47 @@ under-reports, so the budget fails open. It is a shutdown issue rather than a
 metering one — a drain also decides whether a task finishing during shutdown
 posts its answer, which today it deliberately does not.
 
+**#99 is the soft limit, and its two decisions are the sheet field and the
+delivery path.** `[budget] warn_at` is a **fraction** of each hard limit, not a
+pair of absolute soft values: the contradiction then has nowhere to live — a
+soft limit above the hard one it belongs to is unsayable rather than validated,
+which is why the field needs no cross-field refinement — and a fraction follows
+an edit to `daily_tokens` where an absolute pair goes stale silently. `1` is
+excluded because a warning delivered at the moment the meter is spent is the
+refusal said twice; `0` is off, `follow_up_window_seconds`'s spelling.
+`crossedThreshold` sits beside `exhaustedLimit` and runs **after** it, which is
+the acceptance criterion rather than a preference: a channel crossing both in one
+call is refused, and a refusal carries no warning.
+
+Three things follow from where it rides. **`Decision.warning` is on `allow`
+*and* `hold`** — an approved call is served from a `hold`, so a warning only on
+`allow` would be one no approved call ever carried — and it is `BudgetWarning |
+null` rather than optional, so a server composing an answer has to say what it
+did with it. **The claim is durable and belongs to the meter**: `budget_warning
+(channel, day, budget_limit)` with `claimWarning`'s `ON CONFLICT DO NOTHING`,
+which is what makes "once a day" hold under concurrency, per *limit* because two
+limits are two facts, and cleared by `clearDay` so an operator's reset re-arms
+it. **No `BUDGET_SCHEMA_VERSION` bump**, on the argument that added
+`message_thread` without one: that stamp guards the shape of the *counters*, and
+this table holds none — a build without it reads and writes every number
+identically and simply never warns. And **the claim is taken on the `ran` branch
+of the dispatch switch**, not beside `recordToolCall`: a call that came back
+`refused` or `unavailable` has nowhere to put a notice, and claiming earlier
+would burn the channel's one warning on an answer that cannot carry it.
+
+**The warning rides the task's reply, and that is a boundary rather than a
+preference.** `SlackSurface` deliberately withholds `postThreadReply` from the
+composing app — cards are the exception because a card's lifetime outlives the
+handler that raised it, and a notice's does not — so posting it where it happens
+would have meant carving a second exception. Instead `onBudgetWarning` reports it
+out of `packages/agent` (`onUnmappedCall`'s pattern, and it must not throw for
+the same reason), `session/task.ts` holds the first one, and `replyFor` appends
+`budgetWarningMessage` after the cap note. The cost is stated rather than hidden:
+a task ending on `cancelled` posts nothing, so that day's claim is spent unseen.
+**The model is never shown it** — the remedy is a larger number in the sheet,
+which is not a lever a model has, and a sentence in a tool result would be
+re-sent as context every later turn.
+
 **A held call now mints a ticket, and only the proxy half exists.**
 `packages/proxy/src/approvals.ts` is the ticket store and `approvals-route.ts`
 is `POST /v1/approvals` (#125). The shapes are in `packages/schema/src/approval.ts`.

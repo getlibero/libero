@@ -140,6 +140,41 @@ describe("the day boundary", () => {
   });
 });
 
+// The meter's whole share of the soft limit (#99): which day the claim belongs
+// to. Whether the threshold is crossed is ./enforce.ts's, and this file has no
+// team sheet to ask.
+describe("claiming the day's warning", () => {
+  it("gives the claim to the first caller and refuses the rest", async () => {
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(true);
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(false);
+  });
+
+  // The same rollover the counters have, from the same clock: a channel warned
+  // at 23:59 can be warned again at 00:01, because that is a different day and
+  // a different budget.
+  it("re-arms when the day rolls over", async () => {
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(true);
+    clock = NEXT_DAY;
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(true);
+  });
+
+  it("does not re-arm a millisecond early", async () => {
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(true);
+    clock = NEXT_DAY - 1;
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(false);
+  });
+
+  it("keeps one channel's claim out of another's", async () => {
+    expect(await meter.claimWarning(CHANNEL, "daily_tokens")).toBe(true);
+    expect(await meter.claimWarning(OTHER, "daily_tokens")).toBe(true);
+  });
+
+  it("counts nothing", async () => {
+    await meter.claimWarning(CHANNEL, "daily_tokens");
+    expect(await meter.read(CHANNEL)).toEqual(NO_SPEND);
+  });
+});
+
 describe("surviving a restart", () => {
   // The counters roll over at the day boundary rather than at process start:
   // a proxy restarted at noon reads the same numbers it wrote at eleven.

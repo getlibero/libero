@@ -19,6 +19,7 @@ import type {
   TokenUsage
 } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
+import { budgetWarningMessage } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
 import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor } from "./task.js";
@@ -140,6 +141,39 @@ describe("replyFor", () => {
     // Shutdown. Posting a notice into every open thread is noise at exactly
     // the moment nobody is watching.
     expect(replyFor(result({ stopReason: "cancelled", text: "half an answer" }))).toBeUndefined();
+  });
+
+  // The soft budget warning rides the reply (#99), because `SlackSurface`
+  // withholds `postThreadReply` from this process on purpose and a notice is
+  // not the exception a card is.
+  describe("the budget warning", () => {
+    const WARNING = { limit: "daily_tool_calls", spent: 320, cap: 400 } as const;
+
+    it("appends it after the answer, worded by the schema", () => {
+      const reply = replyFor(result({ text: "Merged." }), WARNING);
+      expect(reply?.text).toBe(`Merged.\n\n${budgetWarningMessage(WARNING)}`);
+    });
+
+    // Three facts about three different things, in the order a reader wants
+    // them: the answer, why it stopped, what the channel has left.
+    it("comes after the cap note when both apply", () => {
+      const reply = replyFor(result({ stopReason: "tool_call_cap", text: "Partial." }), WARNING);
+      expect(reply?.text).toMatch(/^Partial\.\n\n.*tool call cap.*\n\nBudget: /s);
+    });
+
+    it("is the whole reply when a task produced no text", () => {
+      expect(replyFor(result({ text: "" }), WARNING)?.text).toBe(budgetWarningMessage(WARNING));
+    });
+
+    // A cancelled task posts nothing, warning or not — the notice is not worth
+    // breaking the one rule shutdown has.
+    it("does not resurrect a cancelled task's reply", () => {
+      expect(replyFor(result({ stopReason: "cancelled", text: "" }), WARNING)).toBeUndefined();
+    });
+
+    it("changes nothing when there is none", () => {
+      expect(replyFor(result({ text: "Merged." }))).toEqual({ text: "Merged." });
+    });
   });
 });
 
@@ -422,6 +456,107 @@ describe("createMentionHandler", () => {
     // The join key: the same root the task's own line and its spend reports
     // carry, so one grep gathers everything a task did.
     expect(line?.task).toBe(captured.lines.find(entry => entry.event === "task")?.task);
+  });
+
+  // The soft budget limit, from the proxy's answer to a served call all the way
+  // to the thread (#99). The model is not told; the channel is.
+  it("relays a budget warning into the reply and logs it", async () => {
+    const captured = capturingLogger();
+    let turn = 0;
+    const runner = createTaskRunner({
+      completion: {
+        complete: (): Promise<CompletionResponse> => {
+          turn += 1;
+          return Promise.resolve(
+            turn === 1
+              ? {
+                  text: "",
+                  toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
+                  stopReason: "tool_use",
+                  usage: { inputTokens: 11, outputTokens: 7 }
+                }
+              : {
+                  text: "Two open.",
+                  toolCalls: [],
+                  stopReason: "end_turn",
+                  usage: { inputTokens: 11, outputTokens: 7 }
+                }
+          );
+        }
+      },
+      transport: fakeTransport({
+        tools: () => LISTED,
+        call: () => ({
+          status: 200,
+          body: {
+            outcome: "ran",
+            id: "call-1",
+            result: { content: "[]" },
+            warning: { limit: "daily_tokens", spent: 812_345, cap: 1_000_000 }
+          }
+        })
+      }).transport,
+      logger: captured.logger
+    });
+
+    const reply = await runner(taskRequest(), SETTINGS);
+
+    // The answer is untouched and the notice follows it.
+    expect(reply?.text).toMatch(/^Two open\.\n\nBudget: /);
+    expect(reply?.text).toContain("812,345 of its 1,000,000 daily tokens");
+    expect(captured.lines.find(entry => entry.event === "budget_warning")).toMatchObject({
+      level: "warn",
+      channel: "C024BE91L",
+      eventId: "Ev0PV52K25",
+      limit: "daily_tokens"
+    });
+  });
+
+  // The tool result the model saw is the upstream's and nothing else. A warning
+  // in there would be third-party-shaped text re-sent on every later turn, and
+  // the remedy it asks for — a larger number in the sheet — is not the model's.
+  it("does not put the warning in front of the model", async () => {
+    const requests: CompletionRequest[] = [];
+    let turn = 0;
+    const runner = createTaskRunner({
+      completion: {
+        complete: (request: CompletionRequest): Promise<CompletionResponse> => {
+          requests.push(request);
+          turn += 1;
+          return Promise.resolve(
+            turn === 1
+              ? {
+                  text: "",
+                  toolCalls: [{ id: "call-1", name: "list_prs", arguments: {} }],
+                  stopReason: "tool_use",
+                  usage: { inputTokens: 11, outputTokens: 7 }
+                }
+              : {
+                  text: "Two open.",
+                  toolCalls: [],
+                  stopReason: "end_turn",
+                  usage: { inputTokens: 11, outputTokens: 7 }
+                }
+          );
+        }
+      },
+      transport: fakeTransport({
+        tools: () => LISTED,
+        call: () => ({
+          status: 200,
+          body: {
+            outcome: "ran",
+            id: "call-1",
+            result: { content: "[]" },
+            warning: { limit: "daily_tokens", spent: 812_345, cap: 1_000_000 }
+          }
+        })
+      }).transport
+    });
+
+    await runner(taskRequest(), SETTINGS);
+
+    expect(JSON.stringify(requests)).not.toMatch(/Budget|812/);
   });
 
   it("takes the per-turn output ceiling from the caps it was handed", async () => {

@@ -65,6 +65,7 @@ describeTokenCapAtTheBoundary();
 describeReportingNothing();
 describeReplayedTurnIds();
 describeCacheWeighting();
+describeSoftLimitWarning();
 
 function describeToolCallCapAndReset(): void {
   let rig: Rig | undefined;
@@ -353,6 +354,87 @@ function describeCacheWeighting(): void {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.cacheReadTokens).toBeGreaterThanOrEqual(2 * CACHE_READS);
       expect(spend.inputTokens + spend.outputTokens).toBeLessThan(100);
+    },
+    CASE_MS
+  );
+}
+
+// The other half of the meter (#99): the soft limit, which warns rather than
+// refusing. Here rather than in its own file because it is the same two
+// counters and the same sheet — and because the claim that matters is a
+// *contrast* with every case above: the call runs.
+function describeSoftLimitWarning(): void {
+  let rig: Rig | undefined;
+
+  /** A fifth of twenty is four, so the fifth call is the one that crosses. */
+  const LIMIT = 20;
+
+  beforeAll(async () => {
+    rig = await startRig({
+      sheets: {
+        [CHANNEL]: {
+          credential: "e2e_canary",
+          tools: [{ name: "list_prs", approval: "none" }],
+          dailyToolCalls: LIMIT,
+          warnAt: 0.2,
+          // Wide, for the reason the first case's is: the claim is that the
+          // proxy warned and went on serving, and a loop-side cap that ended
+          // the task first would make that untestable.
+          maxToolCallsPerTask: 20
+        }
+      },
+      script: [
+        call("call-1"),
+        call("call-2"),
+        call("call-3"),
+        call("call-4"),
+        call("call-5"),
+        says("Five checked."),
+        // A second task, well past the threshold and nowhere near the limit.
+        call("call-6"),
+        says("One more.")
+      ]
+    });
+  }, SETUP_MS);
+
+  afterAll(async () => {
+    await rig?.stop();
+  }, SETUP_MS);
+
+  it(
+    "warns in the thread once a day and serves the call that crossed",
+    async () => {
+      const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
+
+      await agent.slack.deliverMention(mention("Ev00000056"));
+
+      // Every call ran. That is the whole difference from the cases above: the
+      // soft limit is not a refusal, and nothing here was denied.
+      expect(upstream.callsTo("tools/call")).toHaveLength(5);
+      expect(auditRows(auditDb).map(row => row.outcome)).toEqual(["ran", "ran", "ran", "ran", "ran"]);
+      expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(5);
+
+      // In the thread, naming the limit and the channel's position against it —
+      // the position *before* the call that carried it, which is the number the
+      // decision was made against.
+      const [first] = agent.slack.posted;
+      expect(first?.text).toContain("Five checked.");
+      expect(first?.text).toContain(`Budget: this channel has made 4 of its ${LIMIT} daily tool calls.`);
+
+      // And nowhere near the model. A warning in a tool result would be re-sent
+      // as context on every later turn, and the remedy it asks for — a larger
+      // number in the sheet — is not the model's to reach for.
+      expect(JSON.stringify(model.seen)).not.toContain("Budget");
+
+      // Once a day. The second task is further past the threshold than the
+      // first ever was, and it is told nothing: the claim is the proxy's, made
+      // against its own meter, and it was spent.
+      await agent.slack.deliverMention(mention("Ev00000057"));
+
+      expect(upstream.callsTo("tools/call")).toHaveLength(6);
+      const [, second] = agent.slack.posted;
+      expect(second?.text).toBe("One more.");
+      expect(agent.slack.posted.filter(post => post.text.includes("Budget:"))).toHaveLength(1);
     },
     CASE_MS
   );

@@ -687,14 +687,39 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       // that has not been through `decide` (#64).
       const dispatched = await options.dispatcher.dispatch(call, decision.target, decision.limits);
       switch (dispatched.outcome) {
-        case "ran":
+        case "ran": {
           await audit({
             outcome: "ran",
             result: dispatched.result,
             ...(approver !== undefined ? { approver } : {}),
             ...(ticket !== undefined ? { ticket } : {})
           });
-          return ok({ outcome: "ran", id: call.id, result: dispatched.result } satisfies ToolCallResponse);
+          // The soft limit, and the one place it becomes a notice (#99).
+          //
+          // **Claimed here rather than beside the meter write**, because a claim
+          // is spent whether or not anything is delivered: a call that reached
+          // the upstream and came back `refused` or `unavailable` carries no
+          // warning, and claiming before dispatch would burn the channel's one
+          // notice on an answer that has nowhere to put it. This is the only
+          // branch that can carry one, so it is the only branch that takes one.
+          //
+          // Not wrapped in anything that swallows, and it needs no argument of
+          // its own: this is an insert into the file `recordToolCall` wrote to a
+          // few statements ago, so a failure here is a failure there — and there
+          // it is a 500 before the dispatcher is ever reached. A catch would be
+          // a branch nothing can enter.
+          const warning =
+            decision.warning !== null &&
+            (await options.spend.claimWarning(ctx.channel, decision.warning.limit))
+              ? decision.warning
+              : undefined;
+          return ok({
+            outcome: "ran",
+            id: call.id,
+            result: dispatched.result,
+            ...(warning !== undefined ? { warning } : {})
+          } satisfies ToolCallResponse);
+        }
         case "refused":
           // Refused while serving rather than before: the vault could not resolve
           // a credential the sheet names (#51). The ticket is on the row because

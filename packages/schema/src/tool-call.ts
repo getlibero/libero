@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ApprovalTicket } from "./approval.js";
+import { BudgetWarning } from "./budget-warning.js";
 import { ApprovalTicketId, CHANNEL_ID_PATTERN, RequestingUser, ResourceName, TaskId } from "./names.js";
 import { ToolRefusal } from "./refusal.js";
 
@@ -193,7 +194,25 @@ export const ToolCallResponse = z.discriminatedUnion("outcome", [
     .object({
       outcome: z.literal("ran"),
       id: z.string().min(1).max(128),
-      result: ToolResult
+      result: ToolResult,
+      /**
+       * The channel crossed its soft budget limit on this call, which ran (#99).
+       *
+       * **Only on this variant.** A refusal and a hold are answers about a call
+       * that did not happen, and a channel told "you are near your limit" in the
+       * same breath as "that tool is not listed" learns nothing about either. It
+       * is also why this is not a refusal reason: the soft limit is crossed by a
+       * call the sheet permits and the meter allows, so there is a result beside
+       * it.
+       *
+       * **Optional, where a hold's ticket is required**, and the asymmetry is
+       * the point. A hold without a ticket is a question nobody can answer, so
+       * it must not be representable; a `ran` without a warning is the ordinary
+       * case — most calls are nowhere near a limit, and a channel that has
+       * already been told today is not told again. A client that ignores this
+       * field loses a notice and no result.
+       */
+      warning: BudgetWarning.optional()
     })
     .strict(),
   z

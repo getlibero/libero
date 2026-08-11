@@ -246,8 +246,9 @@ run against a live proxy. It will not migrate a file from another schema version
 writing, and a reader that repaired the evidence would not be a reader.
 
 Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
-or an admin resets the channel. (A soft limit that warns before the hard one bites is on the
-roadmap and is not built.)
+or an admin resets the channel. The approach to it is visible too — a channel that passes `[budget]
+warn_at` is told once that day, in the thread, on a call that still runs. A reset re-arms that
+warning along with the counters.
 
 ```bash
 docker compose run --rm proxy node dist/budget.js show  C024BE91L   # today's counters

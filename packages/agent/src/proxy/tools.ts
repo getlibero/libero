@@ -36,6 +36,7 @@ import {
   ToolListing,
   refusalMessage,
   type ApprovalTicket,
+  type BudgetWarning,
   type ToolCall as WireToolCall
 } from "@getlibero/schema";
 import type { ToolCall, ToolDefinition } from "../completion/types.js";
@@ -127,14 +128,45 @@ export interface ProxyToolClientOptions {
    * vanishes rather than being reported.
    */
   onUnmappedCall?: (call: UnmappedToolCall) => void;
+  /**
+   * Told when a served call came back carrying the channel's soft budget
+   * warning (#99). Absent, the notice is dropped and the result is unaffected.
+   *
+   * A callback for `onUnmappedCall`'s reasons — this package cannot log and must
+   * not learn how, and the composer is what holds somewhere to put it. **It must
+   * not throw**, on the same terms: nothing catches it, so a rejection would
+   * turn a call that ran into an error result because a *notice* could not be
+   * filed.
+   *
+   * It does not reach the model, and that is a decision rather than an omission.
+   * The warning is addressed to the people in the channel, whose remedy is an
+   * edit to the sheet; a model told it is near a budget has no lever the loop's
+   * own caps do not already pull, and the sentence would then be re-sent as
+   * context on every subsequent turn of the task.
+   */
+  onBudgetWarning?: (warning: BudgetWarning) => void;
 }
 
 /** Both halves, so a caller cannot wire one to the proxy and the other to a stub. */
 export interface ProxyToolClient extends ToolSource, ToolExecutor {}
 
 export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToolClient {
-  const { transport, channel, onHeld, onUnmappedCall } = options;
+  const { transport, channel, onHeld, onUnmappedCall, onBudgetWarning } = options;
   let byModelName = new Map<string, MappedTool>();
+
+  /**
+   * A call that ran: pass the notice out, hand the result to the loop.
+   *
+   * One function for both submissions, because either can carry the warning —
+   * the proxy decides on the call it serves, and an approved call is served by
+   * the second. It cannot arrive twice for one channel in a day, and this side
+   * does not enforce that: the claim is the proxy's, made once against its own
+   * meter, which is the only place that could know.
+   */
+  function served(answer: Extract<ToolCallResponse, { outcome: "ran" }>): ToolResult {
+    if (answer.warning !== undefined) onBudgetWarning?.(answer.warning);
+    return answer.result;
+  }
 
   /** One submission: POST the body, insist on an answer that parses. */
   async function submit(body: WireToolCall, signal?: AbortSignal): Promise<ToolCallResponse> {
@@ -250,7 +282,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
       const answer = await submit(body, signal);
       switch (answer.outcome) {
         case "ran":
-          return answer.result;
+          return served(answer);
         case "refused":
           // Relayed as what it is. `refusalMessage` words it, so the sentence a
           // channel sees cannot disagree with the reason the proxy gave.
@@ -292,7 +324,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
           const redeemed = await submit({ ...body, ticket: answer.ticket.id }, signal);
           switch (redeemed.outcome) {
             case "ran":
-              return redeemed.result;
+              return served(redeemed);
             // A second `held` for a ticketed call is a proxy the contract says
             // cannot exist; relaying its refusal abandons the call, which is
             // the safe reading of an impossible answer. The refusal cases are

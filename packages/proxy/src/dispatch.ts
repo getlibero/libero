@@ -22,6 +22,7 @@
 import type { BudgetSpend, CallLimits, Target } from "./enforce.js";
 import type { XMcpHeaderDeclaration } from "./vendor/mcp-param-headers.js";
 import type {
+  BudgetLimit,
   BuiltinToolName,
   McpServer,
   ResolvedToolCall,
@@ -90,7 +91,25 @@ export interface TokenRecorder {
  */
 export type SpendRecord = { readonly outcome: "recorded" | "duplicate" };
 
-export interface SpendMeter extends SpendReader, ToolCallRecorder, TokenRecorder {}
+/**
+ * Takes a channel's one soft-limit warning for a limit, for today (#99).
+ *
+ * `true` to the caller that took it, `false` to every caller after — so the
+ * decision to *deliver* is this call's answer rather than something the server
+ * works out from a counter it read a moment ago. Two concurrent calls that both
+ * cross the threshold race here, and one of them loses.
+ *
+ * A fourth interface rather than a method on `SpendReader`, on `TokenRecorder`'s
+ * argument: the report route closes over the recorder alone and must not be able
+ * to spend a channel's warning, and a reader that could take one would be a read
+ * with a side effect. It writes no counter, so nothing about who may call it
+ * bears on what a channel can be charged.
+ */
+export interface WarningClaimer {
+  claimWarning(channel: string, limit: BudgetLimit): boolean | Promise<boolean>;
+}
+
+export interface SpendMeter extends SpendReader, ToolCallRecorder, TokenRecorder, WarningClaimer {}
 
 /**
  * Marks a provisional implementation.

@@ -60,6 +60,15 @@ export interface SheetSpec {
   readonly cacheReadWeight?: number;
   readonly cacheWriteWeight?: number;
   /**
+   * Where the soft limit sits, as a fraction of the two above (#99).
+   *
+   * Left to the schema's default except by the case that is about the warning
+   * itself, for `cacheReadWeight`'s reason — and because the default is what
+   * every other sheet here is implicitly asserting is harmless: a channel
+   * nowhere near either limit is never told anything.
+   */
+  readonly warnAt?: number;
+  /**
    * The `[[builtin]]` block: tools the proxy implements itself (#64).
    *
    * Absent by default, so every existing case keeps a sheet that grants none —
@@ -124,6 +133,7 @@ export function tempChannelsRoot(cleanup: Cleanup): ChannelsRoot {
           `daily_tool_calls = ${spec.dailyToolCalls ?? 200}`,
           ...(spec.cacheReadWeight !== undefined ? [`cache_read_weight = ${spec.cacheReadWeight}`] : []),
           ...(spec.cacheWriteWeight !== undefined ? [`cache_write_weight = ${spec.cacheWriteWeight}`] : []),
+          ...(spec.warnAt !== undefined ? [`warn_at = ${spec.warnAt}`] : []),
           ``,
           `[[mcp_server]]`,
           `name = "${server}"`,

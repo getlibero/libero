@@ -142,6 +142,61 @@ describe("isolation between channels", () => {
   });
 });
 
+// The soft limit's once-a-day claim (#99). A marker, not a counter: it holds no
+// number, and the worst a channel can do by provoking it is spend its own.
+describe("claiming a warning", () => {
+  it("answers true once and false after", () => {
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(false);
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(false);
+  });
+
+  // Per limit, not per channel. Two limits are two facts, and a channel told
+  // about its tokens has not been told about its tool calls.
+  it("keeps the two limits apart", () => {
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tool_calls")).toBe(true);
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tool_calls")).toBe(false);
+  });
+
+  it("keeps channels and days apart", () => {
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+    expect(db.claimWarning(OTHER, DAY, "daily_tokens")).toBe(true);
+    expect(db.claimWarning(CHANNEL, "2026-08-05", "daily_tokens")).toBe(true);
+  });
+
+  it("moves no counter", () => {
+    db.claimWarning(CHANNEL, DAY, "daily_tokens");
+    expect(db.readSpend(CHANNEL, DAY)).toEqual(NO_SPEND);
+  });
+
+  // A reset starts the day over, and a day that cannot be warned about is not
+  // started over — the same half-reset the turn ids would be.
+  it("is re-armed by the operator's reset", () => {
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+    db.clearDay(CHANNEL, DAY);
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+  });
+
+  it("leaves another channel's claim alone when one channel is reset", () => {
+    db.claimWarning(CHANNEL, DAY, "daily_tokens");
+    db.claimWarning(OTHER, DAY, "daily_tokens");
+    db.clearDay(CHANNEL, DAY);
+
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+    expect(db.claimWarning(OTHER, DAY, "daily_tokens")).toBe(false);
+  });
+
+  // The claim survives a restart, which is what makes "once a day" a property
+  // of the day rather than of how long the process happened to stay up.
+  it("survives reopening the file", () => {
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(true);
+    db.close();
+    db = openBudgetDb({ file });
+    expect(db.claimWarning(CHANNEL, DAY, "daily_tokens")).toBe(false);
+  });
+});
+
 describe("the day boundary", () => {
   it("reads a new day as zero and leaves the old day where it is", () => {
     db.addToolCall(CHANNEL, DAY);

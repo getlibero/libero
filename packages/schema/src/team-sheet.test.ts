@@ -17,6 +17,7 @@ describe("the example team sheet", () => {
       daily_tool_calls: 400,
       cache_read_weight: 0.1,
       cache_write_weight: 1.25,
+      warn_at: 0.8,
     });
   });
 
@@ -230,6 +231,7 @@ describe("defaults", () => {
       daily_tool_calls: 200,
       cache_read_weight: 0.1,
       cache_write_weight: 1.25,
+      warn_at: 0.8,
     });
     expect(sheet.mcp_server).toEqual([]);
     expect(sheet.egress.allow).toEqual([]);
@@ -246,6 +248,26 @@ describe("defaults", () => {
     expect(weighted({ cache_read_weight: 0.25, cache_write_weight: 2 }).success).toBe(true);
     expect(weighted({ cache_read_weight: -0.1 }).success).toBe(false);
     expect(weighted({ cache_write_weight: 101 }).success).toBe(false);
+  });
+
+  // The whole reason `warn_at` is a fraction: a soft limit above the hard limit
+  // it belongs to is not a validation case here, it is unsayable. The nearest a
+  // sheet can come is a fraction at or past 1, and that is refused by name.
+  it("refuses a soft threshold at or past the hard limit, and takes 0 as off", () => {
+    const at = (warn_at: unknown) =>
+      TeamSheet.safeParse({ channel: { name: "ops" }, budget: { warn_at } });
+
+    expect(at(0).success).toBe(true);
+    expect(at(0.5).success).toBe(true);
+    expect(at(0.999).success).toBe(true);
+    expect(at(1).success).toBe(false);
+    expect(at(1.5).success).toBe(false);
+    expect(at(-0.1).success).toBe(false);
+
+    const refused = at(1);
+    expect(refused.success).toBe(false);
+    // Named, so an operator reading the parse error knows which line to edit.
+    expect(refused.error?.issues[0]?.path).toEqual(["budget", "warn_at"]);
   });
 });
 

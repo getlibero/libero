@@ -1102,7 +1102,8 @@ describe("composing the proxy", () => {
             cacheWriteTokens: 0
           }),
           recordToolCall: () => {},
-          recordTokens: () => ({ outcome: "recorded" as const })
+          recordTokens: () => ({ outcome: "recorded" as const }),
+          claimWarning: () => false
         }),
         catalog: createUnavailableCatalog(),
         dispatcher: recordingDispatcher(),
@@ -1261,6 +1262,108 @@ describe("the budget gate", () => {
     expect(ToolCallResponse.parse(charged.body)).toMatchObject({
       outcome: "refused",
       refusal: { reason: "budget_exhausted", limit: "daily_tokens" }
+    });
+  });
+});
+
+// The soft limit, end to end (#99). The warning rides a served call, once a
+// day, and the call it rides still runs — the whole difference from the gate
+// above.
+describe("the soft budget warning", () => {
+  // `warn_at = 0.8` of five calls is four, so the fifth call is the one that
+  // finds the count at the threshold — and it is still under the limit, which
+  // is the whole difference between this and the gate above.
+  const fiveCalls = budgetSheet("daily_tool_calls = 5\nwarn_at = 0.8");
+
+  it("carries the warning on the call that crosses, and the call runs", async () => {
+    writeSheet(CHANNEL, fiveCalls);
+    const responses = await callN(5);
+
+    expect(ToolCallResponse.parse(responses[0]?.body)).toMatchObject({ outcome: "ran" });
+    expect(ToolCallResponse.parse(responses[0]?.body)).not.toHaveProperty("warning");
+    expect(ToolCallResponse.parse(responses[4]?.body)).toMatchObject({
+      outcome: "ran",
+      warning: { limit: "daily_tool_calls", spent: 4, cap: 5 }
+    });
+    // It is a notice on a call that happened, not a refusal wearing a result.
+    expect(dispatcher.seen).toHaveLength(5);
+  });
+
+  // The acceptance bullet the once-a-day rule is: a warning repeated on every
+  // call after the threshold is a warning nobody reads.
+  it("warns once and then stops, while the calls go on running", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50\nwarn_at = 0.02"));
+    const responses = await callN(4);
+
+    const warned = responses.filter(res => "warning" in (res.body as object));
+    expect(warned).toHaveLength(1);
+    expect(responses.every(res => (res.body as { outcome: string }).outcome === "ran")).toBe(true);
+  });
+
+  // A new day is a new budget, so it is also a new warning. Same clock, same
+  // rollover the counters have.
+  it("warns again after the day rolls over", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50\nwarn_at = 0.02"));
+    await callN(2);
+
+    budgetClock += 24 * 60 * 60 * 1000;
+    // The count rolled over too, so it takes another call to re-cross.
+    const [, second] = await callN(2);
+    expect(ToolCallResponse.parse(second?.body)).toMatchObject({
+      outcome: "ran",
+      warning: { limit: "daily_tool_calls" }
+    });
+  });
+
+  // The third acceptance bullet, over the wire: a channel that goes from below
+  // the threshold to past the hard limit is refused, and a refusal has no room
+  // for a warning — so it is never told only about the soft one.
+  it("refuses rather than warning once the hard limit is reached", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 1\nwarn_at = 0.8"));
+    const [served, refused] = await callN(2);
+
+    expect(ToolCallResponse.parse(served?.body)).toMatchObject({ outcome: "ran" });
+    const answer = ToolCallResponse.parse(refused?.body);
+    expect(answer).toMatchObject({ outcome: "refused", refusal: { reason: "budget_exhausted" } });
+    expect(answer).not.toHaveProperty("warning");
+  });
+
+  // `0` is the sheet's way of saying a channel does not want the notice, and it
+  // must not warn on the first call of the day through a `>= 0` comparison.
+  it("says nothing when the sheet turns it off", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 3\nwarn_at = 0"));
+    const responses = await callN(3);
+    expect(responses.some(res => "warning" in (res.body as object))).toBe(false);
+  });
+
+  // One claim per channel, from statements scoped to a channel: one channel
+  // crossing its threshold must not spend another's notice.
+  it("keeps one channel's warning out of another's", async () => {
+    writeSheet(CHANNEL, fiveCalls);
+    writeSheet(OTHER_CHANNEL, fiveCalls);
+
+    await callN(5, CHANNEL);
+    const fifth = (await callN(5, OTHER_CHANNEL))[4];
+    expect(ToolCallResponse.parse(fifth?.body)).toMatchObject({
+      outcome: "ran",
+      warning: { limit: "daily_tool_calls" }
+    });
+  });
+
+  // A reset starts the day over, which means the notice comes back too — the
+  // operator did not clear the counters in order to silence the warning.
+  it("is re-armed by the operator's reset", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50\nwarn_at = 0.02"));
+    await callN(2);
+
+    const operator = openBudgetDb({ file: join(budgetDir, "budget.db") });
+    resetChannel(operator, CHANNEL, budgetClock);
+    operator.close();
+
+    const [, second] = await callN(2);
+    expect(ToolCallResponse.parse(second?.body)).toMatchObject({
+      outcome: "ran",
+      warning: { limit: "daily_tool_calls" }
     });
   });
 });
@@ -2198,7 +2301,8 @@ describe("a permitted call with no upstream", () => {
         recordToolCall: () => {
           throw new Error("disk full");
         },
-        recordTokens: () => ({ outcome: "recorded" })
+        recordTokens: () => ({ outcome: "recorded" }),
+        claimWarning: () => false
       },
       dispatcher,
       catalog: createUnavailableCatalog(),

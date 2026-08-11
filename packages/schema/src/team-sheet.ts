@@ -239,6 +239,26 @@ export const TeamSheet = z.object({
       // cache read costs nothing against the budget.
       cache_read_weight: z.number().nonnegative().max(100).default(0.1),
       cache_write_weight: z.number().nonnegative().max(100).default(1.25),
+      // Where the soft limit sits, as a fraction of each hard limit above. At
+      // `0.8` a channel is told once, in its thread, when it has spent four
+      // fifths of either budget, and the call that told it still runs — a
+      // warning is not a refusal. `0` turns it off, which is
+      // `follow_up_window_seconds`'s spelling for the same thing.
+      //
+      // **A fraction rather than a pair of absolute soft values**, because then
+      // the contradiction has nowhere to live: there is no way to write a soft
+      // limit above the hard limit it belongs to, so this needs no cross-field
+      // refinement and a sheet cannot express a warning that fires after the
+      // refusal it exists to precede. `1` is excluded on the same ground rather
+      // than as a range preference — a warning delivered at the moment the meter
+      // is spent is the refusal, said twice. And a fraction follows an edit to
+      // the number above it, where an absolute pair goes stale the day
+      // `daily_tokens` moves and says nothing about it.
+      //
+      // One number for both limits. They are counted differently and hold
+      // against different attackers, but "four fifths spent" reads the same
+      // against either, and the warning names which one crossed.
+      warn_at: z.number().min(0).lt(1).default(0.8),
     })
     .prefault({}),
   mcp_server: McpServerList.default([]),

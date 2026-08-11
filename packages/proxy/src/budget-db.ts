@@ -36,10 +36,13 @@
 //
 //   - The channel comes from the client certificate, so an agent can only ever
 //     write its own row. No request body names a channel.
-//   - Every write is `x = x + n`. There is no decrement in this file.
+//   - Every write to a counter is `x = x + n`. There is no decrement in this
+//     file. (`claimWarning` writes no counter — it takes a marker, which is why
+//     it can sit on the serving interface beside the increments.)
 //   - The server's whole surface on the meter is `read`, `recordToolCall`,
-//     `recordTokens` (see `SpendMeter` in ./dispatch.js). Clearing a counter
-//     lives in ./budget-admin.ts, which nothing in the server imports.
+//     `recordTokens`, `claimWarning` (see `SpendMeter` in ./dispatch.js).
+//     Clearing a counter lives in ./budget-admin.ts, which nothing in the server
+//     imports.
 //
 // So the worst a prompt-injected channel member can do is spend more of their
 // own channel's budget, which is the limit doing its job.
@@ -106,6 +109,15 @@ export const NO_SPEND: DailySpend = {
  * otherwise write rows the newer build cannot read, or read columns that have
  * moved — and the symptom of either is a wrong number in a budget, which is
  * exactly the failure that goes unnoticed until a bill.
+ *
+ * **`budget_warning` arrived without a bump** (#99), on the argument that added
+ * the `message_thread` index in packages/memory without one: what this number
+ * guards is the shape of the *counters*, because a wrong number in a budget is
+ * the failure worth refusing to start over. That table holds no count and no
+ * column of one. A build without it reads and writes every counter identically
+ * and simply never warns; a build with it creates the table on open, since the
+ * schema runs before this check. Neither direction can produce a wrong number,
+ * so neither is worth an operator's outage.
  */
 export const BUDGET_SCHEMA_VERSION = 1;
 
@@ -131,6 +143,13 @@ CREATE TABLE IF NOT EXISTS turn_report (
   day     TEXT    NOT NULL,
   at      INTEGER NOT NULL,
   PRIMARY KEY (channel, turn)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS budget_warning (
+  channel      TEXT NOT NULL,
+  day          TEXT NOT NULL,
+  budget_limit TEXT NOT NULL,
+  PRIMARY KEY (channel, day, budget_limit)
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS turn_report_at ON turn_report (at);
@@ -181,6 +200,24 @@ export interface BudgetDb {
    * with its tokens never added, which is spend lost in silence.
    */
   addTurnTokens(channel: string, day: string, turn: string, atMs: number, usage: TurnTokens): boolean;
+  /**
+   * Take this channel's one warning for this limit today, if it is still there.
+   *
+   * Returns true to the caller that took it and false to everyone after,
+   * which is what makes "once per channel per day" hold under concurrency: two
+   * calls that both cross the threshold race on an insert rather than on a
+   * read-then-write, and exactly one wins. Same mechanism as `claimTurn` above
+   * and the same reason — an `ON CONFLICT DO NOTHING` and its `changes` count.
+   *
+   * A row per limit rather than per channel. The two limits are two facts, a
+   * channel told about its tokens has not been told about its tool calls, and
+   * the bound this exists to keep is "not forty warnings" rather than "exactly
+   * one" — two in a day is still a warning somebody reads.
+   *
+   * It moves no counter, which is why it is safe on the serving interface at
+   * all: the worst a channel can do by provoking it is spend its own warning.
+   */
+  claimWarning(channel: string, day: string, limit: string): boolean;
   /** Operator paths. See ./budget-admin.ts — nothing in the server calls these. */
   clearDay(channel: string, day: string): void;
   daysWithSpend(channel: string): readonly string[];
@@ -250,8 +287,13 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
            cache_read_tokens  = cache_read_tokens  + excluded.cache_read_tokens,
            cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens`
     ),
+    claimWarning: db.prepare(
+      `INSERT INTO budget_warning (channel, day, budget_limit) VALUES (?, ?, ?)
+         ON CONFLICT (channel, day, budget_limit) DO NOTHING`
+    ),
     clearSpend: db.prepare(`DELETE FROM channel_spend WHERE channel = ? AND day = ?`),
     clearTurns: db.prepare(`DELETE FROM turn_report WHERE channel = ? AND day = ?`),
+    clearWarnings: db.prepare(`DELETE FROM budget_warning WHERE channel = ? AND day = ?`),
     days: db.prepare(`SELECT day FROM channel_spend WHERE channel = ? ORDER BY day`),
     // The one statement in this file with no `WHERE channel = ?`, on purpose:
     // it expires retry-dedupe rows by age alone and never touches
@@ -300,14 +342,25 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
       }
     },
 
+    claimWarning(channel, day, limit) {
+      // Number(), for `claimTurn`'s reason: `changes` is a bigint once the
+      // statement has been switched to big-int mode, and a `=== 0` that quietly
+      // stopped matching would make every warning look already-taken.
+      return Number(statements.claimWarning.run(channel, day, limit).changes) === 1;
+    },
+
     clearDay(channel, day) {
-      // Both tables, in one transaction. Clearing the counters and leaving this
-      // channel's turn ids behind would let a retry of an already-counted turn
-      // re-spend a budget that was just reset.
+      // All three tables, in one transaction. Clearing the counters and leaving
+      // this channel's turn ids behind would let a retry of an already-counted
+      // turn re-spend a budget that was just reset; leaving the warning behind
+      // would give the channel a reset day it cannot be warned about, which is
+      // the same class of half-reset and the reason a reset re-arms rather than
+      // merely re-zeroes.
       db.exec("BEGIN IMMEDIATE");
       try {
         statements.clearSpend.run(channel, day);
         statements.clearTurns.run(channel, day);
+        statements.clearWarnings.run(channel, day);
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");

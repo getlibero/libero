@@ -26,7 +26,8 @@ const noSpend = { toolCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens
 const realMeter: SpendMeter = {
   read: () => ({ ...noSpend, toolCalls: 3, inputTokens: 12 }),
   recordToolCall: () => {},
-  recordTokens: () => ({ outcome: "recorded" })
+  recordTokens: () => ({ outcome: "recorded" }),
+  claimWarning: () => false
 };
 
 const realDispatcher: ToolDispatcher = {
@@ -46,7 +47,8 @@ const provisionalMeter = (): SpendMeter =>
   markProvisional({
     read: () => noSpend,
     recordToolCall: () => {},
-    recordTokens: () => ({ outcome: "recorded" as const })
+    recordTokens: () => ({ outcome: "recorded" as const }),
+    claimWarning: () => false
   });
 
 describe("the provisional dispatcher", () => {
