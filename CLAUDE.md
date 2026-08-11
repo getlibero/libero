@@ -485,11 +485,25 @@ hand-roll's stated reason was custody — the belief that the SDK's transport
 owned its own `fetch`, so the credential would be revealed outside
 `callUpstream`. #130 established that is false (`fetch?: FetchLike`, used for
 every request including the auth paths), and its stated cost model was wrong by
-construction: `mcp-spec-watch.yml` triggers on revision tags, and the gap #130
-hit — `x-mcp-header`, which GitHub enforces at `2025-11-25` — is
-within-revision, so the watch structurally could not have fired. What tipped
-the re-run decision was the recurring costs: OAuth is wanted near-term and the
-spec keeps moving, and both are costs the hand-roll pays forever.
+construction: the spec watch that was meant to bound it triggered on revision
+tags, and the gap #130 hit — `x-mcp-header`, which GitHub enforces at
+`2025-11-25` — is within-revision, so the watch structurally could not have
+fired and reported green throughout. What tipped the re-run decision was the
+recurring costs: OAuth is wanted near-term and the spec keeps moving, and both
+are costs the hand-roll pays forever.
+
+**`.github/workflows/mcp-spec-watch.yml` is retired rather than repointed**, and
+the argument is the one above turned around: its only mechanism was grepping
+`MCP_PROTOCOL_VERSION` out of `mcp-protocol.ts` — a constant #188 deletes — and
+pointing it at SDK releases would reimplement Renovate badly. What replaces it is
+a review obligation rather than a job: an `@modelcontextprotocol/*` bump lands
+inside the process that holds every tool credential, so it is a security review,
+and it has to answer the two questions a version diff does not — whether anything
+new lets an upstream ask the client to act on a channel's behalf (the
+`input_required` shape, a refusal decision before it is an implementation one),
+and whether the servers this deployment talks to speak the revision yet.
+`packages/proxy/README.md` carries that obligation where an implementer will
+meet it.
 
 The full evidence — the 13-package MIT/ISC dependency audit, the `FetchLike`
 spike (all six custody assertions pass, including `Mcp-Param-*` derivation and

@@ -28,7 +28,7 @@ import type { McpServer } from "@getlibero/schema";
 import type { ToolCatalog, UpstreamToolDescription } from "./dispatch.js";
 import { createSilentLogger, type Logger } from "./log.js";
 import type { McpClient } from "./mcp-client.js";
-import { boundedToolDescription, boundedToolInputSchema } from "./mcp-protocol.js";
+import { boundedToolDescription, boundedToolInputSchema } from "./mcp-bounds.js";
 import { upstreamKey } from "./enforce.js";
 
 /**

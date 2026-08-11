@@ -241,8 +241,16 @@ export interface UpstreamRequest {
    * another is a security-relevant choice, and a verb is not.
    */
   readonly method?: UpstreamMethod;
-  /** JSON-serializable. The caller owns the shape; see ./http-dispatcher.ts. Absent only for a `DELETE`. */
-  readonly body?: unknown;
+  /**
+   * The request body, already serialized. Absent only for a `DELETE`.
+   *
+   * A string rather than a value this function stringifies, since #188: the one
+   * caller is `createGuardedFetch` below, which is handed a body the MCP SDK has
+   * already framed. Serializing here as well would double-encode it, and a
+   * function that both accepts bytes and invents them is a function with two
+   * contracts.
+   */
+  readonly body?: string;
   /**
    * Extra request headers, lowercase-named. Merged over the defaults and *under*
    * the credential, so nothing here can displace or forge the authorization
@@ -434,7 +442,7 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
     response = await send(request.url, {
       method,
       headers,
-      ...(method === "POST" ? { body: JSON.stringify(request.body) } : {}),
+      ...(method === "POST" ? { body: request.body ?? "" } : {}),
       // Not followed. A redirect target is the only destination in the system
       // that nothing declared: the url above comes from the team sheet, and
       // `[egress]` covers the hosts an operator wrote down, but a 302 is chosen
@@ -531,6 +539,184 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
  * `z.url()` so that should not happen, but the caller decides what to do about
  * it rather than being handed an exception on the credential path.
  */
+/** How long a session id may be before this proxy declines to hand it onward. */
+const MAX_SESSION_ID = 512;
+
+/**
+ * The session id the server assigned, or `null` if it assigned none this proxy
+ * will replay.
+ *
+ * **Validated rather than trusted, and this is the one place it can be.** The
+ * value is upstream-authored and its only use is to be written back into an
+ * outbound request header — which makes a CR or LF in it request smuggling, on
+ * the one path that also carries a credential, and a megabyte of it a header no
+ * proxy in the path will accept. The spec is precise about the shape: visible
+ * ASCII, 0x21 to 0x7E, which excludes space and every control character. So
+ * this is the spec's own rule enforced at the boundary rather than a guess at a
+ * safe character set.
+ *
+ * A server whose id fails it is treated as a server that assigned none: the
+ * handshake still succeeded, and the calls that follow carry no session, which
+ * is a legitimate legacy shape rather than an error.
+ *
+ * **It lives here since #188 rather than beside the framing it used to serve**,
+ * because the MCP client no longer reads this header — the SDK's transport does,
+ * off the `Response` synthesized below. Dropping a bad id there is what keeps
+ * the guarantee: the value never becomes a header the SDK writes, so there is no
+ * downstream `Headers` constructor to depend on for the check.
+ */
+export function readSessionId(header: string | null): string | null {
+  if (header === null || header.length === 0 || header.length > MAX_SESSION_ID) return null;
+  return /^[\x21-\x7E]+$/.test(header) ? header : null;
+}
+
+/**
+ * The transport the MCP client is given.
+ *
+ * Structurally the SDK's `FetchLike`, declared here rather than imported so that
+ * this file — the one that holds a revealed credential — names no third-party
+ * type. The SDK's own declaration is `(url: string | URL, init?: RequestInit) =>
+ * Promise<Response>`; a mismatch is a compile error at the one place the two
+ * meet, in ./mcp-client.ts.
+ */
+export type GuardedFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
+
+/** One upstream's transport settings. Everything per-request arrives on the call. */
+export interface GuardedFetchOptions {
+  /**
+   * The upstream's URL from the team sheet. Its **origin** is the pin: a request
+   * to anything else is refused unsent.
+   */
+  readonly url: string;
+  readonly scheme: AuthScheme;
+  readonly secret: Secret | undefined;
+  readonly credentialName?: string;
+  readonly timeoutMs?: number;
+  readonly maxBodyBytes?: number;
+  /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * `callUpstream`'s discipline, worn as the MCP client's `fetch`.
+ *
+ * **This is what makes adopting a protocol library safe rather than a leap of
+ * faith.** The SDK frames the messages; every byte it puts on the wire and every
+ * byte it reads back passes through here first, so the credential is still
+ * revealed in exactly one function, still attached last, and the reply is still
+ * scrubbed before anything upstream of the socket can see it. #185's spike is
+ * the evidence; the e2e suite is what keeps it true.
+ *
+ * Four things it does that `callUpstream` alone does not, each a decision:
+ *
+ * **The origin is pinned.** `callUpstream` refuses a redirect, which covers the
+ * destination an upstream chooses at call time; this covers the destination a
+ * *library* chooses. Today the SDK has one — no `authProvider` is configured, so
+ * its OAuth discovery paths are unreachable — and pinning is what keeps that a
+ * property of the code rather than of the configuration. A violation is
+ * `"redirected"`: the same category, an undeclared destination, and not a new
+ * word in a closed set that `failureText` reads.
+ *
+ * **Only `POST` and `DELETE` go out.** Anything else is answered `405` without a
+ * socket. The SDK opens a standalone `GET` event stream to listen for
+ * server-initiated messages whenever a request is answered `202` with no body —
+ * which the legacy `notifications/initialized` acknowledgement is. That stream
+ * stays open for the connection's life, and the read below is bounded and
+ * buffered, so it would sit on a socket until the timeout and then report a
+ * failure that nothing asked for.
+ *
+ * `405` is the answer a server offering no listen endpoint already gives, and
+ * the SDK treats it as benign on that path. Measured rather than assumed: on the
+ * legacy era exactly one attempt is made and refused, on the modern era none is
+ * made at all (there is no `initialized` ack to provoke it), the handshake,
+ * listing and call complete in both, and neither `transport.onerror` nor
+ * `client.onerror` fires — a run that lets the `GET` through to a server's own
+ * `405` behaves identically, which is what says this answer is indistinguishable
+ * from the real thing rather than a shape the SDK special-cases.
+ *
+ * The consequence, stated because it is the only one: a server that *does* offer
+ * a listen stream is refused it too, so nothing server-initiated ever arrives —
+ * `notifications/tools/list_changed` included. That is not a regression. The
+ * hand-rolled client never opened one either, and ./mcp-catalog.ts has always
+ * re-asked on a TTL rather than waiting to be told. It preserves what this proxy
+ * has always done: it does not listen, because nothing it would hear has a sheet
+ * entry behind it.
+ *
+ * **The `Response` is the allowlist.** It is built from
+ * `READABLE_RESPONSE_HEADERS` rather than filtered down to them, so
+ * `www-authenticate`, `set-cookie` and everything else are *absent* from what
+ * the SDK receives rather than present and ignored. That is why adopting a
+ * library did not widen the allowlist.
+ *
+ * **A session id is validated before it is exposed**, per `readSessionId` above.
+ */
+export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
+  const origin = originOf(options.url);
+
+  return async (url, init) => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "POST" && method !== "DELETE") {
+      return new Response(null, { status: 405 });
+    }
+
+    // Before the credential is revealed, so a request to somewhere the sheet did
+    // not name never reaches the code that would attach one.
+    if (origin === null || originOf(String(url)) !== origin) {
+      throw new UpstreamError("redirected");
+    }
+
+    const response = await callUpstream({
+      url: String(url),
+      method,
+      ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      headers: headersToRecord(init?.headers),
+      scheme: options.scheme,
+      secret: options.secret,
+      ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options.maxBodyBytes !== undefined ? { maxBodyBytes: options.maxBodyBytes } : {}),
+      ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
+    });
+
+    const exposed = new Headers();
+    const contentType = response.headers["content-type"];
+    if (contentType !== undefined) exposed.set("content-type", contentType);
+    const session = readSessionId(response.headers["mcp-session-id"] ?? null);
+    if (session !== null) exposed.set("mcp-session-id", session);
+
+    // A body is forbidden on these statuses by the `Response` constructor, and
+    // `readBoundedText` already answers `""` for a stream that was never there.
+    const bodyless = response.status === 204 || response.status === 205 || response.status === 304;
+    return new Response(bodyless ? null : response.body, { status: response.status, headers: exposed });
+  };
+}
+
+/** The origin a URL names, or `null` if it does not parse. */
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `HeadersInit` in whatever shape the caller used, as the flat record
+ * `callUpstream` takes.
+ *
+ * `safeRequestHeaders` lowercases and drops `authorization` on the other side,
+ * so this only has to flatten. A `Headers` instance already joins repeats with
+ * `, `, which is what the wire would carry anyway.
+ */
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (headers === undefined) return out;
+  new Headers(headers).forEach((value, name) => {
+    out[name] = value;
+  });
+  return out;
+}
+
 export function destinationHost(url: string): string | null {
   try {
     return new URL(url).hostname;
