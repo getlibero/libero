@@ -103,6 +103,29 @@ credential = "github_service_account"       # one credential, however many block
                                             # heuristic holds this one for a
                                             # click without being told to.
 
+# Tools the proxy implements itself rather than dialling an upstream for. One
+# provider — the proxy — so the block is flat: no url and no credential, because
+# there is nothing to address and nothing to authenticate to.
+#
+# A built-in is not a bypass. Listed here it is refused when the sheet omits it,
+# held when this block asks for a click, charged to the daily meter above, and
+# written to the audit log, exactly as an [[mcp_server.tool]] is. Delete the
+# block and the channel does not get the tool.
+#
+# "libero" is the server name these travel under, and it is reserved: an
+# [[mcp_server]] claiming it is a parse error rather than a channel whose
+# search_channel_history quietly left the process.
+[[builtin]]
+name             = "search_channel_history"   # this channel's own messages, full-text.
+                                              # The channel comes from the client
+                                              # certificate, so no argument can name
+                                              # another one.
+approval         = "none"
+max_result_chars = 8000                       # whole messages come back; a channel-wide
+                                              # 32k is a lot of other people's
+                                              # conversation to put in front of the
+                                              # model at once.
+
 # Where traffic may go when this sheet does not already say. The MCP servers
 # above are NOT listed here: declaring a url in [[mcp_server]] is what
 # authorizes it. This list is for the destinations nothing pinned — the
