@@ -34,9 +34,10 @@
 // paths are unreachable rather than merely unused).
 //
 // **Almost nothing is retried, and the SDK's optimism is switched off
-// explicitly.** `toolDefinition` on every `callTool` disables its
-// header-mismatch recovery, which would re-POST an identical `tools/call` and
-// turn one write into two. The single sanctioned replay is #150's, argued at
+// structurally.** A `tools/call` goes out as a raw `request` rather than
+// through `callTool`, so the SDK's header-mismatch recovery — which would
+// re-POST an identical `tools/call` and turn one write into two — has no code
+// path to run on. The single sanctioned replay is #150's, argued at
 // `reopenSession` below.
 
 import { z } from "zod";
@@ -73,6 +74,21 @@ import type { Secret } from "./vault.js";
 /** What this proxy calls itself to an upstream: the product, never the caller. */
 const CLIENT_NAME = "libero-proxy";
 const CLIENT_VERSION = "0.0.1";
+
+/**
+ * The revisions this proxy will agree to speak, newest first.
+ *
+ * **Passed to the SDK rather than left to its default, and the difference is a
+ * transport contract.** The SDK's own list reaches back to `2024-11-05` and
+ * `2024-10-07`, whose transport is the two-endpoint HTTP+SSE pair — results
+ * arrive on a standalone `GET` stream this proxy answers `405`, because it does
+ * not listen. Accepting such a handshake would send a `tools/call` whose answer
+ * can never arrive: every call hangs to the timeout and the operator reads
+ * "timed out" where the honest word is that the server speaks a version of MCP
+ * this proxy does not. The hand-rolled client failed closed on exactly this
+ * list; handing it to the SDK is what keeps that a property of the code.
+ */
+export const SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"] as const;
 
 /**
  * Which of the two protocol eras a connection settled on.
@@ -170,8 +186,31 @@ export interface McpClientOptions {
  */
 const CatalogPage = z.looseObject({
   tools: z.array(z.unknown()),
-  nextCursor: z.string().optional()
+  // An unknown rather than an optional *string*, for the envelope's own
+  // reason: serializers that spell an absent field `null` are commonplace, and
+  // a page refused over its cursor blanks the catalog as surely as one refused
+  // over an entry. `parseToolsList` reads the cursor and treats anything but a
+  // non-empty string as end-of-pagination, which is what the hand-rolled
+  // client always did. The `.optional()` is still load-bearing: it frees the
+  // *key*, which zod requires present even on an unknown-typed field.
+  nextCursor: z.unknown().optional()
 });
+
+/**
+ * A `tools/call` result, vouched for not at all.
+ *
+ * CatalogPage's argument, one layer down. Passing no schema would have the SDK
+ * validate the result against the specification's own `CallToolResult`, whose
+ * content union is closed — one block of a type outside the negotiated
+ * revision fails the entire call, deleting `blockText`'s placeholder branch,
+ * which exists precisely so a forward-revision block beside ordinary text
+ * costs a placeholder rather than the answer. `toolResultText` is the reader
+ * and answers `null` for a shape it cannot hold, so nothing is vouched for
+ * twice. (On the modern era the SDK validates against the specification before
+ * any caller schema — the same narrowing `mcp-catalog.test.ts` pins for a
+ * listing page.)
+ */
+const CallEnvelope = z.looseObject({});
 
 /** Whether this is, or wraps, a redaction failure. Fail-closed, so it is checked first. */
 function redactionFailure(error: unknown): RedactionError | null {
@@ -343,8 +382,12 @@ export function createMcpClient(options: McpClientOptions): McpClient {
      * bound per call site — the probe, the legacy `initialize`, its
      * acknowledgement and the termination `DELETE` — and a `fetch` has no call
      * sites to choose at. The phase does the choosing instead: a connection is
-     * control-plane until `connect` returns, and again while it is being torn
-     * down. Everything between is a call, and gets the deployment's bound.
+     * control-plane until `connect` returns, and every request after that is a
+     * call and gets the deployment's bound. The termination `DELETE` is *not*
+     * this flag flipped back on — it is bounded by its verb in `build` below,
+     * because the flag is shared with every in-flight call on the session, and
+     * flipping it during `close()` would retroactively cut a legitimate
+     * response off mid-read as `too_large`.
      */
     controlPlane: boolean;
   };
@@ -357,8 +400,13 @@ export function createMcpClient(options: McpClientOptions): McpClient {
         secret: options.secret,
         ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      maxBodyBytes: () =>
-        sink.controlPlane ? MAX_CONTROL_BODY_BYTES : (options.maxResponseBytes ?? DEFAULT_UPSTREAM_RESPONSE_BYTES),
+      // A `DELETE` is control-plane by verb — session termination is the only
+      // one ever sent, and nobody reads its answer — so the phase flag need
+      // never flip back on for shutdown.
+      maxBodyBytes: method =>
+        method === "DELETE" || sink.controlPlane
+          ? MAX_CONTROL_BODY_BYTES
+          : (options.maxResponseBytes ?? DEFAULT_UPSTREAM_RESPONSE_BYTES),
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
     });
 
@@ -397,6 +445,9 @@ export function createMcpClient(options: McpClientOptions): McpClient {
         // the call retried — an upstream driving the client. Off, it raises, and
         // `callFailure` turns that into the refusal.
         inputRequired: { autoFulfill: false },
+        // The SDK's default list reaches back to the HTTP+SSE revisions this
+        // proxy fails closed on — the argument is the constant's, above.
+        supportedProtocolVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
         // Empty rather than absent: this client offers no sampling, no
         // elicitation and no roots, and nothing below registers a handler for
         // any of them.
@@ -435,6 +486,12 @@ export function createMcpClient(options: McpClientOptions): McpClient {
   const ensureOpen = async (): Promise<Opened> => {
     if (session !== undefined) return { ok: true, session };
     if (closed) return { ok: false, failure: "closed" };
+    // A reopen in flight *is* the connection being opened. Without this check a
+    // fresh call arriving while `reopenSession` has cleared `session` would
+    // start a second full ladder — a `server/discover` probe against a server
+    // already known to be legacy — racing the reopen's handshake, with the
+    // loser's session dropped unterminated at the upstream.
+    if (reopening !== undefined) return reopening;
     if (opening === undefined) {
       opening = connect(undefined).finally(() => {
         opening = undefined;
@@ -505,20 +562,18 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     // actually carried rather than what the transport holds afterwards.
     const carried = at.transport.sessionId;
     try {
-      const result = await at.client.callTool(
-        { name: tool, arguments: { ...args } },
-        {
-          timeout: timeoutMs,
-          // **Supplied on every call, and its contents are beside the point.**
-          // The SDK skips its header-mismatch recovery — which re-fetches the
-          // catalog and re-POSTs an identical `tools/call` — whenever a caller
-          // supplies a definition. That recovery is one write becoming two, and
-          // it is safe only if the upstream rejected before dispatching, which
-          // is trust this proxy does not extend. Declaration-free and carrying
-          // no `outputSchema`, so the SDK derives nothing from it and cannot
-          // fail a call by compiling a schema an upstream wrote.
-          toolDefinition: { name: tool, inputSchema: { type: "object" } }
-        }
+      // `request` rather than `callTool`, and both halves of that are wanted.
+      // `callTool` validates the result against the specification's closed
+      // content union — see `CallEnvelope` — and it is also where the SDK's
+      // header-mismatch recovery lives, the one that re-fetches the catalog and
+      // re-POSTs an identical `tools/call`. That recovery is one write becoming
+      // two, and it is safe only if the upstream rejected before dispatching,
+      // which is trust this proxy does not extend. On this path it is
+      // structurally absent rather than disabled by a decoy definition.
+      const result = await at.client.request(
+        { method: "tools/call", params: { name: tool, arguments: { ...args } } },
+        CallEnvelope,
+        { timeout: timeoutMs }
       );
 
       const record = result as unknown as Record<string, unknown>;
@@ -636,8 +691,10 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       session = undefined;
       if (at === undefined) return;
 
-      // The `DELETE`'s answer is read by nobody, so it is control-plane again.
-      at.sink.controlPlane = true;
+      // The `DELETE`'s control-plane bound is chosen by its verb in `build`,
+      // not by a flip here: the sink is shared with any call still in flight,
+      // and rebounding one mid-read would cut a legitimate answer off as
+      // `too_large` for no reason the log names.
       if (at.transport.sessionId !== undefined) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const bounded = new Promise<void>(resolve => {

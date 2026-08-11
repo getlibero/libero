@@ -187,7 +187,7 @@ function describeTheCallCompletes(): void {
       // sees is not what the proxy published: `tool-names.ts` appends its own
       // "Called as …" sentence, so the model-facing string is deliberately
       // longer than MAX_TOOL_DESCRIPTION. The bound the proxy owns is pinned in
-      // packages/proxy/src/mcp-protocol.test.ts against the schema itself.
+      // packages/proxy/src/mcp-bounds.test.ts against the schema itself.
       const read = model.seen[0]?.tools?.find(tool => tool.name === "pull_request_read");
       expect(read?.description?.startsWith("Get details for a single pull request.")).toBe(true);
       expect(read?.description).toContain("… Called as `github.pull_request_read`");

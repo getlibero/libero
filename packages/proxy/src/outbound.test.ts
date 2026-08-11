@@ -878,6 +878,27 @@ describe("the guarded fetch", () => {
     expect(text).toContain("[redacted:github_pat]");
   });
 
+  // The bound is asked per request and handed the verb, which is the one phase
+  // marker the request itself carries: a DELETE is always session termination,
+  // whatever phase the connection believes it is in. This is what lets close()
+  // bound its DELETE at the control-plane size without flipping shared state
+  // under a call still in flight.
+  it("asks the bound per request, handing it the verb", async () => {
+    const seen: string[] = [];
+    const { fetch } = recordingFetch();
+    const asked = guarded({
+      fetch,
+      maxBodyBytes: method => {
+        seen.push(method);
+        return 1024;
+      }
+    });
+    await asked("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+    await asked("http://mcp-github:3001/mcp", { method: "DELETE" });
+
+    expect(seen).toEqual(["POST", "DELETE"]);
+  });
+
   it("forwards the SDK's abort signal to the wire", async () => {
     const { calls, fetch } = recordingFetch();
     const controller = new AbortController();

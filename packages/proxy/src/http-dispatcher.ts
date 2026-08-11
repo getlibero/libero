@@ -7,11 +7,12 @@
 // why the one refusal that cannot be answered from a sheet —
 // `credential_unresolved` — is discovered at this level.
 //
-// The protocol lives in ./mcp-protocol.ts and the session-free client in
-// ./mcp-client.ts. This file is the same shape it was when the wire format was
-// a placeholder, which is what the old header promised: the credential path does
-// not depend on the protocol. What it owns that those do not is the prose a
-// model reads when a call did not produce an answer.
+// The protocol is the official SDK's, adapted in ./mcp-client.ts, with what an
+// upstream may say bounded in ./mcp-bounds.ts. This file is the same shape it
+// was when the wire format was a placeholder, which is what the old header
+// promised: the credential path does not depend on the protocol. What it owns
+// that those do not is the prose a model reads when a call did not produce an
+// answer.
 //
 // The file is still called `http-dispatcher` because the name discriminates
 // transport — http against stdio — and that is still exactly what the guard
@@ -157,6 +158,14 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
       // Without this case the default below would claim the call was made,
       // which is wrong in both clauses.
       return "The proxy is shutting down. The call was not completed.";
+    case "unauthorized":
+      // Reachable on this branch, not only on `connect_failed`: a session the
+      // upstream forgot is reopened mid-call, and the re-handshake can be
+      // answered 401 — a token revoked while the session lived. Both of the
+      // default's clauses are false here (the 404 precedes dispatch, so the
+      // tool never ran), and the wording matches the connect-time case because
+      // the operator's fix is the same either way.
+      return "The tool server rejected this proxy's credential for it. The call was not made.";
     case "too_large":
       // The default below is wrong in its second clause here: an answer did come
       // back, and this proxy declined to hold it. Saying which is what lets a

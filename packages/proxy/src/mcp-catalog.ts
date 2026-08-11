@@ -198,7 +198,7 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
    * One tool's two describing fields, or nothing worth publishing.
    *
    * A description truncates and a schema does not, which is the split
-   * `mcp-protocol.ts` argues. A rejected schema is logged with its reason
+   * `mcp-bounds.ts` argues. A rejected schema is logged with its reason
    * because an operator asking why one tool is thin has no other way to find
    * out; a truncated description is not an event, because truncation is the
    * designed behaviour rather than a fault.
