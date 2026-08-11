@@ -45,25 +45,26 @@ import type { ToolResult } from "@getlibero/schema";
 import {
   MCP_PROTOCOL_VERSION,
   type McpDialect,
-  type UpstreamToolEntry,
   type WireContext,
   acceptedProtocolVersion,
   discoverRequest,
   initializeHeaders,
   initializeRequest,
   initializedNotification,
-  isInputRequired,
   negotiatedVersion,
   parseRpcResponse,
-  parseToolsList,
-  readSessionId,
-  relayedDetail,
   requestHeaders,
   sessionTerminationHeaders,
-  toolResultText,
   toolsCallRequest,
   toolsListRequest
 } from "./mcp-protocol.js";
+import {
+  type UpstreamToolEntry,
+  isInputRequired,
+  parseToolsList,
+  relayedDetail,
+  toolResultText
+} from "./mcp-bounds.js";
 import type { CallLimits } from "./enforce.js";
 import {
   type AuthScheme,
@@ -73,7 +74,8 @@ import {
   type UpstreamMethod,
   type UpstreamResponse,
   UpstreamError,
-  callUpstream
+  callUpstream,
+  readSessionId
 } from "./outbound.js";
 import type { Secret } from "./vault.js";
 
@@ -294,7 +296,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       scheme: options.scheme,
       secret: options.secret,
       ...(call.method !== undefined ? { method: call.method } : {}),
-      ...("body" in call ? { body: call.body } : {}),
+      ...("body" in call ? { body: JSON.stringify(call.body) } : {}),
       ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       ...(maxBodyBytes !== undefined ? { maxBodyBytes } : {}),
@@ -391,7 +393,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
 
     // Read before the acknowledgement, because the acknowledgement is the first
     // request that has to carry it.
-    const sessionId = readSessionId(response.headers["mcp-session-id"]);
+    const sessionId = readSessionId(response.headers["mcp-session-id"] ?? null);
     const next: Mode =
       sessionId === null
         ? { kind: "legacy_sessionless", version }

@@ -10,6 +10,8 @@ import {
   DEFAULT_UPSTREAM_TIMEOUT_MS,
   UpstreamError,
   callUpstream,
+  createGuardedFetch,
+  readSessionId,
   credentialHeader,
   destinationHost,
   injectCredential
@@ -73,7 +75,7 @@ describe("the outbound call", () => {
     const { calls, fetch } = recordingFetch();
     await callUpstream({
       url: "http://mcp-github:3001",
-      body: { tool: "list_prs", arguments: {} },
+      body: JSON.stringify({ tool: "list_prs", arguments: {} }),
       scheme: "bearer",
       secret: secretOf(VALUE),
       fetch
@@ -109,7 +111,7 @@ describe("the outbound call", () => {
     const { fetch } = recordingFetch('{"prs":[]}', 200);
     const response = await callUpstream({
       url: "http://mcp-github:3001",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       fetch
@@ -121,7 +123,7 @@ describe("the outbound call", () => {
     const { calls, fetch } = recordingFetch();
     await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       headers: { "mcp-method": "tools/call", "mcp-name": "list_prs" },
       scheme: "bearer",
       secret: undefined,
@@ -140,7 +142,7 @@ describe("the outbound call", () => {
     const { calls, fetch } = recordingFetch();
     await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       headers: { "MCP-Method": "tools/call" },
       scheme: "bearer",
       secret: undefined,
@@ -158,7 +160,7 @@ describe("the outbound call", () => {
     const { calls, fetch } = recordingFetch();
     await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       headers: { authorization: "Bearer forged", Authorization: "Bearer also-forged" },
       scheme: "bearer",
       secret: secretOf(VALUE),
@@ -171,7 +173,7 @@ describe("the outbound call", () => {
     const { calls, fetch } = recordingFetch();
     await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       headers: { authorization: "Bearer forged" },
       scheme: "bearer",
       secret: undefined,
@@ -187,7 +189,7 @@ describe("the outbound call", () => {
     });
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       fetch
@@ -202,7 +204,7 @@ describe("the outbound call", () => {
     const { fetch } = recordingFetch("{}", 200, { "content-type": `application/json; echo=${VALUE}` });
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       credentialName: "github_token",
@@ -217,7 +219,7 @@ describe("the outbound call", () => {
   // "the upstream said nothing" from "the upstream said the empty string".
   it("omits a header the upstream did not send", async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 202 })) as unknown as typeof globalThis.fetch;
-    const response = await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    const response = await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(response.headers["content-type"]).toBeUndefined();
     expect("content-type" in response.headers).toBe(false);
   });
@@ -240,7 +242,7 @@ describe("the outbound call", () => {
 
     const thrown = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       fetch
@@ -254,7 +256,7 @@ describe("the outbound call", () => {
   // answer for explicitly now that it no longer goes through `response.text()`.
   it("reads a bodiless response as the empty string", async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof globalThis.fetch;
-    const response = await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    const response = await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(response.body).toBe("");
   });
 
@@ -263,15 +265,41 @@ describe("the outbound call", () => {
   it("returns a non-2xx as an ordinary result", async () => {
     const { fetch } = recordingFetch("no such repo", 404);
     await expect(
-      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch })
+      callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch })
     ).resolves.toMatchObject({ status: 404, body: "no such repo" });
   });
 
   it("applies a timeout even when the caller names none", async () => {
     const { calls, fetch } = recordingFetch();
-    await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(calls[0]?.init.signal).toBeInstanceOf(AbortSignal);
     expect(DEFAULT_UPSTREAM_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  // The SDK cancels through the signal it hands its fetch — its per-request
+  // timeout, transport.close(), a session termination racing shutdown. Dropping
+  // it would let every such abort settle the caller's promise while the socket
+  // runs on to the full default timeout, holding the event loop open past the
+  // ten seconds a `docker stop` allows before SIGKILL.
+  it("joins the caller's signal with the timeout rather than replacing it", async () => {
+    const { calls, fetch } = recordingFetch();
+    const controller = new AbortController();
+    await callUpstream({
+      url: "http://u:1",
+      body: "{}",
+      scheme: "bearer",
+      secret: undefined,
+      signal: controller.signal,
+      fetch
+    });
+
+    const wire = calls[0]?.init.signal;
+    // A joined signal, not the caller's own — the timeout still applies.
+    expect(wire).toBeInstanceOf(AbortSignal);
+    expect(wire).not.toBe(controller.signal);
+    expect(wire?.aborted).toBe(false);
+    controller.abort();
+    expect(wire?.aborted).toBe(true);
   });
 
   it("reports a timeout as a timeout", async () => {
@@ -281,7 +309,7 @@ describe("the outbound call", () => {
       throw error;
     }) as unknown as typeof globalThis.fetch;
     await expect(
-      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: secretOf(VALUE), fetch })
+      callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: secretOf(VALUE), fetch })
     ).rejects.toMatchObject({ name: "UpstreamError", failure: "timed_out" });
   });
 
@@ -290,7 +318,7 @@ describe("the outbound call", () => {
       throw new TypeError("connect ECONNREFUSED");
     }) as unknown as typeof globalThis.fetch;
     await expect(
-      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: secretOf(VALUE), fetch })
+      callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: secretOf(VALUE), fetch })
     ).rejects.toMatchObject({ name: "UpstreamError", failure: "unreachable" });
   });
 
@@ -305,7 +333,7 @@ describe("the outbound call", () => {
 
     const thrown = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       fetch
@@ -360,7 +388,7 @@ describe("the bounded body read", () => {
 
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       maxBodyBytes: 4096,
@@ -375,7 +403,7 @@ describe("the bounded body read", () => {
     const { fetch } = recordingFetch(body);
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       maxBodyBytes: 64,
@@ -388,7 +416,7 @@ describe("the bounded body read", () => {
     const { fetch } = recordingFetch("x".repeat(65));
     const thrown = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       maxBodyBytes: 64,
@@ -428,7 +456,7 @@ describe("the bounded body read", () => {
 
     const thrown = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       maxBodyBytes: LIMIT,
@@ -452,7 +480,7 @@ describe("the bounded body read", () => {
     const { fetch } = recordingFetch(`{"leak":"${VALUE}","pad":"${"x".repeat(5000)}"}`);
     const thrown = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       maxBodyBytes: 512,
@@ -468,7 +496,7 @@ describe("the bounded body read", () => {
   it("falls back to the process default when the caller names no limit", async () => {
     const { fetch } = recordingFetch("{}");
     await expect(
-      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch })
+      callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch })
     ).resolves.toMatchObject({ body: "{}" });
     expect(DEFAULT_UPSTREAM_RESPONSE_BYTES).toBeGreaterThan(0);
   });
@@ -480,14 +508,14 @@ describe("the bounded body read", () => {
 describe("a redirecting upstream", () => {
   it("asks the transport not to follow", async () => {
     const { calls, fetch } = recordingFetch();
-    await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(calls[0]?.init.redirect).toBe("manual");
   });
 
   it.each([301, 302, 303, 307, 308])("refuses a %i rather than following it", async (status) => {
     const { fetch } = recordingFetch("", status);
     await expect(
-      callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: secretOf(VALUE), fetch })
+      callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: secretOf(VALUE), fetch })
     ).rejects.toMatchObject({ name: "UpstreamError", failure: "redirected" });
   });
 
@@ -498,7 +526,7 @@ describe("a redirecting upstream", () => {
   it.each(["POST", "DELETE"] as const)("refuses a redirect on a %s alike", async method => {
     const { fetch } = recordingFetch("", 307);
     await expect(
-      callUpstream({ url: "http://u:1", method, body: {}, scheme: "bearer", secret: secretOf(VALUE), fetch })
+      callUpstream({ url: "http://u:1", method, body: "{}", scheme: "bearer", secret: secretOf(VALUE), fetch })
     ).rejects.toMatchObject({ name: "UpstreamError", failure: "redirected" });
   });
 
@@ -511,7 +539,7 @@ describe("a redirecting upstream", () => {
     const fetch = (async () => new Response(null, { status: 304 })) as unknown as typeof globalThis.fetch;
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: undefined,
       fetch
@@ -540,7 +568,7 @@ describe("a redirecting upstream", () => {
     try {
       const thrown = await callUpstream({
         url: `http://127.0.0.1:${(redirector.address() as AddressInfo).port}`,
-        body: {},
+        body: "{}",
         scheme: "bearer",
         secret: secretOf(VALUE)
       }).catch((error: unknown) => error);
@@ -564,7 +592,7 @@ describe("the secret does not come back", () => {
 
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       credentialName: "github_token",
@@ -584,7 +612,7 @@ describe("the secret does not come back", () => {
 
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       credentialName: "c",
@@ -608,7 +636,7 @@ describe("the secret does not come back", () => {
 
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       credentialName: "github_token",
@@ -642,7 +670,7 @@ describe("the secret does not come back", () => {
     const fetch = (async () => new Response('{"prs":[]}')) as unknown as typeof globalThis.fetch;
     const response = await callUpstream({
       url: "http://u:1",
-      body: {},
+      body: "{}",
       scheme: "bearer",
       secret: secretOf(VALUE),
       credentialName: "c",
@@ -653,7 +681,7 @@ describe("the secret does not come back", () => {
 
   it("passes the body through untouched when there is no credential", async () => {
     const fetch = (async () => new Response("anything at all")) as unknown as typeof globalThis.fetch;
-    const response = await callUpstream({ url: "http://u:1", body: {}, scheme: "bearer", secret: undefined, fetch });
+    const response = await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(response.body).toBe("anything at all");
   });
 
@@ -664,7 +692,7 @@ describe("the secret does not come back", () => {
     await expect(
       callUpstream({
         url: "http://u:1",
-        body: {},
+        body: "{}",
         scheme: "bearer",
         secret: secretOf(""),
         credentialName: "c",
@@ -727,5 +755,156 @@ describe("the single reveal", () => {
         expect(readFileSync(join(root, name), "utf8")).not.toContain(".reveal()");
       }
     }
+  });
+});
+
+// The seam the MCP SDK is given in #188. Everything it asserts is a property
+// `callUpstream` already had; what is new is that they survive being worn as a
+// `fetch`, which is what makes handing the wire to a library safe rather than a
+// leap of faith.
+describe("the guarded fetch", () => {
+  const guarded = (
+    overrides: Partial<Parameters<typeof createGuardedFetch>[0]> & { fetch: typeof globalThis.fetch }
+  ) =>
+    createGuardedFetch({
+      url: "http://mcp-github:3001/mcp",
+      scheme: "bearer",
+      secret: secretOf(VALUE),
+      credentialName: "github_pat",
+      ...overrides
+    });
+
+  it("attaches the credential and passes the SDK's body through verbatim", async () => {
+    const { calls, fetch } = recordingFetch();
+    const body = '{"jsonrpc":"2.0","id":1,"method":"tools/call"}';
+    await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "POST", body });
+
+    expect(sentHeaders(calls).authorization).toBe(`Bearer ${VALUE}`);
+    // Not re-serialized: the SDK already framed this, and stringifying a string
+    // would quote and escape it into something no server parses.
+    expect(calls[0]?.init.body).toBe(body);
+  });
+
+  // The SDK opens a standalone GET event stream to listen for server-initiated
+  // messages as soon as a request is answered 202 with no body — which the
+  // legacy `notifications/initialized` acknowledgement is. The read below is
+  // buffered, so that stream would hold a socket until the timeout. 405 is what
+  // a server offering no listen endpoint answers, and the SDK treats it as
+  // benign on that path.
+  it("answers a listen stream 405 without opening a socket", async () => {
+    const { calls, fetch } = recordingFetch();
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "GET" });
+
+    expect(response.status).toBe(405);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a destination the sheet did not name, before revealing anything", async () => {
+    const { calls, fetch } = recordingFetch();
+    await expect(guarded({ fetch })("http://elsewhere.example/mcp", { method: "POST", body: "{}" })).rejects.toThrow(
+      UpstreamError
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  // Structural absence rather than downstream filtering: `www-authenticate` is
+  // what the transport would parse to start an OAuth flow, and it is not on the
+  // object the SDK receives at all.
+  it("exposes only the allowlisted headers, and scrubs them", async () => {
+    const { fetch } = recordingFetch("{}", 200, {
+      "content-type": "application/json",
+      "mcp-session-id": "session-1",
+      "www-authenticate": 'Bearer realm="github"',
+      "x-echo": VALUE
+    });
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    expect([...response.headers.keys()].sort()).toEqual(["content-type", "mcp-session-id"]);
+    expect(response.headers.get("www-authenticate")).toBeNull();
+  });
+
+  it("drops a session id it will not replay rather than handing it on", async () => {
+    const { fetch } = recordingFetch("{}", 200, { "mcp-session-id": "a b" });
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    // A hostile id would otherwise reach the SDK, which writes it into a
+    // `Headers` on the next request — and `Headers.set` throws on a CR, so the
+    // cost of not checking is a spurious transport failure rather than a leak.
+    expect(response.headers.get("mcp-session-id")).toBeNull();
+  });
+
+  it("gives a 204 no body, which the Response constructor requires", async () => {
+    // Built by hand rather than through `recordingFetch`, because `new
+    // Response("", { status: 204 })` throws — which is the whole reason the
+    // bodiless statuses are enumerated in the synthesis below.
+    const fetch = (async () => new Response(null, { status: 204 })) as unknown as typeof globalThis.fetch;
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "DELETE" });
+
+    expect(response.status).toBe(204);
+    expect(response.body).toBeNull();
+  });
+
+  it("scrubs the credential out of a body before the SDK ever parses it", async () => {
+    const { fetch } = recordingFetch(JSON.stringify({ echo: VALUE }));
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+    const text = await response.text();
+
+    expect(text).not.toContain(VALUE);
+    expect(text).toContain("[redacted:github_pat]");
+  });
+
+  it("forwards the SDK's abort signal to the wire", async () => {
+    const { calls, fetch } = recordingFetch();
+    const controller = new AbortController();
+    await guarded({ fetch })("http://mcp-github:3001/mcp", {
+      method: "POST",
+      body: "{}",
+      signal: controller.signal
+    });
+
+    const wire = calls[0]?.init.signal;
+    expect(wire).toBeInstanceOf(AbortSignal);
+    expect(wire?.aborted).toBe(false);
+    controller.abort();
+    expect(wire?.aborted).toBe(true);
+  });
+
+  it("reports an oversized answer as too_large rather than as a transport failure", async () => {
+    const { fetch } = recordingFetch("x".repeat(64));
+    await expect(
+      guarded({ fetch, maxBodyBytes: 8 })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" })
+    ).rejects.toMatchObject({ failure: "too_large" });
+  });
+});
+
+describe("the session id", () => {
+  it("keeps one the server is entitled to assign", () => {
+    expect(readSessionId("session-1")).toBe("session-1");
+    expect(readSessionId("1868a90c-9f2e-4b71-8c3d-0e5a1f6d2c47")).toBe("1868a90c-9f2e-4b71-8c3d-0e5a1f6d2c47");
+  });
+
+  // The value is upstream-authored and its only use is being written back into
+  // an outbound request header, on the one path that also carries a credential.
+  // A CR or LF in it is request smuggling; the spec's own rule — visible ASCII,
+  // 0x21 to 0x7E — is the character set, so nothing here is invented.
+  it.each([
+    ["nothing at all", null],
+    ["an empty string", ""],
+    ["a header injection", "a\r\nX-Injected: 1"],
+    ["a bare newline", "a\nb"],
+    ["an embedded space", "a b"],
+    ["a non-ASCII character", "café"],
+    ["a NUL", "a\u0000b"],
+    ["a DEL", "a\u007Fb"],
+    ["more than a header may hold", "s".repeat(513)]
+  ])("replays none for %s", (_label, header) => {
+    expect(readSessionId(header)).toBeNull();
+  });
+
+  it("treats an unusable id as a server that assigned none", () => {
+    // Not an error: the handshake still succeeded, and a legacy server that
+    // assigns no session is an ordinary one rather than a broken one.
+    expect(readSessionId("a b")).toBeNull();
+    expect(readSessionId(null)).toBeNull();
   });
 });

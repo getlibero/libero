@@ -11,9 +11,10 @@
 // established that is false — `StreamableHTTPClientTransport` takes
 // `fetch?: FetchLike`, used for all network requests, so `callUpstream` can be
 // the injected fetch and the custody argument survives adoption. The stated
-// cost model was also wrong by construction: mcp-spec-watch.yml triggers on
-// revision tags and structurally cannot see within-revision features, which is
-// exactly the gap (`x-mcp-header`) that #130 hit. #185 re-ran the decision on
+// cost model was also wrong by construction: the spec watch that was meant to
+// bound it triggered on revision *tags* and structurally could not see a
+// within-revision feature, which is exactly the gap (`x-mcp-header`) that #130
+// hit while it reported green. It is retired. #185 re-ran the decision on
 // that evidence and chose to adopt `@modelcontextprotocol/client` 2.0.0; #188
 // is the implementation. Do not extend this module's protocol coverage — a gap
 // found here is an argument for finishing #188, not for another function.
@@ -27,19 +28,23 @@
 // a request is written in is a value rather than a mode this module remembers —
 // it remembers nothing.
 //
-// The one import is `@getlibero/schema`, for two bounds the agent's parser
-// enforces from the other end. Shared rather than restated: a proxy truncating
-// a description at one number against a schema rejecting at another turns every
-// chatty upstream into a parse failure that ends a task.
+// The one import is ./mcp-bounds.ts, for the cap on how much of an upstream's
+// error message this module will hand back. Every other bound moved there with
+// #188: what an upstream is allowed to say is policy, and it outlives whoever
+// frames the bytes.
 
-import { MAX_TOOL_DESCRIPTION, ToolInputSchema } from "@getlibero/schema";
+import { relayedDetail } from "./mcp-bounds.js";
 
 /**
  * The revision this client speaks.
  *
- * Kept as a named constant in this module and nowhere else, because
- * `mcp-spec-watch.yml` parses this file for it and fails loudly if it cannot
- * find it. Renaming it is a CI failure rather than a silently dead watcher.
+ * A named constant in this module and nowhere else, so that what the proxy
+ * claims on the wire is one edit rather than a search. It used to be parsed out
+ * of this file by a weekly workflow comparing it against the specification's
+ * revision tags; that watcher was retired with #188, because the SDK owns the
+ * revision from here and a cron grepping a constant that is about to be deleted
+ * can only ever report success. Keeping up is a dependency bump and the security
+ * review that goes with one — see this package's README.
  */
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
 
@@ -58,11 +63,11 @@ export const STATELESS_PROTOCOL_VERSIONS = [MCP_PROTOCOL_VERSION] as const;
  * The revision the legacy handshake proposes: the newest one below the pinned
  * constant.
  *
- * **Not named `LEGACY_MCP_PROTOCOL_VERSION`, deliberately.**
- * `.github/workflows/mcp-spec-watch.yml` greps this file for
- * `MCP_PROTOCOL_VERSION = "…"` with an unanchored pattern, so a constant whose
- * name merely *ends* in that would match as a substring and break the
- * comparison without tripping the workflow's missing-constant guard.
+ * Named so that it does not end in `MCP_PROTOCOL_VERSION`, which was once a
+ * hard requirement — a workflow grepped this file for that constant with an
+ * unanchored pattern, so a name merely ending in it matched as a substring and
+ * broke the comparison silently. That workflow is gone (#188) and the hazard
+ * with it; the name stays because it is the clearer of the two.
  */
 export const LEGACY_PROTOCOL_VERSION = "2025-11-25";
 
@@ -124,22 +129,6 @@ const CLIENT_VERSION = "0.0.1";
 export const UNSUPPORTED_PROTOCOL_VERSION = -32022;
 export const METHOD_NOT_FOUND = -32601;
 
-/** How much upstream-authored text may appear inside a placeholder or an error line. */
-const MAX_RELAYED_MESSAGE = 300;
-const MAX_LABEL = 64;
-const MAX_URI = 200;
-
-/**
- * How large an upstream's input schema may be before this proxy declines to
- * publish it.
- *
- * Bigger than any hand-written schema and small enough that a hundred of them
- * are not a context window. The companion cap on descriptions lives in
- * `@getlibero/schema`, because the agent's parser needs the same number; this
- * one does not cross the wire, because the shape rule already means an
- * oversized schema is simply absent rather than truncated.
- */
-const MAX_TOOL_SCHEMA_BYTES = 8192;
 
 export interface JsonRpcRequest {
   readonly jsonrpc: "2.0";
@@ -478,7 +467,7 @@ export function parseRpcResponse(contentType: string | undefined, body: string, 
       const raw = typeof error["message"] === "string" ? error["message"] : "";
       // `data` is deliberately not read: it is unbounded arbitrary JSON, where
       // `message` is the field the spec designates human-readable.
-      return { kind: "error", code, message: truncate(raw, MAX_RELAYED_MESSAGE) };
+      return { kind: "error", code, message: relayedDetail(raw) };
     }
 
     const result = message["result"];
@@ -533,324 +522,3 @@ export function acceptedProtocolVersion(result: Record<string, unknown>): string
   return (LEGACY_PROTOCOL_VERSIONS as readonly string[]).includes(named) ? named : null;
 }
 
-/** How long a session id may be before this client declines to replay it. */
-const MAX_SESSION_ID = 512;
-
-/**
- * The session id the server assigned, or `null` if it assigned none this client
- * will replay.
- *
- * **Validated rather than trusted, and this is the one place it can be.** The
- * value is upstream-authored and its only use is to be written back into an
- * outbound request header — which makes a CR or LF in it request smuggling, on
- * the one path that also carries a credential, and a megabyte of it a header no
- * proxy in the path will accept. The spec is precise about the shape: visible
- * ASCII, 0x21 to 0x7E, which excludes space and every control character. So
- * this is the spec's own rule enforced at the boundary rather than a guess at a
- * safe character set.
- *
- * A server whose id fails it is treated as a server that assigned none: the
- * handshake still succeeded, and the calls that follow carry no session, which
- * is a legitimate legacy shape rather than an error.
- */
-export function readSessionId(header: string | undefined): string | null {
-  if (header === undefined || header.length === 0 || header.length > MAX_SESSION_ID) return null;
-  return /^[\x21-\x7E]+$/.test(header) ? header : null;
-}
-
-/** Whether a result is the multi-round-trip interim shape rather than an answer. */
-export function isInputRequired(result: Record<string, unknown>): boolean {
-  return result["resultType"] === "input_required";
-}
-
-/**
- * At most `limit` characters, marker included.
- *
- * **The marker is inside the budget, not on top of it**, and that is a
- * correctness requirement rather than tidiness. `MAX_TOOL_DESCRIPTION` is
- * shared with `PermittedTool`'s `description: z.string().max(…)` precisely so
- * the proxy's bound and the agent's parse agree — its own comment says a proxy
- * bounding above the schema "would turn every chatty upstream into a
- * `malformed_response` on the agent side, which ends the task rather than
- * costing it a sentence". An ellipsis appended past the slice made that off by
- * one, so an upstream with a 1,025-character description took down every task
- * in every channel whose sheet named it. GitHub's `pull_request_read`
- * documents nine `method` values inline and is comfortably past the line, which
- * is how #130 found this.
- */
-function truncate(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
-}
-
-/**
- * Bound an upstream-authored error body before it becomes a failure detail.
- *
- * `parseRpcResponse` caps a JSON-RPC error's `message`, but a non-2xx body
- * never reaches it, so the caller relaying that body applies the same cap
- * through this. The first few hundred characters are where an endpoint says
- * what went wrong; everything past them is a wall of text spending the
- * channel's tokens on the way to the model. Exported for the client, not for
- * `index.ts` — like the framing helpers, it leaves this module and no further.
- */
-export function relayedDetail(text: string): string {
-  return truncate(text, MAX_RELAYED_MESSAGE);
-}
-
-/** Base64 decodes to three bytes per four characters, less the padding. */
-function base64Bytes(data: string): number {
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
-}
-
-function describeBytes(count: number): string {
-  if (count < 1024) return `${count} bytes`;
-  if (count < 1024 * 1024) return `${Math.round(count / 1024)} KB`;
-  return `${Math.round(count / (1024 * 1024))} MB`;
-}
-
-/**
- * One content block, as the one line of text a `ToolResult` can carry.
- *
- * **Binary payloads are named, not inlined.** `ToolResult.content` is a string
- * that becomes a `tool_result` block in the model's context, where a base64
- * blob is neither viewable as an image nor cheap: it would spend the channel's
- * token budget and inflate the audit row's byte count to deliver something the
- * model cannot use. Naming the type and the size tells the model a thing came
- * back and what it was, which is what lets it say so rather than retry.
- *
- * Every label here is upstream-authored text entering the model's context, so
- * every one is truncated. A hostile `mimeType` gets 64 characters, not a
- * paragraph.
- */
-function blockText(block: unknown): string | null {
-  if (!isRecord(block)) return null;
-
-  switch (block["type"]) {
-    case "text":
-      return typeof block["text"] === "string" ? block["text"] : null;
-
-    case "image":
-    case "audio": {
-      const kind = block["type"] === "image" ? "image" : "audio";
-      const mime = typeof block["mimeType"] === "string" ? truncate(block["mimeType"], MAX_LABEL) : "unknown";
-      const size = typeof block["data"] === "string" ? describeBytes(base64Bytes(block["data"])) : "unknown size";
-      return `[${kind} omitted: ${mime}, ${size}]`;
-    }
-
-    case "resource": {
-      const resource = block["resource"];
-      if (!isRecord(resource)) return null;
-      if (typeof resource["text"] === "string") return resource["text"];
-      const mime = typeof resource["mimeType"] === "string" ? truncate(resource["mimeType"], MAX_LABEL) : "unknown";
-      const size = typeof resource["blob"] === "string" ? describeBytes(base64Bytes(resource["blob"])) : "unknown size";
-      return `[resource omitted: ${mime}, ${size}]`;
-    }
-
-    case "resource_link": {
-      const uri = typeof block["uri"] === "string" ? truncate(block["uri"], MAX_URI) : "unknown";
-      return `[resource: ${uri}]`;
-    }
-
-    default: {
-      const type = typeof block["type"] === "string" ? truncate(block["type"], MAX_LABEL) : "unnamed";
-      return `[unsupported content block: ${type}]`;
-    }
-  }
-}
-
-/**
- * A `CallToolResult` as the one string and one flag a `ToolResult` holds.
- *
- * `null` when the shape is not a `CallToolResult` at all, which the caller
- * reports as a protocol error rather than as an empty answer.
- *
- * **`structuredContent` is a fallback, not a supplement.** The spec tells
- * servers to mirror structured content into a text block, so reading both would
- * hand the model every well-behaved server's answer twice. It is used only when
- * the content array produced no text at all.
- *
- * Relaying only text is a documented limit rather than an oversight: images,
- * audio, and binary resources need `ToolResult.content` to stop being a string,
- * which is a change across the schema, the agent, and every provider adapter.
- * That is a filed follow-up.
- *
- * **`maxChars` is required and has no default here.** It is the channel's, from
- * `[llm] max_result_chars` and whatever the tool's own entry overrode it with,
- * and a default in this signature is how a call site comes to spend a bound it
- * did not choose — the argument `McpClient.listTools` already makes about its
- * own two arguments. The companion bound, on the bytes read off the wire, is the
- * deployment's and lives in ./outbound.ts; the two answer different questions
- * for different owners and neither substitutes for the other.
- */
-export function toolResultText(
-  result: Record<string, unknown>,
-  maxChars: number
-): { content: string; isError: boolean } | null {
-  const blocks = result["content"];
-  if (!Array.isArray(blocks)) return null;
-
-  const rendered: string[] = [];
-  for (const block of blocks) {
-    const text = blockText(block);
-    if (text === null) return null;
-    rendered.push(text);
-  }
-
-  const isError = result["isError"] === true;
-  const joined = rendered.join("\n");
-
-  // Empty text rather than an empty array: a server that sends an empty text
-  // block alongside structured content has still said nothing in text.
-  //
-  // One exit rather than two, so the bound below covers the structured fallback
-  // as well. Before this it covered only the ordinary path, which is the branch
-  // an upstream would have picked to get around it.
-  const content =
-    joined === "" && result["structuredContent"] !== undefined
-      ? JSON.stringify(result["structuredContent"])
-      : joined;
-
-  return { content: boundedResult(content, maxChars), isError };
-}
-
-/**
- * Bound the one string a `ToolResult` carries, and say where it was cut.
- *
- * **Characters, not bytes.** Every bound in this module counts characters —
- * `truncate`, `MAX_RELAYED_MESSAGE`, `MAX_LABEL`, `MAX_URI` — and so does
- * `[llm] max_history_chars`, the sheet field this one sits beside. Slicing on
- * bytes would also mean cutting mid-sequence, and `ToolResult.content` is a
- * string that survives this function all the way to a provider. The audit row's
- * `result_bytes` still counts bytes, and that is not an inconsistency: it
- * answers a different question, existing to correlate with the next turn's input
- * tokens, and tokenizers are byte-shaped.
- *
- * **The number recorded in the audit row is therefore the truncated length**,
- * which is the right one for what that column is for: the next turn's input
- * tokens are driven by what the model was handed, not by what the upstream sent.
- * The original size is not lost — it is in the notice, which the model reads.
- *
- * The notice is added past the limit rather than fitted inside it, as
- * `truncate`'s ellipsis already is. What the limit bounds is what the upstream
- * said; the notice is this proxy's own and is a fixed shape under sixty
- * characters. It says so in plain text rather than trailing off, because a
- * silently short answer is one the model has no reason to doubt.
- */
-function boundedResult(content: string, limit: number): string {
-  if (content.length <= limit) return content;
-
-  let kept = content.slice(0, limit);
-  // A cut that lands between a surrogate pair leaves a lone high surrogate,
-  // which is not a character and is not something to hand a provider. One code
-  // unit dropped, and only when the cut actually split one.
-  const last = kept.charCodeAt(kept.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) kept = kept.slice(0, -1);
-
-  return `${kept}\n[result truncated: ${String(kept.length)} of ${String(content.length)} characters]`;
-}
-
-/**
- * One tool as an upstream described it, before any of it is believed.
- *
- * `description` and `inputSchema` are `unknown` rather than typed, and that is
- * the point: the only field this module vouches for is `name`, because a name
- * is what a page of a catalog is indexed by. The two describing fields go
- * through `boundedToolDescription` and `boundedToolInputSchema` before anything
- * publishes them, and keeping them `unknown` here means a caller cannot skip
- * that by accident.
- */
-export interface UpstreamToolEntry {
-  readonly name: string;
-  readonly description: unknown;
-  readonly inputSchema: unknown;
-}
-
-/**
- * One page of a `tools/list` result, or `null` when the shape is not one at all.
- *
- * **An unreadable entry is skipped; an unreadable page is refused.** That is the
- * opposite of `toolResultText`, which fails a whole result on one bad block, and
- * the difference is what the two are for. A partial tool *answer* misleads —
- * the model reads it as everything the tool said. A partial *catalog* does not:
- * every tool it omits falls back to the entry the team sheet already produced,
- * which is a defined state with a defined meaning. Refusing the page over one
- * malformed entry would cost every other tool on it its schema.
- *
- * `nextCursor` is `null` unless the server sent a non-empty string. An empty
- * one is the spec's own end-of-pagination signal read the safe way: a cursor
- * this client cannot distinguish from the one it just used is a loop.
- */
-export function parseToolsList(
-  result: Record<string, unknown>
-): { tools: UpstreamToolEntry[]; nextCursor: string | null } | null {
-  const listed = result["tools"];
-  if (!Array.isArray(listed)) return null;
-
-  const tools: UpstreamToolEntry[] = [];
-  for (const entry of listed) {
-    if (!isRecord(entry)) continue;
-    const name = entry["name"];
-    if (typeof name !== "string" || name === "") continue;
-    tools.push({ name, description: entry["description"], inputSchema: entry["inputSchema"] });
-  }
-
-  const cursor = result["nextCursor"];
-  return { tools, nextCursor: typeof cursor === "string" && cursor !== "" ? cursor : null };
-}
-
-/**
- * An upstream's description, bounded to what may enter a model's context.
- *
- * Truncated rather than dropped, because a cut-off sentence still tells the
- * model more about `create_issue` than silence does — the opposite call from
- * the schema below, which cannot be shortened and stay valid. `undefined` for
- * anything that is not a non-empty string, so the absence the caller sees means
- * one thing rather than three.
- */
-export function boundedToolDescription(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed === "" ? undefined : truncate(trimmed, MAX_TOOL_DESCRIPTION);
-}
-
-/** Why an upstream's input schema will not be published. */
-export type SchemaRejection = "not_an_object" | "not_type_object" | "too_large";
-
-/**
- * An upstream's input schema, or the reason it will not be published.
- *
- * **Returns the value it was given, not zod's output.** The shape rule is a
- * gate, never a rewrite: what reaches the provider is the bytes the upstream
- * wrote, so "passed through unmodified" is a fact about this function rather
- * than a claim about it.
- *
- * All-or-nothing, unlike a description. A schema cannot be shortened and stay a
- * schema, and half of one is worse than none — the model would form arguments
- * against a contract nobody holds. Its absence is a defined state: the agent
- * falls back to the open object it published before any of this existed.
- *
- * The `JSON.stringify` is wrapped because a self-referential or BigInt-bearing
- * value throws rather than returning a string, and a schema this proxy cannot
- * even measure is one it will not relay. `too_large` is the honest answer to
- * both — the caller does nothing different for either, and inventing a fourth
- * reason would be a distinction with no consequence.
- */
-export function boundedToolInputSchema(
-  value: unknown
-): { readonly ok: true; readonly schema: ToolInputSchema } | { readonly ok: false; readonly reason: SchemaRejection } {
-  if (!isRecord(value)) return { ok: false, reason: "not_an_object" };
-  if (!ToolInputSchema.safeParse(value).success) return { ok: false, reason: "not_type_object" };
-
-  let bytes: number;
-  try {
-    bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
-  } catch {
-    return { ok: false, reason: "too_large" };
-  }
-  if (bytes > MAX_TOOL_SCHEMA_BYTES) return { ok: false, reason: "too_large" };
-
-  // The value that arrived, asserted rather than reparsed. `safeParse` has just
-  // established the one thing the type claims, and taking zod's output instead
-  // would make "passed through unmodified" false — zod builds a new object.
-  return { ok: true, schema: value as ToolInputSchema };
-}

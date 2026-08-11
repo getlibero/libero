@@ -160,10 +160,23 @@ enforces by name.
 Still to come, with its own issue: the egress allowlist (#73).
 `http-dispatcher.ts` marks where the egress check slots in.
 
-The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and
-`.github/workflows/mcp-spec-watch.yml` opens an issue when the specification
-publishes a newer one. That workflow fails if it cannot find the constant, so a
-rename is loud rather than a watcher that quietly reports nothing.
+The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and is
+on its way out with the hand-rolled client (#188): once the official SDK owns the
+wire, keeping up with the specification is a dependency bump rather than a code
+change here. There is no watcher. There was one — a weekly cron that compared
+that constant against the specification's revision tags — and it was retired with
+#188 rather than repointed, because its only mechanism was grepping a constant
+that will not exist and its own header conceded the fatal limit: it fired on
+revision *tags*, so a within-revision change was invisible to it. That is exactly
+the gap (`x-mcp-header`) that #130 hit, and the watcher was green throughout.
+
+**What replaces it is a review obligation, not a job.** An
+`@modelcontextprotocol/*` bump lands inside the process that holds every tool
+credential, so it is a security review: read the changelog, and answer the two
+questions a version diff does not — whether anything new lets an upstream ask
+the client to act on a channel's behalf (the way `input_required` does, which is
+a refusal decision before it is an implementation one), and whether the servers
+this deployment actually talks to speak the revision yet.
 
 **A permitted call is now served.** `apps/proxy-server` composes the real meter
 with `createHttpDispatcher`, so the 501 is gone.
