@@ -52,17 +52,35 @@ things make that structural rather than a convention:
 
 - There is **no `channel` column**. The file is the channel, so there is no
   column a statement could forget to filter on.
-- **No operation takes a channel id.** `openMessageStore` closes over one file,
-  so a query spanning two channels is not something `MessageStore` can express.
+- **No operation takes a channel id.** `openMessageStore` and `openMessageReader`
+  each close over one file, so a query spanning two channels is not something
+  `MessageStore` or `MessageReader` can express.
+
+## Two openers, and only one of them writes
+
+`openMessageStore` is the gateway's: it creates the schema, stamps the version,
+and holds the six statements that write and read a channel's messages.
+
+`openMessageReader` is the tool proxy's (#64). It opens the same file
+`readOnly`, runs no DDL, stamps nothing, and exposes exactly `search` and
+`close` — so the process holding every tool credential can answer
+`search_channel_history` and can do nothing else to a channel's conversation.
+It answers `null` for a channel with no store yet, which is the ordinary state
+of a newly provisioned channel rather than a misconfiguration.
+
+Neither migrates on the reader's side: a version mismatch names both numbers and
+stops, because a reader that repaired a file would be a reader that changed the
+evidence — and here the evidence is a transcript a model reasons over.
 
 ## The store is a leaf
 
-It depends on `@getlibero/schema` and nothing else in the workspace. #64 has not
-decided whether `search_channel_history` is answered by the proxy opening this
-file as a second reader or by the gateway answering a callback, so the package
-has to be importable from either side — which means it may name neither. An
-ESLint block on `packages/memory/**` enforces that; `src/log.ts` duplicating an
-interface rather than importing one is the visible cost.
+It depends on `@getlibero/schema` and nothing else in the workspace. Both
+services open these files — the gateway writes, the proxy reads — so the package
+is imported from either side and may name neither. An ESLint block on
+`packages/memory/**` enforces that; `src/log.ts` duplicating an interface rather
+than importing one is the visible cost. The cost buys something concrete: a
+`Logger` imported from the gateway would put the Slack SDK into the proxy's
+image through an edge no import in the proxy names.
 
 ## Node 24
 
@@ -74,12 +92,6 @@ a build without it at open, naming the floor rather than letting SQLite report
 `no such module: fts5`.
 
 ## What is not here
-
-`search` has no caller yet. #176 fills a store and #67 reads one back with
-`recent`, both from `apps/server` — but who answers `search_channel_history` as
-a *tool* is still #64's to settle: the proxy opening `store.db` as a second
-reader, or the gateway answering a callback. That is the open question the
-ESLint block on this package exists to keep open.
 
 The mirroring of Slack deletions and edits onto `remove` and `replaceText` is
 #177: `message_changed` and `message_deleted` reach the process today and are

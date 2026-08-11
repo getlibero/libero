@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,6 +8,7 @@ import {
   READ_MAX_LIMIT,
   SEARCH_MAX_TERMS,
   assertFts5,
+  openMessageReader,
   openMessageStore,
   toMatchQuery
 } from "./store-db.js";
@@ -125,8 +126,8 @@ describe("the file", () => {
     expect(found("vault")).toEqual(["1.1"]);
   });
 
-  // WAL, and the question #64 has to answer: whether the proxy reads this file
-  // as a second process. It can.
+  // WAL. The proxy reads this file as a second process (#64) — that is
+  // `openMessageReader`'s suite below; this is the weaker property it rests on.
   it("lets a second handle read while the first is open", () => {
     store.append(message("1.1", "the vault is locked"));
 
@@ -174,6 +175,118 @@ describe("the interface", () => {
     expect(other.search("vault", 10).map(hit => hit.ts)).toEqual(["2.1"]);
 
     other.close();
+  });
+});
+
+// The tool proxy's half of #64. What these assert is not that search works —
+// that is covered exhaustively below against the writer's own handle, and the
+// statement is literally the same one — but that a *second process* can open the
+// file, that it opens it without touching it, and that the isolation invariant
+// survives the second opener.
+describe("reading with openMessageReader", () => {
+  it("reads what the writer has already stored", () => {
+    store.append(message("1.1", "we decided to ship the vault"));
+
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("vault", 10).map(hit => hit.ts)).toEqual(["1.1"]);
+    reader?.close();
+  });
+
+  // WAL's actual promise, and the one the proxy depends on: a reader opened
+  // before a write sees it, without reopening and without blocking the writer.
+  it("sees a message appended after it opened", () => {
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("vault", 10)).toEqual([]);
+
+    store.append(message("1.1", "the vault is locked"));
+
+    expect(reader?.search("vault", 10).map(hit => hit.ts)).toEqual(["1.1"]);
+    reader?.close();
+  });
+
+  it("returns every field the writer stored", () => {
+    const sent = message("1.1", "we shipped it", {
+      threadTs: "1.0",
+      userId: "U0SAM",
+      displayName: "Sam",
+      at: 42
+    });
+    store.append(sent);
+
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("shipped", 10)).toEqual([sent]);
+    reader?.close();
+  });
+
+  // A provisioned channel that has not yet had a message is the ordinary state
+  // of a new channel, so it is null rather than a throw — and null rather than
+  // an empty result, because the proxy says something different to the model for
+  // "nothing matched" than for "nothing has been stored".
+  it("answers null for a channel with no store yet", () => {
+    mkdirSync(join(root, OTHER));
+    expect(openMessageReader({ channel: OTHER, root })).toBeNull();
+  });
+
+  it("answers null rather than creating the file", () => {
+    mkdirSync(join(root, OTHER));
+    openMessageReader({ channel: OTHER, root });
+
+    expect(existsSync(join(root, OTHER, "store.db"))).toBe(false);
+  });
+
+  // A structural regression test, `MessageStore`'s counterpart. The proxy
+  // answers one question and this is the surface that says so: no append, no
+  // remove, no replaceText, and no `recent` — reading a channel's traffic
+  // wholesale is not what search_channel_history is.
+  it("exposes searching and closing, and nothing else", () => {
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(Object.keys(reader ?? {}).sort()).toEqual(["close", "search"]);
+    reader?.close();
+  });
+
+  // The isolation invariant, against the opener that runs in the process
+  // holding every tool credential. The factory closed over one file, so there is
+  // no argument that could reach the other channel.
+  it("cannot reach another channel's store", () => {
+    store.append(message("1.1", "the vault in this channel"));
+    mkdirSync(join(root, OTHER));
+    const other = openMessageStore({ channel: OTHER, root });
+    other.append(message("2.1", "the vault in another channel"));
+
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("vault", 10).map(hit => hit.text)).toEqual(["the vault in this channel"]);
+
+    reader?.close();
+    other.close();
+  });
+
+  it.each([["dot-dot", ".."], ["separator", "a/b"], ["empty", ""], ["leading dot", ".hidden"]])(
+    "refuses a channel id that is not a safe path segment: %s",
+    (_name, channel) => {
+      expect(() => openMessageReader({ channel, root })).toThrow(/not a valid channel id/);
+    }
+  );
+
+  // It does not migrate in either direction, so both mismatches are refused and
+  // the message names both numbers.
+  it("refuses a file whose schema version it does not read", () => {
+    store.close();
+    bumpVersionTo(file, MESSAGE_STORE_SCHEMA_VERSION + 1);
+
+    expect(() => openMessageReader({ channel: CHANNEL, root })).toThrow(
+      new RegExp(`schema version ${MESSAGE_STORE_SCHEMA_VERSION + 1}.*reads version ${MESSAGE_STORE_SCHEMA_VERSION}`, "s")
+    );
+
+    bumpVersionTo(file, MESSAGE_STORE_SCHEMA_VERSION);
+    store = openMessageStore({ channel: CHANNEL, root });
+  });
+
+  it("refuses a file that is not a message store", () => {
+    mkdirSync(join(root, OTHER));
+    const stray = join(root, OTHER, "store.db");
+    raw(stray, db => db.exec("CREATE TABLE something (x INTEGER)"));
+
+    expect(() => openMessageReader({ channel: OTHER, root })).toThrow(/not a message store/);
   });
 });
 

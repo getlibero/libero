@@ -68,14 +68,22 @@
 // channel, and this file cannot stop it. That is the one thing a reviewer of a
 // second caller has to look for.
 //
-// ## This package depends on neither service, and must not start
+// ## Two processes open this file, and only one of them writes
 //
-// #64 has not decided whether `search_channel_history` is answered by the proxy
-// opening this file as a second reader, or by the gateway answering a callback.
-// Both are live, so this package has to be importable from either side, which
-// means it may name neither. `./log.ts` duplicates a `Logger` interface for
-// exactly this reason and argues it at more length. An ESLint block on
-// `packages/memory/**` enforces it.
+// #64 settled it: `search_channel_history` is answered by the tool proxy
+// opening this file as a second reader, not by the gateway answering a callback.
+// So `openMessageStore` is the gateway's and `openMessageReader` is the proxy's,
+// and the difference between them is not a convenience — the reader opens the
+// connection `readOnly` and runs no DDL, because the writer owns the schema and
+// a reader that repaired a file would be a reader that changed the evidence.
+//
+// This package still depends on neither service and still may name neither.
+// `./log.ts` duplicates a `Logger` interface for exactly this reason and argues
+// it at more length; an ESLint block on `packages/memory/**` enforces it. The
+// argument got stronger rather than weaker with the decision: the proxy imports
+// this package today, so a `Logger` imported from the gateway would put the
+// Slack SDK into the proxy's image through an edge that exists rather than one
+// that might.
 //
 // ## `node:sqlite`, and why the repo's Node floor moved for this file
 //
@@ -103,6 +111,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelId } from "@getlibero/schema";
 import type { Logger } from "./log.js";
@@ -172,8 +181,9 @@ CREATE TABLE IF NOT EXISTS message (
   -- they have now, and it does not become the resolver #67 builds. Those
   -- answer different questions: #67 answers "what is this user called today",
   -- and a user who has left the workspace has no today. It is also the only
-  -- attribution available to #64, which runs in a process that holds no Slack
-  -- token and must never be given one.
+  -- attribution available to the tool proxy, which reads this file to answer
+  -- \`search_channel_history\` (#64) and holds no Slack token to resolve a name
+  -- with — nor should ever be given one.
   display_name TEXT,
   text         TEXT NOT NULL,
   -- Our clock, in milliseconds, supplied by the caller so a test can be
@@ -371,6 +381,48 @@ export interface MessageStore {
   close(): void;
 }
 
+export interface MessageReaderOptions {
+  /** The channel this store belongs to. Validated as a `ChannelId`. */
+  readonly channel: string;
+  /**
+   * The directory holding the per-channel state directories, exactly as
+   * `MessageStoreOptions.root` means it. The two processes are configured
+   * separately — `AGENT_STORE_ROOT` and `PROXY_STORE_ROOT` — and must name the
+   * same directory.
+   */
+  readonly root: string;
+  readonly logger?: Logger;
+}
+
+/**
+ * One channel's messages, read-only, for a process that does not own them.
+ *
+ * This is the tool proxy's handle (#64). It is a separate interface rather than
+ * a narrowed `MessageStore` for the reason `HistorySource` is one in
+ * `apps/server`: what a caller cannot express is the point, and a structural
+ * subtype only documents that. The proxy answers `search_channel_history` and
+ * has no business appending, removing, editing, or reading a channel's recent
+ * traffic wholesale — so `search` is the only operation here, and `recent` is
+ * absent on purpose.
+ *
+ * **No method takes a channel id**, which is `MessageStore`'s invariant and
+ * holds here for the same structural reason: the factory closed over one file.
+ * That is what makes "no argument the model controls can widen the search beyond
+ * the calling channel" a shape rather than a check — the proxy resolves the
+ * channel from the client certificate, opens this, and there is no second
+ * channel reachable from the handle it gets back.
+ */
+export interface MessageReader {
+  /**
+   * Ranked full-text search over this channel's messages, best match first.
+   *
+   * Identical to `MessageStore.search` — same statement, same clamp, same
+   * text-not-an-expression rule. See `toMatchQuery`.
+   */
+  search(text: string, limit: number): readonly StoredMessage[];
+  close(): void;
+}
+
 /**
  * The most terms one query may carry, and the longest it may be.
  *
@@ -455,6 +507,30 @@ export function toMatchQuery(text: string): string | undefined {
     .map(term => `"${term.replaceAll('"', '""')}"`);
   return terms.length === 0 ? undefined : terms.join(" ");
 }
+
+/**
+ * The ranked search, shared by both openers.
+ *
+ * Lifted out of `openMessageStore` when `openMessageReader` arrived, because two
+ * copies of one statement is the drift this file's "every SQL string lives here"
+ * rule cannot catch: both copies would be here, and they could still disagree.
+ * The proxy and the gateway must answer the same question the same way.
+ *
+ * The LIMIT sits inside the subquery so the join runs over `limit` rows rather
+ * than over every match. `rank` is FTS5's own hidden column — bm25 by default —
+ * and ordering by it inside the subquery lets FTS5 do the sort rather than
+ * materializing the whole match set. The outer ORDER BY is what survives the
+ * join, which does not preserve the subquery's order.
+ */
+const SEARCH_SQL = `SELECT m.ts, m.thread_ts, m.user_id, m.display_name, m.text, m.at
+     FROM message m
+     JOIN (SELECT rowid AS hit_id, rank AS hit_rank
+             FROM message_fts
+            WHERE message_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?) AS hit
+       ON m.id = hit.hit_id
+    ORDER BY hit.hit_rank`;
 
 /** Clamps to `[1, READ_MAX_LIMIT]`, and treats a non-number as 1. */
 function clampLimit(limit: number): number {
@@ -597,22 +673,7 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     ),
     remove: db.prepare(`DELETE FROM message WHERE ts = ?`),
     replaceText: db.prepare(`UPDATE message SET text = ? WHERE ts = ?`),
-    // The LIMIT sits inside the subquery so the join runs over `limit` rows
-    // rather than over every match. `rank` is FTS5's own hidden column — bm25
-    // by default — and ordering by it inside the subquery lets FTS5 do the sort
-    // rather than materializing the whole match set. The outer ORDER BY is what
-    // survives the join, which does not preserve the subquery's order.
-    search: db.prepare(
-      `SELECT m.ts, m.thread_ts, m.user_id, m.display_name, m.text, m.at
-         FROM message m
-         JOIN (SELECT rowid AS hit_id, rank AS hit_rank
-                 FROM message_fts
-                WHERE message_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?) AS hit
-           ON m.id = hit.hit_id
-        ORDER BY hit.hit_rank`
-    ),
+    search: db.prepare(SEARCH_SQL),
     // DESC because the only way to ask SQLite for a tail is to sort backwards
     // and take the head; `recent` reverses the rows before returning them.
     //
@@ -696,6 +757,105 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         clampLimit(limit)
       ) as MessageRow[];
       return rows.map(toStoredMessage).reverse();
+    },
+
+    close() {
+      db.close();
+    }
+  };
+}
+
+/**
+ * Read the version without claiming the file.
+ *
+ * `checkVersion`'s counterpart, and the difference is the whole point of having
+ * two: that one stamps an unstamped file because a file with no row is one the
+ * writer is about to own. A reader owns nothing. It does not migrate in either
+ * direction — `openAuditReader` states the rule and it is the same rule here,
+ * for a stronger reason: a repaired store is a transcript with text attributed
+ * to the wrong person, which the model then reasons over with no error to show
+ * for it.
+ *
+ * A file with no `schema_version` table at all is not a message store, and
+ * SQLite's own `no such table` names the table but not the file. This says which
+ * file, because the caller passed a root and a channel and never a path.
+ */
+function readVersion(db: DatabaseSync, file: string): void {
+  let row: { version: number } | undefined;
+  try {
+    row = db.prepare("SELECT version FROM schema_version").get() as
+      | { version: number }
+      | undefined;
+  } catch {
+    throw new Error(`memory store: ${file} has no schema_version table, so it is not a message store`);
+  }
+  if (row === undefined || row.version !== MESSAGE_STORE_SCHEMA_VERSION) {
+    throw new Error(
+      `memory store: ${file} is schema version ${row?.version ?? "unstamped"}, and this build ` +
+        `reads version ${MESSAGE_STORE_SCHEMA_VERSION}. The gateway migrates an older file the ` +
+        `first time it opens one; a reader does not, because migrating is writing.`
+    );
+  }
+}
+
+/**
+ * Open one channel's messages to search them, and nothing else.
+ *
+ * The tool proxy's opener (#64). Four things it deliberately does not do, each
+ * of which `openMessageStore` does, and each because it would be a write to a
+ * file this process does not own: it sets no `journal_mode` and no
+ * `synchronous`, it runs no `SCHEMA`, it creates no index and no trigger, and it
+ * stamps no version. `busy_timeout` is set because it is a property of this
+ * connection's patience and of nothing on disk.
+ *
+ * **`null` when the channel has no store yet**, rather than a throw. A channel
+ * that has been provisioned but has not yet had a message stored is the ordinary
+ * state of a new channel, not a misconfiguration — and it is the one case the
+ * writer's absent `mkdir` argument does not cover, because the writer is the one
+ * creating the thing whose absence is suspicious. Checked with `existsSync`
+ * ahead of the open rather than by catching: a read-only connection to a missing
+ * file throws the same generic error as a permissions failure or a corrupt
+ * header, and answering `null` to all three would turn a broken deployment into
+ * a channel that quietly remembers nothing.
+ *
+ * The caller closes it. It holds one prepared statement and no cache, so it is
+ * cheap enough to open per call — which is what the proxy does, rather than
+ * pooling handles it would then have to evict.
+ */
+export function openMessageReader(options: MessageReaderOptions): MessageReader | null {
+  const { channel, root, logger } = options;
+
+  // `ChannelId` for `openMessageStore`'s reason, and it matters more here: this
+  // id arrives from a client certificate's CN, and validating it is what keeps
+  // the join below one path segment that cannot climb out of `root`.
+  if (!ChannelId.safeParse(channel).success) {
+    throw new Error(`memory store: ${JSON.stringify(channel)} is not a valid channel id`);
+  }
+
+  const file = join(root, channel, STORE_FILENAME);
+  if (!existsSync(file)) return null;
+
+  const db = new DatabaseSync(file, { readOnly: true });
+
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    assertFts5(db, file);
+    readVersion(db, file);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+
+  const search = db.prepare(SEARCH_SQL);
+
+  logger?.log("info", { event: "store_reader_opened", channel, file });
+
+  return {
+    search(text, limit) {
+      const query = toMatchQuery(text);
+      if (query === undefined) return [];
+      const rows = search.all(query, clampLimit(limit)) as MessageRow[];
+      return rows.map(toStoredMessage);
     },
 
     close() {

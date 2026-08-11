@@ -6,14 +6,14 @@
 // `packages/gateway/src/log.ts` argues it one way — a shared logger would need
 // the union of both vocabularies, which is exactly what a closed vocabulary
 // exists to prevent. This package has a second reason, and it is structural.
-// **The store has to be a leaf.** #64 has not decided whether the process that
-// answers `search_channel_history` is the proxy, opening `store.db` as a second
-// reader, or the gateway, answering a callback. Both are live, so this package
-// must be importable from either side — which means it may name neither. A
-// `Logger` imported from the gateway would, the day #64 chooses the direct read,
-// put the Slack SDK into the proxy's image through a transitive edge no import
-// in the proxy names. An ESLint block on `packages/memory/**` enforces that
-// rather than this comment asking for it.
+// **The store has to be a leaf.** Both services open these files: the gateway
+// writes every inbound message, and since #64 the tool proxy reads them to
+// answer `search_channel_history`. So this package is imported from either side
+// and may name neither. A `Logger` imported from the gateway would put the Slack
+// SDK into the proxy's image through a transitive edge no import in the proxy
+// names — an edge that exists today rather than one that might, which is what
+// changed when #64 chose the direct read over a callback. An ESLint block on
+// `packages/memory/**` enforces it rather than this comment asking for it.
 //
 // The interface is structurally identical to both siblings, so a caller passes
 // its own logger straight in and nothing imports anything.
@@ -30,7 +30,12 @@
 export type LogLevel = "info" | "warn" | "error";
 
 export interface LogFields {
-  /** Fixed vocabulary, and it has one member today: "store_opened". */
+  /**
+   * Fixed vocabulary: "store_opened" when the gateway opens a store to write,
+   * "store_reader_opened" when the proxy opens one to search. Two words rather
+   * than one because which process opened a channel's file, and whether it can
+   * write to it, is the first thing an operator reading these lines wants.
+   */
   event: string;
   /** The channel this store belongs to. An id — the same one the team sheet is keyed on. */
   channel?: string;
