@@ -20,6 +20,7 @@
 // there — by putting listing traffic on the same seam.
 
 import type { BudgetSpend, CallLimits } from "./enforce.js";
+import type { XMcpHeaderDeclaration } from "./vendor/mcp-param-headers.js";
 import type {
   McpServer,
   ResolvedToolCall,
@@ -211,6 +212,17 @@ export interface UpstreamToolDescription {
  * What `wanted` buys is that an upstream cannot hide a sheet's tool behind two
  * hundred decoys and run the caller out of its own caps.
  */
+/**
+ * What a dispatcher knows about a tool that its arguments do not say.
+ *
+ * Empty is a legitimate answer and the common one: most tools declare no
+ * `x-mcp-header`, and a cold or failing catalog answers this way too. A call is
+ * never blocked for want of one.
+ */
+export interface UpstreamCallDefinition {
+  readonly paramDeclarations: readonly XMcpHeaderDeclaration[];
+}
+
 export interface ToolCatalog {
   describe(
     upstream: McpServer,

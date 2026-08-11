@@ -174,6 +174,35 @@ describe("what an upstream is allowed to say", () => {
     ).toBe(true);
   });
 
+  // The vendored header scan recurses per nesting level with no depth bound,
+  // and it runs on the *raw* schema — deliberately, so a large tool keeps its
+  // headers — which makes it the one consumer of bytes nothing has bounded
+  // yet. Tens of thousands of levels fit inside the response bound, and the
+  // RangeError is neither a RedactionError nor an outcome: unguarded, it
+  // escapes the degrade-to-thin contract and turns one hostile upstream into
+  // a 500 for the channel's whole listing.
+  it("survives a schema nested too deep to scan, and publishes the tool thin", async () => {
+    // Served as raw bytes rather than through the fake's catalog: JSON.parse
+    // keeps its continuation state on the heap, but JSON.stringify recurses on
+    // the call stack — a deep *object* in the catalog would blow up the fake's
+    // own serializer on a small-stacked CI worker before the guard under test
+    // ever ran, and how deep "too deep" is would depend on the runner.
+    const depth = 60_000;
+    const deep = '{"type":"object","properties":{"a":'.repeat(depth) + '{"type":"string"}' + "}}".repeat(depth);
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            raw: `{"jsonrpc":"2.0","id":${String(request.rpc.id ?? 0)},"result":{"resultType":"complete","ttlMs":0,"cacheScope":"public","tools":[{"name":"list_prs","description":"Lists PRs.","inputSchema":${deep}}]}}`
+          }
+        : null;
+    const { describe: ask } = harnessFor();
+
+    // Thin, not absent, and above all: answered. The description survives; the
+    // schema is over the publish bound anyway and is dropped on its own rule.
+    expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({ description: "Lists PRs." });
+  });
+
   it("drops a schema too large to publish", async () => {
     fake = await startFakeMcpServer({
       catalog: [{ name: "list_prs", inputSchema: { type: "object", note: "x".repeat(9000) } }]

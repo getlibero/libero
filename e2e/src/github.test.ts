@@ -58,7 +58,13 @@ const AS_GITHUB: UpstreamOptions = {
   protocol: "legacy",
   sessions: true,
   framing: "sse",
-  pageSize: 2
+  pageSize: 2,
+  // The last of GitHub's shapes to be modelled here, and the one #130 tripped
+  // on: its schemas annotate `owner` and `repo` with `x-mcp-header`, and it
+  // requires the mirrored headers *on a legacy connection* — declining
+  // SEP-2243's optional headerless-legacy courtesy, which is its right. Without
+  // this the suite would happily prove a call the real server refuses.
+  requireParamHeaders: true
 };
 
 /**
@@ -84,7 +90,11 @@ const GITHUB_CATALOG: readonly FakeCatalogTool[] = [
     description: "List pull requests",
     inputSchema: {
       type: "object",
-      properties: { owner: { type: "string" }, repo: { type: "string" }, state: { type: "string" } },
+      properties: {
+        owner: { type: "string", "x-mcp-header": "owner" },
+        repo: { type: "string", "x-mcp-header": "repo" },
+        state: { type: "string" }
+      },
       required: ["owner", "repo"]
     }
   },
@@ -98,7 +108,11 @@ const GITHUB_CATALOG: readonly FakeCatalogTool[] = [
     )}`,
     inputSchema: {
       type: "object",
-      properties: { owner: { type: "string" }, repo: { type: "string" }, pullNumber: { type: "integer" } },
+      properties: {
+        owner: { type: "string", "x-mcp-header": "owner" },
+        repo: { type: "string", "x-mcp-header": "repo" },
+        pullNumber: { type: "integer" }
+      },
       required: ["owner", "repo", "pullNumber", "method"]
     }
   }
@@ -167,6 +181,16 @@ function describeTheCallCompletes(): void {
       // stateless upstream cannot ask for.
       const call = upstream.callsTo("tools/call")[0];
       expect(call?.headers["mcp-session-id"]).toEqual(expect.any(String));
+
+      // And the arguments GitHub wants mirrored were mirrored, on a *legacy*
+      // connection — the gap #130 hit, closed here through the whole stack
+      // rather than in a unit test: the catalog scanned the annotations off the
+      // upstream's own schema, the adapter derived the headers from the vendored
+      // codec, and the upstream accepted them. The fake refuses the call without
+      // them (`requireParamHeaders`), so a regression fails loudly rather than
+      // quietly sending nothing.
+      expect(call?.headers["mcp-param-owner"]).toBe("getlibero");
+      expect(call?.headers["mcp-param-repo"]).toBe("libero");
 
       // The catalog was paged. The walk stops as soon as every wanted name is
       // found, and the sheet's second tool is the catalog's fifth, so two pages

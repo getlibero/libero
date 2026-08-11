@@ -158,6 +158,20 @@ export interface FakeMcpServerOptions {
   /** What `tools/list` publishes. Two well-formed tools by default. */
   catalog: readonly FakeCatalogTool[];
   /**
+   * Refuse a `tools/call` whose declared `Mcp-Param-*` headers are missing.
+   *
+   * **GitHub's hosted server, in one knob.** Its tool schemas annotate `owner`
+   * and `repo` with `x-mcp-header`, and it requires the mirrored headers even on
+   * a legacy connection — declining SEP-2243's optional headerless-legacy
+   * courtesy, which it is entitled to do. A client that does not send them gets
+   * `-32020` for essentially every tool, which is the whole of #130. Off by
+   * default, because most servers do not do this.
+   *
+   * The refusal names the first missing header the way GitHub's does, so a test
+   * asserting the message is asserting something real.
+   */
+  requireParamHeaders: boolean;
+  /**
    * How many tools one `tools/list` page carries, or `null` for all of them.
    *
    * Real pagination rather than a canned `nextCursor`: the cursor is an offset
@@ -212,7 +226,8 @@ const DEFAULTS: FakeMcpServerOptions = {
       inputSchema: { type: "object", properties: { number: { type: "integer" } }, required: ["number"] }
     }
   ],
-  pageSize: null
+  pageSize: null,
+  requireParamHeaders: false
 };
 
 /** Spell every character as `\uXXXX`, the way an over-eager encoder would. */
@@ -349,6 +364,28 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
     }
 
     if (request.rpc?.method === "tools/call") {
+      if (fake.options.requireParamHeaders) {
+        const called = fake.options.catalog.find(tool => tool.name === request.rpc?.params?.["name"]);
+        const properties = (called?.inputSchema?.["properties"] ?? {}) as Record<string, Record<string, unknown>>;
+        for (const [argument, schema] of Object.entries(properties)) {
+          const declared = schema["x-mcp-header"];
+          if (typeof declared !== "string") continue;
+          const supplied = (request.rpc.params?.["arguments"] ?? {}) as Record<string, unknown>;
+          // Only where the argument was actually sent: the specification tells a
+          // client to omit the header for an absent or null value, so demanding
+          // one then would be this fake being wrong rather than strict.
+          if (supplied[argument] === undefined || supplied[argument] === null) continue;
+          if (request.headers[`mcp-param-${declared.toLowerCase()}`] === undefined) {
+            return {
+              message: {
+                jsonrpc: "2.0",
+                id,
+                error: { code: -32020, message: `missing Mcp-Param-${declared} header` }
+              }
+            };
+          }
+        }
+      }
       const auth = request.authorization ?? "";
       const echo =
         fake.options.echoHeaders === "text"

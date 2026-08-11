@@ -35,7 +35,7 @@
 // certain of catching it echoed back.
 
 import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
-import type { Dispatch, ToolCatalog, ToolDispatcher } from "./dispatch.js";
+import type { Dispatch, ToolCatalog, ToolDispatcher, UpstreamCallDefinition } from "./dispatch.js";
 import type { CallLimits } from "./enforce.js";
 import { createSilentLogger, type Logger } from "./log.js";
 import { type ClientLease, createMcpCatalog } from "./mcp-catalog.js";
@@ -311,7 +311,37 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       }
 
       try {
-        const outcome = await client.callTool(call.tool, call.arguments, limits);
+        // **Inside the try, deliberately.** This can throw a `RedactionError`
+        // exactly as the call below can — a catalog walk is a credentialed
+        // request like any other — and the catch beneath is what rethrows one
+        // rather than answering with a result nobody could scrub. Outside it,
+        // the fail-closed path would have a hole in it the width of a listing.
+        //
+        // Everything else it can go wrong with answers with no declarations, so
+        // a cold cache, a dead upstream or a tool that declares nothing all send
+        // the call anyway. A thin catalog has never been allowed to block a
+        // permitted call, and this is the path where that rule earns its keep.
+        //
+        // **Its own catch, because the outer one speaks for the call.** A throw
+        // from here reaching the catch below would be answered "the call was
+        // made and no result came back" and audited `ran` — for a call that was
+        // never dispatched, which is exactly the over-claim `unanswered` exists
+        // to rule out. An unforeseen failure to *describe* degrades to the thin
+        // definition like every foreseen one; only a `RedactionError` crosses.
+        let definition: UpstreamCallDefinition;
+        try {
+          definition = await catalog.definitionFor(upstream, call.tool);
+        } catch (error) {
+          if (error instanceof RedactionError) throw error;
+          logger.log("warn", {
+            event: "catalog_definition_failed",
+            channel: call.channel,
+            server: call.server,
+            tool: call.tool
+          });
+          definition = { paramDeclarations: [] };
+        }
+        const outcome = await client.callTool(call.tool, call.arguments, limits, definition);
         // Read after the call, when the ladder has run. The protocol is settled
         // for the client's life, so there is no read-after-write hazard here.
         const protocol = client.protocol;

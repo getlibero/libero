@@ -51,6 +51,8 @@ import {
 } from "@modelcontextprotocol/client";
 import type { ToolResult } from "@getlibero/schema";
 import type { CallLimits } from "./enforce.js";
+import type { UpstreamCallDefinition } from "./dispatch.js";
+import { buildMcpParamHeaders } from "./vendor/mcp-param-headers.js";
 import {
   type UpstreamToolEntry,
   isInputRequired,
@@ -148,7 +150,12 @@ export type McpListOutcome =
   | { readonly outcome: "call_failed"; readonly failure: McpFailure; readonly status?: number; readonly code?: number };
 
 export interface McpClient {
-  callTool(tool: string, args: Readonly<Record<string, unknown>>, limits: CallLimits): Promise<McpOutcome>;
+  callTool(
+    tool: string,
+    args: Readonly<Record<string, unknown>>,
+    limits: CallLimits,
+    definition: UpstreamCallDefinition
+  ): Promise<McpOutcome>;
   listTools(cursor: string | undefined, timeoutMs: number | undefined): Promise<McpListOutcome>;
   /** The era this connection settled on, or `undefined` before it has. */
   readonly protocol: McpDialect | undefined;
@@ -552,15 +559,47 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     | { readonly kind: "answered"; readonly outcome: Outcome }
     | { readonly kind: "session_lost"; readonly generation: number; readonly outcome: Outcome };
 
+  /**
+   * The `Mcp-Param-*` headers this call carries, if any.
+   *
+   * **Derived here on every era, not only where the SDK declines to.** The
+   * obvious design is to let the SDK mirror on a modern connection and fill the
+   * gap only on a legacy one, since SEP-2243 is a `2026-07-28` feature and the
+   * SDK's era gate is spec-correct. It does not work, and the reason is a
+   * decision made one function down: the SDK's mirroring lives in `callTool`,
+   * which this client does not use — a `tools/call` goes out as a raw `request`
+   * precisely so the header-mismatch re-POST recovery has no code path to run
+   * on — so on a modern connection nobody would send them at all.
+   *
+   * Deriving them here on both eras is also the better shape independently: one
+   * code path rather than two, the second of which is the one nobody exercises
+   * once upstreams modernise. There is no competing source to disagree with,
+   * because the SDK's is switched off by construction.
+   *
+   * What #130 needs is the legacy half: GitHub negotiates `2025-11-25` and
+   * requires the headers anyway, declining the specification's optional
+   * headerless-legacy courtesy.
+   */
+  const paramHeaders = (
+    args: Readonly<Record<string, unknown>>,
+    definition: UpstreamCallDefinition
+  ): Record<string, string> | undefined => {
+    if (definition.paramDeclarations.length === 0) return undefined;
+    const headers = buildMcpParamHeaders(definition.paramDeclarations, args);
+    return Object.keys(headers).length === 0 ? undefined : headers;
+  };
+
   const attempt = async (
     at: Session,
     tool: string,
     args: Readonly<Record<string, unknown>>,
-    limits: CallLimits
+    limits: CallLimits,
+    definition: UpstreamCallDefinition
   ): Promise<Attempt<McpOutcome>> => {
     // Read before the call, so the replay discriminator is what this request
     // actually carried rather than what the transport holds afterwards.
     const carried = at.transport.sessionId;
+    const mirrored = paramHeaders(args, definition);
     try {
       // `request` rather than `callTool`, and both halves of that are wanted.
       // `callTool` validates the result against the specification's closed
@@ -569,11 +608,16 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       // re-POSTs an identical `tools/call`. That recovery is one write becoming
       // two, and it is safe only if the upstream rejected before dispatching,
       // which is trust this proxy does not extend. On this path it is
-      // structurally absent rather than disabled by a decoy definition.
+      // structurally absent rather than disabled by a decoy definition. The
+      // `Mcp-Param-*` headers ride the same per-message option the SDK itself
+      // uses on a modern `callTool`.
       const result = await at.client.request(
         { method: "tools/call", params: { name: tool, arguments: { ...args } } },
         CallEnvelope,
-        { timeout: timeoutMs }
+        {
+          timeout: timeoutMs,
+          ...(mirrored !== undefined ? { headers: mirrored } : {})
+        }
       );
 
       const record = result as unknown as Record<string, unknown>;
@@ -639,18 +683,18 @@ export function createMcpClient(options: McpClientOptions): McpClient {
   };
 
   return {
-    async callTool(tool, args, limits) {
+    async callTool(tool, args, limits, definition) {
       const ready = await ensureOpen();
       if (!ready.ok) return { outcome: "connect_failed", failure: ready.failure };
 
       // Two statements, no counter and no loop: the structure is what bounds the
       // replay at one.
-      const first = await attempt(ready.session, tool, args, limits);
+      const first = await attempt(ready.session, tool, args, limits, definition);
       if (first.kind === "answered") return first.outcome;
 
       const reopened = await reopenSession(first.generation);
       if (!reopened.ok) return { outcome: "call_failed", failure: reopened.failure };
-      return (await attempt(reopened.session, tool, args, limits)).outcome;
+      return (await attempt(reopened.session, tool, args, limits, definition)).outcome;
     },
 
     async listTools(cursor, perCallTimeoutMs) {

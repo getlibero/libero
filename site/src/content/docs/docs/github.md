@@ -3,20 +3,6 @@ title: Connecting GitHub
 description: The first real upstream, end to end — a personal access token in the proxy's vault, GitHub's hosted MCP server in a team sheet, and an audit row at the end of it.
 ---
 
-:::caution[Tool calls do not complete yet]
-Connecting works: the proxy handshakes with GitHub, authenticates with your token, and publishes
-GitHub's real tool definitions to the model. **Calls are then refused by GitHub.**
-
-Its tool schemas annotate `owner` and `repo` with `x-mcp-header`, and the Streamable HTTP transport
-requires a client to mirror those values into `Mcp-Param-{name}` request headers. Libero's MCP
-client does not, so GitHub answers JSON-RPC `-32020`, *"header mismatch: missing Mcp-Param-owner
-header"*. Since `owner` and `repo` are on nearly every GitHub tool, nearly every call is affected.
-
-Nothing about your token, sheet, or vault is wrong when you see this, and there is no
-configuration that works around it — it is a gap in the proxy. Everything below is accurate and
-worth setting up now; the calls will start completing when that lands.
-:::
-
 GitHub publishes a hosted MCP server at `https://api.githubcopilot.com/mcp/`. It is the first real
 upstream Libero was built against, and connecting it is three things: a token in the proxy's vault,
 one `[[mcp_server]]` block per toolset in the channel's team sheet, and a mention.
@@ -210,6 +196,21 @@ overridable per tool. A GitHub PR list is worth less context than a diff, so:
   approval         = "none"
   max_result_chars = 8000
 ```
+
+### A wrinkle GitHub is entitled to
+
+GitHub's tool schemas annotate `owner` and `repo` with `x-mcp-header`, which asks a client to mirror
+those argument values into `Mcp-Param-{name}` request headers. That is a `2026-07-28` feature, and
+GitHub negotiates the older `2025-11-25` revision — but it requires the headers anyway, declining the
+specification's optional allowance for older clients. Both ends are within spec, and between them
+sits a hole: no released MCP client library sends those headers on that connection, so every call to
+an annotated tool — which is nearly all of them — used to come back `-32020`, *"missing
+Mcp-Param-owner header"*.
+
+Libero sends them. Nothing to configure, and it is mentioned here only because a `-32020` in your
+logs is otherwise a mystery with no obvious owner, and because it is the reason a small piece of the
+MCP SDK is vendored into `packages/proxy/src/vendor/`. Filed upstream as
+[typescript-sdk#2639](https://github.com/modelcontextprotocol/typescript-sdk/issues/2639).
 
 ## 6. Verify it
 

@@ -317,6 +317,34 @@ describe("an upstream asking for more input", () => {
   });
 });
 
+describe("a schema too deep to scan for header declarations", () => {
+  // The call-path half of the catalog's degrade rule. A definition the catalog
+  // could not produce is a thin catalog, not a failed call — the call still
+  // goes out, with no mirrored headers. Before the guard, the scan's
+  // RangeError surfaced here and was answered "the call was made and no
+  // result came back" with a `ran` audit row, for a call never dispatched.
+  it("still dispatches the call, without mirrored headers", async () => {
+    // Raw bytes, not a catalog object — the fake's own JSON.stringify would
+    // overflow first on a small-stacked CI worker; mcp-catalog.test.ts's twin
+    // case says the whole of it.
+    const depth = 60_000;
+    const deep = '{"type":"object","properties":{"a":'.repeat(depth) + '{"type":"string"}' + "}}".repeat(depth);
+    fake = await startFakeMcpServer();
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            raw: `{"jsonrpc":"2.0","id":${String(request.rpc.id ?? 0)},"result":{"resultType":"complete","ttlMs":0,"cacheScope":"public","tools":[{"name":"list_prs","description":"Lists PRs.","inputSchema":${deep}}]}}`
+          }
+        : null;
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    expect(result.outcome === "ran" && result.result.isError).toBe(false);
+    expect(result.outcome === "ran" && result.result.content).toBe("called list_prs");
+  });
+});
+
 describe("a credential revoked mid-session", () => {
   // `unauthorized` is reachable on the call path, not only at connect: the
   // upstream forgets the session, the reopen's re-initialize is answered 401.
