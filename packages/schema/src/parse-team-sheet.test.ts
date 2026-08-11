@@ -4,6 +4,15 @@ import { parseTeamSheet } from "./parse-team-sheet.js";
 
 const examplePath = new URL("../../../channels/example/channel.toml", import.meta.url);
 
+/**
+ * The smallest `[channel]` block that parses, as TOML text.
+ *
+ * Since #79 that is a name *and* at least one pinned certificate, so the cases
+ * below — none of which are about `[channel]` — build theirs from here rather
+ * than each carrying the required set. The fingerprint matches nothing.
+ */
+const CHANNEL = `[channel]\nname = "ops"\ncertificate_sha256 = ["${"AB".repeat(32)}"]\n`;
+
 describe("parsing a team sheet", () => {
   it("parses the documented starter sheet", () => {
     const result = parseTeamSheet(readFileSync(examplePath, "utf8"));
@@ -18,7 +27,7 @@ describe("parsing a team sheet", () => {
   });
 
   it("fills defaults from a minimal sheet", () => {
-    const result = parseTeamSheet('[channel]\nname = "ops"\n');
+    const result = parseTeamSheet(CHANNEL);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.sheet.budget.daily_tokens).toBe(1_000_000);
@@ -35,7 +44,7 @@ describe("reporting why a sheet did not parse", () => {
     if (syntax.ok) return;
     expect(syntax.reason).toBe("toml_syntax");
 
-    const schema = parseTeamSheet('[channel]\nname = "ops"\n\n[budget]\ndaily_tokens = 0\n');
+    const schema = parseTeamSheet(CHANNEL + '\n[budget]\ndaily_tokens = 0\n');
     expect(schema.ok).toBe(false);
     if (schema.ok) return;
     expect(schema.reason).toBe("schema_invalid");
@@ -51,7 +60,7 @@ describe("reporting why a sheet did not parse", () => {
 
   it("names the field that failed and how", () => {
     const result = parseTeamSheet(
-      '[channel]\nname = "ops"\n\n[[mcp_server]]\nname = "github"\ntransport = "websocket"\n'
+      CHANNEL + '\n[[mcp_server]]\nname = "github"\ntransport = "websocket"\n'
     );
     expect(result.ok).toBe(false);
     if (result.ok || result.reason !== "schema_invalid") return;
@@ -65,14 +74,14 @@ describe("reporting why a sheet did not parse", () => {
   // rather than the schema's: this is the line an operator reads.
   it("names the url when a transport and its address disagree", () => {
     const missing = parseTeamSheet(
-      '[channel]\nname = "ops"\n\n[[mcp_server]]\nname = "github"\ntransport = "http"\n'
+      CHANNEL + '\n[[mcp_server]]\nname = "github"\ntransport = "http"\n'
     );
     expect(missing.ok).toBe(false);
     if (missing.ok || missing.reason !== "schema_invalid") return;
     expect(missing.issues).toContainEqual({ path: "mcp_server.0.url", code: "invalid_type" });
 
     const spurious = parseTeamSheet(
-      '[channel]\nname = "ops"\n\n[[mcp_server]]\nname = "github"\ntransport = "stdio"\nurl = "http://mcp:3001"\n'
+      CHANNEL + '\n[[mcp_server]]\nname = "github"\ntransport = "stdio"\nurl = "http://mcp:3001"\n'
     );
     expect(spurious.ok).toBe(false);
     if (spurious.ok || spurious.reason !== "schema_invalid") return;
@@ -93,7 +102,7 @@ describe("reporting why a sheet did not parse", () => {
   // around that, so the failure side carries paths and codes only.
   it("carries no free-form message and no value out of the file", () => {
     const result = parseTeamSheet(
-      '[channel]\nname = "ops"\n\n[[mcp_server]]\nname = "github"\ntransport = "sk-live-abc123"\n'
+      CHANNEL + '\n[[mcp_server]]\nname = "github"\ntransport = "sk-live-abc123"\n'
     );
     expect(result.ok).toBe(false);
     if (result.ok || result.reason !== "schema_invalid") return;

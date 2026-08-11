@@ -75,4 +75,8 @@ is `{ readOnly: true }` on the connection, not the mount.
 
 `certs/` holds the CA, the proxy's keypair, and one client certificate per
 channel, laid out by role so each container mounts only its slice and the CA key
-is mounted into neither. `scripts/dev-certs.sh` mints them.
+is mounted into neither. `scripts/dev-certs.sh` mints them, and re-running it
+mints only what is missing — a client certificate in service must not be
+replaced silently, because each channel's team sheet pins the fingerprint of the
+one it accepts (#79). `--rotate` then `--promote` replaces one with no downtime;
+`--print-pins` prints what to paste into a sheet, and when each expires.

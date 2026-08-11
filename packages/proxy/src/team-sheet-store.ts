@@ -57,7 +57,7 @@ export type SheetState =
    * that behaviour is observable instead of silent.
    */
   | { readonly status: "active"; readonly sheet: TeamSheet; readonly stale: boolean }
-  /** No sheet file. The channel is not provisioned, or has been revoked. */
+  /** No sheet file. The channel is not provisioned, or has been retired. */
   | { readonly status: "absent" }
   /** A sheet file exists, has never parsed, and there is no earlier good one. */
   | { readonly status: "unusable" };
@@ -218,8 +218,16 @@ export class TeamSheetStore {
       // invalid edit, because the two differ in what the operator has told us.
       // A typo leaves their intent unknown, so the last good sheet stays in
       // force. A deletion states the intent plainly, and the architecture
-      // defines removing a sheet as how a channel is revoked — so it must not
+      // defines removing a sheet as how a channel is retired — so it must not
       // be the one edit that leaves permissions running.
+      //
+      // The retain rule has a sharper edge since #79, and it is deliberately
+      // not softened here: a sheet edit that revokes a leaked certificate and
+      // fails to parse leaves the leaked fingerprint pinned. Reversing that for
+      // one field would mean a typo disables a channel, which is the failure
+      // this rule exists to prevent — so the answer is the `team_sheet_invalid`
+      // line below, which says at save time that the edit did not land, and
+      // this branch, which is the emergency path when it has to land now.
       if (entry.state.status !== "absent") {
         this.#logger.log("warn", { event: "team_sheet_removed", channel, file });
       }

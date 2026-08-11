@@ -80,9 +80,13 @@ process, as opposed to the model-level cases above, yields the union of those ch
 surfaces rather than one channel's. No tool credentials either way: none are in that process, and
 what is — the gateway and model credentials above — reaches no tool the proxy guards.
 
-Related, and also not built yet: a leaked client key cannot be revoked without retiring the
-channel, because the replacement certificate carries the same subject as the leaked one. Pinning a
-channel's key in its team sheet is the intended fix.
+A leaked client key is a related case with its own answer. Because a replacement certificate
+carries the same subject as the one it replaces, the subject alone cannot tell them apart — so each
+channel's team sheet lists the fingerprints of the certificates allowed to speak for it
+(`[channel] certificate_sha256`), and a request on any other certificate is refused before it
+reaches a route. Revoking a leaked key is dropping its fingerprint from that sheet, which takes
+effect on the next call and does not take the channel offline. See
+[rotating and revoking a certificate](/docs/self-hosting#rotating-and-revoking-a-certificate).
 
 ### An MCP server the sheet names is trusted to describe its own tools
 

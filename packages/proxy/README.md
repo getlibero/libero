@@ -16,7 +16,11 @@ reveals a credential and the one that scrubs the reply.
   CA signed. `requestCert` and `rejectUnauthorized` together, TLS 1.3 only.
 - `identity.ts` — the channel id, read from the client certificate's subject
   (`CN=channel:<id>`) and from nowhere else. No header and no request body is
-  consulted, because the process on the other end runs the model.
+  consulted, because the process on the other end runs the model. It also reads
+  the certificate's SHA-256 digest, which the identity gate matches against the
+  fingerprints the channel's sheet pins (#79) — the sheet's one say in *which
+  key* may speak for a channel, and no say at all in which channel a key speaks
+  for.
 - `team-sheet-store.ts` — resolves `<PROXY_CHANNELS_ROOT>/<channel>/channel.toml`,
   watched and re-read on change. An invalid sheet is rejected loudly and the
   last valid one stays in force.
@@ -546,3 +550,11 @@ container mounts only its slice and the CA key is mounted into neither. The
 tests run that same script rather than carrying fixtures, so no private key is
 committed here and the documented operator path is exercised on every CI run.
 It needs `openssl` on PATH.
+
+Client certificates are valid for a year and the CA for ten, and re-running the
+script mints only what is missing — a re-mint of a certificate already in
+service would stop the fingerprint its team sheet pins from matching. Replacing
+one is `--rotate <channel>` (mints beside what is running, prints the new
+fingerprint) followed by `--promote <channel>` (swaps it in, and refuses until
+the sheet pins the replacement). The overlap where the sheet pins both is what
+makes rotation gapless; see the self-hosting doc for the operator's version.

@@ -40,7 +40,8 @@ function secretOf(value: string): Secret {
 /** Parsed through the real schema, so no test asserts against a block a sheet could not hold. */
 function upstreamOf(block: Record<string, unknown>): HttpUpstream {
   const sheet = TeamSheetSchema.parse({
-    channel: { name: "engineering" },
+    // Pinned because every sheet must be (#79); nothing in the pool reads it.
+    channel: { name: "engineering", certificate_sha256: ["AB".repeat(32)] },
     mcp_server: [{ tool: [{ name: "list_prs" }], ...block }]
   });
   const parsed: McpServer | undefined = sheet.mcp_server[0];

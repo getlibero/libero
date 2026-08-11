@@ -21,8 +21,9 @@ Both services build as images from the compose file, so `docker compose up` star
 from a clean checkout.
 
 What is not finished: `@getlibero/cli` is a placeholder release, so the `init` command on this page
-is target UX rather than something you can run. Certificate rotation and revocation are manual. Do
-not run this against a workspace you care about.
+is target UX rather than something you can run. Certificate rotation and revocation are manual —
+possible without downtime, and driven by a shell script and an edit to a team sheet rather than by
+anything automated. Do not run this against a workspace you care about.
 :::
 
 ## The shape of a deployment
@@ -207,19 +208,94 @@ explicitly.
 ```bash
 sh scripts/dev-certs.sh                       # every channel under channels/
 sh scripts/dev-certs.sh --channels C024BE91L  # or name them
+sh scripts/dev-certs.sh --print-pins          # fingerprints and expiry dates
 ```
 
 Output lands in `deploy/certs`, gitignored and laid out by role: `ca.pem` at the root, the proxy's
 keypair under `proxy/`, the channel client certificates under `agent/`. The compose file mounts
 each container only its own slice, read-only — and the CA's private key into neither, because a
-process that can mint certificates can name itself any channel. Adding a channel means creating
-its directory and running the script again.
+process that can mint certificates can name itself any channel.
 
-**Certificates authenticate; team sheets authorize.** There is no revocation list. A certificate
-proves which channel is calling and nothing more — what that channel may do is resolved from its
-team sheet on every call, so removing a channel's sheet removes its permissions immediately, with
-a stale certificate left holding nothing. Rotate by re-running the script and restarting both
-services.
+**Re-running the script mints only what is missing**, so adding a channel leaves every other
+channel's certificate alone. Replacing one that already exists is `--rotate` (below); `--force`
+does it in place, and `--force-ca` replaces the CA and with it every certificate in the deployment.
+
+Client certificates are valid for a year; the CA and the proxy's server certificate for ten. The
+script warns about any client certificate within thirty days of expiring, and `--print-pins` shows
+every expiry date at once.
+
+### Pinning a channel's certificate
+
+Every team sheet names the certificates allowed to speak for its channel:
+
+```toml
+[channel]
+name = "engineering"
+certificate_sha256 = ["B7:C6:75:05:…:38"]
+```
+
+**Certificates authenticate; team sheets authorize** — and this is the one narrow say the sheet has
+in the first of those. A certificate proves which *channel* is calling; the pin decides which *key*
+may do the calling on its behalf. Without it a leaked private key could not be revoked without
+retiring the channel, because a replacement certificate carries the same `CN=channel:<id>` as the
+key it replaces and nothing could tell them apart.
+
+There is still no revocation list and no CRL. Removing a channel's sheet removes its permissions
+immediately and leaves a stale certificate holding nothing — that is how a channel is *retired*.
+Dropping one fingerprint from a sheet revokes one *key* while the channel keeps working.
+
+Setting a channel up, in order: create `channels/<CHANNEL_ID>/channel.toml`, run the script, and
+paste the fingerprint it prints into the sheet. Between the first and last step the sheet does not
+parse and every call is refused, which is the correct state for a channel that has no key material
+yet. Confirm with:
+
+```bash
+# From the compose network — the proxy publishes no port to the host.
+docker compose run --rm --entrypoint curl proxy \
+  --cacert /etc/libero/certs/ca.pem \
+  --cert /path/to/client-C024BE91L.pem --key /path/to/client-C024BE91L.key \
+  https://proxy:8443/v1/whoami            # -> {"channel":"C024BE91L"}
+```
+
+`/v1/whoami` is the probe for all of this: 200 with the channel id means the certificate
+authenticated and its fingerprint is pinned, and 401 means one of the two is not true. The proxy's
+log says which — `identity_rejected` with `reason: "certificate_not_pinned"` carries the
+fingerprint that arrived and how many the sheet listed.
+
+The script prints the fingerprint and never writes it into a sheet. Minting key material and
+authorizing it are two acts, by two authorities, and a script that did both would give back exactly
+the property pinning creates.
+
+### Rotating and revoking a certificate
+
+Rotation is four steps and has no gap: at every point at least one valid certificate is pinned, and
+neither service is restarted.
+
+```bash
+sh scripts/dev-certs.sh --rotate C024BE91L    # 1. mint a replacement, print its fingerprint
+                                              # 2. add that fingerprint to the channel's sheet,
+                                              #    beside the one already there
+sh scripts/dev-certs.sh --promote C024BE91L   # 3. swap the material into place
+                                              # 4. remove the old fingerprint from the sheet
+```
+
+Step 1 changes nothing in service — the replacement is staged beside what is running. Step 3
+refuses to run until step 2 has landed, because promoting first would take the channel offline with
+nothing on screen to say why. After step 3 the agent presents the new certificate on its next
+request without a restart, and the proxy accepts it because the sheet still pins both.
+
+**Revoking a leaked key** is step 4 on its own: delete that fingerprint, and the next call on that
+certificate is refused. Two things are worth knowing about the edit:
+
+- **It is not done until the sheet parses.** A sheet that fails to validate leaves the previous
+  version in force — including the fingerprint you were trying to remove. The proxy logs
+  `team_sheet_invalid` with `effect: "previous_sheet_retained"` when that happens, and
+  `team_sheet_reloaded` when the edit lands. Watch for the second one.
+- **The emergency path is deleting the sheet.** That takes effect immediately, is exempt from the
+  retain rule above, and takes the channel offline until you restore it. Use it when a key is known
+  to be compromised and the sheet edit is not going smoothly.
+
+Either way, `curl … /v1/whoami` with the revoked certificate answering 401 is the confirmation.
 
 The CA is yours: it never leaves the host, it signs only these two roles, and it is not a public
 trust anchor. The keys it produces are secrets. Keep `deploy/certs` out of the git repo holding

@@ -89,7 +89,7 @@ export function createProxyApprovalsClient(
         throw cause;
       }
 
-      if (response.status !== 200) throw proxyErrorFrom(response.body, "the decision relay failed");
+      if (response.status !== 200) throw proxyErrorFrom(response.body, "the decision relay failed", response.status);
 
       const parsed = ApprovalDecisionResponse.safeParse(response.body);
       if (!parsed.success) {

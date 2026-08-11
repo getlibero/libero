@@ -219,7 +219,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
       ...(signal !== undefined ? { signal } : {})
     });
 
-    if (response.status !== 200) throw proxyErrorFrom(response.body, "the tool call failed");
+    if (response.status !== 200) throw proxyErrorFrom(response.body, "the tool call failed", response.status);
 
     const parsed = ToolCallResponse.safeParse(response.body);
     if (!parsed.success) {
@@ -249,7 +249,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
         ...(signal !== undefined ? { signal } : {})
       });
 
-      if (response.status !== 200) throw proxyErrorFrom(response.body, "the tool listing failed");
+      if (response.status !== 200) throw proxyErrorFrom(response.body, "the tool listing failed", response.status);
 
       // Parsed, not trusted. The proxy is ours, and the reason to parse anyway
       // is that "ours" is an assumption about the network and this is the

@@ -179,17 +179,22 @@ function describeAmbiguousServer(): void {
   it(
     "a tool two blocks disagree about is listed, then refused, and never dialled",
     async () => {
-      const { agent, upstream, model, auditDb, channelsRoot } = rigOf(rig);
+      const { agent, upstream, model, auditDb, channelsRoot, certs } = rigOf(rig);
 
       // Two blocks with one name and two urls. Written by hand because
       // `SheetSpec` emits a single server block — which is the right default
       // and the wrong thing for the one case that is about disagreement.
+      //
+      // Written by hand also means writing the pin by hand: a sheet that names
+      // no certificate does not parse, and this channel's requests arrive on
+      // the one the rig minted for it (#79).
       channelsRoot.writeRaw(
         CHANNEL,
         [
           `[channel]`,
           `name = "e2e"`,
           `description = "End-to-end suite."`,
+          `certificate_sha256 = ["${certs.fingerprint(CHANNEL)}"]`,
           ``,
           `[llm]`,
           `max_task_seconds = 30`,

@@ -193,6 +193,15 @@ a mismatch surfaces as `no_team_sheet` rather than as anything naming the real
 cause. `CHANNEL_ID_PATTERN` in `@getlibero/schema` is the only constraint on the
 id; `dev-certs.sh --channels` adds none.
 
+**And every sheet the harness writes pins the certificate the rig minted for
+that channel** (#79), so a case that says nothing about pinning gets the identity
+it would have had before the field existed. A case that is about pinning sets
+`SheetSpec.pins` — `certs.fingerprint(label)` is the digest of any minted
+certificate, and `certs.rotate` / `certs.promote` drive the real script.
+`src/certificate-pinning.test.ts` is the worked example: a second certificate
+minted through `rawCns` with the *same* CN is the leaked key, and pinning one of
+the two is what tells them apart.
+
 **The model-facing tool name is the bare one.** A sheet naming one server
 publishes `list_prs`, not `github__list_prs` — the flat name is chosen from the
 server and tool alone, and only collides when two servers offer the same tool.

@@ -146,3 +146,40 @@ export const ChannelId = z
   .regex(CHANNEL_ID_PATTERN, "must be a safe path segment: no separator, no leading dot");
 
 export type ChannelId = z.infer<typeof ChannelId>;
+
+/**
+ * The SHA-256 digest of a client certificate, as a team sheet pins one.
+ *
+ * A certificate proves which channel is calling; this is how the sheet says
+ * *which key* may speak for that channel. The reason it is a digest of the whole
+ * certificate rather than a serial or a public key:
+ *
+ * - A **serial** identifies a certificate only as far as the CA's counter is
+ *   unique, and `scripts/dev-certs.sh` keeps no ledger an operator could audit
+ *   — two certificates carrying one serial would pin as one. A digest binds the
+ *   whole certificate, including its public key, and needs no CA state to check.
+ * - An **SPKI** pin would survive a re-mint that reused the key, which is the
+ *   usual reason to prefer it and exactly the wrong property here: a rotation
+ *   that keeps the private key is not a rotation.
+ *
+ * **This is not a credential and not a digest of one.** A certificate is a
+ * public document; anyone holding it can compute this value, and holding this
+ * value gets you nothing. It is safe in a sheet, in a log line, and in an error.
+ *
+ * Both written forms parse: the colon-separated pairs `openssl` and Node's
+ * `fingerprint256` both print, and bare hex for anyone who stripped them. Case
+ * is free. `normalizeCertificateSha256` is what makes two spellings of one
+ * digest compare equal, and both ends must fold through it rather than
+ * comparing strings.
+ */
+export const CertificateSha256 = z
+  .string()
+  .regex(
+    /^(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{64}$/,
+    "must be a SHA-256 certificate fingerprint: 32 hex pairs, colon-separated or bare"
+  );
+
+/** The one form two spellings of a fingerprint are compared in. */
+export function normalizeCertificateSha256(value: string): string {
+  return value.replaceAll(":", "").toUpperCase();
+}

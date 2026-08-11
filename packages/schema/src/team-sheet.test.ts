@@ -7,11 +7,33 @@ import { TeamSheet } from "./team-sheet.js";
 // in sync with this schema. This test is the mechanical form of that rule.
 const examplePath = new URL("../../../channels/example/channel.toml", import.meta.url);
 
+/** A syntactically valid fingerprint. It matches no certificate anyone holds. */
+const PIN = "AB".repeat(32);
+
+/**
+ * The smallest `[channel]` block that parses, in one place.
+ *
+ * Every case below whose subject is some *other* section builds its channel
+ * through this, so the next required field is one line here rather than a
+ * change to twenty-odd literals — which is what #79 cost when it added the
+ * first one.
+ */
+const minimalChannel = (extra: Record<string, unknown> = {}) => ({
+  name: "ops",
+  certificate_sha256: [PIN],
+  ...extra,
+});
+
 describe("the example team sheet", () => {
   const sheet = TeamSheet.parse(parse(readFileSync(examplePath, "utf8")));
 
   it("validates against the schema", () => {
     expect(sheet.channel.name).toBe("engineering");
+    // The starter has to carry a pin, because the field is required — and the
+    // one it carries has to be a placeholder no certificate could match, since
+    // a real fingerprint copied out of a starter sheet would be a channel
+    // authorizing a key its operator never minted.
+    expect(sheet.channel.certificate_sha256).toEqual([`00:`.repeat(31) + "00"]);
     expect(sheet.budget).toEqual({
       daily_tokens: 2_000_000,
       daily_tool_calls: 400,
@@ -98,8 +120,53 @@ describe("the example sheet's built-in block", () => {
   });
 });
 
+// #79. The field that makes a leaked key revocable without retiring the
+// channel, so what is asserted here is mostly what a sheet CANNOT say.
+describe("the channel's pinned certificates", () => {
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("is required, so a sheet naming no certificate does not parse", () => {
+    expect(paths({ channel: { name: "ops" } })).toEqual(["channel.certificate_sha256: invalid_type"]);
+  });
+
+  // The load-bearing one. An empty list is not "this channel pins nothing" — it
+  // is unsayable, so no code downstream can ever read it as "any certificate
+  // this CA signed", which is the behaviour the field exists to end.
+  it("cannot be empty", () => {
+    expect(paths({ channel: { name: "ops", certificate_sha256: [] } })).toEqual([
+      "channel.certificate_sha256: too_small",
+    ]);
+  });
+
+  it("holds two, which is what a rotation in progress looks like", () => {
+    const sheet = TeamSheet.parse({
+      channel: minimalChannel({ certificate_sha256: [PIN, "CD".repeat(32)] }),
+    });
+    expect(sheet.channel.certificate_sha256).toHaveLength(2);
+  });
+
+  // Not a limit on rotations: a rotation needs two. Five is an operator who
+  // stopped dropping the old fingerprint, which is the state this field exists
+  // to keep a deployment out of.
+  it("refuses a list long enough to be a pile of unretired keys", () => {
+    expect(
+      paths({ channel: minimalChannel({ certificate_sha256: Array(5).fill(PIN) }) }),
+    ).toEqual(["channel.certificate_sha256: too_big"]);
+  });
+
+  it("names the entry that is not a fingerprint", () => {
+    expect(
+      paths({ channel: minimalChannel({ certificate_sha256: [PIN, "not-a-digest"] }) }),
+    ).toEqual(["channel.certificate_sha256.1: invalid_format"]);
+  });
+});
+
 describe("the built-in block", () => {
-  const builtinSheet = (builtin: unknown) => ({ channel: { name: "ops" }, builtin });
+  const builtinSheet = (builtin: unknown) => ({ channel: minimalChannel(), builtin });
 
   const paths = (data: unknown) => {
     const result = TeamSheet.safeParse(data);
@@ -108,7 +175,7 @@ describe("the built-in block", () => {
   };
 
   it("defaults to empty, so a sheet that says nothing grants nothing", () => {
-    expect(TeamSheet.parse({ channel: { name: "ops" } }).builtin).toEqual([]);
+    expect(TeamSheet.parse({ channel: minimalChannel() }).builtin).toEqual([]);
   });
 
   it("accepts an entry with nothing but a name", () => {
@@ -159,7 +226,7 @@ describe("the reserved built-in server name", () => {
   it("rejects an mcp_server that claims it, naming the block and the field", () => {
     expect(
       paths({
-        channel: { name: "ops" },
+        channel: minimalChannel(),
         mcp_server: [{ name: "libero", transport: "http", url: "https://evil.example.com/mcp" }],
       })
     ).toEqual(["mcp_server.0.name: custom"]);
@@ -168,7 +235,7 @@ describe("the reserved built-in server name", () => {
   it("names the offending block when it is not the first", () => {
     expect(
       paths({
-        channel: { name: "ops" },
+        channel: minimalChannel(),
         mcp_server: [
           { name: "github", transport: "http", url: "https://api.githubcopilot.com/mcp/" },
           { name: "libero", transport: "stdio" },
@@ -180,7 +247,7 @@ describe("the reserved built-in server name", () => {
   it("leaves every other server name alone", () => {
     expect(
       paths({
-        channel: { name: "ops" },
+        channel: minimalChannel(),
         mcp_server: [{ name: "libero_tools", transport: "stdio" }],
       })
     ).toBeNull();
@@ -191,7 +258,7 @@ describe("defaults", () => {
   // A sheet with no [llm] section must still yield every cap: the composition
   // root maps sheet to caps field by field and has no defaults of its own.
   it("yields every cap and bound when the llm section is absent", () => {
-    const sheet = TeamSheet.parse({ channel: { name: "ops" } });
+    const sheet = TeamSheet.parse({ channel: minimalChannel() });
     expect(sheet.llm).toEqual({
       max_tool_calls_per_task: 25,
       max_task_seconds: 300,
@@ -211,7 +278,7 @@ describe("defaults", () => {
   // `positive()`.
   it("allows a channel to ask for no history at all", () => {
     const sheet = TeamSheet.parse({
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       llm: { max_history_messages: 0, max_history_chars: 0 },
     });
     expect(sheet.llm.max_history_messages).toBe(0);
@@ -219,13 +286,13 @@ describe("defaults", () => {
   });
 
   it("fills each cap the section omits", () => {
-    const sheet = TeamSheet.parse({ channel: { name: "ops" }, llm: { max_task_seconds: 60 } });
+    const sheet = TeamSheet.parse({ channel: minimalChannel(), llm: { max_task_seconds: 60 } });
     expect(sheet.llm.max_task_seconds).toBe(60);
     expect(sheet.llm.max_tokens_per_task).toBe(200_000);
   });
 
   it("fills every optional section from a minimal sheet", () => {
-    const sheet = TeamSheet.parse({ channel: { name: "ops" } });
+    const sheet = TeamSheet.parse({ channel: minimalChannel() });
     expect(sheet.budget).toEqual({
       daily_tokens: 1_000_000,
       daily_tool_calls: 200,
@@ -242,7 +309,7 @@ describe("defaults", () => {
   // zero is a deliberate setting meaning a cache read costs nothing here.
   it("accepts a fractional or zero cache weight and rejects a negative one", () => {
     const weighted = (budget: Record<string, unknown>) =>
-      TeamSheet.safeParse({ channel: { name: "ops" }, budget });
+      TeamSheet.safeParse({ channel: minimalChannel(), budget });
 
     expect(weighted({ cache_read_weight: 0 }).success).toBe(true);
     expect(weighted({ cache_read_weight: 0.25, cache_write_weight: 2 }).success).toBe(true);
@@ -255,7 +322,7 @@ describe("defaults", () => {
   // sheet can come is a fraction at or past 1, and that is refused by name.
   it("refuses a soft threshold at or past the hard limit, and takes 0 as off", () => {
     const at = (warn_at: unknown) =>
-      TeamSheet.safeParse({ channel: { name: "ops" }, budget: { warn_at } });
+      TeamSheet.safeParse({ channel: minimalChannel(), budget: { warn_at } });
 
     expect(at(0).success).toBe(true);
     expect(at(0.5).success).toBe(true);
@@ -277,7 +344,7 @@ describe("defaults", () => {
 // would meet the letter of "invalid sheets are rejected" and none of its point.
 describe("an mcp_server's transport decides its url", () => {
   const serverSheet = (server: Record<string, unknown>) => ({
-    channel: { name: "ops" },
+    channel: minimalChannel(),
     mcp_server: [server],
   });
 
@@ -313,20 +380,20 @@ describe("an mcp_server's transport decides its url", () => {
 describe("rejections", () => {
   it("rejects an unknown transport", () => {
     const result = TeamSheet.safeParse({
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       mcp_server: [{ name: "github", transport: "websocket" }],
     });
     expect(result.success).toBe(false);
   });
 
   it("rejects a missing channel name", () => {
-    expect(TeamSheet.safeParse({ channel: {} }).success).toBe(false);
-    expect(TeamSheet.safeParse({ channel: { name: "" } }).success).toBe(false);
+    expect(TeamSheet.safeParse({ channel: { certificate_sha256: [PIN] } }).success).toBe(false);
+    expect(TeamSheet.safeParse({ channel: minimalChannel({ name: "" }) }).success).toBe(false);
   });
 
   it("rejects a non-positive budget", () => {
     const result = TeamSheet.safeParse({
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       budget: { daily_tokens: 0 },
     });
     expect(result.success).toBe(false);
@@ -341,7 +408,7 @@ describe("rejections", () => {
       { max_tokens_per_task: 0 },
       { max_tokens_per_turn: -8192 },
     ]) {
-      expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
+      expect(TeamSheet.safeParse({ channel: minimalChannel(), llm }).success).toBe(false);
     }
   });
 
@@ -356,7 +423,7 @@ describe("rejections", () => {
       { max_history_messages: 201 },
       { max_history_messages: 2.5 },
     ]) {
-      expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
+      expect(TeamSheet.safeParse({ channel: minimalChannel(), llm }).success).toBe(false);
     }
   });
 
@@ -367,7 +434,7 @@ describe("rejections", () => {
   // cannot keep, and saying so here is what stops it being advertised.
   it("accepts a zero follow-up window and rejects one longer than a session lives", () => {
     const off = TeamSheet.parse({
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       llm: { follow_up_window_seconds: 0 },
     });
     expect(off.llm.follow_up_window_seconds).toBe(0);
@@ -377,7 +444,7 @@ describe("rejections", () => {
       { follow_up_window_seconds: 1801 },
       { follow_up_window_seconds: 90.5 },
     ]) {
-      expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm }).success).toBe(false);
+      expect(TeamSheet.safeParse({ channel: minimalChannel(), llm }).success).toBe(false);
     }
   });
 
@@ -391,7 +458,7 @@ describe("rejections", () => {
     ["negative", -1],
     ["fractional", 1.5],
   ])("rejects a %s channel result bound", (_label, max_result_chars) => {
-    expect(TeamSheet.safeParse({ channel: { name: "ops" }, llm: { max_result_chars } }).success).toBe(false);
+    expect(TeamSheet.safeParse({ channel: minimalChannel(), llm: { max_result_chars } }).success).toBe(false);
   });
 
   // The per-tool override takes the same shape as the channel's, and is checked
@@ -403,7 +470,7 @@ describe("rejections", () => {
     ["fractional", 1.5],
   ])("rejects a %s per-tool result bound", (_label, max_result_chars) => {
     const sheet = {
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       mcp_server: [
         { name: "github", transport: "http", url: "http://x/mcp", tool: [{ name: "list_prs", max_result_chars }] },
       ],
@@ -413,7 +480,7 @@ describe("rejections", () => {
 
   it("leaves the per-tool result bound absent when the entry names none", () => {
     const sheet = TeamSheet.parse({
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       mcp_server: [{ name: "github", transport: "http", url: "http://x/mcp", tool: [{ name: "list_prs" }] }],
     });
     expect(sheet.mcp_server[0]?.tool[0]?.max_result_chars).toBeUndefined();
@@ -421,7 +488,7 @@ describe("rejections", () => {
 
   it("rejects a fractional per-task cap", () => {
     const result = TeamSheet.safeParse({
-      channel: { name: "ops" },
+      channel: minimalChannel(),
       llm: { max_task_seconds: 1.5 },
     });
     expect(result.success).toBe(false);

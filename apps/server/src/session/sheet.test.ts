@@ -20,9 +20,17 @@ import {
 const MODEL = "process-wide-model";
 const CHANNEL = "C024BE91L";
 
+// Every sheet has to pin at least one client certificate since #79. This
+// resolver reads none of that — it is the advisory agent-side reader, and what
+// it wants out of a sheet is the model and the caps — but a sheet without the
+// line does not parse, and a fixture that did not parse would be testing the
+// fallback path in every case below.
+const PIN = `certificate_sha256 = ["${"AB".repeat(32)}"]`;
+
 const VALID = `
 [channel]
 name = "engineering"
+${PIN}
 
 [llm]
 model                   = "sheet-model"
@@ -38,11 +46,13 @@ follow_up_window_seconds = 120
 const NO_LLM_BLOCK = `
 [channel]
 name = "engineering"
+${PIN}
 `;
 
 const NO_MODEL = `
 [channel]
 name = "engineering"
+${PIN}
 
 [llm]
 max_task_seconds = 45
@@ -56,6 +66,7 @@ name = "engineering"
 const SCHEMA_INVALID = `
 [channel]
 name = "engineering"
+${PIN}
 
 [llm]
 max_task_seconds = 0
@@ -109,7 +120,7 @@ describe("settingsFrom", () => {
     // `0` is a channel turning follow-ups off, and a mapping that treated it as
     // "unset" would quietly ignore the only way to say so.
     const off = settingsFrom(
-      sheetOf(`[channel]\nname = "ops"\n\n[llm]\nfollow_up_window_seconds = 0\n`),
+      sheetOf(`[channel]\nname = "ops"\n${PIN}\n\n[llm]\nfollow_up_window_seconds = 0\n`),
       MODEL
     );
 

@@ -4,7 +4,7 @@
 
 import type { TLSSocket } from "node:tls";
 import { describe, expect, it } from "vitest";
-import { channelFromCommonName, resolveChannel } from "./identity.js";
+import { channelFromCommonName, matchesPin, resolveChannel } from "./identity.js";
 
 describe("channelFromCommonName", () => {
   it("resolves a channel principal", () => {
@@ -83,10 +83,25 @@ describe("resolveChannel", () => {
     return { getPeerCertificate: () => peer } as unknown as TLSSocket;
   }
 
-  it("resolves the channel from the peer certificate's subject CN", () => {
-    expect(resolveChannel(socketWithPeer({ subject: { CN: "channel:C024BE91L" } }))).toEqual({
-      ok: true,
-      channel: "C024BE91L"
+  const FINGERPRINT = "AB".repeat(32).replace(/(.{2})(?=.)/g, "$1:");
+
+  it("resolves the channel and the presented fingerprint from the peer certificate", () => {
+    expect(
+      resolveChannel(
+        socketWithPeer({ subject: { CN: "channel:C024BE91L" }, fingerprint256: FINGERPRINT })
+      )
+    ).toEqual({ ok: true, channel: "C024BE91L", fingerprint: FINGERPRINT });
+  });
+
+  // The digest is what the pin check compares, so resolving an identity without
+  // one would be resolving a request that skips the check. Node cannot produce
+  // this with a verified certificate in hand; it is refused rather than
+  // defaulted for the reason the empty-certificate case above is checked.
+  it("refuses a certificate it can read a CN from but no fingerprint", () => {
+    expect(resolveChannel(socketWithPeer({ subject: { CN: "channel:C024BE91L" } }))).toMatchObject({
+      ok: false,
+      reason: "no_certificate_fingerprint",
+      commonName: "channel:C024BE91L"
     });
   });
 
@@ -104,5 +119,45 @@ describe("resolveChannel", () => {
     expect(
       resolveChannel(socketWithPeer({ subject: { CN: ["channel:C024BE91L", "channel:C7ZZZ9999"] } }))
     ).toMatchObject({ ok: false, reason: "ambiguous_common_name" });
+  });
+});
+
+// #79. The certificate says which channel; this says which key may say it.
+describe("matchesPin", () => {
+  const a = "3A:79:E2:94:17:53:18:E7:7A:78:F3:44:38:42:A7:3D:F7:8D:05:E6:E9:FD:E0:BD:3B:B8:52:13:DA:68:16:B9";
+  const b = "FE:BB:80:F9:EC:20:F1:9A:C4:96:77:8C:6D:C6:19:B3:19:F0:BF:77:3A:51:91:D5:05:69:6B:0A:22:16:80:63";
+  const bare = (fp: string) => fp.replaceAll(":", "");
+
+  it("accepts the certificate the sheet pins", () => {
+    expect(matchesPin(a, [a])).toBe(true);
+  });
+
+  // The whole point of the list: during a rotation both are live, so neither
+  // step of a rotation is a moment when the channel cannot call.
+  it("accepts either of two, which is what a rotation in progress looks like", () => {
+    expect(matchesPin(a, [a, b])).toBe(true);
+    expect(matchesPin(b, [a, b])).toBe(true);
+  });
+
+  // The leak, modelled: a second certificate for the same channel, minted from
+  // the same CA, differing only in its key. The CN cannot tell them apart.
+  it("refuses a certificate the sheet does not pin", () => {
+    expect(matchesPin(b, [a])).toBe(false);
+  });
+
+  // An operator who stripped the colons out is not making a different claim, and
+  // a channel offline over punctuation would be a failure with nothing on screen
+  // to explain it.
+  it("reads both written forms and either case as one value", () => {
+    for (const pin of [a, bare(a), a.toLowerCase(), bare(a).toLowerCase()]) {
+      expect(matchesPin(a, [pin])).toBe(true);
+    }
+  });
+
+  // Guarding a state the schema makes unsayable: `certificate_sha256` is
+  // required and `min(1)`. If that ever stopped being true, an empty list must
+  // mean "nothing may speak for this channel" and never "anything may".
+  it("refuses everything when the list is empty", () => {
+    expect(matchesPin(a, [])).toBe(false);
   });
 });

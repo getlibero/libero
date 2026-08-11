@@ -10,7 +10,7 @@
 // only worth asserting against the real handshake.
 
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { X509Certificate, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:https";
 import type { Server } from "node:https";
@@ -223,9 +223,32 @@ function recordingDispatcher(): ToolDispatcher & { seen: ResolvedToolCall[] } {
   };
 }
 
+/** The SHA-256 digest of a minted client certificate, as a sheet pins one. */
+function pinOf(dir: string, label: string): string {
+  return new X509Certificate(readFileSync(join(dir, "agent", `client-${label}.pem`))).fingerprint256;
+}
+
+/**
+ * Every sheet this suite writes pins the certificate minted for its own
+ * channel (#79).
+ *
+ * Injected here rather than written into each fixture. None of the cases below
+ * is about pinning — the ones that are write their own `certificate_sha256`
+ * line, which this leaves alone — and the identity gate answers 401 to a
+ * request whose sheet does not name the certificate it arrived on, so without
+ * this every case in the file would be testing that instead of itself.
+ */
+function pinned(channel: string, toml: string): string {
+  if (toml.includes("certificate_sha256")) return toml;
+  return toml.replace(
+    "[channel]\n",
+    `[channel]\ncertificate_sha256 = ["${pinOf(certs, channel)}"]\n`
+  );
+}
+
 function writeSheet(channel: string, toml: string): void {
   mkdirSync(join(channelsRoot, channel), { recursive: true });
-  writeFileSync(join(channelsRoot, channel, SHEET_FILENAME), toml);
+  writeFileSync(join(channelsRoot, channel, SHEET_FILENAME), pinned(channel, toml));
 }
 
 /** The sheet the shared server serves for CHANNEL, restored before each test. */
@@ -266,7 +289,14 @@ beforeAll(() => {
     "no-prefix=agent",
     // And one whose channel id would escape the per-channel directory.
     "--raw-cn",
-    "traversal=channel:../../etc"
+    "traversal=channel:../../etc",
+    // The leak #79 is about, modelled exactly: a second certificate for a
+    // channel that is still in use, signed by the same CA, carrying the same
+    // subject, differing only in the private key behind it. Nothing about the
+    // CN can tell it from the real one — the sheet's pin is the whole
+    // difference.
+    "--raw-cn",
+    `leaked=channel:${CHANNEL}`
   ]);
   mint(foreignCerts, ["--channels", CHANNEL]);
 
@@ -416,6 +446,141 @@ describe("channel identity", () => {
       event: "identity_rejected",
       reason: "not_a_channel_principal",
       commonName: "agent"
+    });
+  });
+});
+
+// #79. A certificate proves which channel is calling; the sheet says which key
+// is allowed to say it. What these cases are about is the leak the CN alone
+// cannot answer: `client-leaked.pem` carries `CN=channel:<CHANNEL>` exactly as
+// the real one does and was signed by the same CA, so every gate before this
+// one lets it through.
+describe("certificate pinning", () => {
+  const real = () => clientCert(certs, CHANNEL);
+  const leaked = () => clientCert(certs, "leaked");
+
+  /** A sheet for CHANNEL pinning exactly the certificates named. */
+  function pinning(...labels: string[]): string {
+    const pins = labels.map(label => `"${pinOf(certs, label)}"`).join(", ");
+    return `${SHEET.replace("[channel]\n", `[channel]\ncertificate_sha256 = [${pins}]\n`)}`;
+  }
+
+  // The positive control. Every assertion below is "the leaked certificate got
+  // nothing", and each of them passes just as well against a proxy that is
+  // refusing everyone — so first, the real certificate works.
+  it("serves the certificate the sheet pins", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL));
+    expect(await call("/v1/whoami", real())).toEqual({ status: 200, body: { channel: CHANNEL } });
+  });
+
+  // The acceptance criterion, in one test: the leaked key is dead and the
+  // channel is not. No sheet was deleted, so legitimate use never stopped.
+  it("refuses a certificate the sheet does not pin, without taking the channel offline", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL));
+
+    const refused = await call("/v1/whoami", leaked());
+    expect(refused.status).toBe(401);
+    expect(ProxyError.parse(refused.body).error.code).toBe("unauthenticated");
+
+    expect(await call("/v1/whoami", real())).toEqual({ status: 200, body: { channel: CHANNEL } });
+  });
+
+  // The reason the check is in the identity gate rather than in the tool-call
+  // handler. A key that could still enumerate the channel's tools, read its
+  // spend, or answer its held calls would be revoked in name only.
+  it("refuses it on every route on the listener", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL));
+
+    const responses = await Promise.all([
+      call("/health", leaked()),
+      call("/v1/whoami", leaked()),
+      call("/v1/tools", leaked()),
+      call("/v1/tools/call", leaked(), "POST", port, JSON.stringify(listPrs("pin-1"))),
+      call(
+        "/v1/spend",
+        leaked(),
+        "POST",
+        port,
+        JSON.stringify({
+          turn: "9f2a1b6c-4d3e-4f5a-8b7c-0d1e2f3a4b5c",
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }
+        })
+      ),
+      call("/v1/approvals", leaked(), "POST", port, JSON.stringify({ ticket: "t", decision: "approve" })),
+      // Not even which paths exist: the pin check runs ahead of the route table.
+      call("/v1/nope", leaked())
+    ]);
+    expect(responses.map(r => r.status)).toEqual([401, 401, 401, 401, 401, 401, 401]);
+  });
+
+  it("leaves no audit row and reaches no upstream", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL));
+    const before = lastAuditId();
+
+    await call("/v1/tools/call", leaked(), "POST", port, JSON.stringify(listPrs("pin-2")));
+
+    expect(lastAuditId()).toBe(before);
+    expect(dispatcher.seen).toEqual([]);
+  });
+
+  // The overlap that makes rotation gapless: mint the replacement, pin it
+  // beside the one in service, and there is no moment when neither works.
+  it("accepts either of two pinned certificates", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL, "leaked"));
+
+    expect((await call("/v1/whoami", real())).status).toBe(200);
+    expect((await call("/v1/whoami", leaked())).status).toBe(200);
+  });
+
+  // And the other end of the rotation. No restart of anything: the sheet store
+  // re-reads on change and the gate resolves per request, so dropping a
+  // fingerprint takes effect on the next call.
+  it("stops accepting a certificate the moment its pin is dropped", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL, "leaked"));
+    expect((await call("/v1/whoami", leaked())).status).toBe(200);
+
+    writeSheet(CHANNEL, pinning(CHANNEL));
+    expect((await call("/v1/whoami", leaked())).status).toBe(401);
+    expect((await call("/v1/whoami", real())).status).toBe(200);
+  });
+
+  it("keeps the fingerprint out of the response and puts it in the log", async () => {
+    writeSheet(CHANNEL, pinning(CHANNEL));
+    logLines = [];
+
+    const res = await call("/v1/whoami", leaked());
+    const presented = pinOf(certs, "leaked");
+    expect(JSON.stringify(res.body)).not.toContain(presented);
+    // As with every rejection from this gate, the body names no channel.
+    expect(ProxyError.parse(res.body).error.channel).toBeUndefined();
+
+    const rejection = logLines.find(line => line.includes("certificate_not_pinned"));
+    expect(JSON.parse(rejection ?? "{}")).toMatchObject({
+      event: "identity_rejected",
+      reason: "certificate_not_pinned",
+      channel: CHANNEL,
+      fingerprint: presented,
+      pins: 1
+    });
+  });
+
+  // The two sheet states the gate passes through untouched. Both already have
+  // answers further in that name what is wrong, and a bare 401 in their place
+  // would be a worse answer to a question about provisioning.
+  it("leaves a channel with no sheet, and one with a broken sheet, to their own refusals", async () => {
+    rmSync(join(channelsRoot, CHANNEL), { recursive: true, force: true });
+    const unprovisioned = await post("/v1/tools/call", listPrs("pin-3"));
+    expect(unprovisioned.status).toBe(200);
+    expect(ToolCallResponse.parse(unprovisioned.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "no_team_sheet" }
+    });
+
+    writeSheet(CHANNEL, "[channel\nname = broken\n");
+    const unreadable = await post("/v1/tools/call", listPrs("pin-4"));
+    expect(ToolCallResponse.parse(unreadable.body)).toMatchObject({
+      outcome: "refused",
+      refusal: { reason: "team_sheet_unreadable" }
     });
   });
 });
@@ -1515,12 +1680,26 @@ describe("reporting spend", () => {
     expect(reported.body).toEqual({ outcome: "recorded" });
   });
 
-  // And the mechanical form of the same claim: the sheet store is not touched.
-  it("resolves no team sheet at all", async () => {
+  // And the mechanical form of the same claim: this route adds no read of the
+  // sheet to the one every request already makes.
+  //
+  // It used to read "resolves no team sheet at all", and that assertion was
+  // describing the design correctly until #79 put a sheet-sourced check in the
+  // identity gate — which every route on this listener passes through, this one
+  // included. The claim worth keeping is the one that was always the point: the
+  // route itself asks the sheet nothing. So it is measured against a route that
+  // demonstrably reads no sheet of its own rather than against zero, which
+  // keeps it from pinning how many reads the gate happens to make.
+  it("adds no team-sheet read of its own", async () => {
     const resolve = vi.spyOn(sheets, "resolve");
     try {
+      await call("/v1/whoami", clientCert(certs, CHANNEL));
+      const gateOnly = resolve.mock.calls.length;
+      expect(gateOnly).toBeGreaterThan(0);
+
+      resolve.mockClear();
       await post("/v1/spend", { turn, usage });
-      expect(resolve).not.toHaveBeenCalled();
+      expect(resolve.mock.calls.length).toBe(gateOnly);
     } finally {
       resolve.mockRestore();
     }
