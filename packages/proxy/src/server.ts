@@ -83,7 +83,7 @@ import {
   type ToolDispatcher
 } from "./dispatch.js";
 import { decideFromState } from "./enforce.js";
-import { resolveChannel } from "./identity.js";
+import { matchesPin, resolveChannel } from "./identity.js";
 import { createListingRoute } from "./listing-route.js";
 import { createJsonLogger, type Logger } from "./log.js";
 import { createSpendRoute } from "./spend-route.js";
@@ -842,6 +842,65 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     ]
   ]);
 
+  /**
+   * The second half of the identity gate: is this the certificate the channel's
+   * team sheet says may speak for it (#79)?
+   *
+   * Answers `null` when the request may proceed, and a 401 otherwise.
+   *
+   * **Here rather than in `/v1/tools/call`.** A leaked key that could still
+   * enumerate a channel's tools, read its spend, or decide its held calls would
+   * be revoked in name only, so the check sits ahead of the route table and
+   * covers every route on this listener — `/health` included, which is the same
+   * answer that endpoint already gives to a certificate naming no channel.
+   *
+   * **Per request rather than at handshake.** The agent pools connections, so a
+   * decision taken once per socket would go on serving a revoked key until that
+   * socket closed. Resolving the sheet here gives revocation the freshness the
+   * sheet already promises for every other permission: the next request.
+   *
+   * A sheet that is absent or has never parsed is passed through untouched.
+   * There is nothing to check against, and those two states already have
+   * answers further in — `no_team_sheet` and `team_sheet_unreadable` — which are
+   * refusals naming what is wrong rather than a bare 401 that does not.
+   */
+  const pinRejection = async (
+    channel: string,
+    fingerprint: string,
+    requestId: string,
+    method: string,
+    pathname: string
+  ): Promise<RouteResponse | null> => {
+    const state = await options.sheets.resolve(channel);
+    if (state.status !== "active") return null;
+    const pins = state.sheet.channel.certificate_sha256;
+    if (matchesPin(fingerprint, pins)) return null;
+
+    logger.log("warn", {
+      event: "identity_rejected",
+      requestId,
+      channel,
+      method,
+      path: pathname,
+      reason: "certificate_not_pinned",
+      // The two facts a rotation gone wrong turns on: what arrived, and how many
+      // fingerprints the sheet in force listed when it was judged.
+      fingerprint,
+      pins: pins.length
+    });
+    return {
+      status: PROXY_ERROR_STATUS.unauthenticated,
+      // No channel on the body, as with every other rejection from this gate: a
+      // caller that failed to authenticate is told what it needs to fix and
+      // nothing about the deployment it failed to reach.
+      body: proxyError(
+        "unauthenticated",
+        "the client certificate is not one this channel's team sheet pins",
+        requestId
+      )
+    };
+  };
+
   const server = createServer(options.tls, (req: IncomingMessage, res: ServerResponse) => {
     const requestId = randomUUID();
     const method = req.method ?? "GET";
@@ -897,39 +956,53 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       return;
     }
 
-    const { channel } = identity;
-    const handlers = routes.get(pathname);
+    const { channel, fingerprint } = identity;
     const respond = (status: number, body: unknown): void => {
       logger.log("info", { event: "request", requestId, channel, method, path: pathname, status });
       sendJson(res, status, body);
     };
 
-    if (handlers === undefined) {
-      drain();
-      respond(
-        PROXY_ERROR_STATUS.not_found,
-        proxyError("not_found", `no route for ${pathname}`, requestId, channel)
-      );
-      return;
-    }
-
-    const route = handlers.get(method);
-    if (route === undefined) {
-      drain();
-      res.setHeader("allow", [...handlers.keys()].join(", "));
-      respond(
-        PROXY_ERROR_STATUS.method_not_allowed,
-        proxyError("method_not_allowed", `${method} is not allowed on ${pathname}`, requestId, channel)
-      );
-      return;
-    }
-
-    // Promise-aware dispatch: the tool-call endpoint reads a body and the
-    // sheet, and without this the symptom would be a pending Promise
-    // serialized as {} with status 200 — or a rejection escaping the process
-    // as an unhandled rejection.
+    // Promise-aware dispatch: the pin half of the identity gate resolves a team
+    // sheet, the tool-call endpoint reads a body and the sheet again, and
+    // without this the symptom would be a pending Promise serialized as {} with
+    // status 200 — or a rejection escaping the process as an unhandled
+    // rejection.
+    //
+    // Route lookup is inside the chain rather than before it because the pin
+    // check has to come first: a certificate the sheet does not pin learns
+    // which paths exist from nothing here, not even a 404.
     Promise.resolve()
       .then(async (): Promise<RouteResponse> => {
+        const rejected = await pinRejection(channel, fingerprint, requestId, method, pathname);
+        if (rejected !== null) {
+          drain();
+          return rejected;
+        }
+
+        const handlers = routes.get(pathname);
+        if (handlers === undefined) {
+          drain();
+          return {
+            status: PROXY_ERROR_STATUS.not_found,
+            body: proxyError("not_found", `no route for ${pathname}`, requestId, channel)
+          };
+        }
+
+        const route = handlers.get(method);
+        if (route === undefined) {
+          drain();
+          res.setHeader("allow", [...handlers.keys()].join(", "));
+          return {
+            status: PROXY_ERROR_STATUS.method_not_allowed,
+            body: proxyError(
+              "method_not_allowed",
+              `${method} is not allowed on ${pathname}`,
+              requestId,
+              channel
+            )
+          };
+        }
+
         if (route.body !== "json") {
           drain();
           return route.handler({ channel, requestId, body: undefined });

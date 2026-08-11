@@ -38,6 +38,28 @@ export interface LogFields {
   reason?: string;
   /** The certificate subject of a rejected connection. Never in a response. */
   commonName?: string;
+  /**
+   * The SHA-256 fingerprint of the client certificate a connection presented.
+   *
+   * This file's rule is that no field may hold a credential value **or a hash of
+   * one**, so this field owes the argument. A certificate is a public document:
+   * it is sent in the clear at the start of every handshake, anyone holding it
+   * can compute this value, and holding this value gets you nothing — the
+   * private key is what speaks, and it is not here and never was. The hazard the
+   * rule is about is a low-entropy secret whose digest is crackable; there is no
+   * secret behind this digest to crack.
+   *
+   * It is logged because it is the one fact an operator needs when a rotation
+   * goes wrong: the sheet pins fingerprints, the connection presented one, and
+   * "these two differ" is a sentence only this field can finish.
+   */
+  fingerprint?: string;
+  /**
+   * How many certificates the channel's sheet pinned when a connection was
+   * judged against them. A count, not the list — enough to answer "did my sheet
+   * edit land", which is what the line above will be read to answer.
+   */
+  pins?: number;
   host?: string;
   port?: number;
   /**

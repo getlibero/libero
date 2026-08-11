@@ -76,6 +76,17 @@ export interface SheetSpec {
    * obtained by writing nothing rather than by writing an exclusion.
    */
   readonly builtins?: readonly SheetTool[];
+  /**
+   * The certificates allowed to speak for this channel, as SHA-256 digests
+   * (#79).
+   *
+   * Defaulted by the rig to the one certificate it minted for this channel, so
+   * every case that is not about pinning writes nothing and gets a sheet that
+   * matches the certificate the agent will present. The case that *is* about
+   * pinning names its own — one certificate to revoke a second, or two at once
+   * to show a rotation with no gap.
+   */
+  readonly pins?: readonly string[];
 }
 
 export interface ChannelsRoot {
@@ -84,13 +95,37 @@ export interface ChannelsRoot {
   write(channelId: string, spec: SheetSpec): void;
   /** Writes verbatim text, for the cases that need a sheet the parser refuses. */
   writeRaw(channelId: string, toml: string): void;
-  /** Removes a channel's sheet — which is how a channel is revoked. */
+  /**
+   * Removes a channel's sheet — which is how a channel is *retired*. Revoking
+   * one leaked key without retiring the channel is `pins` above (#79).
+   */
   remove(channelId: string): void;
 }
 
-export function tempChannelsRoot(cleanup: Cleanup): ChannelsRoot {
+/**
+ * How a sheet gets its `certificate_sha256` when the case does not name one.
+ *
+ * The rig passes the digest of the certificate it minted for that channel, so
+ * the default sheet pins the default identity and no existing case has to say
+ * anything about pinning. A channel with no certificate minted for it — the
+ * "unprovisioned" fixtures — has no digest to pin, and gets a placeholder that
+ * matches nothing, which is the honest sheet for a channel that cannot call.
+ */
+export type DefaultPins = (channelId: string) => readonly string[];
+
+const UNMINTED = "00".repeat(32);
+
+export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): ChannelsRoot {
   const path = mkdtempSync(join(tmpdir(), "libero-e2e-channels-"));
   cleanup.add("channels", () => rmSync(path, { recursive: true, force: true }));
+
+  // An empty list does not parse — the schema makes "this channel pins nothing"
+  // unsayable on purpose — so a channel with no certificate minted for it gets
+  // a digest no certificate can have. Same effect, said in a sheet that parses.
+  const pinsFor = (channelId: string, spec: SheetSpec): readonly string[] => {
+    const pins = spec.pins ?? defaultPins(channelId);
+    return pins.length > 0 ? pins : [UNMINTED];
+  };
 
   const writeRaw = (channelId: string, toml: string): void => {
     const dir = join(path, channelId);
@@ -120,6 +155,7 @@ export function tempChannelsRoot(cleanup: Cleanup): ChannelsRoot {
           `[channel]`,
           `name = "e2e"`,
           `description = "End-to-end suite."`,
+          `certificate_sha256 = [${pinsFor(channelId, spec).map(pin => `"${pin}"`).join(", ")}]`,
           ``,
           `[llm]`,
           `max_task_seconds = ${spec.maxTaskSeconds ?? 30}`,

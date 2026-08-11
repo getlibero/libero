@@ -1,6 +1,6 @@
 import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
-import { CredentialName, ResourceName } from "./names.js";
+import { CertificateSha256, CredentialName, ResourceName } from "./names.js";
 import { z } from "zod";
 
 /**
@@ -141,6 +141,34 @@ export const TeamSheet = z.object({
   channel: z.object({
     name: z.string().min(1),
     description: z.string().default(""),
+    // Which client certificates may speak for this channel (#79).
+    //
+    // The certificate says *which channel* is calling; this says *which key* is
+    // allowed to say it. Without it a leaked private key could not be revoked
+    // without retiring the channel, because a re-mint carries the same
+    // `CN=channel:<id>` as the key it replaces and the proxy has nothing to tell
+    // them apart. Revocation is dropping a fingerprint from this list, which
+    // keeps revocation an edit to the sheet — the operator workflow the design
+    // already has — rather than a second surface beside it.
+    //
+    // **A list, because rotation needs an overlap.** Mint the replacement, add
+    // its fingerprint here so both are accepted, swap the material, then drop
+    // the old one. Each step is reversible and none of them is a gap in service.
+    //
+    // Required, and `min(1)`: a sheet naming no certificate must not parse. The
+    // hazard is not the empty list itself — a channel that pins nothing simply
+    // stops working — it is that "no pins" is one plausible refactor away from
+    // reading as "any CA-signed certificate for this CN", which is the behaviour
+    // this field exists to end. There is no value of this field that means that,
+    // so no code downstream has to be trusted not to invent one.
+    //
+    // `max(4)` is the operator who stopped dropping old fingerprints. Two is a
+    // rotation in progress; four is room for a mistake; ten is a list of keys
+    // nobody has retired, which is what this field exists to prevent.
+    //
+    // Nothing here is a secret, as nothing in the sheet is: a fingerprint is a
+    // digest of a public document, computable by anyone holding the certificate.
+    certificate_sha256: z.array(CertificateSha256).min(1).max(4),
   }),
   // prefault, not default: an absent section is parsed through the inner
   // schema so nested defaults resolve (zod 4's default() short-circuits).

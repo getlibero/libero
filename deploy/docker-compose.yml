@@ -98,7 +98,9 @@ services:
       # <PROXY_CHANNELS_ROOT>/<channel>/channel.toml on every call and refuses
       # anything the sheet does not permit, so for this service the directory is
       # the authorization source rather than shared state. Removing a channel's
-      # directory is how that channel is revoked.
+      # directory is how that channel is retired; dropping a fingerprint from
+      # its sheet's certificate_sha256 is how one leaked key is revoked while
+      # the channel goes on working.
       PROXY_CHANNELS_ROOT: /data/channels
       # Read, and required. The daily budget meter: per channel, per UTC day,
       # authoritative. SQLite writes -wal and -shm beside this file, so the

@@ -226,7 +226,15 @@ These are load-bearing, not stylistic:
   place that resolves one. No header, query parameter, or request body may ever
   become a channel id: the process on the other end runs the model, so anything
   the model can influence is not a boundary. Certificates authenticate; team
-  sheets authorize — revocation is removing a channel's sheet, not a CRL.
+  sheets authorize — and since #79 the sheet has one narrow say in the first of
+  those: `[channel] certificate_sha256` lists the fingerprints allowed to speak
+  for the channel, checked in the identity gate ahead of the route table. Still
+  not a CRL and still no second surface — revoking a leaked *key* is dropping a
+  fingerprint from the sheet, retiring a *channel* is removing the sheet. The
+  sheet cannot make a key speak for a different channel, because the CN is what
+  selects which sheet is consulted. Rotation is `--rotate`/`--promote` in
+  `scripts/dev-certs.sh` with two pins live across the overlap; the agent
+  re-reads a changed certificate per request, so neither service restarts.
 - **One SQLite file per channel is the isolation boundary** for anything holding
   channel *content* — messages, memory. No schema or query there should be able
   to join across channels. `packages/memory` is where that reading is built, and

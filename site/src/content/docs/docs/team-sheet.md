@@ -33,6 +33,21 @@ This is `channels/example/channel.toml` in the repository, kept in sync with the
 name        = "engineering"
 description = "Deploys, code review, incident response."
 
+# Which client certificates may speak for this channel. The certificate says
+# which channel is calling; this says which key is allowed to say it, so a
+# leaked key is revoked by dropping its fingerprint here rather than by
+# retiring the channel. Print the real value with:
+#
+#   sh scripts/dev-certs.sh --print-pins
+#
+# THE VALUE BELOW IS A PLACEHOLDER and matches no certificate. A channel
+# carrying it cannot authenticate at all — every call is answered 401 until it
+# is replaced. Two entries are a rotation in progress: add the new fingerprint,
+# swap the material, then drop the old one.
+certificate_sha256 = [
+  "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00",
+]
+
 # Hard caps on a single task, how much of the channel's conversation it starts
 # with, and how long a thread it has worked in goes on answering without a
 # mention. The proxy's daily meter below is the authoritative spend limit; the
@@ -177,6 +192,21 @@ schedule = "0 9 * * 1-5"
 
 Identity and a description. The description is part of the agent's context, so it is worth
 writing: it is how the model knows what kind of channel it is in.
+
+`certificate_sha256` is required, and it is the one field here that is about *authentication* rather
+than about what the channel may do. It lists the SHA-256 fingerprints of the client certificates
+allowed to speak for this channel; a request arriving on any other certificate is refused with a
+401 before it reaches a route, even though its subject names this channel and the local CA signed
+it. That is what makes a leaked private key revocable without retiring the channel — dropping a
+fingerprint revokes one key, where removing the whole sheet revokes the channel.
+
+At least one, at most four. Either written form parses — the colon-separated pairs `openssl` and
+the script print, or the same digest with the colons stripped — and case does not matter. Two at
+once is a rotation in progress; the whole procedure is
+[rotating and revoking a certificate](/docs/self-hosting#rotating-and-revoking-a-certificate).
+
+A fingerprint is not a secret. It is a digest of a certificate, which is a public document sent in
+the clear at the start of every handshake, and holding one gets you nothing.
 
 ### `[llm]`
 
@@ -463,6 +493,14 @@ was never there.
 
 A sheet added while the services are running is picked up on first use. Provisioning a channel does
 not need a restart.
+
+The retain rule is worth reading once more in the context of `certificate_sha256`, because it is the
+one field where "the previous version stays active" can mean "the key you were revoking is still
+accepted". An edit that removes a fingerprint has not taken effect until the sheet parses — watch
+for `team_sheet_reloaded` in the proxy's log, and treat `team_sheet_invalid` with
+`effect: "previous_sheet_retained"` as the revocation not having landed. When a key is known to be
+compromised and the edit is not going smoothly, delete the sheet: that is exempt from the retain
+rule, takes effect immediately, and takes the channel offline until you restore it.
 
 Because the sheets are files in your git repo, the review trail for "who allowed the agent to
 deploy" is your normal pull request history. That is deliberate: a web admin UI is an explicit

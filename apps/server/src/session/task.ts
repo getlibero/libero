@@ -78,16 +78,33 @@ export const SYSTEM_PROMPT = [
  * an outage. Silence there is indistinguishable from being ignored, by the one
  * group of people who cannot see the log.
  *
- * Neither sentence is a synthesized answer to what was asked — that is the
+ * No sentence here is a synthesized answer to what was asked — that is the
  * thing this file refuses to do, and saying "the proxy could not be reached" is
  * the opposite of it.
+ *
+ * Which is also why there are three rather than two. A rejected certificate
+ * (#79) is not an unreachable proxy: the proxy answered, and said no. Both of
+ * the specific sentences name a permanent, operator-fixable state, and the
+ * generic one is reserved for the case where this end genuinely cannot tell.
  */
-export const PROXY_UNAVAILABLE: Record<"no_client_certificate" | "other", string> = {
+export const PROXY_UNAVAILABLE: Record<
+  "no_client_certificate" | "certificate_rejected" | "other",
+  string
+> = {
   no_client_certificate:
     "This channel has no client certificate for the tool proxy, so no tool call is possible. An operator mints one with `scripts/dev-certs.sh`.",
+  certificate_rejected:
+    "The tool proxy refused this channel's client certificate, so no tool call is possible. If it was just rotated, this channel's team sheet may not list the new fingerprint.",
   other:
     "The tool proxy could not be reached, so no tool call was possible. An operator has the detail in the server log."
 };
+
+/** Which of the three a transport failure gets. Everything else is `other`. */
+function unavailableKey(reason: string): keyof typeof PROXY_UNAVAILABLE {
+  if (reason === "no_client_certificate") return "no_client_certificate";
+  if (reason === "certificate_rejected") return "certificate_rejected";
+  return "other";
+}
 
 /**
  * A task that produced no text at all — a model that returned an empty turn, or
@@ -351,12 +368,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         // `failed` already, from the initializer — the listing never came back,
         // so no tool call was ever attempted and there is usually no card at
         // all. Setting it here would be restating the default.
-        return {
-          text:
-            error.reason === "no_client_certificate"
-              ? PROXY_UNAVAILABLE.no_client_certificate
-              : PROXY_UNAVAILABLE.other
-        };
+        return { text: PROXY_UNAVAILABLE[unavailableKey(error.reason)] };
       }
 
       // The one thing the gateway's own `mention`/`replied` pair cannot show: why

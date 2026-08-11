@@ -13,7 +13,8 @@
 // will read it from nowhere else.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { X509Certificate } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +51,42 @@ export interface Certs {
   readonly serverKey: string;
   /** `PROXY_CLIENT_CERT_DIR`: holds `client-<channel>.pem` and `.key`. */
   readonly clientCertDir: string;
+  /**
+   * The SHA-256 digest of a minted certificate, by label — a channel id, or a
+   * `--raw-cn` label. This is what a team sheet pins (#79), and it is read out
+   * of the file rather than parsed out of the script's output: the value the
+   * proxy compares against is Node's `fingerprint256`, so computing it the same
+   * way here means the harness cannot agree with the script and disagree with
+   * the thing under test.
+   */
+  fingerprint(label: string): string;
+  /**
+   * Mint a replacement for one channel into `agent/staged/`, leaving what is in
+   * service untouched, and answer its fingerprint. The first half of a
+   * rotation.
+   */
+  rotate(channelId: string): string;
+  /**
+   * Move a staged replacement into place. Refuses — as the script does — unless
+   * the channel's sheet already pins the staged fingerprint, which is why this
+   * takes the channels root.
+   */
+  promote(channelId: string, channelsRoot: string): void;
+}
+
+function devCerts(args: string[]): string {
+  try {
+    return execFileSync("sh", ["scripts/dev-certs.sh", ...args], {
+      cwd: REPO_ROOT,
+      stdio: "pipe"
+    }).toString();
+  } catch (error) {
+    // The script's own diagnostics are on stderr and are the useful half —
+    // "openssl is required and was not found on PATH" is a one-line fix that an
+    // exit-status-only failure would hide.
+    const stderr = (error as { stderr?: Buffer }).stderr?.toString() ?? "";
+    throw new Error(`e2e: dev-certs.sh failed\n${stderr}`);
+  }
 }
 
 export function mintCerts(cleanup: Cleanup, options: MintOptions): Certs {
@@ -58,22 +95,26 @@ export function mintCerts(cleanup: Cleanup, options: MintOptions): Certs {
 
   const args = ["--out", dir, "--channels", options.channels.join(",")];
   for (const raw of options.rawCns ?? []) args.push("--raw-cn", raw);
+  devCerts(args);
 
-  try {
-    execFileSync("sh", ["scripts/dev-certs.sh", ...args], { cwd: REPO_ROOT, stdio: "pipe" });
-  } catch (error) {
-    // The script's own diagnostics are on stderr and are the useful half —
-    // "openssl is required and was not found on PATH" is a one-line fix that an
-    // exit-status-only failure would hide.
-    const stderr = (error as { stderr?: Buffer }).stderr?.toString() ?? "";
-    throw new Error(`e2e: dev-certs.sh failed\n${stderr}`);
-  }
+  const fingerprint = (label: string): string =>
+    new X509Certificate(readFileSync(join(dir, "agent", `client-${label}.pem`))).fingerprint256;
 
   return {
     dir,
     caPath: join(dir, "ca.pem"),
     serverCert: join(dir, "proxy", "server.pem"),
     serverKey: join(dir, "proxy", "server.key"),
-    clientCertDir: join(dir, "agent")
+    clientCertDir: join(dir, "agent"),
+    fingerprint,
+    rotate(channelId: string): string {
+      devCerts(["--out", dir, "--rotate", channelId]);
+      return new X509Certificate(
+        readFileSync(join(dir, "agent", "staged", `client-${channelId}.pem`))
+      ).fingerprint256;
+    },
+    promote(channelId: string, channelsRoot: string): void {
+      devCerts(["--out", dir, "--channels-root", channelsRoot, "--promote", channelId]);
+    }
   };
 }

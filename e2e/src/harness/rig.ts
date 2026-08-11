@@ -74,7 +74,8 @@ export interface RigOptions {
    *
    * The upstream's url is filled in by the rig, so a spec omits it — see
    * `SheetInput`. A channel with a certificate and no entry here has no sheet,
-   * which is exactly the "revoked channel" case.
+   * which is exactly the "retired channel" case. Revoking one leaked key while
+   * the channel keeps working is `SheetSpec.pins` (#79).
    */
   readonly sheets?: Readonly<Record<string, SheetInput>>;
   /** What the upstream publishes from `tools/list`. Shorthand for `upstream.catalog`. */
@@ -254,7 +255,15 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       ...(options.catalog !== undefined ? { catalog: options.catalog } : {})
     });
 
-    const channelsRoot = tempChannelsRoot(cleanup);
+    // Every sheet pins the certificate this rig minted for its own channel, so
+    // a case that says nothing about pinning gets the identity it would have
+    // had before #79 existed. `channels` is the list that got certificates;
+    // anything else named in `sheets` is a channel with no key material, and
+    // `defaultPinsFor` gives it a pin that matches nothing rather than one that
+    // matches a certificate it does not have.
+    const channelsRoot = tempChannelsRoot(cleanup, channelId =>
+      channels.includes(channelId) ? [certs.fingerprint(channelId)] : []
+    );
     const sheets = options.sheets ?? { [CHANNEL]: DEFAULT_SHEET };
     for (const [channelId, spec] of Object.entries(sheets)) {
       channelsRoot.write(channelId, { ...spec, url: spec.url ?? upstream.url });

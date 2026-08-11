@@ -19,6 +19,11 @@
 // Cyrillic and case-variant name sets — are deliberately not restated; see
 // packages/proxy/src/server.test.ts and packages/proxy/src/enforce.test.ts.
 //
+// Adjacent and separate: a certificate for a channel that is still in use, whose
+// key leaked, is `certificate-pinning.test.ts` (#79). Nothing here needs it —
+// one channel's certificate cannot act as another's whether or not a sheet pins
+// anything — and the sheets these cases write pin their own channel by default.
+//
 // One rig, no mentions: `script` is empty because no task ever runs, so the
 // cases are coupled through nothing but the audit and upstream cursors they
 // each take for themselves.

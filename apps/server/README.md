@@ -191,6 +191,10 @@ rather than a reply that never appears.
 The proxy is not optional, so mint certificates first — one per channel the bot
 answers in, plus the CA both processes trust:
 
+The fingerprint it prints goes into that channel's `channel.toml` under
+`[channel] certificate_sha256`; without it the sheet does not parse and every
+call is answered 401.
+
 ```sh
 sh scripts/dev-certs.sh --channels C024BE91L
 pnpm -r build

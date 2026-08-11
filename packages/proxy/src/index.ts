@@ -120,8 +120,8 @@ export type { RedactionFailure, SecretValue } from "./redact.js";
 export { loadTlsOptions } from "./tls.js";
 export type { ProxyTlsPaths } from "./tls.js";
 
-export { CHANNEL_CN_PREFIX, channelFromCommonName, resolveChannel } from "./identity.js";
-export type { ChannelIdentity, IdentityRejection } from "./identity.js";
+export { CHANNEL_CN_PREFIX, channelFromCommonName, matchesPin, resolveChannel } from "./identity.js";
+export type { ChannelIdentity, CommonNameIdentity, IdentityRejection } from "./identity.js";
 
 export {
   DESTRUCTIVE_VERBS,

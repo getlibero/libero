@@ -19,7 +19,8 @@
 // does is ./spend.test.ts, at the transport seam.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { X509Certificate } from "node:crypto";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -34,6 +35,8 @@ import { ProxyClientError, createProxyTransport, type ProxyTransport } from "./t
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const CHANNEL = "C024BE91L";
 const OTHER_CHANNEL = "C7ZZZ9999";
+/** Its material is replaced mid-test, so it is nobody else's channel. */
+const ROTATING = "C0ROTATING";
 
 interface Seen {
   method: string;
@@ -41,6 +44,8 @@ interface Seen {
   body: string;
   /** The CN the listener read off the peer certificate, exactly as the proxy does. */
   commonName: string | undefined;
+  /** And the digest the proxy's pin check compares (#79). */
+  fingerprint: string | undefined;
 }
 
 let certs: string;
@@ -48,12 +53,20 @@ let foreignCerts: string;
 let server: Server;
 let port: number;
 let seen: Seen[] = [];
-let answer: { status: number; body: unknown } = { status: 200, body: { tools: [] } };
+let answer: { status: number; body: unknown; delayMs?: number } = {
+  status: 200,
+  body: { tools: [] }
+};
 
-/** What the proxy's own identity resolver reads: the subject CN, and nothing else. */
+/** What the proxy's own identity resolver reads: the subject CN, and the digest. */
 function commonNameOf(socket: TLSSocket): string | undefined {
   const cn: unknown = socket.getPeerCertificate().subject?.CN;
   return typeof cn === "string" ? cn : undefined;
+}
+
+function fingerprintOf(socket: TLSSocket): string | undefined {
+  const fp: unknown = socket.getPeerCertificate().fingerprint256;
+  return typeof fp === "string" ? fp : undefined;
 }
 
 function mint(out: string, channels: string[]): void {
@@ -76,7 +89,7 @@ beforeAll(async () => {
   certs = mkdtempSync(join(tmpdir(), "libero-agent-certs-"));
   // A second, unrelated CA. Its certificates are well-formed and worthless.
   foreignCerts = mkdtempSync(join(tmpdir(), "libero-agent-foreign-"));
-  mint(certs, [CHANNEL, OTHER_CHANNEL]);
+  mint(certs, [CHANNEL, OTHER_CHANNEL, ROTATING]);
   mint(foreignCerts, [CHANNEL]);
 
   server = createServer(
@@ -96,11 +109,18 @@ beforeAll(async () => {
           method: req.method ?? "",
           path: req.url ?? "",
           body: Buffer.concat(chunks).toString("utf8"),
-          commonName: commonNameOf(req.socket as TLSSocket)
+          commonName: commonNameOf(req.socket as TLSSocket),
+          fingerprint: fingerprintOf(req.socket as TLSSocket)
         });
         const payload = answer.body === undefined ? "" : JSON.stringify(answer.body);
-        res.writeHead(answer.status, { "content-type": "application/json" });
-        res.end(payload);
+        // `delayMs` exists for one case: a request still on the wire while the
+        // client rebuilds that channel's agent underneath it.
+        const reply = (): void => {
+          res.writeHead(answer.status, { "content-type": "application/json" });
+          res.end(payload);
+        };
+        if (answer.delayMs === undefined) reply();
+        else setTimeout(reply, answer.delayMs);
       });
     }
   );
@@ -188,6 +208,108 @@ describe("mutual TLS", () => {
       ).rejects.toMatchObject({ reason: "no_client_certificate" });
     }
     expect(seen).toEqual([]);
+  });
+});
+
+// #79. A rotated certificate has to take effect without restarting this
+// process: restarting it drops the Slack socket, which is the gap in service
+// the rotation path exists not to have.
+describe("rotating a channel's certificate", () => {
+  const script = (...args: string[]): void => {
+    execFileSync("sh", ["scripts/dev-certs.sh", "--out", certs, ...args], {
+      cwd: REPO_ROOT,
+      stdio: "pipe"
+    });
+  };
+
+  const digestOf = (dir: string, channel: string): string =>
+    new X509Certificate(
+      readFileSync(join(dir, "agent", `client-${channel}.pem`))
+    ).fingerprint256;
+
+  /** The real two-step, through the script an operator runs. */
+  const rotate = (channel: string): void => {
+    script("--rotate", channel);
+    // `--promote` refuses unless the sheet already pins the replacement, which
+    // is the proxy's half of the story and not this file's; there is no
+    // channels root here, so this asks for the move directly.
+    script("--promote", channel, "--force");
+  };
+
+  it("presents the new certificate on the next request, with no restart", async () => {
+    const transport = transportTo(certs, port);
+    const before = digestOf(certs, ROTATING);
+
+    await transport.request({ channel: ROTATING, method: "GET", path: "/v1/tools" });
+    expect(seen[0]?.fingerprint).toBe(before);
+
+    rotate(ROTATING);
+    const after = digestOf(certs, ROTATING);
+    expect(after).not.toBe(before);
+
+    await transport.request({ channel: ROTATING, method: "GET", path: "/v1/tools" });
+    expect(seen[1]?.fingerprint).toBe(after);
+  });
+
+  // The cache is still a cache. An unchanged file is not re-read, and the
+  // pooled connection is not thrown away, which is what makes a `stat` per
+  // request the cheap half of this.
+  it("keeps the pooled connection when the file has not changed", async () => {
+    const transport = transportTo(certs, port);
+
+    await transport.request({ channel: ROTATING, method: "GET", path: "/v1/tools" });
+    await transport.request({ channel: ROTATING, method: "GET", path: "/v1/tools" });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]?.fingerprint).toBe(seen[0]?.fingerprint);
+  });
+
+  // The regression that would make "no gap in service" false. Node's
+  // `Agent.destroy()` tears down sockets that are in use, so destroying the
+  // superseded agent inline would kill every tool call already on the wire at
+  // the exact moment a rotation lands.
+  it("does not cut off a request already in flight", async () => {
+    const transport = transportTo(certs, port);
+    answer = { status: 200, body: { tools: [] }, delayMs: 300 };
+
+    const inFlight = transport.request({ channel: ROTATING, method: "GET", path: "/v1/tools" });
+    // Long enough for the request to be on the wire, short enough to land
+    // inside the delay above.
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    rotate(ROTATING);
+    // Rebuilds this channel's agent, which is what retires the one the request
+    // above is still using.
+    await transport.request({ channel: ROTATING, method: "GET", path: "/v1/tools" });
+
+    await expect(inFlight).resolves.toMatchObject({ status: 200 });
+  });
+
+  // `--promote` moves the key and then the certificate, so a process that
+  // starts in between reads a new key with the certificate it replaced. That
+  // fails the handshake, and a handshake failure arrives here as
+  // `connection_reset` — the one reason in the taxonomy documented as
+  // ambiguous. Named instead.
+  it("refuses a certificate and key that are not a pair, rather than failing at the handshake", async () => {
+    const mixed = mkdtempSync(join(tmpdir(), "libero-agent-mixed-"));
+    try {
+      mkdirSync(join(mixed, "agent"), { recursive: true });
+      copyFileSync(
+        join(certs, "agent", `client-${CHANNEL}.pem`),
+        join(mixed, "agent", `client-${CHANNEL}.pem`)
+      );
+      copyFileSync(
+        join(certs, "agent", `client-${OTHER_CHANNEL}.key`),
+        join(mixed, "agent", `client-${CHANNEL}.key`)
+      );
+
+      await expect(
+        transportTo(mixed, port).request({ channel: CHANNEL, method: "GET", path: "/v1/tools" })
+      ).rejects.toMatchObject({ reason: "no_client_certificate" });
+      expect(seen).toEqual([]);
+    } finally {
+      rmSync(mixed, { recursive: true, force: true });
+    }
   });
 });
 

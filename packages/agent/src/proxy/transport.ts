@@ -15,11 +15,19 @@
 // not hold is a channel it cannot reach. That is the whole difference between
 // an identity and a field.
 //
+// Holding the right file is no longer the whole of it: the channel's team sheet
+// names which certificates may speak for it, so a certificate this process
+// holds can still be refused — as one that has been rotated out of a sheet
+// will be. That is why the certificate on disk is re-read when it changes
+// rather than at startup (see `createAgentCache`), and why a 401 from the proxy
+// is `certificate_rejected` rather than a generic failure.
+//
 // (This file names no path inside the proxy package, and not for style: CI
 // greps the agent side for one, which is the second of the two checks that keep
 // the import ban honest. Describe what the proxy does, do not cite where.)
 
-import { readFileSync } from "node:fs";
+import { X509Certificate, createPrivateKey } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import { Agent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { ChannelId } from "@getlibero/schema";
@@ -75,6 +83,18 @@ export type ProxyFailure =
    * a confident-sounding pair of wrong answers.
    */
   | "connection_reset"
+  /**
+   * The proxy was reached and would not accept this channel's certificate.
+   *
+   * Distinct from both `no_client_certificate` (this end has no material to
+   * present) and `connection_reset` (the far end hung up with nothing said):
+   * here the proxy answered, in full, with a 401. Since #79 the ordinary cause
+   * is a team sheet whose pinned fingerprint is not the one the certificate on
+   * disk has — a mistyped digest, or a rotation promoted before the sheet named
+   * the replacement. It is permanent until someone edits a file, which is why
+   * the channel is told rather than left to a retry.
+   */
+  | "certificate_rejected"
   /** The proxy answered, and the answer is not a shape this client can read. */
   | "malformed_response"
   /** The proxy answered with a `ProxyError`: the request could not be served. */
@@ -133,6 +153,31 @@ export interface ProxyTransport {
   request(options: ProxyRequest): Promise<ProxyResponse>;
 }
 
+/** How long a superseded agent is left alone before its sockets are dropped. */
+const RETIRED_AGENT_GRACE_MS = 30_000;
+
+/** What a `stat` has to say for a certificate file to be the same one. */
+interface FileVersion {
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly ino: number;
+}
+
+interface CachedAgent {
+  readonly agent: Agent;
+  readonly version: FileVersion | null;
+}
+
+function versionOf(file: string): FileVersion | null {
+  const stat = statSync(file, { throwIfNoEntry: false });
+  return stat === undefined ? null : { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino };
+}
+
+function sameFile(a: FileVersion | null, b: FileVersion | null): boolean {
+  if (a === null || b === null) return false;
+  return a.mtimeMs === b.mtimeMs && a.size === b.size && a.ino === b.ino;
+}
+
 /**
  * One `https.Agent` per channel, built from that channel's client certificate.
  *
@@ -140,14 +185,25 @@ export interface ProxyTransport {
  * identity: one shared agent would mean one shared identity, which is the
  * design this whole boundary exists to avoid. Connections are pooled within a
  * channel, so a busy channel does not pay for a handshake per tool call.
+ *
+ * **The certificate is re-read when the file changes** (#79). An agent holds
+ * the bytes it was built from, so without this a rotated certificate would need
+ * a process restart to take effect — and restarting this process drops the
+ * Slack socket, which is the gap in service rotation is supposed not to have.
+ * A `stat` per request is what buys that; it is the same identity check the
+ * proxy's own sheet store makes, for the same reason, and it costs nothing
+ * beside a TLS request.
+ *
+ * The superseded agent is dropped rather than destroyed: `destroy()` tears down
+ * sockets that are *in use*, so calling it here would kill every tool call on
+ * the wire at exactly the moment a rotation lands. It is destroyed on an
+ * unref'd timer instead, long after the proxy's keep-alive has closed its idle
+ * sockets, which makes the timer a leak guard rather than the mechanism.
  */
 function createAgentCache(ca: Buffer, clientCertDir: string): (channel: string) => Agent {
-  const agents = new Map<string, Agent>();
+  const agents = new Map<string, CachedAgent>();
 
   return (channel: string): Agent => {
-    const cached = agents.get(channel);
-    if (cached !== undefined) return cached;
-
     // Before the id becomes a filename. `ChannelId` is the same rule the proxy
     // validates with, and it is what makes a validated id safe to use as a path
     // segment — no separator, no leading dot, so no `..` and no escape from the
@@ -160,19 +216,56 @@ function createAgentCache(ca: Buffer, clientCertDir: string): (channel: string) 
       );
     }
 
+    const certPath = join(clientCertDir, `client-${channel}.pem`);
+    const keyPath = join(clientCertDir, `client-${channel}.key`);
+    const version = versionOf(certPath);
+
+    const cached = agents.get(channel);
+    if (cached !== undefined && sameFile(cached.version, version)) return cached.agent;
+
+    const cert = readClientFile("client certificate", certPath);
+    const key = readClientFile("client key", keyPath);
+    // The rename window: `--promote` moves the key into place and then the
+    // certificate, and a process that starts between the two reads a new key
+    // with the certificate it replaced. Without this check the symptom is a
+    // handshake failure reported as `connection_reset` — the one reason in this
+    // taxonomy that is documented as ambiguous, for the most predictable event
+    // in a rotation. Checked rather than assumed, and named when it happens.
+    if (!pairMatches(cert, key)) {
+      throw new ProxyClientError(
+        `proxy client: the client certificate at ${certPath} does not match the key beside it`,
+        "no_client_certificate"
+      );
+    }
+
     const agent = new Agent({
       ca,
-      cert: readClientFile("client certificate", join(clientCertDir, `client-${channel}.pem`)),
-      key: readClientFile("client key", join(clientCertDir, `client-${channel}.key`)),
+      cert,
+      key,
       keepAlive: true,
       // The proxy listens TLS 1.3 only. Matching it here means a mismatch is a
       // startup-shaped failure rather than a handshake that silently negotiates
       // something neither end meant to allow.
       minVersion: "TLSv1.3"
     });
-    agents.set(channel, agent);
+    agents.set(channel, { agent, version });
+
+    if (cached !== undefined) {
+      setTimeout(() => cached.agent.destroy(), RETIRED_AGENT_GRACE_MS).unref();
+    }
     return agent;
   };
+}
+
+/** Whether a certificate and a private key are two halves of one keypair. */
+function pairMatches(cert: Buffer, key: Buffer): boolean {
+  try {
+    return new X509Certificate(cert).checkPrivateKey(createPrivateKey(key));
+  } catch {
+    // Unreadable PEM on either side. Not a different answer: what the caller
+    // needs to know is that this pair cannot be presented.
+    return false;
+  }
 }
 
 function read(role: string, path: string, reason: ProxyFailure): Buffer {

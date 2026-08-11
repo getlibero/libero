@@ -20,6 +20,10 @@ PROXY_STORE_ROOT=deploy/store \
   pnpm --filter @getlibero/proxy-server start
 ```
 
+The script prints each certificate's fingerprint; paste it into that channel's
+`channel.toml` under `[channel] certificate_sha256`, which this process checks
+on every request. `sh scripts/dev-certs.sh --print-pins` prints them again.
+
 Both database directories have to exist first — nothing here creates one:
 `mkdir -p deploy/budget deploy/audit`. `PROXY_STORE_ROOT` is the agent's
 `AGENT_STORE_ROOT`, and the agent creates the per-channel directories under it.

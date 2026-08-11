@@ -5,9 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type LogFields, type LogLevel, createSilentLogger } from "./log.js";
 import { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 
+// Required of every sheet since #79, and read by the identity gate rather than
+// by this store. The store's job is to say which sheet is in force; a fixture
+// carries the line so that it parses at all.
+const PIN = `certificate_sha256 = ["${"AB".repeat(32)}"]`;
+
 const VALID = `
 [channel]
 name = "engineering"
+${PIN}
 
 [budget]
 daily_tokens = 500000
@@ -25,6 +31,7 @@ credential = "github_service_account"
 const WIDER = `
 [channel]
 name = "engineering"
+${PIN}
 
 [[mcp_server]]
 name = "github"
@@ -42,6 +49,7 @@ url = "http://mcp-github:3001"
 const SCHEMA_INVALID = `
 [channel]
 name = "engineering"
+${PIN}
 
 [[mcp_server]]
 name = "github"

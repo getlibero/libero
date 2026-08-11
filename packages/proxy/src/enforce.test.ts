@@ -32,8 +32,16 @@ function sheetOf(input: unknown): TeamSheet {
 // upstream was matched it names its own; elsewhere this stands in.
 const UPSTREAM = "http://mcp-github:3001";
 
+/**
+ * Required of every sheet since #79, and read by the identity gate rather than
+ * by anything in this file — which is the point of it being here: `decide` is a
+ * pure function of a sheet and a call and never sees a certificate. A fixture
+ * carries the field so that it parses.
+ */
+const CHANNEL_BLOCK = { name: "engineering", certificate_sha256: ["AB".repeat(32)] };
+
 const BASE = {
-  channel: { name: "engineering" },
+  channel: CHANNEL_BLOCK,
   budget: { daily_tokens: 1000, daily_tool_calls: 10 },
   mcp_server: [
     {
@@ -196,7 +204,10 @@ describe("names that only look allowed", () => {
   it("cannot even be expressed as a parsed call", () => {
     for (const name of nearMisses.filter(n => n !== "GitHub" && n !== "GITHUB" && n !== "github.")) {
       expect(TeamSheetSchema.safeParse({
-        channel: { name: "ops" },
+        // Pinned, and the url below is present, so the *only* thing left for
+        // this sheet to fail on is the server name. A fixture missing either
+        // would fail for a reason this test is not about and pass anyway.
+        channel: CHANNEL_BLOCK,
         // The url is here so the sheet is otherwise valid. Without it the block
         // would fail on the missing address (#89) and this test would pass
         // while proving nothing about the name.

@@ -131,7 +131,7 @@ export function createProxySpendClient(options: ProxySpendClientOptions): ProxyS
         throw cause;
       }
 
-      if (response.status !== 200) throw proxyErrorFrom(response.body, "the spend report failed");
+      if (response.status !== 200) throw proxyErrorFrom(response.body, "the spend report failed", response.status);
 
       const parsed = SpendReportResponse.safeParse(response.body);
       if (!parsed.success) {
