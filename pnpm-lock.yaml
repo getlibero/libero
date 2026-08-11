@@ -35,6 +35,9 @@ importers:
       '@getlibero/proxy':
         specifier: workspace:*
         version: link:../../packages/proxy
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
     devDependencies:
       '@types/node':
         specifier: ^22.20.1

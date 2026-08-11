@@ -1,16 +1,24 @@
 import { z } from "zod";
+import { refusalMessage } from "./refusal.js";
 import type { RefusalReason } from "./refusal.js";
 
 /**
  * One row of the audit log: what the proxy did with one tool call.
  *
  * This shape never crosses the wire. The proxy constructs it from its own
- * observation of a call it has already decided, and it is read back out of
- * SQLite by the operator's CLI. It lives here anyway because three packages
- * have to agree on the column names — `packages/cli` is npm-published and
- * `@getlibero/proxy` is private, so the audit CLI (#98) opens the database
- * itself rather than importing the proxy. A shared type is what stops it
- * redefining the columns.
+ * observation of a call it has already decided, and reads it back out of SQLite
+ * on the operator's path. It lives here because the row is written by one
+ * mapping and read by another and the two must agree: a column renamed on one
+ * side and not the other is a type error rather than a silently empty CSV
+ * column.
+ *
+ * It is deliberately *not* in `packages/cli`, and the reason is worth keeping
+ * because it decided where the read path went. `@getlibero/cli` is npm-published
+ * and this package is `private`, so a published command could not import these
+ * names at all. The audit command is therefore a second entrypoint of the proxy
+ * process (`node dist/audit.js`), like the vault and the budget — and the
+ * stronger reason is the same one they give: the file it reads lives in a
+ * container volume the operator's host cannot see.
  *
  * `AuditRecord` is a type with **no zod object schema**, for the reason
  * `ResolvedToolCall` has none (see ./tool-call.ts): a schema has a `.parse()`,
@@ -174,4 +182,66 @@ export interface AuditRecord {
    * the proxy host, where the vault already is.
    */
   readonly ticket?: string;
+}
+
+/**
+ * The sentence a human was given for this row's refusal, or `null` when the row
+ * does not carry the facts that sentence needs.
+ *
+ * **It writes no prose.** It rebuilds a `ToolRefusal` from the row's columns and
+ * hands it to `refusalMessage`, so the operator reading the log and the channel
+ * that saw the refusal get the same words. A second vocabulary here is how the
+ * two start describing one event differently, which is the thing `refusal.ts`'s
+ * "no free-text field" rule exists to prevent — and this is the one place with
+ * both the motive and the columns to break it.
+ *
+ * **The gap is structural, and `null` is the honest answer to it.**
+ * `refusalReason` above is a bare `RefusalReason`, while three members of
+ * `ToolRefusal` carry a fact the table has no column for: `budget_exhausted`'s
+ * limit, `egress_denied`'s destination, `credential_unresolved`'s credential.
+ * Inventing one to satisfy the type would make the reader assert which budget
+ * ran out, or which host was blocked, when the row does not say — a fabricated
+ * fact in a record whose whole value is that it was observed. The caller prints
+ * the enumerated reason alone, which is less and is true.
+ *
+ * That `credential_unresolved` is one of the three is worth noticing rather than
+ * regretting: the vault's own rule is that a credential is referenced by name
+ * and never by value, and the table holds neither. There is nothing for this
+ * function to reconstruct, and nothing it could leak if it tried.
+ *
+ * Total over the union, as `refusalMessage` is, so a new reason cannot be added
+ * without deciding what an operator reading the log is told about it.
+ *
+ * `server` and `tool` come from the row's own columns, which every variant that
+ * needs them is satisfied by.
+ */
+export function auditRefusalMessage(
+  reason: RefusalReason,
+  server: string,
+  tool: string
+): string | null {
+  switch (reason) {
+    case "no_team_sheet":
+    case "team_sheet_unreadable":
+      return refusalMessage({ reason });
+    case "server_not_allowed":
+      return refusalMessage({ reason, server });
+    case "tool_not_allowed":
+    case "server_ambiguous":
+    case "approval_required":
+    case "approval_pending":
+    case "approval_unknown":
+    case "approval_expired":
+    case "approval_spent":
+    case "approval_denied":
+    case "approval_mismatch":
+      return refusalMessage({ reason, server, tool });
+    // The three the table cannot complete. Listed rather than defaulted, so a
+    // new reason is a compile error here and a decision rather than a silent
+    // `null` — `refusalMessage`'s totality would otherwise stop at this door.
+    case "budget_exhausted":
+    case "egress_denied":
+    case "credential_unresolved":
+      return null;
+  }
 }

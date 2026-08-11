@@ -15,7 +15,7 @@ identical call with the ticket.
 What is not finished: there is no real MCP server behind the dispatcher yet. The two Dockerfiles
 the compose file builds from are not written, so `docker compose up` fails on a clean checkout —
 run the two processes directly in the meantime. `@getlibero/cli` is a placeholder release, so the
-`init` and `audit` commands on this page are target UX rather than something you can run. The
+`init` command on this page is target UX rather than something you can run. The
 end-to-end suite that attacks all of this is not written, which is the one that would tell you
 the security property holds. Do not run this against a workspace you care about.
 :::
@@ -215,9 +215,27 @@ files are not.
 
 ## Operating it
 
-`libero audit` will query and export the append-only audit log — every tool call with its
-requester, its arguments' hash, its result, and its approver if it had one. The command is not
-built yet; until it lands, the log is a SQLite file at `PROXY_AUDIT_DB` you can open directly.
+`node dist/audit.js` queries and exports the append-only audit log — every tool call with its
+requester, its arguments' hash, its result, and its approver if it had one.
+
+```bash
+docker compose run --rm proxy node dist/audit.js list --channel C024BE91L
+docker compose run --rm proxy node dist/audit.js list --since 2026-08-04 --outcome refused
+docker compose run --rm proxy node dist/audit.js show 1422      # one row in full
+docker compose run --rm proxy node dist/audit.js ticket tk-8f2c1b   # one approval's lifecycle
+docker compose run --rm proxy node dist/audit.js open           # held or approved, unresolved
+docker compose run --rm proxy node dist/audit.js csv > audit.csv
+```
+
+Filters compose — channel, date range, server, tool, outcome — and nothing matching is an empty
+result rather than an error. `list` shows the most recent 50 and says when it truncated; `csv`
+exports every match, and its header row is a stable contract to script against.
+
+It is a second process against the proxy's own database rather than a command in the published
+`libero` CLI, for the reason the vault and budget commands are: it runs where the data is. The
+connection is opened **read-only**, so it cannot write the log even by accident, and it is safe to
+run against a live proxy. It will not migrate a file from another schema version — migrating is
+writing, and a reader that repaired the evidence would not be a reader.
 
 Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
 or an admin resets the channel. (A soft limit that warns before the hard one bites is on the
@@ -241,7 +259,8 @@ the file. Nothing in it is a secret.
 `PROXY_AUDIT_DB` is required on the same terms, and holds the audit log: one row per decided tool
 call, appended and never rewritten. Its failure mode is the budget's turned quiet — a file under a
 path nobody meant produces a deployment that looks audited and has nothing to show when someone
-finally looks. It has no reset command, because the table refuses `DELETE` from any connection.
+finally looks. It has no reset command, because the table refuses `DELETE` from any connection —
+and the read command above opens it read-only, so there is no supported path that writes it at all.
 Nothing in it is a secret either: names, ids, and a hash of the model's arguments, never an argument
 value and never a credential. A proxy that cannot write this file refuses the call it could not
 record rather than serving it unrecorded.

@@ -107,8 +107,14 @@ services:
       # `docker compose run --rm proxy node dist/budget.js reset <channel>`.
       PROXY_BUDGET_DB: /data/budget/budget.db
       # Read, and required. The audit log: one row per decided tool call —
-      # served, held, refused, or permitted with no upstream. SQLite writes -wal
-      # and -shm beside this file, so the *directory* has to be writable.
+      # served, held, refused, permitted with no upstream, or decided and then
+      # never answered. SQLite writes -wal and -shm beside this file, so the
+      # *directory* has to be writable.
+      #
+      # Query and export it with
+      # `docker compose run --rm proxy node dist/audit.js list --channel <id>`,
+      # or `... csv > audit.csv`. That connection is opened read-only, so it is
+      # safe against a running proxy and cannot write the log.
       #
       # Append-only, enforced by triggers on the table itself, so there is no
       # reset command and will not be one: deleting rows from an audit log is

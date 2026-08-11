@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AuditRecord } from "@getlibero/schema";
-import { AUDIT_SCHEMA_VERSION, openAuditDb } from "./audit-db.js";
-import type { AuditDb } from "./audit-db.js";
+import { AUDIT_SCHEMA_VERSION, openAuditDb, openAuditReader } from "./audit-db.js";
+import type { AuditDb, AuditReader } from "./audit-db.js";
 
 const CHANNEL = "C0ENGINEERING";
 const OTHER = "C0DESIGN";
@@ -34,7 +34,11 @@ function record(overrides: Partial<AuditRecord> = {}): AuditRecord {
   };
 }
 
-/** Every row, read the way the audit CLI will: a second handle, its own SQL. */
+/**
+ * Every row, from a raw handle with its own SQL — so a row is checked from
+ * outside the writer rather than through it. Not how the audit CLI reads: that
+ * goes through `openAuditReader`, which is exercised in its own block below.
+ */
 function rows(path: string): Record<string, unknown>[] {
   const raw = new DatabaseSync(path);
   try {
@@ -748,5 +752,217 @@ describe("migrating a version 2 file", () => {
     } finally {
       migrated.close();
     }
+  });
+});
+
+describe("reading it back", () => {
+  const NOT_NOON = NOON + 60_000;
+
+  /** A file with a known spread of rows, in a known order. */
+  function seed(): void {
+    db.append(record({ at: NOON, channel: CHANNEL, server: "github", tool: "list_prs", outcome: "ran", resultBytes: 16, resultIsError: false, task: "t-1" }));
+    db.append(record({ at: NOON + 1, channel: CHANNEL, server: "github", tool: "delete_repo", outcome: "refused", refusalReason: "tool_not_allowed", task: "t-1" }));
+    db.append(record({ at: NOT_NOON, channel: OTHER, server: "stripe", tool: "create_refund", outcome: "held", refusalReason: "approval_required", ticket: "tk-1", task: "t-2" }));
+    db.append(record({ at: NOT_NOON + 1, channel: OTHER, server: "stripe", tool: "create_refund", outcome: "approved", approver: "U0BOSS", ticket: "tk-1", task: "t-2" }));
+    db.append(record({ at: NOT_NOON + 2, channel: OTHER, server: "stripe", tool: "create_refund", outcome: "ran", approver: "U0BOSS", ticket: "tk-1", resultBytes: 40, resultIsError: true, task: "t-2" }));
+  }
+
+  function read<T>(use: (reader: AuditReader) => T): T {
+    const reader = openAuditReader({ file });
+    try {
+      return use(reader);
+    } finally {
+      reader.close();
+    }
+  }
+
+  beforeEach(seed);
+
+  describe("the connection", () => {
+    // The property the whole read path rests on, asserted against SQLite rather
+    // than against the triggers: a read-only connection refuses a write before
+    // the append-only triggers have to.
+    it("refuses every write, including the ones the triggers would catch", () => {
+      read(() => {
+        const raw = new DatabaseSync(file, { readOnly: true });
+        try {
+          expect(() => raw.exec("INSERT INTO tool_call_audit (at) VALUES (1)")).toThrow();
+          expect(() => raw.exec("UPDATE tool_call_audit SET tool = 'x'")).toThrow();
+          expect(() => raw.exec("DELETE FROM tool_call_audit")).toThrow();
+          expect(() => raw.exec("DROP TABLE tool_call_audit")).toThrow();
+        } finally {
+          raw.close();
+        }
+      });
+      expect(rows(file)).toHaveLength(5);
+    });
+
+    // Migrating is writing, so a reader that repaired a file would be a reader
+    // that changed the evidence. Both directions, because a file from the
+    // future read with this build's column list would quietly omit a column.
+    it("refuses a file from another schema version, in both directions", () => {
+      for (const version of [2, 99]) {
+        const other = join(dir, `v${version}.db`);
+        const raw = new DatabaseSync(other);
+        try {
+          raw.exec("CREATE TABLE schema_version (version INTEGER NOT NULL)");
+          raw.exec(`INSERT INTO schema_version (version) VALUES (${version})`);
+        } finally {
+          raw.close();
+        }
+        expect(() => openAuditReader({ file: other })).toThrow(new RegExp(`version ${version}`));
+      }
+    });
+
+    it("refuses a file with no version stamp", () => {
+      const bare = join(dir, "bare.db");
+      const raw = new DatabaseSync(bare);
+      try {
+        raw.exec("CREATE TABLE schema_version (version INTEGER NOT NULL)");
+      } finally {
+        raw.close();
+      }
+      expect(() => openAuditReader({ file: bare })).toThrow(/unstamped/);
+    });
+
+    // The reader's half of the writer's absent mkdir: a path nobody meant is an
+    // error rather than an empty database that looks like an empty log.
+    it("does not create a file that is not there", () => {
+      const missing = join(dir, "nope.db");
+      expect(() => openAuditReader({ file: missing })).toThrow();
+      expect(existsSync(missing)).toBe(false);
+    });
+  });
+
+  describe("page", () => {
+    it("returns every row oldest-first when nothing is asked of it", () => {
+      expect(read(r => r.page({}).map(e => e.id))).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    // A limit is "the most recent n", still printed in reading order — which is
+    // why the statement is a subquery rather than an ORDER BY with a LIMIT.
+    it("takes the most recent n and still answers oldest-first", () => {
+      expect(read(r => r.page({ limit: 2 }).map(e => e.id))).toEqual([4, 5]);
+      expect(read(r => r.page({ limit: 0 }).map(e => e.id))).toEqual([1, 2, 3, 4, 5]);
+      expect(read(r => r.page({ limit: 99 }).map(e => e.id))).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it("filters on each field on its own", () => {
+      expect(read(r => r.page({ channel: CHANNEL }).map(e => e.id))).toEqual([1, 2]);
+      expect(read(r => r.page({ server: "stripe" }).map(e => e.id))).toEqual([3, 4, 5]);
+      expect(read(r => r.page({ tool: "delete_repo" }).map(e => e.id))).toEqual([2]);
+      expect(read(r => r.page({ task: "t-2" }).map(e => e.id))).toEqual([3, 4, 5]);
+      expect(read(r => r.page({ afterId: 3 }).map(e => e.id))).toEqual([4, 5]);
+      expect(read(r => r.page({ outcomes: ["ran"] }).map(e => e.id))).toEqual([1, 5]);
+    });
+
+    // Both ends inclusive: an operator asking for a moment means the moment.
+    it("bounds time at both ends, inclusively", () => {
+      expect(read(r => r.page({ sinceMs: NOON + 1 }).map(e => e.id))).toEqual([2, 3, 4, 5]);
+      expect(read(r => r.page({ untilMs: NOON + 1 }).map(e => e.id))).toEqual([1, 2]);
+      expect(read(r => r.page({ sinceMs: NOON, untilMs: NOON }).map(e => e.id))).toEqual([1]);
+    });
+
+    it("takes several outcomes at once", () => {
+      expect(read(r => r.page({ outcomes: ["held", "approved"] }).map(e => e.id))).toEqual([3, 4]);
+      // An empty list is not a filter that matches nothing: it is no filter.
+      expect(read(r => r.page({ outcomes: [] }).map(e => e.id))).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    // The acceptance criterion's "filters compose", at the level that decides
+    // it: every clause is ANDed and each contributes its own bound parameter.
+    it("composes filters with AND", () => {
+      expect(
+        read(r => r.page({ channel: OTHER, server: "stripe", outcomes: ["ran", "approved"], sinceMs: NOT_NOON + 1 }).map(e => e.id))
+      ).toEqual([4, 5]);
+      // A composition nothing satisfies is empty rather than an error.
+      expect(read(r => r.page({ channel: CHANNEL, server: "stripe" }))).toEqual([]);
+    });
+
+    // Values are bound, never concatenated, so a filter carrying SQL is a
+    // filter that matches nothing.
+    it("binds filter values rather than splicing them", () => {
+      expect(read(r => r.page({ channel: "' OR 1=1 --" }))).toEqual([]);
+      expect(read(r => r.page({ tool: "'; DROP TABLE tool_call_audit; --" }))).toEqual([]);
+      expect(rows(file)).toHaveLength(5);
+    });
+  });
+
+  it("counts the matches a page was taken from, ignoring the limit", () => {
+    expect(read(r => r.count({}))).toBe(5);
+    expect(read(r => r.count({ limit: 2 }))).toBe(5);
+    expect(read(r => r.count({ channel: CHANNEL }))).toBe(2);
+    expect(read(r => r.count({ channel: "C0NOBODY" }))).toBe(0);
+  });
+
+  describe("one row and one lifecycle", () => {
+    // The absent-versus-falsy distinction, which is the reason rowToEntry
+    // spreads conditionally rather than assigning undefined.
+    it("round-trips a record field for field, absences included", () => {
+      const entry = read(r => r.byId(1));
+      expect(entry).toMatchObject({
+        id: 1,
+        at: NOON,
+        channel: CHANNEL,
+        requestingUser: "U0ALICE",
+        server: "github",
+        tool: "list_prs",
+        outcome: "ran",
+        resultBytes: 16,
+        resultIsError: false
+      });
+      expect(entry && "refusalReason" in entry).toBe(false);
+      expect(entry && "approver" in entry).toBe(false);
+      expect(entry && "ticket" in entry).toBe(false);
+    });
+
+    it("tells a missing result from one of zero", () => {
+      db.append(record({ at: NOON + 500, outcome: "unanswered", ticket: "tk-9" }));
+      const entry = read(r => r.byId(6));
+      expect(entry?.outcome).toBe("unanswered");
+      expect(entry && "resultBytes" in entry).toBe(false);
+      expect(entry && "resultIsError" in entry).toBe(false);
+    });
+
+    it("answers nothing for an id that is not there", () => {
+      expect(read(r => r.byId(4210))).toBeUndefined();
+    });
+
+    it("returns a ticket's whole lifecycle, oldest-first", () => {
+      expect(read(r => r.byTicket("tk-1").map(e => [e.id, e.outcome]))).toEqual([
+        [3, "held"],
+        [4, "approved"],
+        [5, "ran"]
+      ]);
+      expect(read(r => r.byTicket("tk-never"))).toEqual([]);
+    });
+  });
+
+  describe("openApprovals", () => {
+    // The two questions AuditOutcome's doc poses in prose. A ticket that
+    // reached `ran` is closed; one that stopped at `held` or `approved` is not.
+    it("finds a held call nobody resolved and an approval nobody redeemed", () => {
+      db.append(record({ at: NOON + 100, channel: CHANNEL, outcome: "held", refusalReason: "approval_required", ticket: "tk-stuck" }));
+      db.append(record({ at: NOON + 200, channel: CHANNEL, outcome: "held", refusalReason: "approval_required", ticket: "tk-unredeemed" }));
+      db.append(record({ at: NOON + 300, channel: CHANNEL, outcome: "approved", approver: "U0BOSS", ticket: "tk-unredeemed" }));
+
+      expect(read(r => r.openApprovals().map(e => [e.ticket, e.outcome]))).toEqual([
+        ["tk-stuck", "held"],
+        ["tk-unredeemed", "approved"]
+      ]);
+    });
+
+    // tk-1 reached `ran`, so it is finished and must not appear.
+    it("leaves out a ticket whose call already ran", () => {
+      expect(read(r => r.openApprovals().map(e => e.ticket))).not.toContain("tk-1");
+    });
+
+    it("scopes to one channel when asked", () => {
+      db.append(record({ at: NOON + 100, channel: CHANNEL, outcome: "held", refusalReason: "approval_required", ticket: "tk-here" }));
+      db.append(record({ at: NOON + 200, channel: OTHER, outcome: "held", refusalReason: "approval_required", ticket: "tk-there" }));
+
+      expect(read(r => r.openApprovals(CHANNEL).map(e => e.ticket))).toEqual(["tk-here"]);
+      expect(read(r => r.openApprovals(OTHER).map(e => e.ticket))).toEqual(["tk-there"]);
+    });
   });
 });

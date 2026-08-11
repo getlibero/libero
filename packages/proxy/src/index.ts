@@ -38,6 +38,14 @@ export type { AuditDb, AuditDbOptions } from "./audit-db.js";
 export { canonicalJson, createSqliteAuditWriter, hashArguments, openAuditWriter } from "./audit-log.js";
 export type { AuditWriter, AuditWriterOptions } from "./audit-log.js";
 
+// The audit log's read path, exported for the audit CLI and reached by nothing
+// in the server — the same shape `budget-admin` has above, enforced the same
+// way: an ESLint rule bans this name by `importNames` in the serving
+// composition root. Reading the log is an operator concern; the serving path
+// writes.
+export { openAuditReader } from "./audit-db.js";
+export type { AuditEntry, AuditQuery, AuditReader, AuditReaderOptions } from "./audit-db.js";
+
 export { createHttpDispatcher } from "./http-dispatcher.js";
 export type { HttpDispatcher, HttpDispatcherOptions } from "./http-dispatcher.js";
 

@@ -137,7 +137,41 @@ rows from an audit log is the operation an attacker wants. Growth is about 200
 bytes a row, so 10k calls a day is roughly 2 MB a day; when that stops being
 small the answer is to rotate the file.
 
-The read path — `libero audit`, with query and CSV export — is #98.
+### Reading it
+
+`node dist/audit.js`, a third entrypoint beside the vault's and the budget's,
+and one for the same reason: the file is in a container volume the host cannot
+see, so it is not a command in the published `libero` CLI.
+
+```bash
+docker compose run --rm proxy node dist/audit.js list --channel C024BE91L
+docker compose run --rm proxy node dist/audit.js list --since 2026-08-04 --outcome refused
+docker compose run --rm proxy node dist/audit.js show 1422
+docker compose run --rm proxy node dist/audit.js ticket tk-8f2c1b
+docker compose run --rm proxy node dist/audit.js open
+docker compose run --rm proxy node dist/audit.js csv --since 2026-08-01 > audit.csv
+```
+
+`list` shows the most recent 50 by default and says so when it truncated; `csv`
+exports every match. Filters compose, and nothing matching is an empty result
+rather than an error. `open` answers the two questions the table cannot answer by
+counting: a held call nobody resolved, and an approval nobody redeemed — both are
+a ticket whose last row is `held` or `approved`, because there is no sweep and no
+timer, so `expired` rows count *observed* expiries only.
+
+**It cannot write.** The connection is opened read-only, so SQLite refuses a
+write before the triggers have to, and there is no command that deletes, prunes
+or rotates. It does not migrate either: a file from another schema version is
+refused with both numbers named, because migrating is writing and a reader that
+repaired the file would be a reader that changed the evidence. It is safe to run
+against a live proxy — the database is WAL — and it resolves no credential and
+opens no vault.
+
+Two things about the CSV worth knowing before you script against it. The header
+row is the contract and a new column is appended at the end, so positional
+indexing keeps working. And a field beginning with `=`, `+`, `-` or `@` is a
+formula to a spreadsheet: `call_id` is model-authored, and this export records
+what was written rather than altering it, so open it as text if that matters.
 
 ## Pending approvals do not survive a restart
 
@@ -154,12 +188,13 @@ is why losing this state is acceptable — it fails in the direction that refuse
 Plan a restart the way you would plan one that drops in-flight requests. If a
 destructive call is waiting on someone, it will need asking again.
 
-### Schema version 2
+### Schema version 3
 
-This build writes schema version 2, and **migrates a version 1 file in place the
-first time it opens one**. The migration rebuilds the table inside one
-transaction: a crash during it leaves the original file untouched and the next
-start tries again. Back up the file first if you would rather not rely on that.
+This build writes schema version 3, and **migrates a version 1 or version 2 file
+in place the first time it opens one**. The migration rebuilds the table inside
+one transaction: a crash during it leaves the original file untouched and the
+next start tries again. Back up the file first if you would rather not rely on
+that.
 
 Two consequences worth knowing before you roll:
 
@@ -169,9 +204,15 @@ Two consequences worth knowing before you roll:
   an incident review with a gap it has no way to notice — but until now it was
   not reachable. Rolling back means restoring the file alongside the binary.
 - Version 2 adds the approval broker's outcomes (`approved`, `denied`,
-  `expired`) and a `ticket` column tying an approval's rows together. Existing
-  rows keep their ids, their order, and every value they had; `ticket` is null
+  `expired`) and a `ticket` column tying an approval's rows together. Version 3
+  adds one more outcome, `unanswered` — a call the proxy decided and metered and
+  then failed to answer — and no column. Existing rows keep their ids, their
+  order, and every value they had; a column an older file did not have is null
   on all of them.
+- **`node dist/audit.js` will not read a file this build has not migrated.** In
+  a normal deployment it runs from the same image as the proxy, so it sees a
+  file the proxy has already brought forward; pointed at an older copy, it says
+  which version it found and which it reads, and does not migrate it.
 
 A second entrypoint rather than a route, and that is the security argument
 rather than a convenience one. A reset makes a hard limit soft again; the proxy

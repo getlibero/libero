@@ -15,6 +15,13 @@
 // serving path — the only other SQL is the `schema_version` bookkeeping at open
 // — and the table refuses both from any connection.
 //
+// That claim is now per *connection* rather than per file, and the distinction
+// is what the reader below rests on. `openAuditDb` is the writing connection and
+// prepares one statement, an INSERT. `openAuditReader` is a second connection,
+// opened read-only, that prepares only SELECTs, runs no migration, and installs
+// nothing. Neither can do the other's work: the reader's connection refuses a
+// write, and the writer's interface has no read method.
+//
 // "Once the file is open" is doing real work in that sentence, and #125 is why.
 // Widening the outcome vocabulary meant rebuilding the table, and SQLite cannot
 // alter a CHECK constraint in place, so `rebuildAuditTable` below drops the two
@@ -85,9 +92,22 @@
 //
 // ## Reading it back
 //
-// Nothing here reads. The audit CLI (#98) adds the query statements — to this
-// file, per the rule above — and the operator-shaped helpers beside it. Until
-// then the only consumer is the route, and the route only writes.
+// `openAuditReader` is the operator's path (#98), and its query statements are
+// here rather than in the command that runs them, per the rule above. It is
+// reached by `node dist/audit.js` — a second entrypoint of the proxy process,
+// like the vault and the budget, because the file lives in a container volume
+// the operator's host cannot see. It is *not* reached by the published CLI, and
+// an ESLint rule keeps it out of the serving composition root by name.
+//
+// Three properties, each deliberate. **Read-only**: the connection is opened
+// `readOnly`, so SQLite refuses a write before the triggers have to. (SQLite
+// still creates the `-wal`/`-shm` sidecars on open — that is bookkeeping beside
+// the file, not a write to the log.) **No migration**: migrating is writing, and
+// a reader that repaired a file would be a reader that changed the evidence.
+// **The schema version must match exactly**, in both directions: a file from the
+// future read with this build's column list is the same failure
+// `AUDIT_SCHEMA_VERSION` guards against on the write side, turned around — a
+// CSV that claims to be the log and quietly omits a column.
 //
 // To ask what a request cost, join to the budget file by hand: rows here carry
 // `task`, and `turn_report` over there carries turn ids shaped `<task>.<n>`.
@@ -98,7 +118,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
-import type { AuditRecord } from "@getlibero/schema";
+import type { AuditOutcome, AuditRecord, RefusalReason } from "@getlibero/schema";
 import type { Logger } from "./log.js";
 
 /**
@@ -225,9 +245,12 @@ export interface AuditDbOptions {
  * `BudgetDb` gives — nobody prepares their own statement.
  *
  * There is one operation, and it appends. No read method: an aggregate read
- * belongs on the operator path (#98) and must never appear on the interface the
- * serving process closes over. No delete, no update: those are what the table
- * refuses, and a method here would be a method that always throws.
+ * belongs on the operator path and must never appear on the interface the
+ * serving process closes over. That path now exists — it is `AuditReader`, a
+ * separate interface over a separate connection from a separate open, reached
+ * by a separate entrypoint. Nothing was added here to serve it. No delete, no
+ * update: those are what the table refuses, and a method here would be a method
+ * that always throws.
  */
 export interface AuditDb {
   append(record: AuditRecord): void;
@@ -302,6 +325,279 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
         record.approver ?? null,
         record.ticket ?? null
       );
+    },
+
+    close() {
+      db.close();
+    }
+  };
+}
+
+/**
+ * A row as it was written, plus the id that orders the log.
+ *
+ * `id` is not on `AuditRecord` because the writer does not supply it — SQLite
+ * assigns it. It is on the way back out because it is the log's own append
+ * order and the cursor an export bookmarks, which is why `rebuildAuditTable`
+ * copies it explicitly rather than letting a migration renumber history.
+ */
+export interface AuditEntry extends AuditRecord {
+  readonly id: number;
+}
+
+/**
+ * What to select. Every field is optional and they compose with AND.
+ *
+ * Absent means "do not filter on this", which is why an empty query is every
+ * row rather than none. The two bounds are inclusive at both ends: an operator
+ * asking for a day means the day.
+ */
+export interface AuditQuery {
+  readonly channel?: string;
+  readonly server?: string;
+  readonly tool?: string;
+  /** The meter's turn ids are `<task>.<n>`, so this is the cross-file join. */
+  readonly task?: string;
+  readonly outcomes?: readonly AuditOutcome[];
+  readonly sinceMs?: number;
+  readonly untilMs?: number;
+  /** Rows after this id — what an incremental export bookmarks. */
+  readonly afterId?: number;
+  /**
+   * The most recent n matches, still returned oldest-first. 0 or absent is
+   * every match.
+   */
+  readonly limit?: number;
+}
+
+/**
+ * The operator's read path over the audit log.
+ *
+ * Named operations rather than a handle, as `AuditDb` is and for the same
+ * reason: nobody prepares their own statement. There is no `append` here and
+ * there must not be — the two interfaces are the two directions, and a process
+ * holding one holds no ability to do the other's job.
+ */
+export interface AuditReader {
+  /** Matching rows, oldest-first. */
+  page(query: AuditQuery): readonly AuditEntry[];
+  /** How many rows match, ignoring `limit`. What tells a reader it saw a page. */
+  count(query: AuditQuery): number;
+  byId(id: number): AuditEntry | undefined;
+  /** One approval's lifecycle, oldest-first. */
+  byTicket(ticket: string): readonly AuditEntry[];
+  /**
+   * Tickets whose last row is `held` or `approved` — the two questions
+   * `AuditOutcome`'s doc poses in prose and answers nowhere: a held call nobody
+   * resolved, and an approval nobody redeemed. One shape, because they are one
+   * query with a different last word.
+   */
+  openApprovals(channel?: string): readonly AuditEntry[];
+  close(): void;
+}
+
+/**
+ * Every column, named, in the table's declared order.
+ *
+ * Never `SELECT *`. The point is that this list and the INSERT's column list sit
+ * on one screen, so a column added to one is visibly missing from the other —
+ * and `rowToEntry` below reads by name, so a `SELECT *` that silently gained a
+ * column would produce an entry that silently lacked it.
+ */
+const AUDIT_COLUMNS = `
+  id, at, channel, requesting_user, task, request_id, call_id, server, tool,
+  arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
+  approver, ticket`;
+
+/**
+ * The WHERE clause and its bound values.
+ *
+ * **No filter value is ever concatenated into SQL.** Each clause contributes a
+ * `?` and pushes its value; the one thing whose *length* varies is the
+ * `outcome IN (…)` placeholder run, and even there only the placeholders are
+ * generated — the words are bound. Every outcome has already been through
+ * `AuditOutcome` before it reaches here, so the list is closed as well as bound.
+ */
+function where(query: AuditQuery): { readonly sql: string; readonly params: (string | number)[] } {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (query.channel !== undefined) {
+    clauses.push("channel = ?");
+    params.push(query.channel);
+  }
+  if (query.server !== undefined) {
+    clauses.push("server = ?");
+    params.push(query.server);
+  }
+  if (query.tool !== undefined) {
+    clauses.push("tool = ?");
+    params.push(query.tool);
+  }
+  if (query.task !== undefined) {
+    clauses.push("task = ?");
+    params.push(query.task);
+  }
+  if (query.sinceMs !== undefined) {
+    clauses.push("at >= ?");
+    params.push(query.sinceMs);
+  }
+  if (query.untilMs !== undefined) {
+    clauses.push("at <= ?");
+    params.push(query.untilMs);
+  }
+  if (query.afterId !== undefined) {
+    clauses.push("id > ?");
+    params.push(query.afterId);
+  }
+  if (query.outcomes !== undefined && query.outcomes.length > 0) {
+    clauses.push(`outcome IN (${query.outcomes.map(() => "?").join(", ")})`);
+    params.push(...query.outcomes);
+  }
+
+  return { sql: clauses.length === 0 ? "" : ` WHERE ${clauses.join(" AND ")}`, params };
+}
+
+/**
+ * A row as SQLite hands it back, to the shape the rest of the system agrees on.
+ *
+ * The nulls become absences rather than falsy values, which is the whole of the
+ * distinction `AuditRecord.resultBytes` insists on: a missing result is not a
+ * result of zero, and a missing error flag is not `false`. `exactOptionalProperty
+ * Types` is why these are spread conditionally rather than assigned `undefined`.
+ */
+function rowToEntry(row: Record<string, unknown>): AuditEntry {
+  return {
+    id: row["id"] as number,
+    at: row["at"] as number,
+    channel: row["channel"] as string,
+    requestingUser: row["requesting_user"] as string,
+    task: row["task"] as string,
+    requestId: row["request_id"] as string,
+    callId: row["call_id"] as string,
+    server: row["server"] as string,
+    tool: row["tool"] as string,
+    argumentsSha256: row["arguments_sha256"] as string,
+    outcome: row["outcome"] as AuditOutcome,
+    ...(row["refusal_reason"] === null ? {} : { refusalReason: row["refusal_reason"] as RefusalReason }),
+    ...(row["result_bytes"] === null ? {} : { resultBytes: row["result_bytes"] as number }),
+    ...(row["result_is_error"] === null ? {} : { resultIsError: row["result_is_error"] === 1 }),
+    ...(row["approver"] === null ? {} : { approver: row["approver"] as string }),
+    ...(row["ticket"] === null ? {} : { ticket: row["ticket"] as string })
+  };
+}
+
+export interface AuditReaderOptions {
+  /** The database file. It must exist: a reader does not create one. */
+  readonly file: string;
+}
+
+/**
+ * Open the audit log to read it, and nothing else.
+ *
+ * See "## Reading it back" at the top of this file for why this is read-only,
+ * why it does not migrate, and why a version mismatch is refused in both
+ * directions. Three things it deliberately does not do, each of which
+ * `openAuditDb` does: it sets no `journal_mode` and no `synchronous` (those are
+ * the writer's durability decisions and setting them here would be a write), it
+ * runs no `SCHEMA` and no `migrate`, and it creates no index and no trigger.
+ * `busy_timeout` is set because it is a property of this connection's patience
+ * and of nothing on disk.
+ *
+ * A missing file is an error and stays missing — SQLite will not create one for
+ * a read-only connection, which is the same fail-loud the writer's absent
+ * `mkdir` buys.
+ *
+ * Statements are prepared per call rather than once at open, which is the
+ * opposite of `openAuditDb`'s choice and is right for the opposite reason: the
+ * filter set is per query, this process runs a handful and exits, and preparing
+ * a statement whose shape depends on the filters is the only way `where` can
+ * bind rather than concatenate.
+ */
+export function openAuditReader(options: AuditReaderOptions): AuditReader {
+  const { file } = options;
+  const db = new DatabaseSync(file, { readOnly: true });
+
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+
+    const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
+    if (row === undefined || row.version !== AUDIT_SCHEMA_VERSION) {
+      throw new Error(
+        `proxy audit: ${file} is schema version ${row?.version ?? "unstamped"}, and this build ` +
+          `reads version ${AUDIT_SCHEMA_VERSION}. The proxy migrates an older file the first ` +
+          `time it opens one; a reader does not, because migrating is writing.`
+      );
+    }
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+
+  const select = (tail: string, params: readonly (string | number)[]): AuditEntry[] =>
+    (db.prepare(`SELECT ${AUDIT_COLUMNS} FROM tool_call_audit${tail}`).all(...params) as Record<
+      string,
+      unknown
+    >[]).map(rowToEntry);
+
+  return {
+    page(query) {
+      const { sql, params } = where(query);
+      // Ordered by `id`, never by `at`: two rows can share a millisecond, and
+      // `id` is the order the log was actually appended in. A limit means *the
+      // most recent n*, so it is taken descending and then flipped, which is why
+      // this is a subquery rather than an ORDER BY with a LIMIT on it.
+      if (query.limit === undefined || query.limit === 0) {
+        return select(`${sql} ORDER BY id`, params);
+      }
+      return (
+        db
+          .prepare(
+            `SELECT * FROM (SELECT ${AUDIT_COLUMNS} FROM tool_call_audit${sql} ORDER BY id DESC LIMIT ?)
+             ORDER BY id`
+          )
+          .all(...params, query.limit) as Record<string, unknown>[]
+      ).map(rowToEntry);
+    },
+
+    count(query) {
+      const { sql, params } = where(query);
+      const row = db.prepare(`SELECT COUNT(*) AS n FROM tool_call_audit${sql}`).get(...params) as {
+        n: number;
+      };
+      return row.n;
+    },
+
+    byId(id) {
+      const [entry] = select(" WHERE id = ?", [id]);
+      return entry;
+    },
+
+    byTicket(ticket) {
+      // Rides the partial index on `ticket`.
+      return select(" WHERE ticket = ? ORDER BY id", [ticket]);
+    },
+
+    openApprovals(channel) {
+      // "No later row for this ticket" is the definition of both questions, and
+      // NOT EXISTS is how it is asked. The outcome list is a module-private
+      // literal rather than a bound parameter because it is this query's
+      // meaning, not a filter someone supplied.
+      const scope = channel === undefined ? "" : " AND t.channel = ?";
+      const params = channel === undefined ? [] : [channel];
+      return (
+        db
+          .prepare(
+            `SELECT ${AUDIT_COLUMNS} FROM tool_call_audit t
+              WHERE t.ticket IS NOT NULL
+                AND t.outcome IN ('held', 'approved')
+                AND NOT EXISTS (
+                  SELECT 1 FROM tool_call_audit l WHERE l.ticket = t.ticket AND l.id > t.id
+                )${scope}
+              ORDER BY t.id`
+          )
+          .all(...params) as Record<string, unknown>[]
+      ).map(rowToEntry);
     },
 
     close() {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AuditOutcome } from "./audit.js";
+import { AuditOutcome, auditRefusalMessage } from "./audit.js";
+import { RefusalReason, refusalMessage } from "./refusal.js";
 import { ToolCallResponse } from "./tool-call.js";
 
 describe("AuditOutcome", () => {
@@ -42,5 +43,63 @@ describe("AuditOutcome", () => {
       "denied",
       "expired"
     ]);
+  });
+});
+
+describe("auditRefusalMessage", () => {
+  const SERVER = "github";
+  const TOOL = "delete_repo";
+
+  // The three the row cannot complete, named here so adding a fourth is a
+  // decision someone made rather than something that drifted in.
+  const INCOMPLETE = ["budget_exhausted", "egress_denied", "credential_unresolved"];
+
+  it("answers every reason in the union, with a sentence or with null", () => {
+    for (const reason of RefusalReason.options) {
+      const message = auditRefusalMessage(reason, SERVER, TOOL);
+      if (INCOMPLETE.includes(reason)) {
+        expect(message).toBeNull();
+      } else {
+        expect(message).toEqual(expect.any(String));
+      }
+    }
+  });
+
+  // The property the whole function exists for: the operator reading the log
+  // and the channel that saw the refusal are given the same words. Compared
+  // against `refusalMessage` itself rather than against literals, so prose
+  // written here instead of delegated fails rather than being reviewed.
+  it("delegates to refusalMessage rather than writing its own prose", () => {
+    expect(auditRefusalMessage("tool_not_allowed", SERVER, TOOL)).toBe(
+      refusalMessage({ reason: "tool_not_allowed", server: SERVER, tool: TOOL })
+    );
+    expect(auditRefusalMessage("no_team_sheet", SERVER, TOOL)).toBe(
+      refusalMessage({ reason: "no_team_sheet" })
+    );
+    expect(auditRefusalMessage("server_not_allowed", SERVER, TOOL)).toBe(
+      refusalMessage({ reason: "server_not_allowed", server: SERVER })
+    );
+    expect(auditRefusalMessage("approval_mismatch", SERVER, TOOL)).toBe(
+      refusalMessage({ reason: "approval_mismatch", server: SERVER, tool: TOOL })
+    );
+  });
+
+  // Null rather than a sentence with a fact nobody recorded. Asserted as an
+  // absence of the specific prose, because the failure this guards against is
+  // picking a plausible variant to satisfy the type.
+  it("invents nothing for the reasons the row has no column for", () => {
+    for (const reason of INCOMPLETE) {
+      expect(auditRefusalMessage(RefusalReason.parse(reason), SERVER, TOOL)).toBeNull();
+    }
+    expect(refusalMessage({ reason: "budget_exhausted", limit: "daily_tokens" })).not.toBe(
+      refusalMessage({ reason: "budget_exhausted", limit: "daily_tool_calls" })
+    );
+  });
+
+  // A refusal naming a credential is the one an operator most wants prose for,
+  // and the one where prose would have to be invented. The table holds the
+  // name no more than the value, so there is nothing here to leak.
+  it("names no credential, because the row holds none", () => {
+    expect(auditRefusalMessage("credential_unresolved", SERVER, TOOL)).toBeNull();
   });
 });

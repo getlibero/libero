@@ -151,9 +151,14 @@ Nothing at runtime but `@getlibero/schema`, which fixes the shape of every
 error, refusal, and listing the proxy returns. Deliberate, for the process that
 holds the secrets.
 
-Still to come, each with its own issue: the egress allowlist (#73) and the audit
-log's read path (#98). `http-dispatcher.ts` marks where the egress check slots
-in.
+The audit log's read path is `openAuditReader` in `audit-db.ts` — a second
+connection, opened read-only, whose statements are in that file with the write
+path's for the reason every statement is. It is reached by `node dist/audit.js`
+in `apps/proxy-server` and by nothing on the serving path, which an ESLint rule
+enforces by name.
+
+Still to come, with its own issue: the egress allowlist (#73).
+`http-dispatcher.ts` marks where the egress check slots in.
 
 The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and
 `.github/workflows/mcp-spec-watch.yml` opens an issue when the specification
