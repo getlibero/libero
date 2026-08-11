@@ -7,6 +7,7 @@
 import type { HeldToolCall } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger, Scheduler } from "@getlibero/gateway";
 import { createStubSlack } from "@getlibero/gateway";
+import { refusalMessage } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import { createHeldCallPrompter, type HeldCallPrompterOptions } from "./prompter.js";
 import { createApprovalRegistry } from "./registry.js";
@@ -136,17 +137,140 @@ describe("the amber card", () => {
 });
 
 describe("how the wait ends", () => {
-  it("approve repaints the card green, naming the approver, and resolves", async () => {
+  // The half of #143 that used to be the whole of it. A click is not an
+  // execution: the card goes to the uncoloured running face and the wait hands
+  // back the callback that will decide its colour.
+  it("approve repaints the card to running — uncoloured — and resolves with a completion", async () => {
     const { slack, registry, onHeld } = rig();
 
     const wait = onHeld(HELD);
     await flush();
     registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
-    await wait;
+    const completion = await wait;
+
+    const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
+    expect(card?.color).toBeUndefined();
+    expect(JSON.stringify(card)).toContain("U0G9QF9C6");
+    expect(typeof completion).toBe("function");
+  });
+
+  it("green arrives only when the re-submission says the call ran", async () => {
+    const { slack, registry, onHeld } = rig();
+
+    const wait = onHeld(HELD);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    const completion = await wait;
+
+    completion?.({ state: "ran" });
+    await flush();
 
     const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
     expect(card?.color).toBe("#1BA85A");
     expect(JSON.stringify(card)).toContain("U0G9QF9C6");
+    expect(card?.fallback).toContain("the call ran");
+  });
+
+  // The case the four states could not say, and the reason #143 exists: the
+  // human's click was honoured and the call was refused anyway, because the
+  // sheet is enforced again at redemption.
+  it("an approved call refused at redemption goes red, names the approver, and relays the proxy's reason", async () => {
+    const { slack, registry, onHeld } = rig();
+
+    const wait = onHeld(HELD);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    const completion = await wait;
+
+    completion?.({ state: "refused", refusal: { reason: "tool_not_allowed", server: "github", tool: "merge_pr" } });
+    await flush();
+
+    const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
+    expect(card?.color).toBe("#FF6B5B");
+    // Not green, which is the whole acceptance criterion.
+    expect(card?.color).not.toBe("#1BA85A");
+    expect(JSON.stringify(card)).toContain("U0G9QF9C6");
+    // The proxy's own sentence, not one composed here.
+    expect(JSON.stringify(card)).toContain(
+      refusalMessage({ reason: "tool_not_allowed", server: "github", tool: "merge_pr" })
+    );
+  });
+
+  // A re-submission cancelled by the task's wall clock never answers, and the
+  // upstream may have acted. Neither green nor red is true, so neither is used.
+  it("a task ending with the re-submission in flight leaves unanswered, not running", async () => {
+    const abort = new AbortController();
+    const { slack, registry, onHeld } = rig();
+
+    const wait = onHeld(HELD, abort.signal);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    await wait;
+
+    abort.abort();
+    await flush();
+
+    const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
+    expect(card?.color).toBeUndefined();
+    expect(card?.fallback).toContain("may have run");
+    expect(JSON.stringify(card)).toContain("U0G9QF9C6");
+  });
+
+  it("a completion arriving after the abandonment repaint changes nothing", async () => {
+    const abort = new AbortController();
+    const { slack, registry, onHeld } = rig();
+
+    const wait = onHeld(HELD, abort.signal);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    const completion = await wait;
+
+    abort.abort();
+    await flush();
+    const edits = slack.edits.length;
+
+    completion?.({ state: "ran" });
+    await flush();
+
+    expect(slack.edits).toHaveLength(edits);
+    expect(slack.cardAt(slack.cards[0]?.messageTs ?? "")?.fallback).toContain("may have run");
+  });
+
+  // The contract `HeldCallCompletion` states, enforced rather than trusted: the
+  // tool client calls this synchronously and would propagate a throw, turning a
+  // call that ran into an error result because a card could not be repainted.
+  it("a completion whose repaint fails does not throw at its caller", async () => {
+    const slack = createStubSlack({ cardUpdateFailure: new Error("message_not_found") });
+    const registry = createApprovalRegistry();
+    const onHeld = createHeldCallPrompter({
+      cards: slack.poster,
+      registry,
+      now: () => NOW,
+      scheduler: manualClock().scheduler
+    })({ channelId: CHANNEL, threadTs: THREAD });
+
+    const wait = onHeld(HELD);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
+    const completion = await wait;
+
+    expect(() => {
+      completion?.({ state: "ran" });
+    }).not.toThrow();
+  });
+
+  it("deny and expiry are one phase still: they resolve with no completion", async () => {
+    const { registry, onHeld } = rig();
+
+    const denied = onHeld(HELD);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "denied", approver: "U0G9QF9C6" });
+    expect(await denied).toBeUndefined();
+
+    const expired = onHeld(HELD);
+    await flush();
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "expired" });
+    expect(await expired).toBeUndefined();
   });
 
   it("deny repaints the card red, naming the approver, and resolves", async () => {
@@ -220,8 +344,13 @@ describe("how the wait ends", () => {
     entry?.settle({ state: "denied", approver: "U9IMPOSTER" });
     await wait;
 
+    // One edit, and it is the approve's running face — the impostor's denial
+    // neither repainted nor reached the card.
     expect(slack.edits).toHaveLength(1);
-    expect(slack.cardAt(slack.cards[0]?.messageTs ?? "")?.color).toBe("#1BA85A");
+    const card = slack.cardAt(slack.cards[0]?.messageTs ?? "");
+    expect(card?.color).toBeUndefined();
+    expect(JSON.stringify(card)).toContain("U0G9QF9C6");
+    expect(JSON.stringify(card)).not.toContain("U9IMPOSTER");
   });
 });
 
@@ -270,8 +399,17 @@ describe("a card Slack would not take", () => {
     await flush();
     registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "approved", approver: "U0G9QF9C6" });
 
-    await wait;
+    const completion = await wait;
 
+    expect(lines).toContainEqual(
+      expect.objectContaining({ event: "card_failed", cardState: "running" })
+    );
+
+    // And the second phase fails the same way, independently: the wait already
+    // resolved, so a failure here has nothing left to fail safe into except the
+    // log line.
+    completion?.({ state: "ran" });
+    await flush();
     expect(lines).toContainEqual(
       expect.objectContaining({ event: "card_failed", cardState: "approved" })
     );

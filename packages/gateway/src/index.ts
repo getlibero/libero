@@ -49,6 +49,13 @@ export type {
   ApprovalCardStatus
 } from "./slack/approval-card.js";
 
+export { renderChecklistCard } from "./slack/checklist-card.js";
+export type {
+  ChecklistCardInput,
+  ChecklistCardStatus,
+  ChecklistStep
+} from "./slack/checklist-card.js";
+
 export { DEFAULT_BACKOFF, nextDelayMs } from "./slack/backoff.js";
 export type { BackoffPolicy } from "./slack/backoff.js";
 

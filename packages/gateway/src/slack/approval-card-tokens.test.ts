@@ -33,7 +33,7 @@ function darkToken(css: string, name: string): string {
 
 const TICKET: ApprovalTicket = { id: "0f2c9b3e-7a41-4c0d-9d2b-6e1f5a8c3b90", expiresAt: 1_749_998_700_123 };
 
-const colourOf = (status: Parameters<typeof renderApprovalCard>[0]["status"]): string =>
+const colourOf = (status: Parameters<typeof renderApprovalCard>[0]["status"]): string | undefined =>
   renderApprovalCard({ toolName: "github.pr.merge", status }).color;
 
 describe("the card's colours against design/tokens.css", () => {
@@ -47,9 +47,18 @@ describe("the card's colours against design/tokens.css", () => {
     expect(colourOf({ state: "approved", approver: "U0HUMAN" })).toBe(darkToken(css, "--lb-accent"));
   });
 
-  it("draws denied and expired in the dark --lb-danger", () => {
+  it("draws denied, expired, and approved-then-refused in the dark --lb-danger", () => {
     const danger = darkToken(css, "--lb-danger");
     expect(colourOf({ state: "denied", approver: "U0HUMAN" })).toBe(danger);
     expect(colourOf({ state: "expired" })).toBe(danger);
+    expect(colourOf({ state: "refused", approver: "U0HUMAN", reason: "no" })).toBe(danger);
+  });
+
+  // The in-flight faces spend no token, which is what keeps this file's list
+  // exhaustive: a state that wore a fourth colour would have to name a token
+  // here, and the spec has none to give it.
+  it("spends no token on a state that has no status yet", () => {
+    expect(colourOf({ state: "running", approver: "U0HUMAN" })).toBeUndefined();
+    expect(colourOf({ state: "unanswered", approver: "U0HUMAN" })).toBeUndefined();
   });
 });

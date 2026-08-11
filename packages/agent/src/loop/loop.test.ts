@@ -22,6 +22,7 @@ import type {
   AgentLoopCaps,
   AgentTaskOptions,
   ToolCallAttribution,
+  ToolCallStep,
   ToolExecutor,
   ToolResult,
   ToolSource
@@ -282,6 +283,157 @@ describe("telling the caller what each turn cost", () => {
       { usage: { inputTokens: 10, outputTokens: 5 }, turn: 1 },
       { usage: { inputTokens: 20, outputTokens: 7, cacheReadInputTokens: 4096 }, turn: 2 }
     ]);
+  });
+
+  describe("onToolCall", () => {
+    /** Every step, flattened to `<ordinal> <name> <state>` for readable assertions. */
+    const trace = (steps: ToolCallStep[]): string[] =>
+      steps.map(step => `${String(step.ordinal)} ${step.name} ${step.state}`);
+
+    it("reports each call running and then how it ended", async () => {
+      const steps: ToolCallStep[] = [];
+      const { client } = fakeCompletion([
+        response({ stopReason: "tool_use", toolCalls: [toolCall("call-1"), toolCall("call-2")] }),
+        response({ text: "done", stopReason: "end_turn" })
+      ]);
+
+      await runAgentTask(
+        task({
+          completion: client,
+          toolExecutor: fakeExecutor({
+            lookup: call =>
+              call.id === "call-1" ? { content: "ok" } : { content: "no", isError: true }
+          }).executor,
+          onToolCall: step => {
+            steps.push(step);
+          }
+        })
+      );
+
+      expect(trace(steps)).toEqual([
+        "1 lookup running",
+        "1 lookup ok",
+        "2 lookup running",
+        "2 lookup error"
+      ]);
+    });
+
+    // A refusal from the proxy arrives as an ordinary `isError` result, and a
+    // throw becomes one in the loop. Both read as a failed step.
+    it("reports a thrown tool failure as an error, not as a lost step", async () => {
+      const steps: ToolCallStep[] = [];
+      const { client } = fakeCompletion([
+        response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
+        response({ text: "done", stopReason: "end_turn" })
+      ]);
+
+      await runAgentTask(
+        task({
+          completion: client,
+          toolExecutor: {
+            execute: () => Promise.reject(new Error("upstream down"))
+          },
+          onToolCall: step => {
+            steps.push(step);
+          }
+        })
+      );
+
+      expect(trace(steps)).toEqual(["1 lookup running", "1 lookup error"]);
+    });
+
+    // Ordinals number what the task attempted, so a capped call still gets one
+    // — and it is never reported running, because it never was.
+    it("numbers a capped call and reports it skipped, never running", async () => {
+      const steps: ToolCallStep[] = [];
+      const { client } = fakeCompletion([
+        response({
+          stopReason: "tool_use",
+          toolCalls: [toolCall("call-1"), toolCall("call-2"), toolCall("call-3")]
+        })
+      ]);
+
+      const result = await runAgentTask(
+        task({
+          completion: client,
+          caps: { ...CAPS, maxToolCalls: 1 },
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+          onToolCall: step => {
+            steps.push(step);
+          }
+        })
+      );
+
+      expect(result.stopReason).toBe("tool_call_cap");
+      expect(trace(steps)).toEqual([
+        "1 lookup running",
+        "1 lookup ok",
+        "2 lookup skipped",
+        "3 lookup skipped"
+      ]);
+    });
+
+    // Ordinals are task-global: a second turn's first call is not ordinal 1
+    // again, or a consumer keyed on it would overwrite the first turn's row.
+    it("numbers across turns, not within one", async () => {
+      const steps: ToolCallStep[] = [];
+      const { client } = fakeCompletion([
+        response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
+        response({ stopReason: "tool_use", toolCalls: [toolCall("call-2")] }),
+        response({ text: "done", stopReason: "end_turn" })
+      ]);
+
+      await runAgentTask(
+        task({
+          completion: client,
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+          onToolCall: step => {
+            steps.push(step);
+          }
+        })
+      );
+
+      expect(steps.map(step => step.ordinal)).toEqual([1, 1, 2, 2]);
+    });
+
+    // The name is the model's own text, relayed as a value. A name that decodes
+    // to no tool is refused by the client rather than here, and still counts.
+    it("reports the name the model emitted, whatever it was", async () => {
+      const steps: ToolCallStep[] = [];
+      const { client } = fakeCompletion([
+        response({ stopReason: "tool_use", toolCalls: [toolCall("call-1", "<!channel>")] }),
+        response({ text: "done", stopReason: "end_turn" })
+      ]);
+
+      await runAgentTask(
+        task({
+          completion: client,
+          toolExecutor: { execute: () => Promise.resolve({ content: "no such tool", isError: true }) },
+          onToolCall: step => {
+            steps.push(step);
+          }
+        })
+      );
+
+      expect(steps.map(step => step.name)).toEqual(["<!channel>", "<!channel>"]);
+    });
+
+    it("is optional: a task with no hook runs exactly as before", async () => {
+      const { client } = fakeCompletion([
+        response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
+        response({ text: "done", stopReason: "end_turn" })
+      ]);
+
+      const result = await runAgentTask(
+        task({
+          completion: client,
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor
+        })
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.toolCalls).toBe(1);
+    });
   });
 
   it("is not called when no turn was taken", async () => {

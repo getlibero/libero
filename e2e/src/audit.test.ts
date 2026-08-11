@@ -29,6 +29,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
   CANARY,
   CHANNEL,
+  approvalCardOf,
   auditRows,
   calls,
   lastAuditId,
@@ -149,12 +150,12 @@ beforeAll(async () => {
   // The card is what says the hold has happened and the row is written; reading
   // the ticket before it appears is a race the run would lose intermittently.
   await vi.waitFor(() => {
-    expect(agent.slack.cards).toHaveLength(1);
+    expect(approvalCardOf(agent)).toBeDefined();
   });
   // The ticket comes off the proxy's own `held` row rather than being invented
   // here — the card offers the proxy's id, and a click has to carry it back.
   const ticket = heldTicket(auditRows(rig.auditDb, start));
-  const card = agent.slack.cards.at(-1);
+  const card = approvalCardOf(agent);
   await agent.slack.deliverDecision({
     teamId: "T024BE7LD",
     channelId: CHANNEL,

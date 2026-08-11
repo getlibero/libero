@@ -15,12 +15,19 @@ const TICKET: ApprovalTicket = {
 };
 
 const AWAITING: ApprovalCardStatus = { state: "awaiting", ticket: TICKET };
+const RUNNING: ApprovalCardStatus = { state: "running", approver: "U0HUMAN" };
 const APPROVED: ApprovalCardStatus = { state: "approved", approver: "U0HUMAN" };
 const DENIED: ApprovalCardStatus = { state: "denied", approver: "U0HUMAN" };
+const REFUSED: ApprovalCardStatus = {
+  state: "refused",
+  approver: "U0HUMAN",
+  reason: "This channel's team sheet does not permit `github.pr.merge`."
+};
 const EXPIRED: ApprovalCardStatus = { state: "expired" };
+const UNANSWERED: ApprovalCardStatus = { state: "unanswered", approver: "U0HUMAN" };
 
-const ALL: ApprovalCardStatus[] = [AWAITING, APPROVED, DENIED, EXPIRED];
-const DECIDED: ApprovalCardStatus[] = [APPROVED, DENIED, EXPIRED];
+const ALL: ApprovalCardStatus[] = [AWAITING, RUNNING, APPROVED, DENIED, REFUSED, EXPIRED, UNANSWERED];
+const DECIDED: ApprovalCardStatus[] = [RUNNING, APPROVED, DENIED, REFUSED, EXPIRED, UNANSWERED];
 
 function card(status: ApprovalCardStatus, overrides: { toolName?: string; arguments?: string } = {}) {
   return renderApprovalCard({
@@ -84,22 +91,71 @@ describe("renderApprovalCard", () => {
   it("uses the three status colours and no fourth", () => {
     expect(ALL.map(status => card(status).color)).toEqual([
       "#F5B544",
+      // `running` — in flight is none of the three, so it wears none of them.
+      undefined,
       "#1BA85A",
       "#FF6B5B",
-      "#FF6B5B"
+      "#FF6B5B",
+      "#FF6B5B",
+      // `unanswered` — the fate of the call is unknown, so it claims nothing.
+      undefined
     ]);
-    expect(new Set(ALL.map(status => card(status).color)).size).toBe(3);
+    const colours = ALL.map(status => card(status).color).filter(value => value !== undefined);
+    expect(new Set(colours).size).toBe(3);
+  });
+
+  // The in-flight faces omit the key rather than carrying an empty string,
+  // which is what the adapter turns into an attachment with no `color` at all.
+  it("omits the colour key entirely for a state that has no status yet", () => {
+    for (const status of [RUNNING, UNANSWERED]) {
+      expect(Object.hasOwn(card(status), "color")).toBe(false);
+    }
+    expect(Object.hasOwn(card(APPROVED), "color")).toBe(true);
+  });
+
+  // Green is the claim that the call ran, which is the whole of #143. A human's
+  // click is `running`, and only the re-submission's answer moves it.
+  it("keeps green for the call that ran, and gives a click of its own its own face", () => {
+    expect(card(RUNNING).color).toBeUndefined();
+    expect(sectionText(card(RUNNING))).toContain("the call is running");
+    expect(sectionText(card(APPROVED))).toContain("the call ran");
+  });
+
+  // Approved-then-refused names the approver: their decision was carried out,
+  // and something after it stopped the call. Dropping the name would read as
+  // though the click had been ignored.
+  it("names the approver on an approved call that was refused anyway, with the proxy's reason", () => {
+    const rendered = card(REFUSED);
+    expect(rendered.color).toBe("#FF6B5B");
+    expect(text(rendered)).toContain("U0HUMAN");
+    expect(text(rendered)).toContain("does not permit");
+    expect(sectionText(rendered)).toContain("It did not run.");
+  });
+
+  it("says only what is known when the task ended before the call answered", () => {
+    const rendered = card(UNANSWERED);
+    expect(text(rendered)).toContain("U0HUMAN");
+    expect(sectionText(rendered)).toContain("It may have run.");
+    // Neither claim is available, so neither is made.
+    expect(sectionText(rendered)).not.toContain("did not run");
+    expect(sectionText(rendered)).not.toContain("the call ran");
   });
 
   it("says the state in words as well as in colour", () => {
     // The colour is an attachment's left border: it does not survive a push
-    // notification and a screen reader never sees it. Every state names itself.
+    // notification and a screen reader never sees it. Every state names itself
+    // — which is what makes the two uncoloured states legible at all.
     const expected: Array<[ApprovalCardStatus, string, string]> = [
       [AWAITING, "APPROVAL REQUIRED", "Awaiting a human"],
+      [RUNNING, "APPROVED — RUNNING", "the call is running"],
       [APPROVED, "APPROVED", "Approved:"],
       [DENIED, "DENIED", "Denied:"],
-      [EXPIRED, "EXPIRED", "Expired:"]
+      [REFUSED, "APPROVED — BLOCKED", "Blocked:"],
+      [EXPIRED, "EXPIRED", "Expired:"],
+      [UNANSWERED, "APPROVED — UNANSWERED", "Unanswered:"]
     ];
+
+    expect(expected).toHaveLength(ALL.length);
 
     for (const [status, label, fallbackWord] of expected) {
       const rendered = card(status);
@@ -145,6 +201,23 @@ describe("renderApprovalCard", () => {
     expect(rendered_text).toContain("a&lt;b&amp;c");
     // The one angle bracket that is ours: the date token the renderer wrote.
     expect(rendered_text.match(/<(?!!date\^)/gu)).toBeNull();
+  });
+
+  // `refused`'s reason is `refusalMessage`'s today, which this project writes —
+  // but it is a caller string of type `string`, and the rule that holds for one
+  // caller string must not depend on which one it is. The approver's own `<@…>`
+  // is the renderer's and survives.
+  it("neutralizes markup in the relayed refusal reason too", () => {
+    const rendered = card({
+      state: "refused",
+      approver: "U0HUMAN",
+      reason: "<!channel> the sheet <https://evil|says no>"
+    });
+    const rendered_text = `${text(rendered)}${rendered.fallback}`;
+
+    expect(rendered_text).not.toContain("<!channel>");
+    expect(rendered_text).toContain("&lt;!channel&gt;");
+    expect(rendered_text).toContain("<@U0HUMAN>");
   });
 
   it("truncates an argument that would blow Slack's section limit", () => {

@@ -27,6 +27,7 @@ import type {
 import { createSilentLogger } from "@getlibero/gateway";
 import type { HeldCallPrompter } from "@getlibero/agent";
 import type { PromptTarget } from "./approvals/prompter.js";
+import type { ChecklistReporter, ChecklistTarget } from "./checklist/checklist.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import type { SessionRegistry } from "./session/registry.js";
 import type { ChannelRouter } from "./session/router.js";
@@ -68,6 +69,16 @@ export interface MessageIngestOptions {
    * only be answered when a card is actually wanted.
    */
   onHeld?: (target: PromptTarget) => HeldCallPrompter | undefined;
+  /**
+   * Where a follow-up's checklist goes. Optional per call for `onHeld`'s
+   * reason and answered by the same knot in compose.ts — the card poster is
+   * built after this handler is.
+   *
+   * A follow-up gets its own card in its own thread. Sharing one with the
+   * mention that started the thread would mean editing a message from a
+   * finished task, and a reader would watch a completed checklist reopen.
+   */
+  checklist?: (target: ChecklistTarget) => ChecklistReporter | undefined;
   logger?: Logger;
   /** Injected so a test states the clock rather than faking timers. */
   now?: () => number;
@@ -192,6 +203,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
     if (!session.threads.isActive(thread, now())) return undefined;
 
     const held = onHeld?.({ channelId: message.channelId, threadTs: thread });
+    const checklist = options.checklist?.({ channelId: message.channelId, threadTs: thread });
 
     const reply = await route({
       key: { workspace: message.teamId, channel: message.channelId },
@@ -199,7 +211,8 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
       thread,
       text: message.text,
       traceId: message.eventId,
-      ...(held !== undefined ? { onHeld: held } : {})
+      ...(held !== undefined ? { onHeld: held } : {}),
+      ...(checklist !== undefined ? { checklist } : {})
     });
 
     return reply === undefined ? undefined : { text: reply.text };

@@ -182,6 +182,17 @@ function rig(redeemed: () => ProxyResponse) {
   return { slack, clock, registry, proxy, modelSaw, gateway };
 }
 
+/**
+ * The approval card among the thread's cards.
+ *
+ * Since #68 a tool-calling task also posts a checklist, so `cards[0]` is
+ * whichever went up first and this file cares about exactly one of them. The
+ * ticket id is the discriminator because only the amber card carries it — it is
+ * the button's value, and a decided card drops the actions block entirely.
+ */
+const approvalCard = (slack: ReturnType<typeof createStubSlack>) =>
+  slack.cards.find(posted => JSON.stringify(posted.card).includes(TICKET));
+
 const mentionFields = (text: string, eventId: string, ts = THREAD) => ({
   teamId: TEAM,
   channelId: CHANNEL,
@@ -202,9 +213,9 @@ describe("hold → card → decision → run", () => {
     // The amber card is up while the task waits — the model has seen one turn
     // and the thread has no reply yet.
     await vi.waitFor(() => {
-      expect(slack.cards).toHaveLength(1);
+      expect(approvalCard(slack)).toBeDefined();
     });
-    const card = slack.cards[0];
+    const card = approvalCard(slack);
     expect(card?.card.color).toBe(AMBER);
     expect(card?.threadTs).toBe(THREAD);
     expect(slack.posted).toHaveLength(0);
@@ -239,7 +250,7 @@ describe("hold → card → decision → run", () => {
 
     const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev002"));
     await vi.waitFor(() => {
-      expect(slack.cards).toHaveLength(1);
+      expect(approvalCard(slack)).toBeDefined();
     });
 
     await slack.deliverDecision({
@@ -248,12 +259,12 @@ describe("hold → card → decision → run", () => {
       userId: "U0G9QF9C6",
       ticketId: TICKET,
       verdict: "deny",
-      messageTs: slack.cards[0]?.messageTs ?? "",
+      messageTs: approvalCard(slack)?.messageTs ?? "",
       threadTs: THREAD
     });
     await pending;
 
-    expect(slack.cardAt(slack.cards[0]?.messageTs ?? "")?.color).toBe(RED);
+    expect(slack.cardAt(approvalCard(slack)?.messageTs ?? "")?.color).toBe(RED);
     // The refusal is the tool result the model relays; the task completed and
     // the thread got its reply rather than a hang.
     expect(JSON.stringify(modelSaw)).toContain("A human declined");
@@ -268,7 +279,7 @@ describe("hold → card → decision → run", () => {
 
     const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev003"));
     await vi.waitFor(() => {
-      expect(slack.cards).toHaveLength(1);
+      expect(approvalCard(slack)).toBeDefined();
     });
 
     // Nobody clicks. The deadline is the ticket's own expiresAt.
@@ -276,8 +287,50 @@ describe("hold → card → decision → run", () => {
     clock.fire();
     await pending;
 
-    expect(slack.cardAt(slack.cards[0]?.messageTs ?? "")?.color).toBe(RED);
+    expect(slack.cardAt(approvalCard(slack)?.messageTs ?? "")?.color).toBe(RED);
     expect(JSON.stringify(modelSaw)).toContain("expired before the call was made");
+    expect(slack.posted).toHaveLength(1);
+
+    await gateway.stop();
+  });
+
+  // #143 end to end: the sheet is enforced again at redemption, so a human's
+  // yes is not the last word. An operator's edit during the hold — here, the
+  // tool leaving the allowlist — refuses the call, and the card must not claim
+  // an execution that did not happen.
+  it("an approved call refused at redemption never goes green", async () => {
+    const { slack, gateway, modelSaw } = rig(() => refusedWith("tool_not_allowed"));
+    await gateway.start();
+
+    const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev005"));
+    await vi.waitFor(() => {
+      expect(approvalCard(slack)).toBeDefined();
+    });
+    const messageTs = approvalCard(slack)?.messageTs ?? "";
+
+    await slack.deliverDecision({
+      teamId: TEAM,
+      channelId: CHANNEL,
+      userId: "U0G9QF9C6",
+      ticketId: TICKET,
+      verdict: "approve",
+      messageTs,
+      threadTs: THREAD
+    });
+    await pending;
+
+    const shown = slack.cardAt(messageTs);
+    expect(shown?.color).toBe(RED);
+    expect(shown?.color).not.toBe(GREEN);
+    // The approver is still named: their click was honoured, and what stopped
+    // the call happened after it.
+    expect(JSON.stringify(shown)).toContain("U0G9QF9C6");
+    expect(JSON.stringify(shown)).toContain("lists `github` but not the tool `merge_pr`");
+
+    // The model-facing half is unchanged by #143 — the same refusal it always
+    // relayed, and the thread still gets its reply.
+    expect(JSON.stringify(modelSaw)).toContain("lists `github` but not the tool `merge_pr`");
+    expect(JSON.stringify(modelSaw)).not.toContain(TICKET);
     expect(slack.posted).toHaveLength(1);
 
     await gateway.stop();
@@ -291,7 +344,7 @@ describe("hold → card → decision → run", () => {
 
     const first = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev004"));
     await vi.waitFor(() => {
-      expect(slack.cards).toHaveLength(1);
+      expect(approvalCard(slack)).toBeDefined();
     });
 
     const second = slack.deliverMention(
@@ -307,7 +360,7 @@ describe("hold → card → decision → run", () => {
       userId: "U0G9QF9C6",
       ticketId: TICKET,
       verdict: "approve",
-      messageTs: slack.cards[0]?.messageTs ?? "",
+      messageTs: approvalCard(slack)?.messageTs ?? "",
       threadTs: THREAD
     });
     await first;

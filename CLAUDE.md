@@ -943,6 +943,62 @@ task ends on `wall_time_cap`, and an operator who wants longer holds sizes the
 channel's `[llm]` caps for it in the sheet. The wait's deadline is the wire's
 `expiresAt` on the proxy's clock — skew is relayed, not corrected.
 
+**#143 made green mean the call ran, and #68 put a checklist beside it. They
+share one decision: `SlackCard.color` is optional now.** The design system's
+vocabulary is three — green allowed and executed, amber a human who still has to
+click, red blocked — and the spec is locked. A checklist mid-task and an approved
+call whose re-submission has not answered are none of the three, so rather than a
+fourth colour or a widened amber (which would make the one colour meaning *click
+this* also mean *nothing to do*), those states carry **no** colour and Slack
+draws its own default border. That reads as *not a status yet*, and it is only
+safe because the card was already required to be legible with no colour at all.
+
+**#143's mechanism is a second phase on the prompter.** `HeldCallPrompter` may
+resolve to a `HeldCallCompletion`, which `tools.ts` calls with the
+re-submission's outcome; a prompter returning nothing behaves exactly as #127's,
+and the **model-facing results are unchanged in every case**. Three faces were
+added, and the third is the one worth keeping: `running` (uncoloured), `refused`
+(red, naming the approver and relaying the proxy's own sentence — their decision
+*was* carried out and something after it stopped the call, which is a different
+fact from `denied`), and `unanswered` (uncoloured) for a task that ended with the
+re-submission in flight. `unanswered` is the audit log's word (#124) and its
+argument: the call was dispatched and may have run, so say only what is known.
+Without it, an approve on a task that then hits its wall clock left a card
+reading "the call is running" forever — the lie in the other direction. The three
+prompter tests that failed had *encoded* the gap, the way `audit.test.ts` did.
+
+**#68's two decisions are when the card appears and how edits are bounded.** It
+is posted on the **first tool call**, not at task start, so a task that answers
+from what the model knows still produces one message — which is also why it needs
+no sheet field to switch off. And edits are coalesced against a one-second floor
+(`MIN_EDIT_INTERVAL_MS`, the process's number on `DEFAULT_UPSTREAM_TIMEOUT_MS`'s
+argument: it exists to stay inside Slack's rate limits, which belong to the app
+rather than to any channel). The mechanism is a serialized write chain plus that
+floor, and a write renders whatever is true *when it runs* — so a burst landing
+during one write is covered by the next, and N steps never cost N writes. The
+terminal write skips the floor and is awaited, because it is the state a reader
+is left looking at.
+
+Three smaller things there are settled. **The loop reports tool calls and
+nothing else** — `onToolCall`, synchronous and *not* awaited, which is the
+opposite of `onTurn` and deliberate: its consumer edits a Slack message, and
+awaiting that would put a round trip between every tool call and the next. A
+task's ending is its `AgentTaskResult`, which the caller already has, and the
+case where the loop *throws* has no result at all and is exactly the one a
+checklist must still close — so `session/task.ts` closes it in a `finally`, from
+an `ending` initialized to `failed`. **The row shows the flat name the model
+called**, not the `(server, tool)` pair the approval card shows: only the tool
+client holds that mapping, and the flat name is the better one anyway, since a
+name decoding to no tool still gets a row (#170). It is model-authored text and
+is escaped by the renderer. And **`deps.scheduler` deliberately does not reach
+the checklist** — that scheduler is the approval deadline's, and a test firing
+the next pending timer to expire a ticket must not find an edit floor in the
+queue instead, which is the rule `compose.ts` already stated for the gateway's
+reconnect ladder.
+
+Both are why `e2e/`'s `approvalCardOf` exists: a thread that holds a call now has
+two cards in it, and which is first is a race.
+
 Three decisions on the gateway side are settled and should not be
 re-litigated. **The gateway holds no clock** — it renders `expired` when told to
 and never on its own, because the deadline belongs to the layer already awaiting

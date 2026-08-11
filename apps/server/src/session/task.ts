@@ -19,7 +19,13 @@
 // counter, and that is not worth a user's answer — so the report is awaited,
 // its failure is a log line, and the reply goes to the thread either way.
 //
-// Still absent, and it belongs to its own issue: the live checklist (#68).
+// The live checklist (#68) is driven from here, for the reason the spend report
+// is: this is the only layer that sees both the loop's progress and how the task
+// ended. The loop deliberately reports neither — a task's ending is its
+// `AgentTaskResult`, which the caller already has, and the case where the loop
+// *throws* has no result at all and is exactly the one a checklist must still
+// close. So every exit closes it, which is what keeps a card from being left
+// reading `WORKING` for a task that is over.
 
 import { randomUUID } from "node:crypto";
 import {
@@ -35,8 +41,10 @@ import type {
   CompletionClient,
   ProxySpendClient,
   ProxyTransport,
-  TokenUsage
+  TokenUsage,
+  ToolCallStep
 } from "@getlibero/agent";
+import type { ChecklistOutcome } from "../checklist/checklist.js";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import { budgetWarningMessage, type BudgetWarning } from "@getlibero/schema";
@@ -252,6 +260,18 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     // is reported as the channel that spent it, or not at all.
     const spend = createProxySpendClient({ transport: options.transport, channel });
 
+    /**
+     * How the checklist is closed, and the sentence that goes with it.
+     *
+     * Initialized to `failed` rather than to a hopeful default, which is what
+     * makes the `finally` below total: every path that reaches an ending sets
+     * it, and a path that throws before any of them — a bug here, a provider
+     * that rejects in a way nothing anticipated — closes the card honestly
+     * instead of leaving it mid-task.
+     */
+    let ending: ChecklistOutcome = "failed";
+    let endingNote: string | undefined;
+
     // Minted here rather than by the loop, which is what `taskId` is for: a
     // turn's report has to be named before the turn happens, and the loop only
     // hands its id back when the task is over. Every turn's id derives from
@@ -259,83 +279,109 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     // carry the same root.
     const taskId = randomUUID();
 
-    let result: AgentTaskResult;
+    // Everything from here has an ending, and the checklist is closed on
+    // every one of them — including a throw, which is the path the loop cannot
+    // report and the one a reader is most likely to be left staring at.
     try {
-      result = await runAgentTask({
-        taskId,
-        completion: options.completion,
-        toolSource: tools,
-        toolExecutor: tools,
-        // The channel's, out of its team sheet, with AGENT_MODEL behind it.
-        model: settings.model,
-        // Attribution for the audit log, not authentication: nothing in the
-        // proxy decides anything from it. The requesting user as the front-end
-        // sent it — display-name resolution is the context assembler's (#67),
-        // and a name is not what an audit record wants anyway.
-        requestingUser: request.requestingUser,
-        system: SYSTEM_PROMPT,
-        // The whole seed transcript, already assembled: the channel's recent
-        // messages with their authors, then what was asked. Built by the router
-        // from the session's store and name cache, because those are the
-        // session's and this file is given one task's settings rather than a
-        // channel's state.
-        //
-        // A copy, because `AgentTaskOptions.messages` is mutable and the loop's
-        // contract is only that it does not mutate what it was handed.
-        messages: [...settings.messages],
-        // The channel's `[llm]` caps. Defence in depth — the proxy's meter is
-        // what is authoritative — but the channel's numbers rather than the
-        // process's.
-        caps: settings.caps,
-        // Reported as the turns happen, not when the task ends. See
-        // `reportSpend`.
-        onTurn: (usage, turn) => reportSpend(spend, taskId, turn, usage, request, logger),
-        ...(options.signal !== undefined ? { signal: options.signal } : {})
-      });
-    } catch (error) {
-      // Only the tool listing reaches here. A failed tool *call* never does —
-      // the loop turns it into an error result the model relays, so the task
-      // still answers — and every other throw is the provider's and stays the
-      // gateway's to log.
-      if (!(error instanceof ProxyClientError)) throw error;
+      let result: AgentTaskResult;
+      try {
+        result = await runAgentTask({
+          taskId,
+          completion: options.completion,
+          toolSource: tools,
+          toolExecutor: tools,
+          // The channel's, out of its team sheet, with AGENT_MODEL behind it.
+          model: settings.model,
+          // Attribution for the audit log, not authentication: nothing in the
+          // proxy decides anything from it. The requesting user as the front-end
+          // sent it — display-name resolution is the context assembler's (#67),
+          // and a name is not what an audit record wants anyway.
+          requestingUser: request.requestingUser,
+          system: SYSTEM_PROMPT,
+          // The whole seed transcript, already assembled: the channel's recent
+          // messages with their authors, then what was asked. Built by the router
+          // from the session's store and name cache, because those are the
+          // session's and this file is given one task's settings rather than a
+          // channel's state.
+          //
+          // A copy, because `AgentTaskOptions.messages` is mutable and the loop's
+          // contract is only that it does not mutate what it was handed.
+          messages: [...settings.messages],
+          // The channel's `[llm]` caps. Defence in depth — the proxy's meter is
+          // what is authoritative — but the channel's numbers rather than the
+          // process's.
+          caps: settings.caps,
+          // Reported as the turns happen, not when the task ends. See
+          // `reportSpend`.
+          onTurn: (usage, turn) => reportSpend(spend, taskId, turn, usage, request, logger),
+          // Where the checklist's rows come from. Synchronous and not awaited,
+          // which is the hook's contract: the reporter coalesces behind it, so
+          // a fast loop does not wait on a Slack edit between tool calls.
+          // Absent when the front-end gave the request no checklist.
+          ...(request.checklist !== undefined
+            ? { onToolCall: (step: ToolCallStep) => { request.checklist?.report(step); } }
+            : {}),
+          ...(options.signal !== undefined ? { signal: options.signal } : {})
+        });
+        ending = result.stopReason;
+        endingNote = CAP_NOTE[result.stopReason];
+      } catch (error) {
+        // Only the tool listing reaches here. A failed tool *call* never does —
+        // the loop turns it into an error result the model relays, so the task
+        // still answers — and every other throw is the provider's and stays the
+        // gateway's to log.
+        if (!(error instanceof ProxyClientError)) throw error;
 
-      // A cancelled listing is the process shutting down, and shutdown posts
-      // nothing: the operator asked for quiet, and this would otherwise put a
-      // line into every thread open at that moment.
-      if (error.reason === "cancelled") return undefined;
+        // A cancelled listing is the process shutting down, and shutdown posts
+        // nothing: the operator asked for quiet, and this would otherwise put a
+        // line into every thread open at that moment. The checklist still
+        // closes — a card is not a reply, and one left reading `WORKING` after
+        // a restart is worse than a quiet thread.
+        if (error.reason === "cancelled") {
+          ending = "cancelled";
+          return undefined;
+        }
 
-      logger.log("error", {
-        event: "tools_unavailable",
+        logger.log("error", {
+          event: "tools_unavailable",
+          channel,
+          eventId: request.traceId,
+          reason: error.reason
+        });
+        // `failed` already, from the initializer — the listing never came back,
+        // so no tool call was ever attempted and there is usually no card at
+        // all. Setting it here would be restating the default.
+        return {
+          text:
+            error.reason === "no_client_certificate"
+              ? PROXY_UNAVAILABLE.no_client_certificate
+              : PROXY_UNAVAILABLE.other
+        };
+      }
+
+      // The one thing the gateway's own `mention`/`replied` pair cannot show: why
+      // a task ended, what it cost in total, and which model it cost that on. The
+      // per-turn `spend_reported` lines say what the meter was told and sum to
+      // this; a task line whose `totalTokens` is larger than its reports add up to
+      // is a meter that missed something, which is worth being able to see at a
+      // glance.
+      logger.log("info", {
+        event: "task",
         channel,
         eventId: request.traceId,
-        reason: error.reason
+        task: result.taskId,
+        model: settings.model,
+        stopReason: result.stopReason,
+        totalTokens: result.totalTokens,
+        turns: result.turns
       });
-      return {
-        text:
-          error.reason === "no_client_certificate"
-            ? PROXY_UNAVAILABLE.no_client_certificate
-            : PROXY_UNAVAILABLE.other
-      };
+
+      return replyFor(result, warning);
+    } finally {
+      // Awaited, so the card is terminal before the reply lands under it. It
+      // never rejects: `close` is total, for the reason `reportSpend` is.
+      await request.checklist?.close(ending, endingNote);
     }
-
-    // The one thing the gateway's own `mention`/`replied` pair cannot show: why
-    // a task ended, what it cost in total, and which model it cost that on. The
-    // per-turn `spend_reported` lines say what the meter was told and sum to
-    // this; a task line whose `totalTokens` is larger than its reports add up to
-    // is a meter that missed something, which is worth being able to see at a
-    // glance.
-    logger.log("info", {
-      event: "task",
-      channel,
-      eventId: request.traceId,
-      task: result.taskId,
-      model: settings.model,
-      stopReason: result.stopReason,
-      totalTokens: result.totalTokens,
-      turns: result.turns
-    });
-
-    return replyFor(result, warning);
   };
 }
 

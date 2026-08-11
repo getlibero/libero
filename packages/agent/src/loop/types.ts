@@ -59,6 +59,43 @@ export interface ToolExecutor {
 }
 
 /**
+ * Where one tool call has got to, as the loop dispatches it (#68).
+ *
+ * Four states rather than a boolean, because a reader watching a task wants to
+ * tell "this one is in flight" from "this one came back an error" from "the cap
+ * bit before this one ran" — and the third is not a failure of the call, which
+ * never happened.
+ */
+export type ToolCallState =
+  /** Dispatched, no answer yet. */
+  | "running"
+  /** Answered. */
+  | "ok"
+  /** Answered with `isError`, or threw. A refusal is one of these. */
+  | "error"
+  /** Never dispatched: a cap or an abort ended the batch first. */
+  | "skipped";
+
+/**
+ * One tool call's progress, reported as it happens.
+ *
+ * `ordinal` is 1-based and task-global, allocated when the call is dispatched
+ * and reused for that call's later states, so a consumer keyed on it sees a
+ * step change rather than a second step. It counts skipped calls too: the
+ * numbering is what the task attempted, not what it achieved.
+ *
+ * **`name` is model-authored text** — the flat name the model emitted, which
+ * the tool client may not even be able to decode to a pair. It is a value here
+ * rather than part of a sentence for `UnmappedToolCall.name`'s reason, and a
+ * consumer that renders it on a human-facing surface has to escape it there.
+ */
+export interface ToolCallStep {
+  readonly ordinal: number;
+  readonly name: string;
+  readonly state: ToolCallState;
+}
+
+/**
  * Per-task hard caps.
  *
  * Defense in depth only. The tool proxy service's meter is authoritative and
@@ -171,6 +208,30 @@ export interface AgentTaskOptions {
    * it has a logger.
    */
   onTurn?: (usage: TokenUsage, turn: number) => void | Promise<void>;
+  /**
+   * Where each tool call has got to, called as the loop dispatches them (#68).
+   *
+   * **Synchronous and not awaited**, which is the opposite of `onTurn` and is
+   * the decision rather than an oversight. `onTurn` is awaited because the
+   * meter is being told about an ordering it has to see; this is a progress
+   * report, and its consumer edits a Slack message — awaiting that would put a
+   * network round trip between every tool call and the next, making a task as
+   * slow as the surface watching it. A consumer that writes anywhere coalesces
+   * and rate-limits behind this callback, where it can, rather than here, where
+   * it would cost the task.
+   *
+   * **It must not throw.** Nothing catches it: a rejection would end the task
+   * and lose the answer because a *checklist* could not be drawn. Catching here
+   * would be worse, for the reason `onTurn` gives — this file has no way to log,
+   * so a swallowed failure vanishes rather than being reported.
+   *
+   * The loop reports nothing else. A task's terminal state is its
+   * `AgentTaskResult`, which the caller already has, and reporting it twice
+   * would give a consumer two sources for one fact that can disagree — and the
+   * loop cannot report the case where it *throws* at all, which is exactly the
+   * one a checklist must still close.
+   */
+  onToolCall?: (step: ToolCallStep) => void;
 }
 
 export interface AgentTaskResult {

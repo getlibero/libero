@@ -24,7 +24,16 @@
 import { createProxyTransport } from "@getlibero/agent";
 import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import { createGateway, createStubSlack } from "@getlibero/gateway";
-import type { LogFields, LogLevel, Logger, Scheduler, SlackGateway, StubSlack } from "@getlibero/gateway";
+import type {
+  LogFields,
+  LogLevel,
+  Logger,
+  PostedCard,
+  Scheduler,
+  SlackCard,
+  SlackGateway,
+  StubSlack
+} from "@getlibero/gateway";
 import { createMessageStoreOpener, createServer, createSheetResolver } from "@getlibero/server";
 import type { Cleanup } from "./cleanup.js";
 
@@ -80,6 +89,29 @@ export interface AgentSide {
   readonly gateway: SlackGateway;
   /** Every structured log line this side emitted — one of the canary surfaces. */
   log(): Array<{ level: LogLevel; fields: LogFields }>;
+}
+
+/**
+ * The approval card among the thread's cards.
+ *
+ * Since #68 a tool-calling task also posts a live checklist, so a thread that
+ * holds a call has two cards in it and `cards[0]` is whichever went up first —
+ * which is a race, because the checklist is posted from the loop and the
+ * approval card from the tool client. Every approval assertion goes through
+ * here instead.
+ *
+ * The actions block is the discriminator, and it is exact rather than a
+ * heuristic: only the amber approval card draws buttons, and a checklist has no
+ * interactive element in any state. Reading `slack.cards` rather than the edited
+ * state is deliberate — a decided card drops its actions block, so the posted
+ * copy is the one that still identifies itself.
+ */
+export function approvalCardOf(
+  agent: AgentSide
+): (PostedCard & { threadTs: string; card: SlackCard }) | undefined {
+  return agent.slack.cards.find(posted =>
+    posted.card.blocks.some(block => block["type"] === "actions")
+  );
 }
 
 /**

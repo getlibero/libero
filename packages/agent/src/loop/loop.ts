@@ -16,6 +16,7 @@ import type {
   AgentTaskOptions,
   AgentTaskResult,
   ToolCallAttribution,
+  ToolCallStep,
   ToolExecutor,
   ToolResult
 } from "./types.js";
@@ -63,6 +64,14 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
   const messages = [...options.messages];
   let text = "";
   let turns = 0;
+
+  /**
+   * Ordinals for the progress hook, allocated across the whole task rather than
+   * per batch. A box because `dispatchToolCalls` is called once per turn and the
+   * numbering has to survive between calls; there is nowhere else to keep it
+   * that does not put turn-shaped state on the tracker, which counts caps.
+   */
+  const ordinals = { dispatched: 0 };
 
   const finish = (stopReason: AgentStopReason): AgentTaskResult => {
     const counted = tracker.snapshot();
@@ -146,7 +155,9 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
       toolExecutor,
       attribution,
       tracker,
-      messages
+      messages,
+      ordinals,
+      options.onToolCall
     );
     if (stopped !== undefined) return finish(stopped);
   }
@@ -168,7 +179,9 @@ async function dispatchToolCalls(
   executor: ToolExecutor,
   attribution: ToolCallAttribution,
   tracker: CapTracker,
-  messages: AgentTaskResult["messages"]
+  messages: AgentTaskResult["messages"],
+  ordinals: { dispatched: number },
+  onToolCall: ((step: ToolCallStep) => void) | undefined
 ): Promise<DispatchStop | undefined> {
   let stopped: DispatchStop | undefined;
 
@@ -177,15 +190,22 @@ async function dispatchToolCalls(
     // and N+1 is refused, even when the batch straddles the boundary.
     stopped ??= tracker.abortStop() ?? (tracker.toolCallsExhausted() ? "tool_call_cap" : undefined);
 
+    // Allocated for every call the model asked for, including the ones a cap
+    // stops. The numbering is what the task attempted.
+    ordinals.dispatched += 1;
+    const ordinal = ordinals.dispatched;
+
     if (stopped !== undefined) {
       // Every call gets a result even when it never ran. A transcript holding
       // a tool call with no matching result is not a valid conversation to
       // continue from, so skipping these would make a capped task unresumable.
+      onToolCall?.({ ordinal, name: call.name, state: "skipped" });
       messages.push(note(call, `not executed: ${STOP_NOTE[stopped]}`));
       continue;
     }
 
     tracker.recordToolCall();
+    onToolCall?.({ ordinal, name: call.name, state: "running" });
 
     let result: ToolResult;
     try {
@@ -194,11 +214,20 @@ async function dispatchToolCalls(
       const aborted = tracker.abortStop();
       if (aborted !== undefined) {
         stopped = aborted;
+        // Dispatched and never answered, which is `skipped`'s sibling rather
+        // than an error: the call may well have run at the far end, and this
+        // side has no result to call a failure.
+        onToolCall?.({ ordinal, name: call.name, state: "skipped" });
         messages.push(note(call, `not completed: ${STOP_NOTE[aborted]}`));
         continue;
       }
       result = { content: toolErrorContent(cause), isError: true };
     }
+
+    // A refusal from the proxy arrives here as an ordinary `isError` result, so
+    // it shows as a failed step. That is the reading a reader wants: the call
+    // did not do anything, and why is in the thread.
+    onToolCall?.({ ordinal, name: call.name, state: result.isError === true ? "error" : "ok" });
 
     messages.push({
       role: "tool",

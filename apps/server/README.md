@@ -37,7 +37,32 @@ bounds their size; what accepts the exposure is the team sheet naming the
 server. The one thing an upstream cannot describe is approval, so "this call is
 held for approval from a human" always comes from the manifest.
 
-Not here yet: the live checklist (#68).
+## The live checklist
+
+A task that calls a tool posts one message into its thread and edits it as it
+goes: a row per call, each `running`, `done`, `failed`, or `not run`. A task that
+answers from what the model knows posts nothing but its answer — the card goes up
+on the first tool call, not at task start, which is why there is no sheet field
+to turn it off.
+
+Two things about it are decisions rather than mechanics.
+
+**It wears no colour while it is working.** The design system's vocabulary is
+three — green allowed and executed, amber a human who still has to click, red
+blocked — and a task in flight is none of them. Green arrives when the task
+reaches its own end and red when a cap stopped it, and the card then names which
+cap, in the same sentence the reply uses. A cancelled task is uncoloured too:
+shutdown concluded nothing.
+
+**Edits are coalesced against a one-second floor**, so a task making twenty calls
+makes a handful of edits rather than twenty. A write renders whatever is true
+when it runs, so a burst that lands during one write is covered by the next. The
+terminal write skips the floor and is awaited, because it is the state a reader
+is left looking at.
+
+It rides `CardPoster`, the same seam the approval card does, and degrades the
+same way: a front-end with nowhere to put a card runs tasks that post only their
+answer.
 
 ## Configuration
 
