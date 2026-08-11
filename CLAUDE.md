@@ -47,8 +47,8 @@ error, approval, and audit shapes), `packages/agent`
 (provider-agnostic completion layer, ReAct loop with per-task caps),
 `packages/proxy` (mTLS listener, per-channel identity, team-sheet enforcement
 on both gates, the credential vault, credential injection into outbound HTTP
-calls, the redaction pass on the way back, the MCP client and its per-upstream
-pool, the daily budget meter over `node:sqlite`, the append-only audit log, and
+calls, the redaction pass on the way back, the MCP client over the official SDK
+and its per-upstream pool, the daily budget meter over `node:sqlite`, the append-only audit log, and
 the approval ticket store),
 `apps/proxy-server` (the process composing all of it — a
 permitted call is now served rather than answered 501, plus `budget` and
@@ -284,16 +284,38 @@ never from what the model wrote.
 The clock there is one-sided and the file says so: only the agent's scheduler is
 injectable, so a true `approval_expired` stays `approvals.test.ts`'s to prove.
 
-**#130 pointed the proxy at GitHub for real and is still open, because the call
-does not complete.** GitHub's tool schemas annotate `owner` and `repo` with
-`x-mcp-header`, and the Streamable HTTP transport requires a client to mirror
-those argument values into `Mcp-Param-{name}` request headers. This client does
-not, so GitHub answers `-32020` to essentially every tool call. Everything
-before that step works against the live server and is proven by
-`e2e/src/github-live.test.ts`: the ladder, the legacy `2025-11-25` handshake,
-the credential, the real catalog. The fix is not "write the mirroring": #185
-re-ran the hand-rolled-vs-SDK decision on #130's evidence and chose to adopt
-the official client; #188 is that implementation and is what completes #130.
+**#130 is closed: the proxy calls GitHub for real**, proven live by
+`e2e/src/github-live.test.ts` — the ladder, the legacy `2025-11-25` handshake,
+the credential, the real catalog, and the call itself. What blocked it for a
+while is worth keeping, because it is a hazard rather than a bug: GitHub's tool
+schemas annotate `owner` and `repo` with `x-mcp-header`, asking a client to
+mirror those argument values into `Mcp-Param-{name}` request headers. That is a
+`2026-07-28` feature and GitHub negotiates `2025-11-25` — but it requires the
+headers anyway, declining SEP-2243's optional allowance for older clients. The
+official SDK mirrors only on a modern connection, which is equally correct. Both
+ends are within spec and nothing between them worked, which is why the codec is
+**vendored** at `packages/proxy/src/vendor/` and why the headers are derived on
+*both* eras rather than only the legacy one: the SDK's mirroring lives in
+`callTool`, which this client does not use — a `tools/call` goes out as a raw
+`request` so the re-POST recovery has no code path to run on — so its mirroring
+never runs. The derived headers ride the SDK's per-message `headers` option.
+Filed upstream as `modelcontextprotocol/typescript-sdk#2639`.
+
+**The declarations are scanned from the raw schema, before bounding**, and that
+ordering is load-bearing. The bounding rules decide what may enter a *model's*
+context — a schema over `MAX_TOOL_SCHEMA_BYTES` or one whose type is not
+`object` is dropped and the tool published thin — and none of that bears on
+which arguments a server wants in headers. Read off the published schema, a tool
+too large to show the model would silently lose its headers and have every call
+refused at the far end, with nothing in the log naming why. The cost of the
+ordering is that the scan is the one consumer of bytes nothing has bounded, and
+the vendored `visit` recurses per nesting level — so `declarationsIn` guards it,
+and a schema the scan cannot survive declares nothing, exactly as one it will
+not vouch for. Unguarded, the `RangeError` escaped the degrade-to-thin contract
+(a 500 for the channel's whole listing), and on the call path was answered "the
+call was made and no result came back" with a `ran` audit row for a call never
+dispatched — the dispatcher now gives `definitionFor` its own catch for the
+same reason.
 
 **What #130 changed most is the docs.**
 GitHub's hosted server is `https://api.githubcopilot.com/mcp/`, and
@@ -316,8 +338,8 @@ as designed — it is a default for the entry nobody thought about — but the
 starter sheet now says so in a comment and the docs say so in a table, because a
 starter that showed only the caught case would teach the wrong lesson.
 
-**And one real bug, which is what a real upstream is for.** `truncate` in
-`mcp-protocol.ts` appended its ellipsis *past* the limit, so
+**And one real bug, which is what a real upstream is for.** `truncate` — now
+in `mcp-bounds.ts` — appended its ellipsis *past* the limit, so
 `boundedToolDescription` returned 1,025 characters against a
 `MAX_TOOL_DESCRIPTION` of 1,024 — the same constant `PermittedTool.description`
 parses against, chosen to be one number precisely so the two ends agree. Any
@@ -415,7 +437,9 @@ rather than `allSettled`. **The route holds `ToolCatalog` and nothing wider** �
 one seam that can describe, a separate one that can run, both filled by the
 dispatcher object because that is still the only thing holding a vault and a
 pool; an ESLint block on `listing-route.ts` bans the vault, the pool, the
-client, and the outbound sender. And **upstream descriptions and schemas are
+client, and the outbound sender. `definitionFor`, which #188 added for the call
+path, is deliberately on the *concrete* catalog type rather than on that seam,
+so the listing route still structurally cannot feed a call. And **upstream descriptions and schemas are
 third-party text entering the model's context every turn** — the tool-poisoning
 surface. Nothing reads them, because a rule that read a description is a rule
 the upstream phrases around; the caps (1024-character descriptions, 8KB
@@ -426,6 +450,33 @@ A schema must be a JSON object saying `type: "object"` or it is dropped and the
 entry stays thin, and that rule is load-bearing rather than fussy:
 `packages/agent` casts it straight into the provider's tool definition, and a
 provider answering 400 fails the whole turn rather than the one tool.
+
+**#188 rekeyed that cache onto the upstream, and the reason is the call path.**
+It was keyed by `(upstream, exact sorted wanted-set)`, which made it a cache of
+*answers to one question* rather than of a catalog — right while the only caller
+was the listing route, wrong the moment a call wants one tool's `x-mcp-header`
+declarations, because a one-name question is a different key and so a guaranteed
+miss: a five-page walk under a five-second budget, per call, against an upstream
+walked seconds ago. The key is now `upstreamKey` alone and the entry holds
+per-name resolutions, where `published: null` means *walked and confirmed
+absent* — a different fact from not-yet-asked, and one that has to be storable or
+a sheet naming a tool the upstream does not offer re-walks it forever. Freshness
+is per name because a walk is per name.
+
+The old key protected something real and it survives. Its hazard — two channels
+naming one server with different tool lists reading each other's answer — was
+about sharing a *conclusion* drawn under someone else's question; per-name facts
+cannot disagree, since a catalog is the server's and `upstreamKey` already
+separates credentials. What did have to change is that **`MAX_DESCRIBED_TOOLS`
+became a budget the caller subtracts from — and a cap `assemble` applies**: the
+cap bounds what enters a model's context and definitions are re-sent every turn,
+so it has to hold across the *answer* rather than across one walk, or a caller
+asking for thirty names and then for all of them carries thirty remembered plus
+a fresh hundred. The budget alone was not enough, because resolutions merge
+across *questions* too: two narrow asks can together settle more names than the
+cap, and a later wide ask finds everything fresh and walks nothing — so the
+bound is applied where every path returns, in the sheet's order, making what
+survives the cut the operator's priority rather than the upstream's.
 
 **#151 bounds a response, and the decision is that there are two bounds owned by
 two different principals.** Those listing caps bound what reaches the *model*;
@@ -473,29 +524,106 @@ size survives in the notice the model reads, so no column was added.
 member and silently claims "no result came back"; `too_large` and `closed` each
 have one because both clauses were false for them.
 
-**The proxy speaks MCP for real, at revision `2026-07-28` (#128).**
-`mcp-protocol.ts` is the wire format as pure functions, `mcp-client.ts` is one
-upstream's client, `mcp-pool.ts` keys one client per `(transport, url,
+**The proxy speaks MCP through `@modelcontextprotocol/client` 2.0.0 (#128, then
+#185/#188).** `mcp-client.ts` is one upstream's client and the **only module
+that may import the SDK**; `mcp-bounds.ts` is what an upstream is allowed to say
+and how much of it; `mcp-pool.ts` keys one client per `(transport, url,
 credential)` triple — the same `upstreamKey` enforcement compares, exported
-rather than restated so the two cannot drift.
+rather than restated so the two cannot drift. The confinement is enforced three
+ways, because `no-restricted-imports` is *replaced* by the last ESLint block that
+matches a file rather than merged into it: the ban is restated in every block, a
+`boundary-check` grep catches a `package.json` edge on the agent side before any
+import exists, and a test in `outbound.test.ts` matches the import form.
 
-The client is hand-rolled, and **#185 decided to replace it with
-`@modelcontextprotocol/client` 2.0.0; #188 is the implementation.** The
-hand-roll's stated reason was custody — the belief that the SDK's transport
-owned its own `fetch`, so the credential would be revealed outside
-`callUpstream`. #130 established that is false (`fetch?: FetchLike`, used for
-every request including the auth paths), and its stated cost model was wrong by
-construction: the spec watch that was meant to bound it triggered on revision
-tags, and the gap #130 hit — `x-mcp-header`, which GitHub enforces at
-`2025-11-25` — is within-revision, so the watch structurally could not have
-fired and reported green throughout. What tipped the re-run decision was the
-recurring costs: OAuth is wanted near-term and the spec keeps moving, and both
-are costs the hand-roll pays forever.
+The client was hand-rolled until #188. Its stated reason was custody — the
+belief that the SDK's transport owned its own `fetch`, so the credential would be
+revealed outside `callUpstream`. #130 established that is false
+(`fetch?: FetchLike`, used for every request including the auth paths), and the
+stated cost model was wrong by construction: the spec watch meant to bound it
+triggered on revision tags, and the gap #130 hit — `x-mcp-header`, which GitHub
+enforces at `2025-11-25` — is within-revision, so the watch structurally could
+not have fired and reported green throughout. What tipped the decision was the
+recurring costs: OAuth is wanted near-term and the spec keeps moving.
+
+**Custody survives adoption, and the argument is one line**: the SDK reaches the
+network only through the `fetch` it is handed, and that is
+`createGuardedFetch` — so the credential is revealed in one function, attached
+last, and every byte the SDK sees has already been through the one scrub. The
+e2e suite is what makes that checkable rather than asserted.
+
+**What the adapter owns is the translation, under one rule**: from an SDK error
+it reads the class and the numeric code and *never* a message — except
+`http_error`'s detail, which was always upstream text and was always scrubbed on
+the way in. That is what keeps "`connect_failed` relays no upstream bytes" a
+property of the code rather than a hope about someone else's error-message
+discipline.
+
+**Five options invert an SDK default** and each would fail quietly if dropped, so
+each has a test that fails without it: `versionNegotiation: { mode: "auto" }`
+(the SDK defaults to the legacy handshake with no probe),
+`inputRequired: { autoFulfill: false }` (it defaults to **on**, which would let
+an upstream drive elicitation and sampling from inside an ordinary `tools/call`),
+`supportedProtocolVersions` (the SDK's own list reaches back to `2024-11-05` and
+`2024-10-07`, the HTTP+SSE revisions whose results arrive on the GET stream the
+guarded fetch answers 405 — accepting that handshake makes every call a
+thirty-second timeout with a wrong word at the end),
+`reconnectionOptions.maxRetries: 0`, and no `authProvider` — without one the
+OAuth paths are unreachable rather than merely unused. A `tools/call` goes out
+as a raw `request` against a permissive envelope rather than through `callTool`,
+and both halves are wanted: the header-mismatch recovery that would re-POST an
+identical call has no code path to run on, and the specification's closed
+content union does not fail a whole call over one forward-revision block —
+`blockText`'s placeholder branch stays reachable on the legacy era. The same
+envelope argument puts `nextCursor` on `z.unknown()`: serializers that spell an
+absent field `null` are commonplace, and the cursor's reading is
+`parseToolsList`'s.
+
+**Two things the SDK swallows on the connect path but propagates on the call
+path**, which is why the guarded fetch records what it refused where `connect`
+can read it. Without that, an unreachable host, an oversized handshake and a
+refused destination all collapse into "could not agree a version" — and a
+`RedactionError` stops failing closed, degrading from a constant 500 into a
+cheerful error result. The phase flag on the same holder is what restores
+`MAX_CONTROL_BODY_BYTES`: a `fetch` has no call sites to choose a bound at, so
+the connection answers per request instead — except the termination `DELETE`,
+which is bounded **by its verb**, because the flag is shared with every
+in-flight call on the session and a `close()` that flipped it would cut a
+legitimate answer off mid-read as `too_large`.
+
+**Three behaviours the adapter had to rebuild rather than inherit**, found by
+review of the stack. The guarded fetch forwards `init.signal` into
+`callUpstream`, joined with the timeout via `AbortSignal.any` — the SDK cancels
+through the signal it hands its fetch (its per-request timeout,
+`transport.close()`, the termination racing shutdown), and dropping it left
+every such abort settling a promise while the socket ran to the full 30s,
+holding the event loop past `docker stop`'s SIGKILL window. `ensureOpen`
+consults `reopening`, because a session-loss reopen clears `session` before its
+handshake resolves and a fresh call arriving in that window would start a
+second full ladder, orphaning the loser's session at the upstream. And
+`failureText` has an `unauthorized` case on the *call* branch too — a revoked
+token surfaces as a 401 to the reopen's re-initialize, where the default's
+"the call was made" is false in both clauses.
+
+**`McpFailure` gained `unauthorized`** because the SDK settles the protocol in
+one round trip and treats a 401 there as final. Telling an operator their server
+speaks the wrong MCP revision when their token expired is the most expensive
+wrong word in `failureText`.
+
+**One property narrowed, and it is a decision on the record rather than a
+regression to find later.** The rule that an unreadable *entry* is skipped while
+only an unreadable *page* is refused survives on the legacy era — the client asks
+for a page against a permissive schema precisely to keep it — but not on
+`2026-07-28`, where the SDK validates against the specification before any
+caller-supplied schema and one non-conforming entry fails the whole page. There
+is no relaxation flag and the rejected bytes never reach us. What is lost is
+graceful degradation, **not a permission**: the listing still names every tool
+the sheet allows and the sheet is still enforced on the call. Every upstream in
+production negotiates legacy. `mcp-catalog.test.ts` pins both halves.
 
 **`.github/workflows/mcp-spec-watch.yml` is retired rather than repointed**, and
 the argument is the one above turned around: its only mechanism was grepping
-`MCP_PROTOCOL_VERSION` out of `mcp-protocol.ts` — a constant #188 deletes — and
-pointing it at SDK releases would reimplement Renovate badly. What replaces it is
+`MCP_PROTOCOL_VERSION` out of the wire-format module #188 deleted, and pointing
+it at SDK releases would reimplement Renovate badly. What replaces it is
 a review obligation rather than a job: an `@modelcontextprotocol/*` bump lands
 inside the process that holds every tool credential, so it is a security review,
 and it has to answer the two questions a version diff does not — whether anything
@@ -505,21 +633,19 @@ and whether the servers this deployment talks to speak the revision yet.
 `packages/proxy/README.md` carries that obligation where an implementer will
 meet it.
 
-The full evidence — the 13-package MIT/ISC dependency audit, the `FetchLike`
-spike (all six custody assertions pass, including `Mcp-Param-*` derivation and
-a positive control), and the pool-isolation answer (`upstreamKey` keying
-survives; the pool holds SDK clients) — is the recommendation comment on #185.
-The conditions the implementation must carry are #188's acceptance criteria;
-the four that are easiest to lose: `versionNegotiation: { mode: "auto" }`
-(the SDK defaults to legacy-first), `toolDefinition` on every `callTool` (it
-disables the `-32020` re-POST, one write must not become two), a vendored
-`Mcp-Param` codec applied via per-call `options.headers` on legacy-era
-connections (GitHub enforces the headers where the SDK does not mirror them),
-and no `authProvider` until OAuth is designed vault-first (without one, the
-OAuth paths are provably unreachable). **Do not implement more protocol in the
-hand-rolled client**; a gap found there is an argument for finishing #188.
+The evidence behind the decision — the 13-package dependency audit, the
+`FetchLike` spike, and the pool-isolation answer — is the recommendation comment
+on #185.
 
-Three behaviours there are decisions rather than mechanics. **A server naming no
+**`packages/proxy/src/vendor/` is the one place third-party source is copied
+rather than depended on**, and its README states the rule: a copy, not a fork.
+`license-check` walks `package.json` trees and cannot see a copied file, so
+attribution is kept by review — which is why each vendored file names its source
+repository, its exact commit, the release it corresponds to, and what was
+removed. Every vendored file also needs a test that fails when upstream's
+behaviour changes, since a version bump does not touch a copy.
+
+Two behaviours are decisions rather than mechanics. **A server naming no
 version we speak fails closed** with no `tools/call` sent, rather than being
 spoken to at a version it never agreed to. **An `input_required` result is
 refused** — MRTR replaced server-initiated sampling and elicitation, so an
