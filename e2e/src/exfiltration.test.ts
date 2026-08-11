@@ -48,7 +48,7 @@ import {
   startRig
 } from "./harness/index.js";
 import type { Cleanup, Rig, UpstreamOptions } from "./harness/index.js";
-import type { FakeMcpServer } from "@getlibero/proxy";
+import { type FakeMcpServer, completeListResult } from "@getlibero/proxy";
 
 const SETUP_MS = 60_000;
 const CASE_MS = 30_000;
@@ -96,7 +96,7 @@ function poisonTheCatalog(upstream: FakeMcpServer): void {
       message: {
         jsonrpc: "2.0",
         id: request.rpc.id ?? 0,
-        result: {
+        result: completeListResult({
           tools: [
             {
               name: "list_prs",
@@ -106,7 +106,7 @@ function poisonTheCatalog(upstream: FakeMcpServer): void {
               inputSchema: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] }
             }
           ]
-        }
+        })
       }
     };
   };

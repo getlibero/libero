@@ -38,7 +38,40 @@
 
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { LEGACY_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION, METHOD_NOT_FOUND } from "./mcp-protocol.js";
+
+// **The fake owns its own revision strings since #188, and that is the right
+// way round.** They used to come from the hand-rolled client's wire module, so
+// client and server agreed by construction — which is exactly what a test
+// upstream must not do: a fake that cannot disagree with the client cannot catch
+// the client disagreeing with a real server. The client's revisions are the
+// SDK's now, and these are a *server's* claim about what it speaks, written down
+// here because that is what the thing being faked would do.
+const MCP_PROTOCOL_VERSION = "2026-07-28";
+const LEGACY_PROTOCOL_VERSION = "2025-11-25";
+
+/** The JSON-RPC code an older framework answers an unrouted method with. */
+const METHOD_NOT_FOUND = -32601;
+
+/**
+ * A result carrying the `2026-07-28` envelope, for a test that builds its own.
+ *
+ * The revision made `resultType` mandatory on every result and gave the
+ * cacheable verbs freshness hints that are equally mandatory; a real client
+ * refuses a result missing either. A test using `respond` to say what an
+ * upstream answered should be saying that and not restating the envelope, so it
+ * lives here — with the server, which is whose knowledge it is.
+ *
+ * The fields are harmless on a legacy connection, which ignores what it does not
+ * know, so a test need not care which protocol its fake is speaking.
+ */
+export function completeResult(body: Record<string, unknown>, cacheable = false): Record<string, unknown> {
+  return { resultType: "complete", ...(cacheable ? { ttlMs: 0, cacheScope: "public" } : {}), ...body };
+}
+
+/** One page of a catalog, enveloped. `tools/list` is a cacheable verb. */
+export function completeListResult(body: Record<string, unknown>): Record<string, unknown> {
+  return completeResult(body, true);
+}
 
 /** One request the fake received, as it arrived. */
 export interface FakeRequest {
@@ -279,6 +312,25 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
       };
     }
 
+    /**
+     * The result envelope the negotiated revision requires.
+     *
+     * `2026-07-28` made `resultType` mandatory on every result, and gave the
+     * cacheable verbs — `tools/list` among them — SEP-2549 freshness hints that
+     * are equally mandatory. A real client refuses a result missing either. The
+     * hand-rolled client checked for neither, so this fake sent neither while
+     * claiming to speak the revision; adopting the official SDK is what surfaced
+     * that. A legacy result carries none, because a legacy server would not.
+     *
+     * `ttlMs: 0` is the spec's "immediately stale", which is what a fake wants:
+     * nothing downstream should serve a cached page in a test that is counting
+     * requests.
+     */
+    const enveloped = (body: Record<string, unknown>, cacheable = false): Record<string, unknown> =>
+      fake.options.protocol === "stateless"
+        ? { resultType: "complete", ...(cacheable ? { ttlMs: 0, cacheScope: "public" } : {}), ...body }
+        : body;
+
     if (request.rpc?.method === "tools/list") {
       const catalog = fake.options.catalog;
       const raw = request.rpc.params?.["cursor"];
@@ -291,7 +343,7 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
         message: {
           jsonrpc: "2.0",
           id,
-          result: { tools: page, ...(end < catalog.length ? { nextCursor: String(end) } : {}) }
+          result: enveloped({ tools: page, ...(end < catalog.length ? { nextCursor: String(end) } : {}) }, true)
         }
       };
     }
@@ -306,7 +358,7 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
             : "";
       const text = `called ${String(request.rpc.params?.["name"] ?? "")}${echo}`;
 
-      const message = { jsonrpc: "2.0", id, result: { resultType: "complete", content: [{ type: "text", text }] } };
+      const message = { jsonrpc: "2.0", id, result: enveloped({ content: [{ type: "text", text }] }) };
       if (fake.options.echoHeaders !== "json-escaped") return { message };
 
       // Hand-built so the credential is spelled with escapes rather than

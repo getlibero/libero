@@ -37,6 +37,20 @@
 # genuinely about imports and has a parser available.
 set -eu
 
+# The MCP SDK belongs to the proxy alone, and this is the half an ESLint rule
+# cannot cover: a `package.json` dependency edge ships the SDK in the agent's
+# image before any import exists, which is the same argument the proxy ban makes
+# below. The agent reaches tools over the network and speaks no MCP at all.
+if grep -rn \
+  --include='*.ts' --include='*.mts' --include='*.cts' \
+  --include='*.js' --include='*.mjs' --include='*.cjs' \
+  --include='package.json' \
+  -e '@modelcontextprotocol' \
+  packages/agent/ packages/gateway/ apps/server/; then
+  echo "boundary-check: the agent side references the MCP SDK. Only the proxy speaks MCP; the agent reaches tools over the network." >&2
+  exit 1
+fi
+
 if grep -rn \
   --include='*.ts' --include='*.mts' --include='*.cts' \
   --include='*.js' --include='*.mjs' --include='*.cjs' \

@@ -718,6 +718,31 @@ describe("the single reveal", () => {
     expect(found[0]).toContain("packages/proxy/src/outbound.ts");
   });
 
+  // The MCP SDK's confinement, checked the same way and for the same reason.
+  // ESLint enforces it too, but `no-restricted-imports` is replaced by the last
+  // config block that matches a file — so the ban is restated in a dozen places
+  // and a thirteenth block added without it would open the hole silently. A
+  // grep cannot be routed around by adding a block.
+  //
+  // It matches the *import* form rather than the package name, which is the
+  // lesson the `reveal()` grep above already teaches: a module explaining why
+  // the SDK is confined has to be able to name it. ./server.ts does exactly
+  // that, in the paragraph stating the dependency rule.
+  it("keeps the MCP SDK inside the one module entitled to it", () => {
+    const found = execFileSync(
+      "sh",
+      [
+        "-c",
+        "grep -rln 'from \"@modelcontextprotocol' packages/*/src apps/*/src --include='*.ts' | grep -v '\\.test\\.ts' || true"
+      ],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    )
+      .split("\n")
+      .filter(line => line.length > 0);
+
+    expect(found).toEqual(["packages/proxy/src/mcp-client.ts"]);
+  });
+
   // The companion property: no module outside outbound.ts and the vault should
   // even be able to reach a value, so nothing else imports `Secret` to unwrap.
   it("keeps the credential value out of every other source file", () => {

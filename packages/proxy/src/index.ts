@@ -67,17 +67,17 @@ export type { HttpDispatcher, HttpDispatcherOptions } from "./http-dispatcher.js
 // a composition root that could build its own would be one that could hand it
 // something wider.
 //
-// Only the version constants leave ./mcp-protocol.ts. The framing helpers stay
-// private because exporting them is an invitation to hand-assemble a request
-// somewhere that is not the client.
-export { MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "./mcp-protocol.js";
+// **No protocol constant leaves this package, because none is ours to publish.**
+// The revision is the SDK's since #188, and a re-exported version string would
+// be a second place for it to be true — which is how a proxy comes to claim one
+// revision in a log line and speak another on the wire.
 
 // The fake upstream, exported for the e2e suite on the argument stub-slack.ts
 // makes: one recording upstream that the client's own tests already keep honest
 // beats a second one written against the same spec. It is the exception to the
 // paragraph above rather than a hole in it — a server, holding no vault, no
 // pool, and no client, which is what that rule is about.
-export { startFakeMcpServer } from "./mcp-fake-server.js";
+export { completeListResult, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 export type {
   FakeCatalogTool,
   FakeMcpServer,

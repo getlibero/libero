@@ -13,7 +13,7 @@ import type { CallLimits } from "./enforce.js";
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 import { createJsonLogger } from "./log.js";
-import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
+import { type FakeMcpServer, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 import { RedactionError } from "./redact.js";
 import type { CredentialLookup, Secret, Vault } from "./vault.js";
 
@@ -292,7 +292,19 @@ describe("an upstream asking for more input", () => {
     fake = await startFakeMcpServer();
     fake.respond = request =>
       request.rpc?.method === "tools/call"
-        ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: { resultType: "input_required" } } }
+        ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: completeResult({
+              resultType: "input_required",
+              // A conformant one: `inputRequests` is a map keyed by an
+              // identifier the server assigns, not a bare marker. A malformed
+              // one is refused too, but as a protocol error — which would let
+              // this case pass without exercising the refusal it is about.
+              inputRequests: {
+                ask: {
+                  method: "sampling/createMessage",
+                  params: { messages: [{ role: "user", content: { type: "text", text: "who?" } }], maxTokens: 64 }
+                }
+              }
+            }) } }
         : null;
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
@@ -505,7 +517,7 @@ describe("the two bounds on what comes back", () => {
           message: {
             jsonrpc: "2.0",
             id: request.rpc.id,
-            result: { content: [{ type: "text", text: "x".repeat(size) }] }
+            result: completeResult({ content: [{ type: "text", text: "x".repeat(size) }] })
           }
         }
       : null;

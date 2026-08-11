@@ -122,6 +122,16 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
     if (outcome.failure === "unsupported_protocol") {
       return "The tool server does not speak a version of MCP this proxy supports. The call was not made.";
     }
+    // Its own sentence since #188, and the reason is that the alternative is a
+    // lie an operator would act on. The SDK settles the protocol in one round
+    // trip and treats a 401 or 403 on it as final, so this case is reachable
+    // where the old ladder reported `unsupported_protocol` — and telling
+    // somebody their server speaks the wrong MCP revision, when what actually
+    // happened is that their token expired, is the most expensive wrong word in
+    // this function. Still no upstream bytes: a status code is a protocol number.
+    if (outcome.failure === "unauthorized") {
+      return "The tool server rejected this proxy's credential for it. The call was not made.";
+    }
     // Its own sentence rather than the "could not be reached" one below, which
     // would be false: the server answered, at length. Reachable because a
     // handshake runs under `MAX_CONTROL_BODY_BYTES` and `discover` reports an
