@@ -3,12 +3,16 @@ export type { ProxyServerOptions, RequestContext, RouteHandler, RouteResponse } 
 
 export {
   assertServableComposition,
+  createToolDispatcher,
+  createUnavailableBuiltinDispatcher,
   createUnavailableCatalog,
   createUnavailableDispatcher,
   markProvisional
 } from "./dispatch.js";
 export type {
+  BuiltinDispatcher,
   Dispatch,
+  McpToolDispatcher,
   SpendMeter,
   SpendReader,
   SpendRecord,
@@ -18,6 +22,14 @@ export type {
   ToolDispatcher,
   UpstreamToolDescription
 } from "./dispatch.js";
+
+// The built-in tools (#64). The definitions are constants and the executor
+// reads a channel's message store; both are here because `apps/proxy-server`
+// composes them, and the listing route is separately forbidden the second.
+export { BUILTIN_TOOLS, DEFAULT_SEARCH_LIMIT } from "./builtins.js";
+export type { BuiltinDefinition } from "./builtins.js";
+export { createBuiltinDispatcher } from "./builtin-dispatcher.js";
+export type { BuiltinDispatcherOptions } from "./builtin-dispatcher.js";
 
 // The budget meter. Real, and required by any composition that also has a real
 // dispatcher — see `assertServableComposition`.

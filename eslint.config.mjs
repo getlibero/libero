@@ -196,11 +196,13 @@ export default tseslint.config(
                 "**/mcp-client*",
                 "**/mcp-catalog*",
                 "**/http-dispatcher*",
+                "**/builtin-dispatcher*",
                 "**/outbound*",
+                "@getlibero/memory",
                 "@getlibero/proxy"
               ],
               message:
-                "The tool listing route can ask an upstream what it offers and can run nothing. It holds a ToolCatalog, never a vault, a pool, a client, or the sender that attaches a credential."
+                "The tool listing route can ask an upstream what it offers and can run nothing. It holds a ToolCatalog, never a vault, a pool, a client, the sender that attaches a credential, or the executor that reads a channel's messages. ./builtins.ts is allowed and ./builtin-dispatcher.ts is not: definitions are constants, the executor opens a store."
             }
           ]
         }

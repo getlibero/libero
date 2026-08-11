@@ -35,7 +35,7 @@
 // certain of catching it echoed back.
 
 import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
-import type { Dispatch, ToolCatalog, ToolDispatcher, UpstreamCallDefinition } from "./dispatch.js";
+import type { Dispatch, McpToolDispatcher, ToolCatalog, UpstreamCallDefinition } from "./dispatch.js";
 import type { CallLimits } from "./enforce.js";
 import { createSilentLogger, type Logger } from "./log.js";
 import { type ClientLease, createMcpCatalog } from "./mcp-catalog.js";
@@ -86,15 +86,22 @@ export interface HttpDispatcherOptions {
 /**
  * A dispatcher that owns its client pool, and the catalog that leases from it.
  *
- * `ToolDispatcher` and `ToolCatalog` are both unchanged and both stay the
- * narrow seams `createProxyServer` takes; this is the concrete type the one
- * composition root that builds it sees. Same move `close()` already made: an
+ * `McpToolDispatcher` and `ToolCatalog` are both unchanged and both stay the
+ * narrow seams the composition root wires; this is the concrete type the one
+ * place that builds it sees. Same move `close()` already made: an
  * optional `close?()` on the interface would put an optional-chained call in
  * the composition root and imply every dispatcher owns connections, and a
- * `describe` on `ToolDispatcher` would put listing traffic on the seam whose
+ * `describe` on the dispatcher seam would put listing traffic on the one whose
  * whole property is that a refused call leaves no trace on it.
+ *
+ * **It is the MCP seam and not `ToolDispatcher`** (#64). The server holds a
+ * `ToolDispatcher`, which takes a `Target` that may be a built-in;
+ * `createToolDispatcher` narrows and hands this arm an `McpServer`. So the
+ * object that owns the vault and the pool structurally cannot be handed a
+ * built-in call, and there is no branch in here that could mistake one for an
+ * upstream with a missing url.
  */
-export interface HttpDispatcher extends ToolDispatcher, ToolCatalog {
+export interface HttpDispatcher extends McpToolDispatcher, ToolCatalog {
   /**
    * Terminates every legacy session, drops every client, and forgets every
    * cached catalog. Idempotent, bounded, and never rejects.

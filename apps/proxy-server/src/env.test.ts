@@ -5,6 +5,7 @@ import {
   DEFAULT_HOST,
   DEFAULT_PORT,
   auditDbFromEnv,
+  storeRootFromEnv,
   budgetDbFromEnv,
   channelsRootFromEnv,
   hostFromEnv,
@@ -131,6 +132,29 @@ describe("budgetDbFromEnv", () => {
   it("refuses to start without one", () => {
     expect(() => budgetDbFromEnv({})).toThrow(/PROXY_BUDGET_DB/);
     expect(() => budgetDbFromEnv({ PROXY_BUDGET_DB: "" })).toThrow(/PROXY_BUDGET_DB/);
+  });
+});
+
+describe("storeRootFromEnv", () => {
+  it("returns the per-channel store root", () => {
+    expect(storeRootFromEnv({ PROXY_STORE_ROOT: "/data/store" })).toBe("/data/store");
+  });
+
+  // The quiet alternative is a proxy that starts, publishes
+  // search_channel_history to every channel whose sheet grants it, and answers
+  // each call with "no messages have been stored yet" — a tool that is present,
+  // permitted, metered, audited, and useless.
+  it("refuses to start without one", () => {
+    expect(() => storeRootFromEnv({})).toThrow(/PROXY_STORE_ROOT/);
+    expect(() => storeRootFromEnv({ PROXY_STORE_ROOT: "" })).toThrow(/PROXY_STORE_ROOT/);
+  });
+
+  // Team sheets are what this process reads its authorization from, and the
+  // agent must not be able to write there — so the store has its own root on
+  // the agent's writable side (#176). Reading it from here does not merge them.
+  it("is not the channels root", () => {
+    const env = { PROXY_STORE_ROOT: "/data/store", PROXY_CHANNELS_ROOT: "/data/channels" };
+    expect(storeRootFromEnv(env)).not.toBe(channelsRootFromEnv(env));
   });
 });
 

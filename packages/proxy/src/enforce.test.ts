@@ -1,7 +1,14 @@
-import { type ResolvedToolCall, type TeamSheet, TeamSheet as TeamSheetSchema } from "@getlibero/schema";
+import {
+  type McpServer,
+  type ResolvedToolCall,
+  type TeamSheet,
+  TeamSheet as TeamSheetSchema
+} from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import {
   type BudgetSpend,
+  type Decision,
+  type Target,
   DESTRUCTIVE_VERBS,
   decide,
   decideFromState,
@@ -63,6 +70,24 @@ function spending(tokens: number, toolCalls: number): BudgetSpend {
 }
 
 const NO_SPEND: BudgetSpend = spending(0, 0);
+
+/**
+ * The upstream behind a target, or undefined if there is not one.
+ *
+ * Two narrowings in one, because most assertions here are about which
+ * `[[mcp_server]]` block won and neither the outcome nor the target kind is what
+ * they are testing. `undefined` for a built-in and for `null` alike: a case that
+ * cares about the difference asserts on `target` directly, and the two cases
+ * that do are right below.
+ */
+function targetUpstream(target: Target | null): McpServer | undefined {
+  return target?.kind === "mcp" ? target.upstream : undefined;
+}
+
+/** The same, from a decision, for the `allow` and `hold` assertions. */
+function upstreamOf(decision: Decision): McpServer | undefined {
+  return decision.outcome === "refuse" ? undefined : targetUpstream(decision.target);
+}
 
 function callTo(server: string, tool: string): ResolvedToolCall {
   return {
@@ -405,7 +430,10 @@ describe("which upstream an allow names", () => {
     const decision = decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND });
     expect(decision).toEqual({
       outcome: "allow",
-      upstream: expect.objectContaining({ name: "github", transport: "http" }),
+      target: {
+        kind: "mcp",
+        upstream: expect.objectContaining({ name: "github", transport: "http" })
+      },
       limits: { maxResultChars: expect.any(Number) }
     });
   });
@@ -420,8 +448,8 @@ describe("which upstream an allow names", () => {
     const allowed = decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND });
 
     expect(held.outcome).toBe("hold");
-    expect(held.outcome === "hold" && held.upstream).toEqual(allowed.outcome === "allow" && allowed.upstream);
-    expect(held.outcome === "hold" && held.upstream.url).toBe(UPSTREAM);
+    expect(upstreamOf(held)).toEqual(upstreamOf(allowed));
+    expect(upstreamOf(held)?.url).toBe(UPSTREAM);
   });
 
   // The ordering at the top of `decide` is unchanged by that: a sheet whose
@@ -453,7 +481,7 @@ describe("which upstream an allow names", () => {
     });
     const decision = decide({ sheet: split, call: callTo("github", "get_issue"), spend: NO_SPEND });
     expect(decision.outcome).toBe("allow");
-    expect(decision.outcome === "allow" && decision.upstream.url).toBe("http://real:3001");
+    expect(upstreamOf(decision)?.url).toBe("http://real:3001");
   });
 
   it("keeps the credential name attached to the block that carried the tool", () => {
@@ -465,7 +493,7 @@ describe("which upstream an allow names", () => {
       ]
     });
     const decision = decide({ sheet: split, call: callTo("github", "get_issue"), spend: NO_SPEND });
-    expect(decision.outcome === "allow" && decision.upstream.credential).toBe("cred_b");
+    expect(upstreamOf(decision)?.credential).toBe("cred_b");
   });
 
   // Blocks may repeat; they may not contradict. Each field dispatch reads is
@@ -513,7 +541,7 @@ describe("which upstream an allow names", () => {
       ]
     });
     const decision = decide({ sheet: identical, call: callTo("github", "get_issue"), spend: NO_SPEND });
-    expect(decision.outcome === "allow" && decision.upstream.url).toBe("http://a:3001");
+    expect(upstreamOf(decision)?.url).toBe("http://a:3001");
   });
 
   // A block that shares the name but does not carry the tool is not a
@@ -527,7 +555,7 @@ describe("which upstream an allow names", () => {
       ]
     });
     const decision = decide({ sheet: unrelated, call: callTo("github", "get_issue"), spend: NO_SPEND });
-    expect(decision.outcome === "allow" && decision.upstream.url).toBe("http://a:3001");
+    expect(upstreamOf(decision)?.url).toBe("http://a:3001");
   });
 
   // Ordering: a structural fault is not a condition that clears tomorrow, and
@@ -878,7 +906,7 @@ describe("which upstream a listed tool would be described by", () => {
       ]
     });
     const sources = permittedToolSources(split);
-    expect(sources.map(source => [source.tool.tool, source.upstream?.url])).toEqual([
+    expect(sources.map(source => [source.tool.tool, targetUpstream(source.target)?.url])).toEqual([
       ["list_prs", "http://decoy:3001"],
       ["get_issue", "http://real:3001"]
     ]);
@@ -901,7 +929,7 @@ describe("which upstream a listed tool would be described by", () => {
     const sources = permittedToolSources(ambiguous);
 
     expect(sources).toHaveLength(1);
-    expect(sources[0]?.upstream).toBeNull();
+    expect(sources[0]?.target).toBeNull();
     // Listed all the same, and refused at call time by the gate that shares the
     // expression this used.
     expect(sources[0]?.tool.tool).toBe("get_issue");
@@ -926,7 +954,10 @@ describe("which upstream a listed tool would be described by", () => {
         }
       ]
     });
-    const keys = permittedToolSources(split).map(source => source.upstream && upstreamKey(source.upstream));
+    const keys = permittedToolSources(split).map(source => {
+      const upstream = targetUpstream(source.target);
+      return upstream === undefined ? null : upstreamKey(upstream);
+    });
     expect(keys[0]).toBe(keys[1]);
     expect(keys[0]).not.toBeNull();
   });
@@ -1029,5 +1060,160 @@ describe("the upstream key", () => {
     if (block === undefined) throw new Error("fixture lost a block");
 
     expect(upstreamKey(block)).toContain("github_token");
+  });
+});
+
+// A built-in is not a bypass (#64). Every case below is the MCP case with the
+// server name swapped, and that is the claim: the same five steps in the same
+// order, resolved by the same functions.
+describe("a built-in tool", () => {
+  const withBuiltin = (builtin: unknown, extra: Record<string, unknown> = {}) =>
+    sheetOf({ ...BASE, builtin, ...extra });
+
+  const callBuiltin = (tool: string) => callTo("libero", tool);
+
+  it("is allowed when the sheet names it, and its target is not an upstream", () => {
+    const decision = decide({
+      sheet: withBuiltin([{ name: "search_channel_history" }]),
+      call: callBuiltin("search_channel_history"),
+      spend: NO_SPEND
+    });
+
+    expect(decision).toEqual({
+      outcome: "allow",
+      target: { kind: "builtin", tool: "search_channel_history" },
+      limits: { maxResultChars: expect.any(Number) }
+    });
+    // Nothing on this decision could send the call to a server.
+    expect(upstreamOf(decision)).toBeUndefined();
+  });
+
+  // The two refusals split the way the MCP branch's do: no built-ins at all is a
+  // different fact from some but not this one, and an operator debugging a
+  // sheet wants to be told which.
+  it("refuses server_not_allowed when the sheet grants no built-ins", () => {
+    expect(
+      decide({ sheet: sheetOf(BASE), call: callBuiltin("search_channel_history"), spend: NO_SPEND })
+    ).toEqual({ outcome: "refuse", refusal: { reason: "server_not_allowed", server: "libero" } });
+  });
+
+  // There is only one built-in today, so the sheet cannot name a second and
+  // omit this one. The decision is still written to tell them apart, and this
+  // asserts the branch by handing it a sheet whose entry was filtered out — the
+  // shape a second built-in will produce the day one lands.
+  it("refuses tool_not_allowed when the sheet grants a different built-in", () => {
+    const sheet = withBuiltin([{ name: "search_channel_history" }]);
+    // Reaching past the schema on purpose: a closed enum cannot express the
+    // sheet a second built-in would make possible, and the branch exists for it.
+    const other = { ...sheet, builtin: [{ name: "some_later_builtin" }] } as unknown as TeamSheet;
+
+    expect(decide({ sheet: other, call: callBuiltin("search_channel_history"), spend: NO_SPEND })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "tool_not_allowed", server: "libero", tool: "search_channel_history" }
+    });
+  });
+
+  // The narrow claim the issue asks for: a built-in draws on the channel's
+  // meter like any other tool, so an exhausted channel does not get a free one.
+  it("is refused when the channel's budget is spent", () => {
+    const sheet = withBuiltin([{ name: "search_channel_history" }]);
+
+    expect(
+      decide({ sheet, call: callBuiltin("search_channel_history"), spend: spending(0, 10) })
+    ).toEqual({ outcome: "refuse", refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" } });
+
+    expect(
+      decide({ sheet, call: callBuiltin("search_channel_history"), spend: spending(1000, 0) })
+    ).toEqual({ outcome: "refuse", refusal: { reason: "budget_exhausted", limit: "daily_tokens" } });
+  });
+
+  it("holds for a human when the sheet asks for one, and carries a target to run from", () => {
+    const decision = decide({
+      sheet: withBuiltin([{ name: "search_channel_history", approval: "required" }]),
+      call: callBuiltin("search_channel_history"),
+      spend: NO_SPEND
+    });
+
+    expect(decision).toMatchObject({
+      outcome: "hold",
+      target: { kind: "builtin", tool: "search_channel_history" },
+      refusal: { reason: "approval_required", server: "libero", tool: "search_channel_history" }
+    });
+  });
+
+  // `search_channel_history` contains none of delete/drop/transfer/deploy, so
+  // the heuristic leaves it running. Asserted rather than assumed, because it is
+  // the reason the starter sheet writes `approval` out.
+  it("runs unheld with no approval line, because the heuristic does not fire on it", () => {
+    expect(
+      decide({
+        sheet: withBuiltin([{ name: "search_channel_history" }]),
+        call: callBuiltin("search_channel_history"),
+        spend: NO_SPEND
+      }).outcome
+    ).toBe("allow");
+  });
+
+  it("takes its result bound from the entry, falling back to the channel's", () => {
+    expect(
+      decide({
+        sheet: withBuiltin([{ name: "search_channel_history", max_result_chars: 512 }]),
+        call: callBuiltin("search_channel_history"),
+        spend: NO_SPEND
+      })
+    ).toMatchObject({ limits: { maxResultChars: 512 } });
+
+    expect(
+      decide({
+        sheet: withBuiltin([{ name: "search_channel_history" }], { llm: { max_result_chars: 4096 } }),
+        call: callBuiltin("search_channel_history"),
+        spend: NO_SPEND
+      })
+    ).toMatchObject({ limits: { maxResultChars: 4096 } });
+  });
+
+  // Duplicates are an operator slip rather than a policy, and they resolve the
+  // way every other duplicate in this file does: most restrictive wins, through
+  // the same two functions.
+  it("resolves duplicate entries most-restrictively", () => {
+    const decision = decide({
+      sheet: withBuiltin([
+        { name: "search_channel_history", approval: "none", max_result_chars: 8000 },
+        { name: "search_channel_history", approval: "required", max_result_chars: 512 }
+      ]),
+      call: callBuiltin("search_channel_history"),
+      spend: NO_SPEND
+    });
+
+    expect(decision.outcome).toBe("hold");
+    expect(decision).toMatchObject({ limits: { maxResultChars: 512 } });
+  });
+
+  it("appears in the listing with its target, after the sheet's upstreams", () => {
+    const sources = permittedToolSources(withBuiltin([{ name: "search_channel_history" }]));
+
+    expect(sources.at(-1)).toEqual({
+      tool: { server: "libero", tool: "search_channel_history", approval: "none" },
+      target: { kind: "builtin", tool: "search_channel_history" }
+    });
+    // Every MCP tool the sheet named still comes first.
+    expect(sources.slice(0, -1).every(source => source.target?.kind === "mcp")).toBe(true);
+  });
+
+  it("collapses a duplicated entry to one listing row", () => {
+    const sources = permittedToolSources(
+      withBuiltin([
+        { name: "search_channel_history" },
+        { name: "search_channel_history", approval: "required" }
+      ])
+    );
+
+    const rows = sources.filter(source => source.tool.server === "libero");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.tool.approval).toBe("required");
+  });
+
+  it("is absent from the listing when the sheet grants none", () => {
+    expect(permittedTools(sheetOf(BASE)).some(tool => tool.server === "libero")).toBe(false);
   });
 });

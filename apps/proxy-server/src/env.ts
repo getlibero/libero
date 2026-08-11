@@ -107,6 +107,43 @@ export function auditDbFromEnv(env: Env): string {
 }
 
 /**
+ * The per-channel message stores: `PROXY_STORE_ROOT`.
+ *
+ * The directory the gateway writes a channel's conversation into, mounted into
+ * this service as well so `search_channel_history` can read it (#64). The file
+ * is `<root>/<channel>/store.db` and this process opens every one of them
+ * `readOnly`.
+ *
+ * **Two variables for one directory, deliberately.** The gateway names it
+ * `AGENT_STORE_ROOT` and this process names it `PROXY_STORE_ROOT`, because the
+ * two services are configured separately and a shared name would imply a shared
+ * setting they could not disagree about — which is exactly the thing an operator
+ * running them on different hosts needs to notice. `deploy/docker-compose.yml`
+ * points both at the same volume.
+ *
+ * **Not `PROXY_CHANNELS_ROOT`, and that separation is the security decision
+ * #176 made.** Team sheets are what this process reads its authorization from,
+ * and the agent must not be able to write there — so the store got its own root
+ * on the agent's writable side. Reading it from here does not undo that: the
+ * channels mount stays `:ro` on both services and this one is a different path.
+ *
+ * Required with no default, on the same argument as the three paths above. The
+ * quiet alternative is a proxy that starts, publishes `search_channel_history`
+ * to every channel whose sheet grants it, and answers each call with "no
+ * messages have been stored for this channel yet" — a tool that is present,
+ * permitted, metered, audited, and silently useless. A missing variable should
+ * be a container that will not start.
+ *
+ * The *mount* has to be read-write even though every open is read-only: a SQLite
+ * WAL reader creates the `-shm` and `-wal` sidecars beside the file, so a `:ro`
+ * mount fails at the first search. The read-only-ness is `{ readOnly: true }` on
+ * the connection, which is the posture `openAuditReader` already takes.
+ */
+export function storeRootFromEnv(env: Env): string {
+  return requiredEnv(env, "PROXY_STORE_ROOT");
+}
+
+/**
  * The vault master key: `PROXY_VAULT_KEY`, base64, 32 bytes.
  *
  * One name, prefixed like everything else this process reads. It replaces the
