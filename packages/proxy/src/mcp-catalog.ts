@@ -111,9 +111,27 @@ export interface McpCatalogOptions {
 
 type Described = ReadonlyMap<string, UpstreamToolDescription>;
 
-interface CacheEntry {
-  readonly described: Described;
+/**
+ * What is known about one tool on one upstream, and until when.
+ *
+ * **`published: null` means walked and confirmed absent**, which is a different
+ * fact from "not asked about yet" and has to be storable, or a sheet naming a
+ * tool the upstream does not offer would re-walk that upstream on every single
+ * listing and every single call.
+ *
+ * Freshness is per name because a walk is per name: a tool found by a complete
+ * walk is good for `CATALOG_TTL_MS`, and one touched by a partial walk — a
+ * failure, a cap, the budget — for `CATALOG_FAILURE_TTL_MS`, so a dead upstream
+ * costs one attempt per half minute rather than pretending its tools are gone.
+ */
+interface Resolution {
+  readonly published: UpstreamToolDescription | null;
   readonly expiresAt: number;
+}
+
+/** Everything known about one upstream's catalog, by tool name. */
+interface CacheEntry {
+  readonly resolved: Map<string, Resolution>;
 }
 
 /**
@@ -129,29 +147,40 @@ type Walked = "complete" | "partial";
 const EMPTY: Described = new Map();
 
 /**
- * The cache key: the upstream, and what was asked of it.
+ * The single-flight key: the upstream, and the names this walk is going after.
  *
- * `upstreamKey` alone would be wrong. A walk stops as soon as it has found
- * every wanted name and it caps on the wanted names, so what it produces
- * depends on the set it was given — and two channels whose sheets name the same
- * server with different tool lists would otherwise read each other's answer.
- * That is not a content leak (a catalog is the server's, identical for every
- * channel that can reach it, and `upstreamKey` already separates credentials)
- * but it is a wrong answer, and one channel's listing going thin because
- * another asked for less is exactly the bug nobody would find.
+ * Not the *cache* key — that is `upstreamKey` alone, and the difference is the
+ * point of #188's restructure. The cache used to be keyed by (upstream, exact
+ * wanted set), which made it a cache of *answers to one question* rather than of
+ * the upstream's catalog. That was right while the only caller was the listing
+ * route, which always asks the same question for a given sheet; it is wrong the
+ * moment the *call* path wants one tool, because a one-name question is a
+ * different key and so a guaranteed miss — a full five-page walk under a five
+ * second budget, per call, against an upstream that was walked seconds ago.
  *
- * Sorted, so two sheets naming the same tools in different orders share the
- * entry they should share.
+ * Keying on the upstream and storing per-name facts fixes that without giving up
+ * what the old key protected. The hazard it named — "two channels whose sheets
+ * name the same server with different tool lists would read each other's
+ * answer" — was really about sharing a *conclusion* drawn under someone else's
+ * question. Per-name resolutions cannot disagree: a catalog is the server's,
+ * identical for every channel that can reach it, and `upstreamKey` already
+ * separates credentials. Each channel still gets exactly the names it asked
+ * about; they merely stop paying for facts another channel already established.
+ *
+ * Sorted, so two callers chasing the same missing names collapse to one walk.
  */
-function cacheKey(upstream: McpServer, wanted: ReadonlySet<string>): string {
-  return JSON.stringify([upstreamKey(upstream), [...wanted].sort()]);
+function walkKey(upstream: McpServer, missing: ReadonlySet<string>): string {
+  return JSON.stringify([upstreamKey(upstream), [...missing].sort()]);
 }
 
 export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { clear(): void } {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
   const cached = new Map<string, CacheEntry>();
-  const walking = new Map<string, Promise<Described>>();
+  // Resolves when the walk has merged, not with an answer: every caller
+  // assembles its own from `wanted`, which two callers sharing a walk do not
+  // agree on.
+  const walking = new Map<string, Promise<void>>();
 
   const unavailable = (upstream: McpServer, reason: string, extra: Record<string, unknown> = {}): void => {
     // On a cache miss only, so a client polling the listing route does not
@@ -204,14 +233,28 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
    * cursor, `MAX_CATALOG_PAGES`, the remaining budget, or a failure. Whatever
    * was collected before the stop is kept — the thin entry is the floor, so a
    * partial walk never misdescribes anything, it only describes less.
+   *
+   * **`budget` rather than `MAX_DESCRIBED_TOOLS` directly, and that is what
+   * makes a merged cache safe.** The cap bounds what enters a model's context,
+   * and definitions are re-sent every turn — so it has to hold across the
+   * *answer*, not across one walk. Once resolutions merge, a caller asking for
+   * sixty names and then for a hundred and sixty would otherwise get sixty
+   * remembered plus a hundred freshly walked. The caller subtracts what it is
+   * already carrying and this stops there.
    */
   const walk = async (
     upstream: McpServer,
     client: McpClient,
     wanted: ReadonlySet<string>,
-    described: Map<string, UpstreamToolDescription>
+    described: Map<string, UpstreamToolDescription>,
+    budget: number
   ): Promise<Walked> => {
     let cursor: string | undefined;
+
+    if (budget <= 0) {
+      unavailable(upstream, "truncated", { described: 0 });
+      return "partial";
+    }
 
     for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
       // Also the per-request timeout, so an abandoned page stops rather than
@@ -231,7 +274,7 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
         // caller: capping in the upstream's order would let a server bury a
         // permitted tool behind decoys.
         if (!wanted.has(entry.name) || described.has(entry.name)) continue;
-        if (described.size >= MAX_DESCRIBED_TOOLS) {
+        if (described.size >= budget) {
           unavailable(upstream, "truncated", { described: described.size });
           return "partial";
         }
@@ -267,7 +310,8 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
     upstream: McpServer,
     client: McpClient,
     wanted: ReadonlySet<string>,
-    described: Map<string, UpstreamToolDescription>
+    described: Map<string, UpstreamToolDescription>,
+    allowance: number
   ): Promise<Walked> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
@@ -280,7 +324,7 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
       timer.unref?.();
     });
     try {
-      const outcome = await Promise.race([walk(upstream, client, wanted, described), budget]);
+      const outcome = await Promise.race([walk(upstream, client, wanted, described, allowance), budget]);
       // Only when the timer actually fired. A walk that returned `partial` on
       // its own has already logged the reason it did, and a second line saying
       // "budget" would name the wrong cause.
@@ -291,46 +335,105 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
     }
   };
 
+  /** This upstream's entry, created empty on first sight. */
+  const entryFor = (upstream: McpServer): CacheEntry => {
+    const key = upstreamKey(upstream);
+    const existing = cached.get(key);
+    if (existing !== undefined) return existing;
+    const fresh: CacheEntry = { resolved: new Map<string, Resolution>() };
+    cached.set(key, fresh);
+    return fresh;
+  };
+
+  /** The answer, assembled from what is settled. Wanted order, published only. */
+  const assemble = (entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
+    const answer = new Map<string, UpstreamToolDescription>();
+    for (const name of wanted) {
+      const resolution = entry.resolved.get(name);
+      if (resolution?.published != null) answer.set(name, resolution.published);
+    }
+    return answer;
+  };
+
   /**
-   * One upstream, asked at most once at a time and at most once per TTL.
+   * Write what a walk established, including what it established was absent.
+   *
+   * Every name the walk went after gets a resolution, so a second ask does not
+   * re-walk for a tool this upstream does not offer. A partial walk's findings
+   * land on the short window for the reason `CATALOG_FAILURE_TTL_MS` exists: it
+   * did not finish, so "absent" is provisional and worth re-asking soon.
+   */
+  const merge = (
+    entry: CacheEntry,
+    missing: ReadonlySet<string>,
+    described: ReadonlyMap<string, UpstreamToolDescription>,
+    walked: Walked
+  ): void => {
+    const expiresAt = now() + (walked === "complete" ? CATALOG_TTL_MS : CATALOG_FAILURE_TTL_MS);
+    for (const name of missing) {
+      entry.resolved.set(name, { published: described.get(name) ?? null, expiresAt });
+    }
+  };
+
+  /**
+   * One upstream, asked only about what it has not already answered for.
    *
    * The single flight is `ensureOpen`'s shape and buys the same thing: N
-   * listings naming one upstream at the same instant cost one walk. The entry
-   * is written before the promise is cleared, so the next caller sees the cache
-   * rather than starting a second walk into the gap.
+   * listings naming one upstream at the same instant cost one walk. It is keyed
+   * on the *missing* names rather than the wanted ones, so two callers chasing
+   * the same gap still collapse, and a caller whose gap is already being filled
+   * by a wider walk simply walks its own — correct, and rarer than the case that
+   * matters, which is the listing route and the call path asking in turn.
    */
   const describeUpstream = async (upstream: McpServer, wanted: ReadonlySet<string>): Promise<Described> => {
-    const key = cacheKey(upstream, wanted);
-    const hit = cached.get(key);
-    if (hit !== undefined && hit.expiresAt > now()) return hit.described;
+    const entry = entryFor(upstream);
+    const at = now();
 
+    const missing = new Set<string>();
+    let carried = 0;
+    for (const name of wanted) {
+      const resolution = entry.resolved.get(name);
+      if (resolution === undefined || resolution.expiresAt <= at) {
+        missing.add(name);
+        continue;
+      }
+      if (resolution.published !== null) carried += 1;
+    }
+
+    // The whole point of the restructure: a tool the listing route already
+    // walked for costs the call path nothing — no lease, no request, no log.
+    if (missing.size === 0) return assemble(entry, wanted);
+
+    const key = walkKey(upstream, missing);
     const inFlight = walking.get(key);
-    if (inFlight !== undefined) return inFlight;
+    if (inFlight !== undefined) {
+      await inFlight;
+      return assemble(entry, wanted);
+    }
 
-    const started = (async (): Promise<Described> => {
+    const started = (async (): Promise<void> => {
       const lease = options.lease(upstream);
       if (!lease.ok) {
         unavailable(upstream, lease.reason, lease.credential !== undefined ? { credential: lease.credential } : {});
-        // Cached like any other failure, so a sheet naming a credential the
+        // Recorded like any other failure, so a sheet naming a credential the
         // vault does not hold costs one log line per half minute rather than
         // one per listing.
-        cached.set(key, { described: EMPTY, expiresAt: now() + CATALOG_FAILURE_TTL_MS });
-        return EMPTY;
+        merge(entry, missing, EMPTY, "partial");
+        return;
       }
 
       const described = new Map<string, UpstreamToolDescription>();
-      const walked = await walkWithin(upstream, lease.client, wanted, described);
-      cached.set(key, {
-        described,
-        expiresAt: now() + (walked === "complete" ? CATALOG_TTL_MS : CATALOG_FAILURE_TTL_MS)
-      });
-      return described;
+      // What this answer may still spend of the cap. Names already carried are
+      // in the answer whether or not the walk adds anything, so they count.
+      const walked = await walkWithin(upstream, lease.client, missing, described, MAX_DESCRIBED_TOOLS - carried);
+      merge(entry, missing, described, walked);
     })().finally(() => {
       walking.delete(key);
     });
 
     walking.set(key, started);
-    return started;
+    await started;
+    return assemble(entry, wanted);
   };
 
   return {

@@ -421,3 +421,78 @@ describe("the catalog cache", () => {
     expect([...(await ask(upstream, ["list_prs", "merge_pr"])).keys()]).toEqual(["list_prs", "merge_pr"]);
   });
 });
+
+// #188 keyed the cache on the upstream alone and stores what is known per tool
+// name. The reason is the call path: it wants one tool's definition, and under
+// the old (upstream, exact-wanted-set) key that was a different question and so
+// a guaranteed miss — a five-page walk under a five-second budget, per call,
+// against an upstream that was walked seconds ago.
+describe("what one upstream is already known to offer", () => {
+  it("answers a single tool from a walk another question paid for", async () => {
+    fake = await startFakeMcpServer({ pageSize: 1 });
+    const { describe: ask } = harnessFor();
+    const upstream = serverAt(fake.url);
+
+    // The listing route's question: every tool this sheet names.
+    await ask(upstream, ["list_prs", "merge_pr"]);
+    const paid = fake.callsTo("tools/list").length;
+
+    // The call path's question, one tool. Under the old keying this walked again.
+    const one = await ask(upstream, ["merge_pr"]);
+
+    expect([...one.keys()]).toEqual(["merge_pr"]);
+    expect(fake.callsTo("tools/list")).toHaveLength(paid);
+  });
+
+  // Absence is a fact worth storing. Without it a sheet naming a tool the
+  // upstream does not offer re-walks that upstream on every listing and every
+  // call — the case a `null` resolution exists for.
+  it("remembers that a tool is not there, rather than looking again", async () => {
+    fake = await startFakeMcpServer();
+    const { describe: ask } = harnessFor();
+    const upstream = serverAt(fake.url);
+
+    // Asked as part of a wider question, so the second ask is a *different*
+    // question — which is exactly what the old keying could not answer, and why
+    // this is the discriminator rather than a repeat of the same request.
+    expect([...(await ask(upstream, ["list_prs", "no_such_tool"])).keys()]).toEqual(["list_prs"]);
+    const paid = fake.callsTo("tools/list").length;
+    expect(await ask(upstream, ["no_such_tool"])).toEqual(new Map());
+
+    expect(fake.callsTo("tools/list")).toHaveLength(paid);
+  });
+
+  it("asks again once what it learned has gone stale", async () => {
+    fake = await startFakeMcpServer();
+    const { describe: ask, advance } = harnessFor();
+    const upstream = serverAt(fake.url);
+
+    await ask(upstream, ["list_prs"]);
+    advance(CATALOG_TTL_MS + 1);
+    await ask(upstream, ["list_prs"]);
+
+    expect(fake.callsTo("tools/list")).toHaveLength(2);
+  });
+
+  // The cap bounds what enters a model's context, and definitions are re-sent
+  // every turn — so it has to hold across the *answer*, not across one walk.
+  // Merging is what makes that a live question: without a budget, a caller
+  // asking for a few names and then for many would carry the first answer plus
+  // a full cap's worth of the second.
+  it("holds the described-tools cap across a merged answer", async () => {
+    const catalog = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_unused, index) => ({
+      name: `tool_${String(index)}`,
+      description: "listed",
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({ catalog, pageSize: null });
+    const { describe: ask } = harnessFor();
+    const upstream = serverAt(fake.url);
+    const every = catalog.map(tool => tool.name);
+
+    await ask(upstream, every.slice(0, 30));
+    const described = await ask(upstream, every);
+
+    expect(described.size).toBeLessThanOrEqual(MAX_DESCRIBED_TOOLS);
+  });
+});
