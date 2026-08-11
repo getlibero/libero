@@ -1,10 +1,13 @@
 name: MCP spec watch
 
-# The proxy speaks MCP with a hand-rolled client rather than the vendored SDK,
-# for the reasons in packages/proxy/src/mcp-protocol.ts. The cost of that choice
-# is that a published revision is a code change here rather than a version bump,
-# and a cost nobody is reminded of is a cost that gets forgotten: #128 was
-# written against a revision that went stale twice before it was started.
+# The proxy speaks MCP with a hand-rolled client, which #185 decided to replace
+# with the official SDK; this watcher retires (or repoints at SDK releases) when
+# #188 lands. Until then the hand-roll ships, and the cost of that is that a
+# published revision is a code change here rather than a version bump — and a
+# cost nobody is reminded of is a cost that gets forgotten: #128 was written
+# against a revision that went stale twice before it was started. Note the
+# limit #185 documented: this fires on revision *tags*, so a within-revision
+# change (the `x-mcp-header` gap #130 hit) is invisible to it.
 #
 # So this watches the specification repository's revision tags and opens an
 # issue when one appears past the pinned constant. It does not attempt to judge
