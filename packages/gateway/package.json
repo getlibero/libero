@@ -4,6 +4,7 @@
   "private": true,
   "description": "Slack gateway for Libero: Socket Mode adapter, mention intake, approval cards.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

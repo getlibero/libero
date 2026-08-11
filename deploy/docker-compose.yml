@@ -150,7 +150,18 @@ services:
       - audit-data:/data/audit
       - budget-data:/data/budget
       - vault-data:/data/vault
-      - /var/run/docker.sock:/var/run/docker.sock   # sandbox runner (see docs for gVisor)
+      # No Docker socket. It was here for the stdio transport's sandbox runner,
+      # which is #154 and unbuilt — nothing in this repository opens it — and it
+      # was harmless only for as long as this file could not be started at all.
+      # A process that can reach the daemon socket can start a privileged
+      # container mounting the host's root filesystem, so mounting it here would
+      # give the process holding every tool credential a supported path to root
+      # on the host, and would make "compromising the agent yields no tool
+      # credentials" a claim about the less interesting direction.
+      #
+      # When #154 lands it needs a sandbox the proxy can drive without the
+      # daemon socket. That is a design question for that issue, not a mount to
+      # restore.
     networks: [libero]
     # No published ports: the proxy listens only on the private network.
     restart: unless-stopped

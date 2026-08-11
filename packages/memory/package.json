@@ -4,6 +4,7 @@
   "private": true,
   "description": "Per-channel message store for Libero. One SQLite file per channel with an FTS5 index; the file-per-channel layout is the isolation boundary.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -4,6 +4,7 @@
   "private": true,
   "description": "Zod schemas for Libero: team sheets, audit records, tool calls, approval requests, memory ops. Single source of truth — both services import from here.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

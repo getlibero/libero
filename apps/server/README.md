@@ -333,8 +333,11 @@ A failed tool *call* is different and never ends a task: a refusal, a hold, or
 an upstream error comes back to the model as tool-result content and the task
 carries on.
 
-Under compose it is the `server` service. That path needs a Dockerfile, which
-is #86.
+Under compose it is the `server` service, built from `apps/server/Dockerfile`
+with the repository root as its context — the pnpm workspace is what installs,
+not one package. The image runs as `node`, carries the built JavaScript and its
+production dependencies and nothing else, and sets no ENTRYPOINT, so `CMD` is
+`node dist/index.js` and an operator's own command line replaces it whole.
 
 ## Shutting down
 

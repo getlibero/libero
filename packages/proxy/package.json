@@ -4,6 +4,7 @@
   "private": true,
   "description": "Tool proxy for Libero: team-sheet enforcement, credential vault, approvals, budget meter, audit log. Holds every credential; the agent reaches tools only through this service.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

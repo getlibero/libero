@@ -4,6 +4,7 @@
   "private": true,
   "description": "The tool-proxy process: composes @getlibero/proxy, listens only on localhost/private network with mTLS between services.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
