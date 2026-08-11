@@ -46,8 +46,8 @@ required with no default — the Slack tokens, the provider key, `AGENT_PROVIDER
 `AGENT_MODEL`, the channels roots for both services, the agent's `AGENT_STORE_ROOT`, the proxy's
 TLS material, and the vault, budget, and audit paths (compose sets the in-container paths itself;
 the file says which). A missing one is a startup failure that names itself. `PROXY_BUDGET_DB`,
-`PROXY_AUDIT_DB` and `AGENT_STORE_ROOT` get their own paragraphs under
-[operating it](#operating-it) because they are the three where a wrong value fails quietly rather
+`PROXY_AUDIT_DB`, `AGENT_STORE_ROOT` and `PROXY_STORE_ROOT` get their own paragraphs under
+[operating it](#operating-it) because they are the four where a wrong value fails quietly rather
 than loudly.
 
 Credentials go into the vault from inside the proxy container, so the master key never has to
@@ -285,6 +285,20 @@ Unlike the two above, **this one is not "nothing in it is a secret"**: it holds 
 a channel, and it belongs to that channel's members. One SQLite file per channel is the isolation
 boundary — there is no channel column for a query to forget to filter on — and back it up, or not,
 on the terms your Slack retention policy already sets.
+
+`PROXY_STORE_ROOT` is the **same directory**, named again on the proxy side, because the proxy
+serves `search_channel_history` and has to read the store to answer it. Two variables for one path
+because the two services are configured separately; point them at the same place or the tool finds
+every channel empty. Required with no default, on the same terms as the rest — the quiet failure is
+a proxy that starts, publishes the tool to every channel whose sheet grants it, and answers each
+call with "no messages have been stored for this channel yet".
+
+The proxy opens every store **read-only**, per call, through an opener that has `search` and
+`close` on it and no way to write, stamp a version, or migrate. The mount is still read-write, and
+has to be: a SQLite WAL reader creates the `-shm` and `-wal` sidecars beside the file, so a `:ro`
+mount fails at the first search. It is not `PROXY_CHANNELS_ROOT` and does not merge with it — the
+paragraph above is about the agent writing where the proxy reads *authorization*, and this is
+neither of those.
 
 The meter uses Node's built-in `node:sqlite` — no dependency, no native build. Both services need
 Node 24 or newer: the message store's full-text index needs SQLite's FTS5, and `node:sqlite` was

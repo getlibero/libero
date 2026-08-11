@@ -196,11 +196,13 @@ export default tseslint.config(
                 "**/mcp-client*",
                 "**/mcp-catalog*",
                 "**/http-dispatcher*",
+                "**/builtin-dispatcher*",
                 "**/outbound*",
+                "@getlibero/memory",
                 "@getlibero/proxy"
               ],
               message:
-                "The tool listing route can ask an upstream what it offers and can run nothing. It holds a ToolCatalog, never a vault, a pool, a client, or the sender that attaches a credential."
+                "The tool listing route can ask an upstream what it offers and can run nothing. It holds a ToolCatalog, never a vault, a pool, a client, the sender that attaches a credential, or the executor that reads a channel's messages. ./builtins.ts is allowed and ./builtin-dispatcher.ts is not: definitions are constants, the executor opens a store."
             }
           ]
         }
@@ -392,14 +394,17 @@ export default tseslint.config(
   {
     // The message store is a leaf, and this block is what keeps it one.
     //
-    // It holds channel content, and #64 has not decided who reads it: the proxy,
-    // opening store.db as a second reader, or the gateway, answering a callback.
-    // Both are live, so this package has to be importable from either side —
-    // which means it may name neither. The concrete hazard is transitive: a
-    // Logger imported from the gateway would, the day #64 chooses the direct
-    // read, put the Slack SDK into the proxy's image through an edge no import
-    // in the proxy names. packages/memory/src/log.ts duplicates an interface
-    // rather than importing one for exactly this reason.
+    // It holds channel content and both services open it: the gateway writes
+    // every inbound message, and since #64 the proxy reads one back to answer
+    // search_channel_history. So this package is imported from either side and
+    // may name neither. The concrete hazard is transitive: a Logger imported
+    // from the gateway would put the Slack SDK into the proxy's image through an
+    // edge no import in the proxy names. packages/memory/src/log.ts duplicates
+    // an interface rather than importing one for exactly this reason.
+    //
+    // #64 closing made this stricter rather than moot — the proxy edge exists
+    // today, so the ban now guards a live import path rather than a prospective
+    // one.
     //
     // Wider than PROXY_IMPORT_BAN rather than a member of it, so this is its own
     // block. Note the config's rule at the top of this file: no-restricted-imports
@@ -429,7 +434,7 @@ export default tseslint.config(
                 "**/packages/agent/**"
               ],
               message:
-                "The message store is a leaf: it holds channel content and either service may end up reading it (#64), so it may depend on neither. Its Logger is duplicated in src/log.ts on purpose."
+                "The message store is a leaf: it holds channel content and both services open it — the gateway writes, the proxy reads (#64) — so it may depend on neither. Its Logger is duplicated in src/log.ts on purpose."
             }
           ]
         }

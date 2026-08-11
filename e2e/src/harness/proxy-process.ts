@@ -36,6 +36,13 @@ export interface ProxyEnv {
   readonly vaultKey: string;
   readonly budgetDb: string;
   readonly auditDb: string;
+  /**
+   * The per-channel message stores (#64). The same directory the in-process
+   * agent writes under, so a message the stub Slack delivered is one this
+   * spawned process can read back — which is the whole of what the
+   * `search_channel_history` cases prove.
+   */
+  readonly storeRoot: string;
   readonly tlsCert: string;
   readonly tlsKey: string;
   readonly tlsCa: string;
@@ -119,6 +126,7 @@ export async function spawnProxy(
       PROXY_VAULT_KEY: env.vaultKey,
       PROXY_BUDGET_DB: env.budgetDb,
       PROXY_AUDIT_DB: env.auditDb,
+      PROXY_STORE_ROOT: env.storeRoot,
       PROXY_TLS_CERT: env.tlsCert,
       PROXY_TLS_KEY: env.tlsKey,
       PROXY_TLS_CA: env.tlsCa

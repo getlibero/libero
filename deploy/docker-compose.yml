@@ -122,6 +122,20 @@ services:
       # row, so 10k calls a day is about 2 MB a day — and the answer when that
       # stops being small is to rotate the file, not to prune it.
       PROXY_AUDIT_DB: /data/audit/audit.db
+      # Read, and required. The per-channel message stores the gateway writes,
+      # read here to answer search_channel_history (#64). Same directory the
+      # server service mounts as AGENT_STORE_ROOT; two names because the two
+      # services are configured separately.
+      #
+      # Every file is opened readOnly and per call. The mount below is still
+      # read-write, and has to be: a SQLite WAL reader creates the -shm and -wal
+      # sidecars beside the file, so a :ro mount fails at the first search.
+      #
+      # Deliberately not PROXY_CHANNELS_ROOT. Team sheets are where this service
+      # reads its authorization from, so the agent must never be able to write
+      # there; the store lives on the agent's writable side and this is a
+      # different path. The channels mount stays :ro on both services.
+      PROXY_STORE_ROOT: /data/store
       # 0.0.0.0 reaches only the private bridge below, which publishes no
       # ports. Outside compose the default is 127.0.0.1.
       PROXY_HOST: 0.0.0.0
@@ -150,6 +164,12 @@ services:
       - audit-data:/data/audit
       - budget-data:/data/budget
       - vault-data:/data/vault
+      # The channel stores the server service writes, for search_channel_history
+      # (#64). Read-write because a SQLite WAL reader creates the -shm and -wal
+      # sidecars; the read-only-ness is `{ readOnly: true }` on each connection,
+      # which is the posture the audit reader already takes. This service opens
+      # no store for writing and has no statement that could.
+      - store-data:/data/store
       # No Docker socket. It was here for the stdio transport's sandbox runner,
       # which is #154 and unbuilt — nothing in this repository opens it — and it
       # was harmless only for as long as this file could not be started at all.
@@ -183,7 +203,9 @@ networks:
 volumes:
   audit-data:
   budget-data:
-  # The only one of these the agent side mounts, and the only one holding
-  # channel content rather than operator records.
+  # The only one holding channel content rather than operator records, and the
+  # only one both services mount: the server writes every inbound message, and
+  # since #64 the proxy reads one back to answer search_channel_history. The
+  # proxy opens each file readOnly.
   store-data:
   vault-data:

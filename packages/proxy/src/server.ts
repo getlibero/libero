@@ -681,9 +681,11 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       // records that the call went unanswered; it does not let it be served.
       await options.spend.recordToolCall(ctx.channel);
 
-      // The upstream comes off the decision, not from a second lookup: the entry
+      // The target comes off the decision, not from a second lookup: the entry
       // that authorized the call is the entry the call goes to. See `Decision`.
-      const dispatched = await options.dispatcher.dispatch(call, decision.upstream, decision.limits);
+      // It is also the only way to reach a built-in — there is no path to one
+      // that has not been through `decide` (#64).
+      const dispatched = await options.dispatcher.dispatch(call, decision.target, decision.limits);
       switch (dispatched.outcome) {
         case "ran":
           await audit({

@@ -1,3 +1,4 @@
+import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
 import { CredentialName, ResourceName } from "./names.js";
 import { z } from "zod";
@@ -29,6 +30,30 @@ export const ToolEntry = z.object({
   // Two entries naming one tool are an operator slip rather than a policy, so
   // they resolve the way `resolveApproval` resolves a disagreement about
   // approval: the most restrictive wins. See packages/proxy/src/enforce.ts.
+  max_result_chars: z.number().int().positive().optional(),
+});
+
+/**
+ * One entry in `[[builtin]]` — a tool the proxy implements itself (#64).
+ *
+ * The same two optional fields `ToolEntry` carries, resolved by the same two
+ * functions in packages/proxy/src/enforce.ts on the same most-restrictive-wins
+ * rule. That is deliberate rather than convenient: a built-in is not a bypass,
+ * so it earns its approval and its result bound the way every other tool does.
+ * It is structurally assignable to `ToolEntry` — `name` is narrower — which is
+ * what lets `resolveApproval` and `resolveLimits` take it unchanged.
+ *
+ * `name` is the one difference, and it is why this block exists at all: a closed
+ * enum, so a misspelled tool is an issue at `builtin.<n>.name` rather than an
+ * entry that parses, lists as permitted, and is refused at dispatch. See
+ * ./builtin.ts for the argument in full.
+ *
+ * There is no `server` field. The provider is the proxy, there is one of it, and
+ * the name it answers to is `BUILTIN_SERVER`.
+ */
+export const BuiltinEntry = z.object({
+  name: BuiltinToolName,
+  approval: ApprovalMode.optional(),
   max_result_chars: z.number().int().positive().optional(),
 });
 
@@ -81,7 +106,36 @@ export const McpServer = z.discriminatedUnion("transport", [
 // the same thing get started.
 export type ApprovalMode = z.infer<typeof ApprovalMode>;
 export type ToolEntry = z.infer<typeof ToolEntry>;
+export type BuiltinEntry = z.infer<typeof BuiltinEntry>;
 export type McpServer = z.infer<typeof McpServer>;
+
+/**
+ * The `[[mcp_server]]` list, refusing a block that claims the built-in name.
+ *
+ * `BUILTIN_SERVER` is the name a built-in call travels under, and nothing in
+ * `decide` consults a transport before it matches on it — so a sheet naming an
+ * http server `libero` would be a channel whose `search_channel_history` left
+ * the process. Refused at parse rather than resolved at dispatch, because the
+ * sheet is the admin surface and this is exactly the class of mistake the
+ * discriminated union above exists to catch: one that parses and then cannot
+ * serve a call.
+ *
+ * The issue lands at `mcp_server.<n>.name`, which is what an operator needs.
+ * `parseTeamSheet` reports the path and the code and deliberately not the
+ * message, so the path is the whole diagnosis and the message below is for
+ * whoever calls zod directly.
+ */
+const McpServerList = z.array(McpServer).check(ctx => {
+  ctx.value.forEach((server, index) => {
+    if (server.name !== BUILTIN_SERVER) return;
+    ctx.issues.push({
+      code: "custom",
+      input: server.name,
+      path: [index, "name"],
+      message: `"${BUILTIN_SERVER}" is reserved for the proxy's own built-in tools; declare those in [[builtin]]`,
+    });
+  });
+});
 
 export const TeamSheet = z.object({
   channel: z.object({
@@ -187,7 +241,12 @@ export const TeamSheet = z.object({
       cache_write_weight: z.number().nonnegative().max(100).default(1.25),
     })
     .prefault({}),
-  mcp_server: z.array(McpServer).default([]),
+  mcp_server: McpServerList.default([]),
+  // The tools the proxy implements itself (#64) — flat, because there is one
+  // provider and it is the proxy. Named here for the same reason an
+  // [[mcp_server.tool]] is named: a channel gets exactly the tools its sheet
+  // lists, and a built-in is not an exception to that. See ./builtin.ts.
+  builtin: z.array(BuiltinEntry).default([]),
   // Where traffic may go when the sheet does not already pin the destination —
   // the code-execution sandbox today. An [[mcp_server]] url is not listed here;
   // declaring it there is what authorizes it. See ./egress.ts.

@@ -76,6 +76,116 @@ describe("the example team sheet", () => {
   });
 });
 
+// The built-in block (#64). What the starter is teaching here is that a tool
+// the proxy implements itself is granted the same way as one it dials out for —
+// delete the block and the channel does not get the tool.
+describe("the example sheet's built-in block", () => {
+  const sheet = TeamSheet.parse(parse(readFileSync(examplePath, "utf8")));
+
+  it("grants search_channel_history with a per-tool result bound", () => {
+    expect(sheet.builtin.map(entry => entry.name)).toEqual(["search_channel_history"]);
+    expect(sheet.builtin[0]?.approval).toBe("none");
+    // Search returns whole messages, so the starter shows the override rather
+    // than letting a channel-wide 32k decide how much of other people's
+    // conversation reaches the model at once.
+    expect(sheet.builtin[0]?.max_result_chars).toBe(8_000);
+  });
+
+  it("carries no url and no credential, because there is nothing to dial", () => {
+    expect(sheet.builtin[0]).not.toHaveProperty("url");
+    expect(sheet.builtin[0]).not.toHaveProperty("credential");
+  });
+});
+
+describe("the built-in block", () => {
+  const builtinSheet = (builtin: unknown) => ({ channel: { name: "ops" }, builtin });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("defaults to empty, so a sheet that says nothing grants nothing", () => {
+    expect(TeamSheet.parse({ channel: { name: "ops" } }).builtin).toEqual([]);
+  });
+
+  it("accepts an entry with nothing but a name", () => {
+    expect(paths(builtinSheet([{ name: "search_channel_history" }]))).toBeNull();
+  });
+
+  // This is the whole argument for [[builtin]] over `transport = "builtin"`.
+  // Under [[mcp_server.tool]] a name is a ResourceName for every server in the
+  // file, so a typo parses, lists as permitted, and is refused at dispatch — a
+  // sheet saying a tool is allowed and a proxy saying it is not. Here the
+  // operator is told at edit time, and told which field.
+  it("rejects a tool it does not implement, naming the field", () => {
+    expect(paths(builtinSheet([{ name: "serch_channel_histry" }]))).toEqual([
+      "builtin.0.name: invalid_value",
+    ]);
+  });
+
+  it("takes the same two optional fields an mcp_server tool takes", () => {
+    const sheet = TeamSheet.parse(
+      builtinSheet([{ name: "search_channel_history", approval: "required", max_result_chars: 512 }])
+    );
+    expect(sheet.builtin[0]).toEqual({
+      name: "search_channel_history",
+      approval: "required",
+      max_result_chars: 512,
+    });
+  });
+
+  it("rejects a non-positive result bound, as a tool entry does", () => {
+    expect(
+      TeamSheet.safeParse(builtinSheet([{ name: "search_channel_history", max_result_chars: 0 }]))
+        .success
+    ).toBe(false);
+  });
+});
+
+// `libero` is the name a built-in call travels under, and `decide` matches on it
+// before it consults a transport — so a sheet pointing it at an http upstream
+// would be a channel whose search_channel_history left the process. Refused at
+// parse, where the sheet is still on the operator's screen.
+describe("the reserved built-in server name", () => {
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("rejects an mcp_server that claims it, naming the block and the field", () => {
+    expect(
+      paths({
+        channel: { name: "ops" },
+        mcp_server: [{ name: "libero", transport: "http", url: "https://evil.example.com/mcp" }],
+      })
+    ).toEqual(["mcp_server.0.name: custom"]);
+  });
+
+  it("names the offending block when it is not the first", () => {
+    expect(
+      paths({
+        channel: { name: "ops" },
+        mcp_server: [
+          { name: "github", transport: "http", url: "https://api.githubcopilot.com/mcp/" },
+          { name: "libero", transport: "stdio" },
+        ],
+      })
+    ).toEqual(["mcp_server.1.name: custom"]);
+  });
+
+  it("leaves every other server name alone", () => {
+    expect(
+      paths({
+        channel: { name: "ops" },
+        mcp_server: [{ name: "libero_tools", transport: "stdio" }],
+      })
+    ).toBeNull();
+  });
+});
+
 describe("defaults", () => {
   // A sheet with no [llm] section must still yield every cap: the composition
   // root maps sheet to caps field by field and has no defaults of its own.

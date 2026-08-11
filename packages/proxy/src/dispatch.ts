@@ -19,9 +19,10 @@
 // against a recording dispatcher — that a refused or held call leaves no trace
 // there — by putting listing traffic on the same seam.
 
-import type { BudgetSpend, CallLimits } from "./enforce.js";
+import type { BudgetSpend, CallLimits, Target } from "./enforce.js";
 import type { XMcpHeaderDeclaration } from "./vendor/mcp-param-headers.js";
 import type {
+  BuiltinToolName,
   McpServer,
   ResolvedToolCall,
   TokenUsageReport,
@@ -143,12 +144,18 @@ export type Dispatch =
  * refused or held call must leave no trace here, because reaching this
  * interface at all is what opens a connection and resolves a secret.
  *
- * `upstream` is the team-sheet entry enforcement matched, passed in rather than
- * looked up. A dispatcher that resolved the sheet itself could get a different
- * answer than the decision did — sheets are watched and reload on file change —
- * and would then send the call somewhere nothing approved. See the note on
- * `Decision` in ./enforce.ts. It also keeps this interface free of the sheet
- * store, so a dispatcher cannot read policy it has no business reading.
+ * `target` is what enforcement matched, passed in rather than looked up. A
+ * dispatcher that resolved the sheet itself could get a different answer than
+ * the decision did — sheets are watched and reload on file change — and would
+ * then send the call somewhere nothing approved. See the note on `Decision` in
+ * ./enforce.ts. It also keeps this interface free of the sheet store, so a
+ * dispatcher cannot read policy it has no business reading.
+ *
+ * It is a union because a permitted call may be served by an upstream or by this
+ * process itself (#64), and both arrive here having passed the same gate. A
+ * built-in reachable any other way would be the bypass that design exists to
+ * rule out, and the type is what rules it out: the only source of a `Target` is
+ * a `Decision`.
  *
  * `limits` arrives the same way and for the same reason — resolved once by the
  * decision that authorized the call, rather than looked up here against a sheet
@@ -157,7 +164,92 @@ export type Dispatch =
  * own options, so nothing on this interface can raise it.
  */
 export interface ToolDispatcher {
+  dispatch(call: ResolvedToolCall, target: Target, limits: CallLimits): Dispatch | Promise<Dispatch>;
+}
+
+/**
+ * Serves a call bound for an MCP upstream.
+ *
+ * ./http-dispatcher.ts fills this, and it takes an `McpServer` rather than a
+ * `Target` deliberately: the arm that holds the vault and the client pool
+ * structurally cannot be handed a built-in, so there is no branch in it that
+ * could mistake one for an upstream with a missing url. `createToolDispatcher`
+ * is the only thing that narrows, and it is a switch with no I/O.
+ */
+export interface McpToolDispatcher {
   dispatch(call: ResolvedToolCall, upstream: McpServer, limits: CallLimits): Dispatch | Promise<Dispatch>;
+}
+
+/**
+ * Serves a call this process implements itself.
+ *
+ * Narrower than `ToolDispatcher` on both ends, and each narrowing is the point.
+ * It takes a `BuiltinToolName` rather than a `Target`, so it structurally cannot
+ * be handed an upstream; and it is synchronous, because every built-in so far
+ * reads a local SQLite file and a promise here would invite one that does not.
+ *
+ * It lives behind `createToolDispatcher` rather than being wired into the server
+ * directly, so `ToolDispatcher` stays the one seam the server holds.
+ */
+export interface BuiltinDispatcher {
+  run(call: ResolvedToolCall, tool: BuiltinToolName, limits: CallLimits): Dispatch;
+}
+
+/**
+ * The two arms, as the one seam the server holds.
+ *
+ * A composite rather than a branch inside `HttpDispatcher`, and the reason is
+ * what each arm is allowed to hold. `HttpDispatcher` owns a vault and a client
+ * pool; the built-in owns a path to a directory of channel stores. Neither
+ * should be able to reach the other's, and a single object implementing both
+ * would hold both. Here the switch is the only thing that holds either, and it
+ * is four lines with no I/O.
+ *
+ * **Provisional iff both arms are.** `assertServableComposition` asks whether a
+ * dispatcher can really serve a call; this one can if either arm can, so a real
+ * built-in beside the unavailable MCP dispatcher still demands a real meter —
+ * which is right, because a built-in draws on the same budget.
+ */
+export function createToolDispatcher(arms: {
+  readonly mcp: McpToolDispatcher;
+  /**
+   * Optional, defaulting to the unavailable arm.
+   *
+   * A composition with no store root to read is every test that is not about
+   * built-ins, and it degrades to a 501 — the same honest answer an unbuilt
+   * upstream gives. It is not a silent degradation: a channel whose sheet grants
+   * a built-in gets `not_implemented`, which says the sheet is right and the
+   * process is not finished. `apps/proxy-server` always passes a real one.
+   */
+  readonly builtin?: BuiltinDispatcher;
+}): ToolDispatcher {
+  const builtin = arms.builtin ?? createUnavailableBuiltinDispatcher();
+
+  const dispatcher: ToolDispatcher = {
+    dispatch(call, target, limits) {
+      switch (target.kind) {
+        case "mcp":
+          return arms.mcp.dispatch(call, target.upstream, limits);
+        case "builtin":
+          return builtin.run(call, target.tool, limits);
+      }
+    }
+  };
+
+  return isProvisional(arms.mcp) && isProvisional(builtin)
+    ? markProvisional(dispatcher)
+    : dispatcher;
+}
+
+/**
+ * A built-in arm with nothing behind it.
+ *
+ * The counterpart to `createUnavailableDispatcher`, for a composition that has
+ * no store root to read — which is every test that is not about built-ins, and
+ * nothing in production.
+ */
+export function createUnavailableBuiltinDispatcher(): Provisional<BuiltinDispatcher> {
+  return markProvisional({ run: () => ({ outcome: "unavailable" }) as Dispatch });
 }
 
 /**
@@ -168,7 +260,7 @@ export interface ToolDispatcher {
  * keeps the two readable apart — an operator seeing `not_implemented` knows
  * their team sheet is correct and the proxy is unfinished, which is true.
  */
-export function createUnavailableDispatcher(): Provisional<ToolDispatcher> {
+export function createUnavailableDispatcher(): Provisional<McpToolDispatcher> {
   return markProvisional({ dispatch: () => ({ outcome: "unavailable" }) as Dispatch });
 }
 

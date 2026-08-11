@@ -20,6 +20,14 @@ This is `channels/example/channel.toml` in the repository, kept in sync with the
 
 ```toml
 # Example team sheet — copy to channels/<CHANNEL_ID>/channel.toml
+#
+# The team sheet is the admin surface: the sheet the manager submits before a
+# match declaring who is allowed on the pitch, what position they play, and
+# what needs the gaffer's sign-off. Keep these files in your own git repo.
+#
+# Nothing in this file is a secret. Credentials are NAMES, resolved only
+# inside the proxy's vault. Invalid sheets are rejected loudly and the
+# previous valid version stays active.
 
 [channel]
 name        = "engineering"
@@ -46,15 +54,28 @@ max_result_chars         = 32768                 # one tool answer's ceiling; pa
                                                  # setting: that heap is shared by every channel.
 follow_up_window_seconds = 900                   # replies in a worked thread need no re-mention; 0 for off
 
+# The daily meter, per channel, in the proxy. The two limits are not equally
+# strong: daily_tool_calls is counted by the proxy from calls it serves, so it
+# holds even if the agent process is fully compromised; daily_tokens is counted
+# from what the agent reports, which a prompt-injected model cannot forge but a
+# compromised agent process could. Both roll over at UTC midnight.
 [budget]
 daily_tokens     = 2_000_000
 daily_tool_calls = 400
-cache_read_weight  = 0.1                    # what a cached token costs
+
+# What a cached token costs against daily_tokens. Cache reads and cache writes
+# bill differently from ordinary input tokens; how differently is your
+# provider's decision. These are Anthropic's ratios. Set cache_read_weight = 0
+# to stop counting cache reads at all.
+cache_read_weight  = 0.1
 cache_write_weight = 1.25
 
-# GitHub's hosted MCP server. For this server the url path is also the only
-# configuration Libero can reach: /x/<toolset> picks the toolset, a trailing
-# /readonly drops every write tool. See /docs/github/
+# GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
+# and all — and for this server the path is also the only configuration Libero
+# can reach: /x/<toolset> picks the toolset and a trailing /readonly drops every
+# write tool. The alternative is a set of X-MCP-* request headers, and a team
+# sheet has no field for those on purpose. Redirects are not followed, so get
+# the url exactly right. See the docs: /docs/github/
 [[mcp_server]]
 name       = "github"
 transport  = "http"
@@ -75,11 +96,18 @@ credential = "github_service_account"       # name only; value lives in the vaul
 
   [[mcp_server.tool]]
   name     = "merge_pull_request"
-  approval = "required"                     # held for a human Approve click. Written out
-                                            # because the heuristic would NOT hold this
-                                            # one — "merge" is not a destructive verb.
+  approval = "required"                     # held for a human Approve click.
+                                            # Written out because the heuristic
+                                            # would NOT hold this one: it looks
+                                            # for delete/drop/transfer/deploy in
+                                            # the name, and "merge" is none of
+                                            # them. Same for push_files,
+                                            # create_or_update_file, issue_write.
 
-# A second toolset is a second block, because GitHub's scoping is the url.
+# A second toolset is a second block, because GitHub's scoping is the url. Two
+# blocks may also share a name — that is how a long tool list gets split — as
+# long as every block carrying a given tool agrees on the upstream. These do not
+# share one, so nothing here has to agree with anything above.
 [[mcp_server]]
 name       = "github_repos"
 transport  = "http"
@@ -91,10 +119,45 @@ credential = "github_service_account"       # one credential, however many block
   approval = "none"
 
   [[mcp_server.tool]]
-  name = "delete_file"                      # no approval line at all: "delete" is a
-                                            # destructive verb, so the heuristic holds
-                                            # this one without being told to.
+  name = "delete_file"                      # no approval line at all: "delete"
+                                            # is a destructive verb, so the
+                                            # heuristic holds this one for a
+                                            # click without being told to.
 
+# Tools the proxy implements itself rather than dialling an upstream for. One
+# provider — the proxy — so the block is flat: no url and no credential, because
+# there is nothing to address and nothing to authenticate to.
+#
+# A built-in is not a bypass. Listed here it is refused when the sheet omits it,
+# held when this block asks for a click, charged to the daily meter above, and
+# written to the audit log, exactly as an [[mcp_server.tool]] is. Delete the
+# block and the channel does not get the tool.
+#
+# "libero" is the server name these travel under, and it is reserved: an
+# [[mcp_server]] claiming it is a parse error rather than a channel whose
+# search_channel_history quietly left the process.
+[[builtin]]
+name             = "search_channel_history"   # this channel's own messages, full-text.
+                                              # The channel comes from the client
+                                              # certificate, so no argument can name
+                                              # another one.
+approval         = "none"
+max_result_chars = 8000                       # whole messages come back; a channel-wide
+                                              # 32k is a lot of other people's
+                                              # conversation to put in front of the
+                                              # model at once.
+
+# Where traffic may go when this sheet does not already say. The MCP servers
+# above are NOT listed here: declaring a url in [[mcp_server]] is what
+# authorizes it. This list is for the destinations nothing pinned — the
+# code-execution sandbox today. Keeping them apart is why allowing the GitHub
+# MCP server (api.githubcopilot.com) does not also let sandboxed code call
+# api.github.com directly, and why allowing the API does not let it dial the
+# MCP server.
+#
+# Default deny. "*." stands for one or more subdomain labels, so
+# *.internal.example.com covers build.internal.example.com but not
+# internal.example.com itself. There is no allow-all.
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 
@@ -288,6 +351,44 @@ Names are matched exactly. `GitHub` is not `github`, and a tool listed as `List_
 not match a call to `list_pull_requests` — the call is refused as an unlisted tool. If a tool you
 allowlisted is being refused, check the spelling before anything else. If the same tool appears twice they are resolved
 the same way in both fields: the stricter approval applies, and the smaller result bound applies.
+
+### `[[builtin]]`
+
+Tools the proxy implements itself, rather than dialling an upstream for. One block per tool, flat:
+there is a single provider — the proxy — so there is no server to group under, no `url` to name and
+no `credential` to reference.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Which built-in. A closed set; anything else is a parse error naming the field. |
+| `approval` | no | `"required"` or `"none"`, exactly as on `[[mcp_server.tool]]`. |
+| `max_result_chars` | no | This tool's own ceiling, overriding `[llm] max_result_chars`. |
+
+**A built-in is not a bypass.** Listed here it is refused when the sheet omits it, held when this
+block asks for a click, charged to the channel's daily meter, and written to the audit log — the
+same path an `[[mcp_server.tool]]` takes, resolved by the same code. Delete the block and the
+channel does not get the tool. Duplicates resolve the way they do everywhere else in this file: the
+stricter approval and the smaller result bound win.
+
+`libero` is the server name these travel under, and it is **reserved**. An `[[mcp_server]]` claiming
+that name is a parse error rather than a channel whose `search_channel_history` quietly leaves the
+process.
+
+There is one built-in today:
+
+| Name | What it does |
+| --- | --- |
+| `search_channel_history` | Full-text search over **this channel's** stored messages. Takes words, not a query language; results are ranked by relevance rather than recency. |
+
+Its scope is not negotiable and is not a setting. The channel comes from the client certificate, the
+tool's input schema has no field for one, and the arguments are parsed strictly — so a model that
+sends `{"query": "…", "channel": "C0OTHER"}` gets an error naming the key rather than another
+channel's conversation. The proxy opens that channel's store read-only and can reach no other file.
+
+Only messages the app has seen are searchable. It is not a Slack search API: nothing backfills, so
+history starts when the app joined the channel. The author shown is the display name as it was when
+the message was stored, and `<@U…>` mentions inside message text stay as ids — the proxy holds no
+Slack token and inventing a name would be worse than showing an id.
 
 ### `[egress]`
 

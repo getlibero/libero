@@ -59,6 +59,14 @@ export interface SheetSpec {
    */
   readonly cacheReadWeight?: number;
   readonly cacheWriteWeight?: number;
+  /**
+   * The `[[builtin]]` block: tools the proxy implements itself (#64).
+   *
+   * Absent by default, so every existing case keeps a sheet that grants none —
+   * which is also the "a channel whose sheet omits it is refused" fixture,
+   * obtained by writing nothing rather than by writing an exclusion.
+   */
+  readonly builtins?: readonly SheetTool[];
 }
 
 export interface ChannelsRoot {
@@ -123,7 +131,15 @@ export function tempChannelsRoot(cleanup: Cleanup): ChannelsRoot {
           `url = "${spec.url}"`,
           ...(spec.credential !== undefined ? [`credential = "${spec.credential}"`] : []),
           ``,
-          tools
+          tools,
+          ...(spec.builtins === undefined
+            ? []
+            : spec.builtins.flatMap(builtin => [
+                ``,
+                `[[builtin]]`,
+                `name = "${builtin.name}"`,
+                ...(builtin.approval !== undefined ? [`approval = "${builtin.approval}"`] : [])
+              ]))
         ].join("\n")
       );
     }

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
+import type { BuiltinToolName, McpServer, ResolvedToolCall } from "@getlibero/schema";
 import {
   type Dispatch,
   type SpendMeter,
   type ToolDispatcher,
   assertServableComposition,
+  createToolDispatcher,
   createUnavailableCatalog,
   createUnavailableDispatcher,
   markProvisional
@@ -58,6 +59,89 @@ describe("the provisional dispatcher", () => {
   });
 });
 
+// The composite is the seam the server holds, and the whole of its behaviour is
+// which arm a target reaches. Both arms record, so a test can assert the one
+// that was *not* called — which is the property that matters: the arm holding
+// the vault and the pool must never see a built-in, and the arm holding a path
+// to channel messages must never see an upstream.
+describe("createToolDispatcher", () => {
+  const call = { id: "1", server: "github", tool: "list_prs", arguments: {}, channel: "C1" } as ResolvedToolCall;
+  const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
+
+  const arms = () => {
+    const seen = { mcp: [] as McpServer[], builtin: [] as string[] };
+    return {
+      seen,
+      mcp: {
+        dispatch: (_call: ResolvedToolCall, server: McpServer): Dispatch => {
+          seen.mcp.push(server);
+          return { outcome: "ran", result: { content: "mcp", isError: false } };
+        }
+      },
+      builtin: {
+        run: (_call: ResolvedToolCall, tool: BuiltinToolName): Dispatch => {
+          seen.builtin.push(tool);
+          return { outcome: "ran", result: { content: "builtin", isError: false } };
+        }
+      }
+    };
+  };
+
+  it("sends an mcp target to the mcp arm, unwrapped", () => {
+    const { seen, mcp, builtin } = arms();
+    const result = createToolDispatcher({ mcp, builtin }).dispatch(call, { kind: "mcp", upstream }, LIMITS);
+
+    expect(result).toEqual({ outcome: "ran", result: { content: "mcp", isError: false } });
+    // The arm receives the `McpServer`, not the `Target` around it: it cannot
+    // be handed a built-in, so it needs no branch that could mistake one.
+    expect(seen.mcp).toEqual([upstream]);
+    expect(seen.builtin).toEqual([]);
+  });
+
+  it("sends a builtin target to the builtin arm, and never to the mcp one", () => {
+    const { seen, mcp, builtin } = arms();
+    const result = createToolDispatcher({ mcp, builtin }).dispatch(
+      call,
+      { kind: "builtin", tool: "search_channel_history" },
+      LIMITS
+    );
+
+    expect(result).toEqual({ outcome: "ran", result: { content: "builtin", isError: false } });
+    expect(seen.builtin).toEqual(["search_channel_history"]);
+    // The arm that holds the vault and the client pool saw nothing.
+    expect(seen.mcp).toEqual([]);
+  });
+
+  it("answers a builtin target 501 when no builtin arm was composed", () => {
+    const { mcp } = arms();
+    expect(
+      createToolDispatcher({ mcp }).dispatch(call, { kind: "builtin", tool: "search_channel_history" }, LIMITS)
+    ).toEqual({ outcome: "unavailable" });
+  });
+
+  // `assertServableComposition` asks whether this can really serve a call. It
+  // can if *either* arm can — a real built-in beside an unbuilt upstream still
+  // spends a channel's meter, so it still demands a real one.
+  it("is provisional only when both arms are", () => {
+    const { mcp, builtin } = arms();
+
+    expect(() =>
+      assertServableComposition(provisionalMeter(), createToolDispatcher({ mcp: createUnavailableDispatcher() }))
+    ).not.toThrow();
+
+    expect(() =>
+      assertServableComposition(
+        provisionalMeter(),
+        createToolDispatcher({ mcp: createUnavailableDispatcher(), builtin })
+      )
+    ).toThrow(/needs a real spend meter/);
+
+    expect(() =>
+      assertServableComposition(provisionalMeter(), createToolDispatcher({ mcp }))
+    ).toThrow(/needs a real spend meter/);
+  });
+});
+
 describe("the provisional catalog", () => {
   it("describes nothing, so every tool stays as the sheet wrote it", async () => {
     const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
@@ -70,7 +154,7 @@ describe("the provisional catalog", () => {
   // exists to prevent.
   it("is not a composition the servability check has an opinion about", () => {
     expect(() => assertServableComposition(realMeter, realDispatcher)).not.toThrow();
-    expect(() => assertServableComposition(provisionalMeter(), createUnavailableDispatcher())).not.toThrow();
+    expect(() => assertServableComposition(provisionalMeter(), createToolDispatcher({ mcp: createUnavailableDispatcher() }))).not.toThrow();
   });
 });
 
@@ -86,14 +170,14 @@ describe("assertServableComposition", () => {
 
   it("allows a provisional meter with the unavailable dispatcher", () => {
     expect(() =>
-      assertServableComposition(provisionalMeter(), createUnavailableDispatcher())
+      assertServableComposition(provisionalMeter(), createToolDispatcher({ mcp: createUnavailableDispatcher() }))
     ).not.toThrow();
   });
 
   // What ships now: a real meter, and either dispatcher. A real meter with the
   // unavailable dispatcher is a deployment ahead of its upstream, not a fault.
   it("allows a real meter with either dispatcher", () => {
-    expect(() => assertServableComposition(realMeter, createUnavailableDispatcher())).not.toThrow();
+    expect(() => assertServableComposition(realMeter, createToolDispatcher({ mcp: createUnavailableDispatcher() }))).not.toThrow();
     expect(() => assertServableComposition(realMeter, realDispatcher)).not.toThrow();
   });
 

@@ -138,6 +138,9 @@ importers:
 
   packages/proxy:
     dependencies:
+      '@getlibero/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@getlibero/schema':
         specifier: workspace:*
         version: link:../schema

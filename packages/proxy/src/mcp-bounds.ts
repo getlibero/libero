@@ -73,7 +73,7 @@ export function isInputRequired(result: Record<string, unknown>): boolean {
  * documents nine `method` values inline and is comfortably past the line, which
  * is how #130 found this.
  */
-function truncate(text: string, limit: number): string {
+export function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 

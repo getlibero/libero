@@ -6,10 +6,12 @@
 
 import {
   TeamSheetStore,
+  createBuiltinDispatcher,
   createHttpDispatcher,
   createJsonLogger,
   createProxyServer,
   createSqliteSpendMeter,
+  createToolDispatcher,
   loadTlsOptions,
   openAuditWriter,
   openBudgetDb,
@@ -23,6 +25,7 @@ import {
   maxResponseBytesFromEnv,
   portFromEnv,
   requiredEnv,
+  storeRootFromEnv,
   vaultFileFromEnv,
   vaultKeyFromEnv
 } from "./env.js";
@@ -78,11 +81,23 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // the deployment's rather than a channel's: it bounds this process's heap, which
 // every channel shares. The channel's own bound on a result rides on each
 // decision instead. See `maxResponseBytesFromEnv`.
-const dispatcher = createHttpDispatcher({
+const mcp = createHttpDispatcher({
   vault,
   logger,
   maxResponseBytes: maxResponseBytesFromEnv(process.env)
 });
+
+// The other arm, and it holds a directory path where the one above holds a
+// vault and a client pool (#64). Neither can reach the other's: the composite
+// below is what narrows a `Target`, so the arm that dials upstreams is never
+// handed a built-in and the arm that reads a channel's messages is never handed
+// an upstream.
+//
+// The store root is the same directory the gateway writes under, mounted into
+// this service as well. Every file is opened `readOnly` and per call — see
+// `storeRootFromEnv` and `openMessageReader` — so there is nothing here for
+// shutdown to close.
+const builtin = createBuiltinDispatcher({ storeRoot: storeRootFromEnv(process.env), logger });
 
 const server = createProxyServer({
   tls: loadTlsOptions({
@@ -100,8 +115,11 @@ const server = createProxyServer({
   // the tree today, which is exactly why the check is worth keeping — the seams
   // that land next arrive before their implementations do.
   spend: createSqliteSpendMeter({ db: budget, logger }),
-  dispatcher,
-  catalog: dispatcher,
+  dispatcher: createToolDispatcher({ mcp, builtin }),
+  // The MCP arm, not the composite: `ToolCatalog.describe` asks an *upstream*
+  // what it offers, and a built-in has nobody to ask — the listing route reads
+  // its definition from `BUILTIN_TOOLS` instead.
+  catalog: mcp,
   // The writer, not the handle: the serving process appends and cannot close
   // the file it is being audited into. `auditDb` stays here, where shutdown is.
   audit,
@@ -156,7 +174,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
       // exits whatever the terminations did. `void` marks the floating promise
       // as deliberate — this callback is not async, and making it async would
       // produce the same floating promise with more to read.
-      void dispatcher.close().finally(() => {
+      void mcp.close().finally(() => {
         budget.close();
         auditDb.close();
         process.exit(0);

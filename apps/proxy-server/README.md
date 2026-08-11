@@ -16,11 +16,13 @@ PROXY_VAULT_FILE=deploy/vault/vault.enc \
 PROXY_VAULT_KEY="$(openssl rand -base64 32)" \
 PROXY_BUDGET_DB=deploy/budget/budget.db \
 PROXY_AUDIT_DB=deploy/audit/audit.db \
+PROXY_STORE_ROOT=deploy/store \
   pnpm --filter @getlibero/proxy-server start
 ```
 
 Both database directories have to exist first — nothing here creates one:
-`mkdir -p deploy/budget deploy/audit`.
+`mkdir -p deploy/budget deploy/audit`. `PROXY_STORE_ROOT` is the agent's
+`AGENT_STORE_ROOT`, and the agent creates the per-channel directories under it.
 
 | variable | default | |
 | --- | --- | --- |
@@ -32,6 +34,7 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_VAULT_KEY` | — | its master key: base64, 32 bytes |
 | `PROXY_BUDGET_DB` | — | the daily budget meter |
 | `PROXY_AUDIT_DB` | — | the append-only audit log |
+| `PROXY_STORE_ROOT` | — | the agent's per-channel message stores, read read-only for `search_channel_history` |
 | `PROXY_HOST` | `127.0.0.1` | empty means the default; compose sets `0.0.0.0`, on a bridge that publishes no ports |
 | `PROXY_PORT` | `8443` | |
 | `PROXY_MAX_RESPONSE_BYTES` | `4194304` | how much of an upstream's answer to hold before abandoning it |
@@ -116,6 +119,36 @@ docker compose run --rm proxy node dist/budget.js show  C024BE91L
 docker compose run --rm proxy node dist/budget.js reset C024BE91L
 docker compose run --rm proxy node dist/budget.js prune
 ```
+
+## The channel message stores
+
+`PROXY_STORE_ROOT` is the agent's `AGENT_STORE_ROOT` — the same directory, named
+again because the two services are configured separately. The proxy reads it to
+answer `search_channel_history`, the one tool it implements itself rather than
+dialling an upstream for.
+
+**Read-only, per call.** The opener has `search` and `close` on it and no way to
+append, remove, edit, stamp a version, or migrate; the connection is opened
+`readOnly`, which is the posture the audit reader already takes. Nothing here
+creates a directory: a channel with no store yet is answered "no messages have
+been stored for this channel yet", which is the ordinary state of a newly
+provisioned channel.
+
+The *mount* has to be writable all the same, and that surprises people: a SQLite
+WAL reader creates the `-shm` and `-wal` sidecars beside the file, so a `:ro`
+mount fails at the first search.
+
+**It is not `PROXY_CHANNELS_ROOT` and must not be merged with it.** Team sheets
+are where this process reads its authorization from and the proxy re-reads one
+per call, so an agent able to write there would be a compromised agent widening
+its own permissions. The store lives on the agent's writable side; reading it
+from here crosses that line in the safe direction and in one direction only.
+
+Unlike the vault, the meter and the log, **this one holds content rather than
+operator records**: it is what people said in a channel, and it belongs to that
+channel's members. One SQLite file per channel is the isolation boundary, and the
+opener closes over exactly one file — so `search_channel_history` has no argument
+that could reach another channel, and no statement that could.
 
 ## The audit log
 

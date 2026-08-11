@@ -232,6 +232,44 @@ resolves from the channel's team sheet with the rest of policy, at decision
 time, so an operator changes it with a sheet edit rather than an agent release.
 `apps/proxy-server/README.md` documents loading secrets into the vault.
 
+## Built-in tools
+
+Not every permitted call goes to an upstream. `search_channel_history` is served
+by this process, reading the calling channel's message store (`@getlibero/memory`,
+opened read-only). `builtins.ts` holds the definitions and the strict argument
+parser; `builtin-dispatcher.ts` is the executor.
+
+**A built-in is not a bypass**, and the type system is what says so rather than a
+comment. `decide` returns a `Target` — `{kind: "mcp", upstream}` or
+`{kind: "builtin", tool}` — so both kinds come out of the same decision, having
+passed the same allowlist, the same budget check and the same approval rule, and
+the only way to obtain one is to be handed a `Decision`. `decideBuiltin` runs the
+same steps in the same order as the MCP branch, minus `server_ambiguous`, which
+has no question to answer when there is one provider; `exhaustedLimit`,
+`resolveLimits` and `resolveApproval` are the functions that branch calls rather
+than copies of them.
+
+**The two arms cannot be handed each other's work.** `createToolDispatcher` is
+the only thing that narrows a `Target`, and it is a switch with no I/O:
+`HttpDispatcher` implements `McpToolDispatcher` and takes an `McpServer`,
+`BuiltinDispatcher` takes a `BuiltinToolName`. So the object holding the vault
+and the client pool never sees a built-in, and the object holding a path to
+channel messages never sees an upstream — neither needs a branch guarding
+against it.
+
+**The listing route may import `builtins.ts` and not `builtin-dispatcher.ts`**,
+enforced by its ESLint block. That is the `ToolCatalog`/`ToolDispatcher` split
+one file over: definitions are constants a route may publish, the executor opens
+a channel's store. A built-in's description comes from this build rather than
+from an upstream answer, so it is the one listing row that cannot degrade to a
+thin one — and it is checked against `MAX_TOOL_DESCRIPTION` at module load,
+because a description over that bound fails `ToolListing.parse` on the agent's
+side and ends the task rather than costing it a sentence.
+
+Adding a built-in is two halves that fail the build separately: a member on
+`BuiltinToolName` in `@getlibero/schema`, and a definition in `BUILTIN_TOOLS`
+plus a case in the executor's exhaustive switch.
+
 ## Endpoints
 
 Every route is behind mutual TLS and the channel-identity gate. There is no

@@ -36,6 +36,7 @@ import type { BudgetDb } from "./budget-db.js";
 import { createSqliteSpendMeter } from "./budget-meter.js";
 import {
   type SpendMeter,
+  createToolDispatcher,
   createUnavailableCatalog,
   createUnavailableDispatcher,
   markProvisional,
@@ -460,7 +461,7 @@ describe("routing", () => {
       }),
       sheets,
       spend: meter,
-      dispatcher: createUnavailableDispatcher(),
+      dispatcher: createToolDispatcher({ mcp: createUnavailableDispatcher() }),
       catalog: createUnavailableCatalog(),
       audit: discardingAuditWriter(),
       logger: createJsonLogger(line => {
@@ -569,6 +570,65 @@ name = "engineering"
 
     const after = await call("/v1/tools", clientCert(certs, CHANNEL));
     expect(ToolListing.parse(after.body).tools).toEqual([]);
+  });
+
+  // A built-in is described from this build's own constants rather than from an
+  // upstream answer, so it is the one row that cannot degrade to a thin one —
+  // there is nobody to ask and nothing that can fail (#64).
+  it("carries a built-in with its description and schema", async () => {
+    writeSheet(
+      CHANNEL,
+      `
+[channel]
+name = "engineering"
+
+[[builtin]]
+name = "search_channel_history"
+`
+    );
+
+    const { tools } = ToolListing.parse((await call("/v1/tools", clientCert(certs, CHANNEL))).body);
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      server: "libero",
+      tool: "search_channel_history",
+      approval: "none",
+      description: expect.stringContaining("Search this Slack channel's own message history"),
+      inputSchema: expect.objectContaining({ type: "object" })
+    });
+    // No channel argument, which is what makes the scope structural rather than
+    // checked. The executor's `.strict()` parse is the other half.
+    const properties = (tools[0]?.inputSchema as unknown as { properties: Record<string, unknown> })
+      .properties;
+    expect(Object.keys(properties)).toEqual(["query", "limit"]);
+    expect(properties).not.toHaveProperty("channel");
+  });
+
+  it("resolves a built-in's approval the way the call-time gate will", async () => {
+    writeSheet(
+      CHANNEL,
+      `
+[channel]
+name = "engineering"
+
+[[builtin]]
+name = "search_channel_history"
+approval = "required"
+`
+    );
+
+    const { tools } = ToolListing.parse((await call("/v1/tools", clientCert(certs, CHANNEL))).body);
+    expect(tools[0]?.approval).toBe("required");
+  });
+
+  it("lists a built-in after the sheet's upstream tools", async () => {
+    writeSheet(CHANNEL, `${SHEET}\n[[builtin]]\nname = "search_channel_history"\n`);
+
+    const { tools } = ToolListing.parse((await call("/v1/tools", clientCert(certs, CHANNEL))).body);
+
+    expect(tools.at(-1)?.server).toBe("libero");
+    expect(tools.slice(0, -1).every(tool => tool.server === "github")).toBe(true);
   });
 
   it("lists per channel, not per process", async () => {
@@ -1521,7 +1581,9 @@ credential = "github_service_account"
         // The same logger to both, as a deployment would: the dispatcher's
         // outbound line and the server's request line land in one stream, which
         // is what makes "no log line holds the value" worth asserting.
-        dispatcher: (injectDispatcher = createHttpDispatcher({ vault, logger: injectLogger })),
+        dispatcher: createToolDispatcher({
+          mcp: (injectDispatcher = createHttpDispatcher({ vault, logger: injectLogger }))
+        }),
         // The same object twice, as apps/proxy-server does: one thing holds the
         // vault and the pool, and the two seams are what each route sees of it.
         catalog: injectDispatcher,
@@ -1750,7 +1812,7 @@ describe("a listing described by its upstream", () => {
       }),
       sheets,
       spend: meter,
-      dispatcher: dispatch,
+      dispatcher: createToolDispatcher({ mcp: dispatch }),
       // One object, two seams — the composition root's own shape.
       catalog: dispatch,
       audit: discardingAuditWriter(),
@@ -1994,7 +2056,7 @@ describe("a permitted call with no upstream", () => {
       // A real meter with the unavailable dispatcher: a deployment ahead of
       // its upstream, which `assertServableComposition` permits.
       spend: meter,
-      dispatcher: createUnavailableDispatcher(),
+      dispatcher: createToolDispatcher({ mcp: createUnavailableDispatcher() }),
       catalog: createUnavailableCatalog(),
       audit: createSqliteAuditWriter({ db: bareAuditDb }),
       logger: createJsonLogger(() => {})

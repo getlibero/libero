@@ -15,9 +15,11 @@
 // heuristic below reads the tool's *name*, which comes from the team sheet's
 // allowlist and not from the model.
 
+import { BUILTIN_SERVER } from "@getlibero/schema";
 import type {
   ApprovalMode,
   BudgetLimit,
+  BuiltinToolName,
   McpServer,
   PermittedTool,
   ResolvedToolCall,
@@ -100,14 +102,37 @@ export interface EnforcementInput {
  * elsewhere. Neither question is allowed to stand in for the other.
  */
 export type Decision =
-  | { readonly outcome: "allow"; readonly upstream: McpServer; readonly limits: CallLimits }
+  | { readonly outcome: "allow"; readonly target: Target; readonly limits: CallLimits }
   | {
       readonly outcome: "hold";
-      readonly upstream: McpServer;
+      readonly target: Target;
       readonly refusal: ToolRefusal;
       readonly limits: CallLimits;
     }
   | { readonly outcome: "refuse"; readonly refusal: ToolRefusal };
+
+/**
+ * Where a permitted call goes.
+ *
+ * The shape that carries "a built-in is not a bypass" (#64). Both kinds come out
+ * of the same `decide`, having passed the same allowlist, the same budget check
+ * and the same approval rule — so a dispatcher cannot serve a built-in without
+ * having been through the gate, because the only way to obtain one of these is
+ * to be handed a `Decision`.
+ *
+ * A union rather than an `McpServer` with a magic transport. The alternative was
+ * weighed and rejected in `packages/schema/src/builtin.ts`; the part that
+ * matters here is that `decide` returning an `McpServer` for something that is
+ * not a server would be a claim the code makes and a reader has to check,
+ * whereas this one the dispatcher has to handle.
+ *
+ * `builtin` carries the tool name and nothing else, because there is nothing
+ * else: the provider is this process, there is one of it, and the channel comes
+ * from the client certificate rather than from anything on the decision.
+ */
+export type Target =
+  | { readonly kind: "mcp"; readonly upstream: McpServer }
+  | { readonly kind: "builtin"; readonly tool: BuiltinToolName };
 
 /**
  * What a served call may spend of the channel's context.
@@ -310,6 +335,19 @@ function exhaustedLimit(sheet: TeamSheet, spend: BudgetSpend): BudgetLimit | nul
 export function decide(input: EnforcementInput): Decision {
   const { sheet, call, spend } = input;
 
+  // Before the allowlist scan, because `serversNamed` would answer empty for the
+  // reserved name and refuse `server_not_allowed` even on a sheet that grants
+  // built-ins. Nothing else about the order changes: the branch below runs the
+  // same five steps in the same sequence, for the same reasons.
+  //
+  // The name is reserved at parse (`packages/schema/src/team-sheet.ts`), so
+  // there is no sheet on which this branch and the one below both have an
+  // answer. That is what makes matching on the name safe here rather than a
+  // shadowing hazard.
+  if (call.server === BUILTIN_SERVER) {
+    return decideBuiltin(sheet, call, spend);
+  }
+
   const servers = serversNamed(sheet, call.server);
   if (servers.length === 0) {
     return refuse({ reason: "server_not_allowed", server: call.server });
@@ -342,13 +380,74 @@ export function decide(input: EnforcementInput): Decision {
   if (resolveApproval(tools, call.tool) === "required") {
     return {
       outcome: "hold",
-      upstream,
+      target: { kind: "mcp", upstream },
       refusal: { reason: "approval_required", server: call.server, tool: call.tool },
       limits
     };
   }
 
-  return { outcome: "allow", upstream, limits };
+  return { outcome: "allow", target: { kind: "mcp", upstream }, limits };
+}
+
+/**
+ * The same decision for a tool this process implements itself (#64).
+ *
+ * Deliberately the *same five steps in the same order*, minus the one that has
+ * no question to answer: there is a single provider, so no two blocks can
+ * disagree about where a built-in goes and there is no `server_ambiguous` to
+ * resolve. Everything else holds, and holds because it is the same code —
+ * `exhaustedLimit`, `resolveLimits` and `resolveApproval` are the functions the
+ * MCP branch calls, not copies of them, which is what keeps "a built-in draws on
+ * the channel's meter and obeys the sheet's approval" a property rather than a
+ * promise. `BuiltinEntry` is structurally a `ToolEntry`, which is what lets the
+ * last two take it unchanged.
+ *
+ * The two refusals split the way the MCP branch's do, and the distinction is
+ * worth keeping: an empty `[[builtin]]` is a channel with no built-ins at all
+ * (`server_not_allowed`), and a non-empty one missing this name is a channel
+ * with some but not this (`tool_not_allowed`).
+ *
+ * `search_channel_history` contains none of `DESTRUCTIVE_VERBS`, so an entry
+ * with no `approval` line resolves to `none` through the heuristic's default. An
+ * operator who wants a click writes it, exactly as the starter sheet does for
+ * `merge_pull_request`.
+ */
+function decideBuiltin(
+  sheet: TeamSheet,
+  call: ResolvedToolCall,
+  spend: BudgetSpend
+): Decision {
+  if (sheet.builtin.length === 0) {
+    return refuse({ reason: "server_not_allowed", server: call.server });
+  }
+
+  const entries = sheet.builtin.filter(entry => entry.name === call.tool);
+  // Destructured rather than length-checked so the name below is a
+  // `BuiltinToolName` and not a `string`: the sheet's parse is what established
+  // that, and re-narrowing it here would be a second opinion about a closed set.
+  const first = entries[0];
+  if (first === undefined) {
+    return refuse({ reason: "tool_not_allowed", server: call.server, tool: call.tool });
+  }
+
+  const limit = exhaustedLimit(sheet, spend);
+  if (limit !== null) {
+    return refuse({ reason: "budget_exhausted", limit });
+  }
+
+  const target: Target = { kind: "builtin", tool: first.name };
+  const limits = resolveLimits(sheet, entries);
+
+  if (resolveApproval(entries, call.tool) === "required") {
+    return {
+      outcome: "hold",
+      target,
+      refusal: { reason: "approval_required", server: call.server, tool: call.tool },
+      limits
+    };
+  }
+
+  return { outcome: "allow", target, limits };
 }
 
 /**
@@ -395,17 +494,20 @@ export function permittedTools(sheet: TeamSheet): PermittedTool[] {
 }
 
 /**
- * A permitted tool and the block that carries it.
+ * A permitted tool and where a call on it would go.
  *
- * `upstream` is `null` for exactly the tools `decide` refuses as
+ * `target` is `null` for exactly the tools `decide` refuses as
  * `server_ambiguous`: the blocks naming them disagree about where they go, so
  * there is no single upstream to ask about them either. Such a tool is still
  * listed — the describing fields are what an upstream fills in, not the row
  * itself — it simply cannot be described.
+ *
+ * A `builtin` target is never null. There is one provider and the sheet cannot
+ * name a second, so the condition `null` reports has no way to arise.
  */
 export interface PermittedToolSource {
   readonly tool: PermittedTool;
-  readonly upstream: McpServer | null;
+  readonly target: Target | null;
 }
 
 /**
@@ -438,15 +540,43 @@ export function permittedToolSources(sheet: TeamSheet): PermittedToolSource[] {
       seen.add(key);
 
       const named = serversNamed(sheet, server.name);
+      const upstream = selectUpstream(serversCarrying(named, entry.name));
       listed.push({
         tool: {
           server: server.name,
           tool: entry.name,
           approval: resolveApproval(toolsNamed(named, entry.name), entry.name)
         },
-        upstream: selectUpstream(serversCarrying(named, entry.name))
+        target: upstream === null ? null : { kind: "mcp", upstream }
       });
     }
+  }
+
+  // Built-ins after the upstreams, and that ordering is a choice rather than an
+  // accident of where the loop sits. The listing's order is the sheet's, and
+  // `MAX_DESCRIBED_TOOLS` reads that as the operator's priority — so putting
+  // these last says a channel's own history is the thing to drop first if a
+  // catalog ever fills the budget. It is also the order the starter sheet writes
+  // them in.
+  //
+  // The same `seen` set, so the key rule is stated once. Nothing can collide
+  // across the two loops in practice, because `BUILTIN_SERVER` is reserved at
+  // parse — sharing the set is what makes that a redundancy rather than an
+  // assumption.
+  for (const entry of sheet.builtin) {
+    const key = `${BUILTIN_SERVER}\u0000${entry.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const named = sheet.builtin.filter(other => other.name === entry.name);
+    listed.push({
+      tool: {
+        server: BUILTIN_SERVER,
+        tool: entry.name,
+        approval: resolveApproval(named, entry.name)
+      },
+      target: { kind: "builtin", tool: entry.name }
+    });
   }
 
   return listed;
