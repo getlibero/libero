@@ -76,7 +76,12 @@ export interface WebClientLike {
  */
 function attachmentOf(card: SlackCard): MessageAttachment {
   return {
-    color: card.color,
+    // Spread rather than passed through, because `exactOptionalPropertyTypes`
+    // rejects an explicit `undefined` — and because the two are different
+    // requests to Slack rather than the same one with a blank field: an
+    // attachment with no `color` gets Slack's own default border, which is what
+    // an in-flight card asks for. See `SlackCard.color`.
+    ...(card.color !== undefined ? { color: card.color } : {}),
     fallback: card.fallback,
     blocks: card.blocks as unknown as NonNullable<MessageAttachment["blocks"]>
   };

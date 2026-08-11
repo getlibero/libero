@@ -22,17 +22,32 @@
 // and whether a call may run are the proxy's, from the team sheet. This file
 // draws what it is told and knows no policy.
 //
-// ## Two gaps, both #127's, both deliberate
+// ## Green means it ran, and that took two more states (#143)
 //
-// **`approved` means a human said yes, not that the call ran.** Redemption
-// enforces the sheet again, so an approved call can still be refused — an
-// operator's edit during the hold beats a click that preceded it. A caller that
-// wants green to mean executed renders `approved` after the re-submission comes
-// back `ran`, which costs it one line of ordering. The case with no state is
-// approve-then-refused-at-redemption: green would lie and red would blame the
-// human. Four states rather than a fifth invented for a path that does not
-// exist yet — and the union is switched exhaustively, so adding one is a
-// compile error in the places that matter.
+// Until #143 there were four, and `approved` was painted at *decision* time,
+// before the re-submission. Redemption enforces the sheet again — an operator's
+// edit during the hold beats a click that preceded it, and a budget can be spent
+// in between — so a redemption that then refused left a green card above a call
+// that never ran. The copy was honest about it ("a human approved it") but on a
+// phone lock screen the colour is what does the talking, and green-above-a-
+// refusal is the exact small lie this card exists to avoid.
+//
+// So the approve path is now two states rather than one:
+//
+// **`running`** — a human said yes and the re-submission has not answered.
+// **It carries no colour**, because none of the three fits: the call is not
+// executed, no human is being waited on, and nothing is blocked. The design
+// spec's vocabulary is locked at three, and widening amber to "unsettled" would
+// make the one colour that means *click this* also mean *nothing to do*. A card
+// with no status yet gets no colour; see `SlackCard.color`.
+//
+// **`refused`** — approved, then refused at redemption. Red, because the call is
+// blocked, and it still names the approver: the human's decision was carried out
+// faithfully and something else stopped the call, which is a different sentence
+// from `denied` and has to read like one.
+//
+// The union is switched exhaustively, so a seventh state is a compile error in
+// the places that matter.
 //
 // **Nothing here holds a clock or a deadline.** A ticket dies fifteen minutes
 // after it is minted, and this file will render `expired` when it is told to
@@ -58,6 +73,11 @@ import type { SlackBlock, SlackCard } from "./types.js";
  * a parameter — a caller can ask for a state and has no way to ask for a
  * colour.
  *
+ * `running` maps to `undefined` rather than to a fourth value, which is what
+ * keeps the vocabulary at three while still admitting a state that is none of
+ * them. It is a real entry in this record and not a missing key, so the
+ * exhaustiveness the `Record<ApprovalCardState, …>` buys still holds.
+ *
  * It is drawn as a message attachment's left border, which is the only way to
  * get an arbitrary colour into a Slack message at all. Attachments are legacy
  * by Slack's own documentation — "not deprecated per se, but they may change in
@@ -71,32 +91,67 @@ import type { SlackBlock, SlackCard } from "./types.js";
  * also the whole cost of the day Slack drops attachments: the card degrades to
  * correct-but-grey rather than to nothing.
  */
-const STATUS_COLOUR: Record<ApprovalCardState, string> = {
+const STATUS_COLOUR: Record<ApprovalCardState, string | undefined> = {
   awaiting: "#F5B544",
+  running: undefined,
   approved: "#1BA85A",
   denied: "#FF6B5B",
-  expired: "#FF6B5B"
+  refused: "#FF6B5B",
+  expired: "#FF6B5B",
+  unanswered: undefined
 };
 
 /** The mono label at the top of each state. Uppercase, and the state in words. */
 const STATUS_LABEL: Record<ApprovalCardState, string> = {
   awaiting: "APPROVAL REQUIRED",
+  running: "APPROVED — RUNNING",
   approved: "APPROVED",
   denied: "DENIED",
-  expired: "EXPIRED"
+  refused: "APPROVED — BLOCKED",
+  expired: "EXPIRED",
+  unanswered: "APPROVED — UNANSWERED"
 };
 
-export type ApprovalCardState = "awaiting" | "approved" | "denied" | "expired";
+export type ApprovalCardState =
+  | "awaiting"
+  | "running"
+  | "approved"
+  | "denied"
+  | "refused"
+  | "expired"
+  | "unanswered";
 
 export type ApprovalCardStatus =
   /** Amber. Nobody has clicked. The only state that carries a ticket, so the only one that can draw a button. */
   | { state: "awaiting"; ticket: ApprovalTicket }
-  /** Green. A human said yes. */
+  /** No colour. A human said yes and the call has not answered yet. */
+  | { state: "running"; approver: string }
+  /** Green. A human said yes and the call ran. */
   | { state: "approved"; approver: string }
   /** Red. A human said no. */
   | { state: "denied"; approver: string }
+  /**
+   * Red. A human said yes and the call was refused anyway.
+   *
+   * `reason` is the proxy's sentence for its own refusal, relayed rather than
+   * composed here — this file words the card's four fixed states and has no
+   * business restating an enumeration that lives in `@getlibero/schema`. It is
+   * escaped and capped like every other caller string.
+   */
+  | { state: "refused"; approver: string; reason: string }
   /** Red. The deadline passed with nobody clicking. */
-  | { state: "expired" };
+  | { state: "expired" }
+  /**
+   * No colour. Approved, dispatched, and the task ended before an answer came
+   * back — the wall clock, or shutdown.
+   *
+   * It asserts nothing about whether the call ran, which is the whole reason it
+   * is its own state: the re-submission was sent, so the upstream may well have
+   * acted. That is the audit log's `unanswered` (#124) as a card, chosen the
+   * same way and for the same reason — green would claim an execution nobody
+   * observed and red would claim a block that never happened.
+   */
+  | { state: "unanswered"; approver: string };
 
 export interface ApprovalCardInput {
   /** `server.tool`, as the proxy named the held call. */
@@ -118,6 +173,12 @@ export interface ApprovalCardInput {
 /** Slack rejects a section over 3000 characters, and would reject the whole post with it. */
 const TOOL_NAME_LIMIT = 80;
 const ARGUMENTS_LIMIT = 300;
+/**
+ * `refused`'s relayed sentence. Generous because `refusalMessage`'s longest
+ * variants name a credential and a host, and truncating one mid-name would send
+ * an operator looking for something that does not exist.
+ */
+const REASON_LIMIT = 400;
 
 /**
  * Neutralizes Slack's markup in a string this package did not author.
@@ -237,15 +298,26 @@ export function renderApprovalCard(input: ApprovalCardInput): SlackCard {
 
     // Every decided state drops the actions block, which is what editing in
     // place buys beyond tidiness: a decided card cannot be clicked again, and
-    // the ticket id is nowhere in the message left to scrape.
+    // the ticket id is nowhere in the message left to scrape. `running` is
+    // decided in that sense — a human has clicked — even though the call has
+    // not answered.
+    case "running": {
+      blocks.push(
+        section(`${label}\nThe agent asked to call \`${tool}\`${on}. A human approved it; the call is running.`),
+        context(`Approved by <@${input.status.approver}>.`)
+      );
+      fallback = `Approved: a human approved ${tool} and the call is running.`;
+      break;
+    }
+
     case "approved": {
       blocks.push(
-        section(`${label}\nThe agent asked to call \`${tool}\`${on}. A human approved it.`),
+        section(`${label}\nThe agent asked to call \`${tool}\`${on}. A human approved it and the call ran.`),
         // Slack resolves the display name client-side. This package never
         // learns it, and does not need to.
         context(`Approved by <@${input.status.approver}>.`)
       );
-      fallback = `Approved: a human approved ${tool}.`;
+      fallback = `Approved: a human approved ${tool} and the call ran.`;
       break;
     }
 
@@ -258,6 +330,21 @@ export function renderApprovalCard(input: ApprovalCardInput): SlackCard {
       break;
     }
 
+    // The state #143 added, and the one the four could not say. The approver is
+    // named because their decision was carried out — what stopped the call
+    // happened after it, and a card that dropped the name here would read as
+    // though the click had been ignored.
+    case "refused": {
+      blocks.push(
+        section(
+          `${label}\nThe agent asked to call \`${tool}\`${on}. A human approved it, and the call was refused anyway. It did not run.`
+        ),
+        context(`Approved by <@${input.status.approver}>. ${safeText(input.status.reason, REASON_LIMIT)}`)
+      );
+      fallback = `Blocked: ${tool} was approved by a human and refused anyway. The call did not run.`;
+      break;
+    }
+
     case "expired": {
       blocks.push(
         section(`${label}\nThe agent asked to call \`${tool}\`${on}. The call did not run.`),
@@ -266,7 +353,27 @@ export function renderApprovalCard(input: ApprovalCardInput): SlackCard {
       fallback = `Expired: nobody decided ${tool} before the deadline. The call did not run.`;
       break;
     }
+
+    // Says only what is known. "May have run" is the accurate reading and the
+    // card says it in those words rather than hedging into vagueness — an
+    // operator who needs to know looks in the audit log, and the card points
+    // there instead of guessing.
+    case "unanswered": {
+      blocks.push(
+        section(
+          `${label}\nThe agent asked to call \`${tool}\`${on}. A human approved it and the task ended before the call answered. It may have run.`
+        ),
+        context(`Approved by <@${input.status.approver}>. The audit log has what the call did.`)
+      );
+      fallback = `Unanswered: ${tool} was approved and the task ended before the call answered. It may have run.`;
+      break;
+    }
   }
 
-  return { color: STATUS_COLOUR[state], fallback, blocks };
+  // Spread rather than assigned: `exactOptionalPropertyTypes` rejects an
+  // explicit `undefined`, and the distinction is the one this card now relies
+  // on — an absent `color` is what the adapter turns into an attachment with no
+  // border, which is the in-flight face.
+  const colour = STATUS_COLOUR[state];
+  return { ...(colour !== undefined ? { color: colour } : {}), fallback, blocks };
 }

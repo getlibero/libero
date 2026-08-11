@@ -11,6 +11,7 @@ import type { ToolCall } from "../completion/types.js";
 import type { ToolCallAttribution } from "../loop/types.js";
 import {
   createProxyToolClient,
+  type HeldCallOutcome,
   type HeldCallPrompter,
   type HeldToolCall,
   type UnmappedToolCall
@@ -377,6 +378,81 @@ describe("a held call with a prompter", () => {
       const result = await client.execute(call("merge_pr"), ATTRIBUTION);
       expect(result.content).not.toContain(TICKET.id);
     }
+  });
+
+  // #143's half of the contract: a prompter that asked to be told what its
+  // approval produced is told, with the proxy's own answer and nothing derived
+  // from it here.
+  describe("telling the prompter what the re-submission became", () => {
+    it("says `ran` when the call ran", async () => {
+      const told: HeldCallOutcome[] = [];
+      const { client } = await ready({ call: heldThen(RAN) }, async () => outcome => {
+        told.push(outcome);
+      });
+
+      await client.execute(call("merge_pr", { pr: 42 }), ATTRIBUTION);
+
+      expect(told).toEqual([{ state: "ran" }]);
+    });
+
+    it("relays the refusal verbatim when an approved call was refused anyway", async () => {
+      const told: HeldCallOutcome[] = [];
+      const { client } = await ready(
+        { call: heldThen(refusedWith("tool_not_allowed")) },
+        async () => outcome => {
+          told.push(outcome);
+        }
+      );
+
+      await client.execute(call("merge_pr"), ATTRIBUTION);
+
+      expect(told).toEqual([
+        { state: "refused", refusal: { reason: "tool_not_allowed", server: "github", tool: "merge_pr" } }
+      ]);
+    });
+
+    it("is told exactly once, and the model's result is unchanged either way", async () => {
+      let calls = 0;
+      const { client } = await ready({ call: heldThen(RAN) }, async () => () => {
+        calls += 1;
+      });
+
+      // The same assertion the no-completion case makes above, which is the
+      // acceptance criterion: #143 touches the card and nothing the model sees.
+      await expect(client.execute(call("merge_pr"), ATTRIBUTION)).resolves.toEqual({
+        content: "merged #42",
+        isError: false
+      });
+      expect(calls).toBe(1);
+    });
+
+    // A prompter that returns nothing is #127's, and still what a front-end
+    // with nothing to repaint wants.
+    it("is optional: a prompter resolving to nothing behaves exactly as before", async () => {
+      const { client, sent } = await ready({ call: heldThen(RAN) }, async () => {});
+
+      await expect(client.execute(call("merge_pr"), ATTRIBUTION)).resolves.toEqual({
+        content: "merged #42",
+        isError: false
+      });
+      expect(sent).toHaveLength(3);
+    });
+
+    // A wait that failed has said it is not waiting for this. Calling a
+    // completion it never handed back is not possible, and the re-submission
+    // still happens.
+    it("is not called when the prompter rejected", async () => {
+      let calls = 0;
+      const { client, sent } = await ready({ call: heldThen(RAN) }, async () => {
+        calls += 1;
+        throw new Error("the card could not be posted");
+      });
+
+      await client.execute(call("merge_pr"), ATTRIBUTION);
+
+      expect(calls).toBe(1);
+      expect(sent).toHaveLength(3);
+    });
   });
 
   // A rejection means the wait ended badly rather than well; either way it

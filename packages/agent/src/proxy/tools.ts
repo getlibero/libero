@@ -37,7 +37,8 @@ import {
   refusalMessage,
   type ApprovalTicket,
   type BudgetWarning,
-  type ToolCall as WireToolCall
+  type ToolCall as WireToolCall,
+  type ToolRefusal
 } from "@getlibero/schema";
 import type { ToolCall, ToolDefinition } from "../completion/types.js";
 import type { ToolCallAttribution, ToolExecutor, ToolResult, ToolSource } from "../loop/types.js";
@@ -67,14 +68,54 @@ export interface HeldToolCall {
 }
 
 /**
- * Asks a human about a held call and resolves when the wait is over — decided,
- * expired, aborted, or unaskable. It resolves to nothing, deliberately: the
- * re-submission is the authority on what the call became, so there is no
- * verdict a prompter could return that `execute` would be right to act on. A
- * rejection is treated exactly as a resolution, and nothing it carries reaches
- * the model.
+ * What the re-submission became, told back to the prompter that waited (#143).
+ *
+ * The two outcomes a redemption has. `ran` is the call executing; `refused`
+ * carries the proxy's own refusal, which is the whole reason this exists — an
+ * approved call can still be refused, because the sheet is enforced again at
+ * redemption and an operator's edit during the hold beats a click that preceded
+ * it. The prompter is the only thing that can say so where the human who
+ * clicked will see it.
+ *
+ * It is the proxy's answer relayed verbatim, never a verdict formed here.
  */
-export type HeldCallPrompter = (held: HeldToolCall, signal?: AbortSignal) => Promise<void>;
+export type HeldCallOutcome =
+  | { readonly state: "ran" }
+  | { readonly state: "refused"; readonly refusal: ToolRefusal };
+
+/**
+ * Told what the call the human decided about actually did.
+ *
+ * Returned by a prompter that wants the second phase, and called exactly once,
+ * after the re-submission answers. **It must not throw** — nothing catches it,
+ * `execute` would propagate, and a call that ran would become an error result
+ * because a *card* could not be repainted. That is `onUnmappedCall`'s contract
+ * and it is load-bearing for the same reason.
+ *
+ * It is not called when the wait itself failed — a prompter that rejected, or
+ * one that returned nothing, has said it is not waiting for this.
+ */
+export type HeldCallCompletion = (outcome: HeldCallOutcome) => void;
+
+/**
+ * Asks a human about a held call and resolves when the wait is over — decided,
+ * expired, aborted, or unaskable.
+ *
+ * **It resolves to no verdict, deliberately.** The re-submission is the
+ * authority on what the call became, so there is nothing a prompter could
+ * return that `execute` would be right to act on. A rejection is treated
+ * exactly as a resolution, and nothing it carries reaches the model.
+ *
+ * What it may resolve to is a `HeldCallCompletion`: a callback this client
+ * invokes with the re-submission's outcome, which is the *opposite* direction
+ * and carries no authority either — it tells, it does not ask. Without one the
+ * behaviour is #127's exactly, which is what a front-end that repaints nothing
+ * still wants.
+ */
+export type HeldCallPrompter = (
+  held: HeldToolCall,
+  signal?: AbortSignal
+) => Promise<HeldCallCompletion | void>;
 
 /**
  * A call refused here rather than by the proxy, because the name the model used
@@ -295,8 +336,13 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
             return { content: refusalMessage(answer.refusal), isError: true };
           }
 
+          // What the prompter wants told when the re-submission answers, if it
+          // asked to be told (#143). Undefined covers both a prompter that
+          // wants no second phase and one that failed — a wait that ended badly
+          // has nothing to complete.
+          let completion: HeldCallCompletion | undefined;
           try {
-            await onHeld(
+            const waited = await onHeld(
               {
                 server: mapped.server,
                 tool: mapped.tool,
@@ -307,6 +353,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
               },
               signal
             );
+            if (typeof waited === "function") completion = waited;
           } catch {
             // A rejection means the wait ended badly rather than well; either
             // way it ended. Nothing the prompter threw reaches the model — the
@@ -321,9 +368,20 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
           // An aborted signal rejects in the transport as `cancelled`, which
           // the loop maps to the task's stop reason — the wait itself never
           // decides what the abort meant.
+          //
+          // A rejection here leaves `completion` uncalled, which is why the
+          // prompter's own abort path has to be able to close its card without
+          // this: a cancelled re-submission never answers, and something still
+          // has to stop the card claiming a call is running.
           const redeemed = await submit({ ...body, ticket: answer.ticket.id }, signal);
           switch (redeemed.outcome) {
             case "ran":
+              // Told before the result goes to the model, so the card is
+              // repainted on the same tick the call is known to have run.
+              // `served` may raise a budget notice and neither ordering is
+              // load-bearing; this one keeps the two facts about *this call*
+              // adjacent.
+              completion?.({ state: "ran" });
               return served(redeemed);
             // A second `held` for a ticketed call is a proxy the contract says
             // cannot exist; relaying its refusal abandons the call, which is
@@ -332,8 +390,13 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
             // a sheet edit during the hold, and a lost ticket each come back as
             // the precise refusal the proxy wrote. The model sees one tool
             // result either way, and no sentence in it carries the ticket id.
+            //
+            // The completion is told the refusal verbatim — this is the case
+            // #143 exists for, where a human clicked approve and the call did
+            // not run, and only the proxy knows why.
             case "held":
             case "refused":
+              completion?.({ state: "refused", refusal: redeemed.refusal });
               return { content: refusalMessage(redeemed.refusal), isError: true };
           }
         }

@@ -271,8 +271,21 @@ export interface SlackCard {
   /**
    * The attachment's left-border colour, as a design-system hex. Status, never
    * decoration — the renderer is the only thing that picks one.
+   *
+   * **Optional, and absence is the in-flight face** (#68, #143). The design
+   * system's vocabulary is exactly three: green is allowed and executed, amber
+   * is a human who still has to click, red is blocked. A checklist mid-task and
+   * an approved call whose re-submission has not answered yet are none of the
+   * three, and the spec is locked — so rather than widen amber to mean
+   * "unsettled" or add a fourth colour, a surface with no status yet carries no
+   * colour and Slack draws its own default border.
+   *
+   * That is not a degradation: it reads as *not a status*, which is what
+   * in-flight is, and every such state still names itself in the blocks and in
+   * `fallback` on the terms below. The colour arrives with the terminal
+   * repaint, which is the moment there is a status to have.
    */
-  color: string;
+  color?: string;
   /**
    * The state in words. The only string a client that cannot render blocks
    * shows, which on a phone is the push notification, so it has to say what

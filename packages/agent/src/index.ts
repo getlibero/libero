@@ -49,6 +49,8 @@ export type {
 
 export { createProxyToolClient } from "./proxy/tools.js";
 export type {
+  HeldCallCompletion,
+  HeldCallOutcome,
   HeldCallPrompter,
   HeldToolCall,
   ProxyToolClient,

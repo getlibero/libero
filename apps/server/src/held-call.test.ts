@@ -283,6 +283,48 @@ describe("hold → card → decision → run", () => {
     await gateway.stop();
   });
 
+  // #143 end to end: the sheet is enforced again at redemption, so a human's
+  // yes is not the last word. An operator's edit during the hold — here, the
+  // tool leaving the allowlist — refuses the call, and the card must not claim
+  // an execution that did not happen.
+  it("an approved call refused at redemption never goes green", async () => {
+    const { slack, gateway, modelSaw } = rig(() => refusedWith("tool_not_allowed"));
+    await gateway.start();
+
+    const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev005"));
+    await vi.waitFor(() => {
+      expect(slack.cards).toHaveLength(1);
+    });
+    const messageTs = slack.cards[0]?.messageTs ?? "";
+
+    await slack.deliverDecision({
+      teamId: TEAM,
+      channelId: CHANNEL,
+      userId: "U0G9QF9C6",
+      ticketId: TICKET,
+      verdict: "approve",
+      messageTs,
+      threadTs: THREAD
+    });
+    await pending;
+
+    const shown = slack.cardAt(messageTs);
+    expect(shown?.color).toBe(RED);
+    expect(shown?.color).not.toBe(GREEN);
+    // The approver is still named: their click was honoured, and what stopped
+    // the call happened after it.
+    expect(JSON.stringify(shown)).toContain("U0G9QF9C6");
+    expect(JSON.stringify(shown)).toContain("lists `github` but not the tool `merge_pr`");
+
+    // The model-facing half is unchanged by #143 — the same refusal it always
+    // relayed, and the thread still gets its reply.
+    expect(JSON.stringify(modelSaw)).toContain("lists `github` but not the tool `merge_pr`");
+    expect(JSON.stringify(modelSaw)).not.toContain(TICKET);
+    expect(slack.posted).toHaveLength(1);
+
+    await gateway.stop();
+  });
+
   // The session mutex working as specified: the channel is busy while held, so
   // a second mention queues behind the approval rather than interleaving.
   it("a mention during a hold queues, and runs after the decision", async () => {
