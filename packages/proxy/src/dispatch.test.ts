@@ -15,7 +15,7 @@ import type { CallLimits } from "./enforce.js";
  * The channel's bound on a result, which every `callTool` now carries.
  *
  * Roomy on purpose: these cases are about the protocol and the transport, not
- * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ * about truncation. The bound's own behaviour is mcp-bounds.test.ts's.
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
