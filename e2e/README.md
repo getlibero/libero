@@ -366,14 +366,29 @@ now has something in it. `startRig({ users })` seeds the directory those
 messages are attributed by; an author with no entry renders as their id, which
 is a real state rather than a gap.
 
-**The message store is the agent side's, and it has no helper.** `rig.storeRoot`
-is `AGENT_STORE_ROOT`: one `<channel>/store.db` per channel that has a sheet,
-written by the composition as an ordinary `message` arrives on
+**The message store is written by the agent side and read by both, and it has no
+helper.** `rig.storeRoot` is one `<channel>/store.db` per channel that has a
+sheet, written by the composition as an ordinary `message` arrives on
 `agent.slack.deliverMessage`. There is deliberately no `messagesIn` beside
 `auditRows` and `spendFor` — open the file with your own `node:sqlite` handle.
 Reading it through `@getlibero/memory` would prove the writer and the reader
 agree about a schema, which is a weaker claim than the row being in the file,
 and the whole reason a case reaches for it is the one-file-per-channel boundary.
+
+Since #64 the rig passes the same directory to the spawned proxy as
+`PROXY_STORE_ROOT`, which is what makes `src/channel-history.test.ts` a real
+two-process claim: the agent writes a message and a *separate* process reads it
+back to answer `search_channel_history`. Grant it with `builtins` on a sheet
+spec; omit the field and the channel does not have the tool, which is the
+refusal fixture.
+
+**A `search_channel_history` assertion has to be narrowed to the tool result.**
+The seeded turn already carries a `<channel-history>` block of the channel's
+recent messages (#67), so `expect(JSON.stringify(model.seen)).toContain(…)` is
+answered by the context assembler rather than by the tool, and a negative is
+answered by it too. `channel-history.test.ts`'s `toolResults` helper is the
+narrowing. It is also the honest account of what the built-in adds: the
+assembler seeds the last few messages, and the tool reaches the rest.
 
 It is a **separate root from the sheets**, exactly as in production, and that is
 what makes "nothing was written to `channelsRoot`" assertable. The channels

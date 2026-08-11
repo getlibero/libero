@@ -282,6 +282,11 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       vaultKey: vault.keyBase64,
       budgetDb,
       auditDb,
+      // The same directory `startAgent` gets below. One process writes it and
+      // the other reads it, which is the production shape and is what makes a
+      // `search_channel_history` case a real two-process claim rather than a
+      // module-scope one (#64).
+      storeRoot,
       tlsCert: certs.serverCert,
       tlsKey: certs.serverKey,
       tlsCa: certs.caPath
