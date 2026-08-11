@@ -64,6 +64,47 @@ It rides `CardPoster`, the same seam the approval card does, and degrades the
 same way: a front-end with nowhere to put a card runs tasks that post only their
 answer.
 
+## Approvals, from this side
+
+The proxy holds every ticket and decides every redemption. What lives here is the
+half that asks a human and relays what they said — `src/approvals/`, three files:
+
+- `registry.ts` — which tickets this process is waiting on. One map at process
+  scope, because a click arrives at process scope with nothing but a ticket id
+  and the channel it was clicked in. Entries are task-scoped, so a ticket nobody
+  is waiting on looks the same as one that never existed. Keyed by channel then
+  id, so a lookup cannot reach another channel's entry.
+- `prompter.ts` — posts the card, waits, repaints it, resolves.
+- `decisions.ts` — click → `POST /v1/approvals` → settle with **what the proxy
+  said**, never with what was clicked. Unknown-ticket and wrong-channel clicks
+  are dropped before the proxy is asked.
+
+**The task closes its own card.** Every exit — a click, the ticket's deadline,
+the task's wall clock, shutdown — repaints out of amber before the wait resolves,
+so a card never outlives the wait it belongs to. A repaint that fails fails safe:
+a stale amber card's clicks find no registry entry, and the proxy answers a
+re-submission from its own ticket state regardless of what any card shows.
+
+**Green means the call ran, not that a human clicked.** An approve repaints to an
+uncoloured `running` face and the card is finished by a second phase, when the
+re-submission answers — green if it ran, red naming the approver and the proxy's
+own refusal if it did not, and `unanswered` if the task ended first. The sheet is
+enforced again at redemption, so an operator's edit during the hold beats a click
+that preceded it, and painting green at decision time put green above calls that
+never ran.
+
+**The hold spends the task's wall clock by design.** Under default caps — a
+five-minute wall clock against a fifteen-minute ticket — the wall cap usually
+wins: the card goes red, the task ends on `wall_time_cap`, and an operator who
+wants longer holds sizes the channel's `[llm]` caps for it. The wait's deadline
+is the wire's `expiresAt` on the proxy's clock; skew is relayed, not corrected.
+
+The trust claim is worth stating precisely, because it is not the same one tool
+credentials get: the click is observed by gateway code rather than produced by a
+model, so approver identity holds against a **prompt-injected model** and not
+against a **compromised agent process**, which relays it. Tool credentials
+survive process compromise; approvals survive prompt injection.
+
 ## Configuration
 
 Environment only. Nothing is read from a file and nothing is baked into the
@@ -205,6 +246,15 @@ chatty channel keeps a warm handle, which is the point of holding one.
 A message that is *answered* — see below — does take the queue, because it is a
 model turn like any other. The write happens first either way, so the transcript
 its own task assembles already holds the thing it was asked about.
+
+**Messages are deduplicated by the store's `ts`, and never by the gateway's
+`seen` set.** The store's insert is `ON CONFLICT DO NOTHING` on a UNIQUE column,
+so a redelivered event is a no-op. That key is also the better one: it is the
+message's own identity and it survives a restart, where `seen` is an in-memory
+FIFO bounded at 1000 — message traffic would flush every remembered mention id in
+seconds. Two idempotency mechanisms that can disagree is the thing to avoid, and
+the reason `seen` exists at all (nothing downstream of a *mention* is idempotent)
+does not apply here.
 
 ### Follow-ups in a thread the agent is working in
 
@@ -413,7 +463,18 @@ brings it back once the environment is fixed.
 - `src/session/router.ts` — request in, reply out: which session, what it waits
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend
-  client per task, both pinned to the request's channel.
+  client per task, both pinned to the request's channel. It also turns the
+  agent package's callbacks into log lines, which is where a model naming a tool
+  the channel was never given becomes visible as `tool_not_permitted` — the
+  proxy never saw that call and rightly writes no audit row, so this is the only
+  record of it.
+- `src/approvals/` — the client half of the approval broker: the pending-wait
+  registry, the card prompter, and the decision route. Out here rather than under
+  `session/` because a card needs the mention's channel and thread, and what
+  crosses into the router is a closure.
+- `src/checklist/checklist.ts` — the live checklist's coalescer. Same shape and
+  the same reason: the Slack facts are captured on the adapter's side, and the
+  router carries a reporter that names none of them.
 - `src/compose.ts` — the wiring, as a function of its dependencies:
   `createServer(deps)` returns a gateway that has not connected. It holds no
   environment, no token, and no default that could stand in for one. This is the

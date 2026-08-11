@@ -64,6 +64,38 @@ cards.
 stopped does not get to post" stays a property of the dispatcher rather than a
 habit of every caller.
 
+### The third subscription: ordinary messages
+
+Since #176 there is an `onMessage` beside `onMention`, and `toMessage` beside
+`toMention`. They differ in two places that matter.
+
+**`toMessage` keeps the raw `thread_ts`.** `toMention`'s `?? ts` is picking a
+*reply target*, which is right for a mention and wrong here: it makes a top-level
+message and a self-threaded one indistinguishable, and the layer above needs that
+difference to decide whether a message is a reply to anything.
+
+**Subtypes are an allowlist**: absent, `thread_broadcast`, and `file_share`.
+`message_changed` and `message_deleted` are dropped under their own reason code
+rather than silently, because they are the landing site for deletion mirroring
+(#177) — the store already has `remove` and `replaceText` waiting for them.
+
+**A mention arrives on both subscriptions**, with a *different* `event_id` on
+each, so nothing downstream can tell the pair apart by id. The gateway therefore
+resolves its own user id with `auth.test` inside `connectWithRetry`, before the
+socket opens, and sets `SlackMessage.mentionsApp`. Resolving identity there also
+turns a bot token Slack will never accept into a startup `auth_rejected` rather
+than a reply that never appears.
+
+**`mentionsApp` fails closed**: with no id, any `<@…>` token counts. Losing a
+follow-up costs a message the user can repeat; mistaking a mention for one costs
+two model turns and two replies in the same thread.
+
+A `MessageHandler` returns a `SlackReply | undefined`, and the gateway posts it
+to `message.threadTs` and **never `?? ts`** — so the adapter still cannot start a
+thread on a message nobody addressed it in. An answered message logs `follow_up`,
+not `replied`; nothing else on that path logs at all, because one line per
+message would turn stdout into a record of who spoke in which channel and when.
+
 ## What does not exist yet
 
 **Nothing posts a card in production.** The verbs exist and the decoder works;
