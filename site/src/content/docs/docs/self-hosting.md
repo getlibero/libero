@@ -17,11 +17,12 @@ exercised end to end. The end-to-end suite that attacks all of this exists: it c
 over real mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget
 exhaustion, held destructive calls, and channel isolation.
 
-What is not finished: the two Dockerfiles the compose file builds from are not written, so
-`docker compose up` fails on a clean checkout — run the two processes directly in the meantime.
-`@getlibero/cli` is a placeholder release, so the `init` command on this page is target UX rather
-than something you can run. Certificate rotation and revocation are manual. Do not run this against
-a workspace you care about.
+Both services build as images from the compose file, so `docker compose up` starts a deployment
+from a clean checkout.
+
+What is not finished: `@getlibero/cli` is a placeholder release, so the `init` command on this page
+is target UX rather than something you can run. Certificate rotation and revocation are manual. Do
+not run this against a workspace you care about.
 :::
 
 ## The shape of a deployment

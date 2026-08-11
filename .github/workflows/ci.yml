@@ -53,6 +53,70 @@ jobs:
       - name: Enforce agent/proxy boundary
         run: sh scripts/boundary-check.sh
 
+  images:
+    # Both services ship as images, so a Dockerfile that does not build is a
+    # release that does not happen. This job is the thing that fails first.
+    #
+    # It builds through deploy/docker-compose.yml rather than calling
+    # `docker build` twice, because the compose file is what an operator runs
+    # and its build contexts, dockerfile paths and image names are part of what
+    # can break. No pnpm install: the builder stage does its own, from the same
+    # frozen lockfile.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build both images
+        # The values are placeholders and none of them reaches a layer — they
+        # exist because compose interpolates the whole file before it builds,
+        # and the two `:?` guards fail on an empty value as readily as on a
+        # missing one. That is wanted at `up` time; here it just means a build
+        # needs an environment to parse against. `.env.example` cannot serve:
+        # it ships PROXY_VAULT_KEY empty, which is exactly what `:?` rejects.
+        env:
+          PROXY_VAULT_KEY: ci-placeholder-not-a-key
+          AGENT_MODEL: ci-placeholder-not-a-model
+          SLACK_APP_TOKEN: ci-placeholder
+          SLACK_BOT_TOKEN: ci-placeholder
+        run: docker compose -f deploy/docker-compose.yml build
+
+      - name: Nothing in either image but what runs
+        # The proxy holds every tool credential in the deployment, so what is in
+        # its filesystem is a security property in the same way its dependency
+        # list is. Asserting it here rather than trusting the Dockerfile is the
+        # same move as boundary-check backing up the ESLint rule: the multi-stage
+        # build and the `pnpm deploy --prod` prune are each one edit away from
+        # silently shipping the workspace whole.
+        #
+        # Scoped to what this workspace built. Third-party packages ship their
+        # own sources and declarations and are left as their publisher shipped
+        # them — rewriting the inside of a dependency is not a hardening step.
+        run: |
+          failed=0
+          for image in ghcr.io/getlibero/proxy:latest ghcr.io/getlibero/server:latest; do
+            user=$(docker image inspect "$image" --format '{{.Config.User}}')
+            if [ "$user" = "" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
+              echo "::error::$image runs as '${user:-root}'. Both images must run as a non-root user."
+              failed=1
+            fi
+
+            # One `docker run` per property. Three container starts rather than
+            # one, because splitting a multi-line result back apart depends on
+            # the shell's word-splitting and this has to be legible more than it
+            # has to be quick.
+            count() { docker run --rm --entrypoint sh "$image" -c "$1" | tr -d '[:space:]'; }
+
+            src=$(count 'find /app -name "*.ts" ! -name "*.d.ts" -not -path "*/node_modules/*" | wc -l')
+            [ "$src" = "0" ] || { echo "::error::$image carries $src TypeScript source file(s)."; failed=1; }
+
+            tests=$(count 'find /app \( -path "/app/dist/*" -o -path "*/@getlibero/*" \) -name "*.test.js" | wc -l')
+            [ "$tests" = "0" ] || { echo "::error::$image carries $tests compiled test file(s)."; failed=1; }
+
+            toolchain=$(count 'ls /app/node_modules/.pnpm 2>/dev/null | grep -cE "^(typescript|vitest|eslint|vite)@" || true')
+            [ "$toolchain" = "0" ] || { echo "::error::$image carries $toolchain build-toolchain package(s) — the --prod prune did not happen."; failed=1; }
+          done
+          exit $failed
+
   workflow-guard:
     # A pull_request_target workflow runs with a write token against the base
     # repo. That is safe only while it never checks out or executes pull

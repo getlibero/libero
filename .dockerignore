@@ -1,0 +1,51 @@
+# What may enter a Docker build context, for the two images built from the
+# repository root (`context: ..` in deploy/docker-compose.yml).
+#
+# This is an allowlist rather than a list of things to leave out, and that is
+# the security decision in this file. The root of this repository is also where
+# an operator's deployment state sits: `deploy/certs/` holds the CA key and
+# every channel's client key, `deploy/vault/` holds the credential vault, and
+# `.env` holds the vault's master key. A build context is not a layer — it is
+# not in the published image — but it is sent to the daemon in full and is
+# readable by anything that can reach a build, including a `--mount=type=bind`
+# in some later stage nobody reviewed. Denying by default means the next
+# directory of deployment state is excluded on the day it is created, rather
+# than on the day someone remembers to add a line here.
+#
+# The cost is that a new workspace package has to be named below. It fails
+# loudly — `pnpm install --frozen-lockfile` cannot reconcile a lockfile against
+# a manifest that is not there — which is the failure mode to want.
+
+*
+
+# The workspace's own root files. `pnpm install --frozen-lockfile` needs the
+# lockfile and the workspace definition; `pnpm -r build` needs the base
+# tsconfig every package extends.
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+
+# The workspace itself. `e2e` is here because it is a member of
+# pnpm-workspace.yaml and the frozen lockfile covers it — it is filtered out of
+# what ships by `pnpm deploy`, not by being withheld from the build.
+!packages
+!apps
+!e2e
+
+# Build output and installed trees, re-excluded after the directories above let
+# them back in. Later patterns win, so these have to follow the `!` lines.
+# Copying a host `node_modules` into the build would put the host's platform
+# binaries in a Linux image, and copying a host `dist` would ship whatever was
+# last built locally rather than what this Dockerfile built.
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/coverage
+
+# Never in an image, and named individually so that a reader of this file does
+# not have to infer the reason from `*` above.
+#
+# `site/` and `design/` are outside the pnpm workspace with their own lockfiles;
+# `deploy/` holds the compose file and the operator's generated key material;
+# `.git` carries the full history of everything ever committed.

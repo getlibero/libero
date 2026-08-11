@@ -4,6 +4,7 @@
   "private": true,
   "description": "Agent loop for Libero: provider-agnostic completion layer and ReAct loop with loop-side caps. Reaches tools only over the network.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

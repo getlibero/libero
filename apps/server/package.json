@@ -4,6 +4,7 @@
   "private": true,
   "description": "The gateway + agent process: composes @getlibero/gateway and @getlibero/agent, talks to Slack over Socket Mode. Holds no tool credential.",
   "license": "MIT",
+  "files": ["dist"],
   "type": "module",
   "main": "dist/compose.js",
   "types": "dist/compose.d.ts",
