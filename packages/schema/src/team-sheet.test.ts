@@ -38,11 +38,41 @@ describe("the example team sheet", () => {
     const github = sheet.mcp_server[0];
     expect(github?.name).toBe("github");
     expect(github?.credential).toBe("github_service_account");
-    expect(github?.tool.map((t) => t.name)).toEqual(["list_prs", "trigger_workflow"]);
-    expect(github?.tool[1]?.approval).toBe("required");
+    expect(github?.tool.map((t) => t.name)).toEqual([
+      "list_pull_requests",
+      "pull_request_read",
+      "merge_pull_request",
+    ]);
+    // Written out rather than left to the heuristic, and that is the lesson the
+    // starter is teaching: `merge_pull_request` contains none of
+    // delete/drop/transfer/deploy, so without this line the most destructive
+    // tool on the sheet would default to running unreviewed.
+    expect(github?.tool[2]?.approval).toBe("required");
     // The starter sheet is where an operator learns the per-tool override
     // exists, so it documents one rather than only describing it.
     expect(github?.tool[0]?.max_result_chars).toBe(8_000);
+  });
+
+  // GitHub scopes its hosted server by url — /x/<toolset> — so a second toolset
+  // is a second block rather than more entries under the first. The starter
+  // shows one because that is the shape an operator will actually write, and
+  // because it is where the heuristic gets to fire on its own.
+  it("carries a second server block whose destructive tool rides the heuristic", () => {
+    const repos = sheet.mcp_server[1];
+    expect(repos?.name).toBe("github_repos");
+    expect(repos?.credential).toBe("github_service_account");
+    expect(repos?.tool.map((t) => t.name)).toEqual(["get_file_contents", "delete_file"]);
+    expect(repos?.tool[1]?.approval).toBeUndefined();
+  });
+
+  it("points both blocks at GitHub's hosted server over https", () => {
+    const urls = sheet.mcp_server.map((server) =>
+      server.transport === "http" ? server.url : null,
+    );
+    expect(urls).toEqual([
+      "https://api.githubcopilot.com/mcp/x/pull_requests",
+      "https://api.githubcopilot.com/mcp/x/repos",
+    ]);
   });
 });
 

@@ -49,28 +49,67 @@ daily_tool_calls = 400
 cache_read_weight  = 0.1
 cache_write_weight = 1.25
 
+# GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
+# and all — and for this server the path is also the only configuration Libero
+# can reach: /x/<toolset> picks the toolset and a trailing /readonly drops every
+# write tool. The alternative is a set of X-MCP-* request headers, and a team
+# sheet has no field for those on purpose. Redirects are not followed, so get
+# the url exactly right. See the docs: /docs/github/
 [[mcp_server]]
 name       = "github"
 transport  = "http"
-url        = "http://mcp-github:3001/mcp"   # the server's single MCP endpoint, path and all
+url        = "https://api.githubcopilot.com/mcp/x/pull_requests"
 credential = "github_service_account"       # name only; value lives in the vault
 
   # Tools not listed here do not exist as far as this channel is concerned.
   [[mcp_server.tool]]
-  name             = "list_prs"
+  name             = "list_pull_requests"
+  approval         = "none"
   max_result_chars = 8000                   # this one lists; a channel-wide 32k is more
                                             # context than a PR list is worth. Overrides
                                             # [llm] max_result_chars for this tool alone.
 
   [[mcp_server.tool]]
-  name     = "trigger_workflow"
-  approval = "required"                     # held for a human Approve click
+  name     = "pull_request_read"
+  approval = "none"
 
-# Where traffic may go when this sheet does not already say. The MCP server
-# above is NOT listed here: declaring its url in [[mcp_server]] is what
+  [[mcp_server.tool]]
+  name     = "merge_pull_request"
+  approval = "required"                     # held for a human Approve click.
+                                            # Written out because the heuristic
+                                            # would NOT hold this one: it looks
+                                            # for delete/drop/transfer/deploy in
+                                            # the name, and "merge" is none of
+                                            # them. Same for push_files,
+                                            # create_or_update_file, issue_write.
+
+# A second toolset is a second block, because GitHub's scoping is the url. Two
+# blocks may also share a name — that is how a long tool list gets split — as
+# long as every block carrying a given tool agrees on the upstream. These do not
+# share one, so nothing here has to agree with anything above.
+[[mcp_server]]
+name       = "github_repos"
+transport  = "http"
+url        = "https://api.githubcopilot.com/mcp/x/repos"
+credential = "github_service_account"       # one credential, however many blocks
+
+  [[mcp_server.tool]]
+  name     = "get_file_contents"
+  approval = "none"
+
+  [[mcp_server.tool]]
+  name = "delete_file"                      # no approval line at all: "delete"
+                                            # is a destructive verb, so the
+                                            # heuristic holds this one for a
+                                            # click without being told to.
+
+# Where traffic may go when this sheet does not already say. The MCP servers
+# above are NOT listed here: declaring a url in [[mcp_server]] is what
 # authorizes it. This list is for the destinations nothing pinned — the
 # code-execution sandbox today. Keeping them apart is why allowing the GitHub
-# MCP server does not also let sandboxed code call api.github.com directly.
+# MCP server (api.githubcopilot.com) does not also let sandboxed code call
+# api.github.com directly, and why allowing the API does not let it dial the
+# MCP server.
 #
 # Default deny. "*." stands for one or more subdomain labels, so
 # *.internal.example.com covers build.internal.example.com but not

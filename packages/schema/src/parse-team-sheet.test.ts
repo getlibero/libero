@@ -11,8 +11,9 @@ describe("parsing a team sheet", () => {
     if (!result.ok) return;
     expect(result.sheet.channel.name).toBe("engineering");
     expect(result.sheet.mcp_server[0]?.tool.map(t => t.name)).toEqual([
-      "list_prs",
-      "trigger_workflow"
+      "list_pull_requests",
+      "pull_request_read",
+      "merge_pull_request"
     ]);
   });
 

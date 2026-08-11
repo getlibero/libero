@@ -24,6 +24,10 @@ import {
   toolsCallRequest,
   toolsListRequest
 } from "./mcp-protocol.js";
+// The other half of the bound: the proxy truncates to this constant and the
+// agent parses against it, so the truncation cases below assert against both
+// rather than against a number typed twice.
+import { MAX_TOOL_DESCRIPTION, PermittedTool } from "@getlibero/schema";
 
 /** The wire context a stateless request goes out on. */
 const STATELESS = { dialect: "stateless", version: MCP_PROTOCOL_VERSION } as const;
@@ -592,11 +596,32 @@ describe("reading a page of a catalog", () => {
 });
 
 describe("bounding what an upstream says about a tool", () => {
-  it("keeps a description and truncates an overlong one", () => {
+  it("keeps a description and truncates an overlong one to the shared bound", () => {
     expect(boundedToolDescription("  Lists open pull requests.  ")).toBe("Lists open pull requests.");
     const long = boundedToolDescription("x".repeat(2000));
-    expect(long).toHaveLength(1025);
+    // MAX_TOOL_DESCRIPTION exactly, marker included. An earlier version of this
+    // test asserted 1025 and so encoded the bug it was meant to catch: the same
+    // constant is `PermittedTool.description`'s `.max()`, so one character over
+    // is a listing the agent's own parse rejects as `malformed_response`, which
+    // ends the task rather than shortening a sentence.
+    expect(long).toHaveLength(MAX_TOOL_DESCRIPTION);
     expect(long?.endsWith("…")).toBe(true);
+    expect(PermittedTool.safeParse({
+      server: "github",
+      tool: "pull_request_read",
+      approval: "none",
+      description: long
+    }).success).toBe(true);
+  });
+
+  // The property the case above pins by example, at the boundary and just past
+  // it. Nothing an upstream can write may produce a description the agent's
+  // schema will not take.
+  it("never publishes a description the listing schema would reject", () => {
+    for (const length of [MAX_TOOL_DESCRIPTION - 1, MAX_TOOL_DESCRIPTION, MAX_TOOL_DESCRIPTION + 1, 50_000]) {
+      const bounded = boundedToolDescription("x".repeat(length));
+      expect(bounded?.length).toBeLessThanOrEqual(MAX_TOOL_DESCRIPTION);
+    }
   });
 
   it("reports an absent description as absent, however it was absent", () => {

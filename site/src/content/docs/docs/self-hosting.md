@@ -12,12 +12,16 @@ gateway and the agent loop exist and reach tools through the proxy, and approval
 to end: a held call raises an amber card in the channel, and an approver's click re-submits the
 identical call with the ticket.
 
-What is not finished: there is no real MCP server behind the dispatcher yet. The two Dockerfiles
-the compose file builds from are not written, so `docker compose up` fails on a clean checkout —
-run the two processes directly in the meantime. `@getlibero/cli` is a placeholder release, so the
-`init` command on this page is target UX rather than something you can run. The
-end-to-end suite that attacks all of this is not written, which is the one that would tell you
-the security property holds. Do not run this against a workspace you care about.
+The proxy speaks MCP for real, and [GitHub's hosted server](/docs/github/) is documented and
+exercised end to end. The end-to-end suite that attacks all of this exists: it composes both halves
+over real mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget
+exhaustion, held destructive calls, and channel isolation.
+
+What is not finished: the two Dockerfiles the compose file builds from are not written, so
+`docker compose up` fails on a clean checkout — run the two processes directly in the meantime.
+`@getlibero/cli` is a placeholder release, so the `init` command on this page is target UX rather
+than something you can run. Certificate rotation and revocation are manual. Do not run this against
+a workspace you care about.
 :::
 
 ## The shape of a deployment
@@ -57,6 +61,9 @@ The value is read from stdin rather than an argument, because `ps` shows argumen
 on the box and a shell writes them to history. There is no command that prints a credential back.
 The proxy reads the vault at startup, so a change takes effect on restart — and losing the master
 key means losing the vault: there is no recovery path and no escrow.
+
+[Connecting GitHub](/docs/github/) walks that credential the rest of the way: into a team sheet, out
+to GitHub's hosted MCP server, and onto an audit row.
 
 ## What you provide
 

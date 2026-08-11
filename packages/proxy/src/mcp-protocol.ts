@@ -566,8 +566,23 @@ export function isInputRequired(result: Record<string, unknown>): boolean {
   return result["resultType"] === "input_required";
 }
 
+/**
+ * At most `limit` characters, marker included.
+ *
+ * **The marker is inside the budget, not on top of it**, and that is a
+ * correctness requirement rather than tidiness. `MAX_TOOL_DESCRIPTION` is
+ * shared with `PermittedTool`'s `description: z.string().max(…)` precisely so
+ * the proxy's bound and the agent's parse agree — its own comment says a proxy
+ * bounding above the schema "would turn every chatty upstream into a
+ * `malformed_response` on the agent side, which ends the task rather than
+ * costing it a sentence". An ellipsis appended past the slice made that off by
+ * one, so an upstream with a 1,025-character description took down every task
+ * in every channel whose sheet named it. GitHub's `pull_request_read`
+ * documents nine `method` values inline and is comfortably past the line, which
+ * is how #130 found this.
+ */
 function truncate(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
+  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
 }
 
 /**

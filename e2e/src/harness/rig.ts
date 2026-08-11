@@ -55,6 +55,21 @@ export interface RigOptions {
   /** Extra `label=CN` certificates, for the stolen-identity cases. */
   readonly rawCns?: readonly string[];
   /**
+   * Extra vault entries, beside the canary, by credential name.
+   *
+   * There is exactly one caller and it is `github-live.test.ts`, which plants a
+   * real GitHub token so a sheet can point at `api.githubcopilot.com` instead of
+   * at the loopback fake. Every other case should plant the canary and nothing
+   * else — see canary.ts on why a leak scan with no positive control is
+   * vacuous. The live case has a control of its own: GitHub answers 401 without
+   * the token, so a result carrying real repository data is proof the vault
+   * resolved.
+   *
+   * The canary is always present and cannot be displaced by a name collision,
+   * because it is merged last.
+   */
+  readonly credentials?: Readonly<Record<string, string>>;
+  /**
    * Sheets to write before the proxy starts, by channel id.
    *
    * The upstream's url is filled in by the rig, so a spec omits it — see
@@ -245,7 +260,8 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       channelsRoot.write(channelId, { ...spec, url: spec.url ?? upstream.url });
     }
 
-    const vault = writeVault(cleanup, { [CANARY_CREDENTIAL]: CANARY });
+    // The canary last, so no caller-supplied name can displace it.
+    const vault = writeVault(cleanup, { ...options.credentials, [CANARY_CREDENTIAL]: CANARY });
 
     const dbDir = mkdtempSync(join(tmpdir(), "libero-e2e-db-"));
     cleanup.add("databases", () => rmSync(dbDir, { recursive: true, force: true }));
