@@ -101,7 +101,7 @@ const sheet = {
 
 describe.skipIf(PAT === undefined || PAT === "")("against api.githubcopilot.com", () => {
   describeTheGovernedPathReachesGitHub();
-  describeTheCallIsRefusedPendingHeaderMirroring();
+  describeTheCallCompletes();
   describeTheRevokedChannelIsRefused();
 });
 
@@ -170,21 +170,24 @@ function describeTheGovernedPathReachesGitHub(): void {
 }
 
 /**
- * Acceptance 1's remaining half, and it does not hold yet.
+ * Acceptance 1's remaining half, and #130's close.
  *
- * **This case pins a known gap rather than a property.** GitHub's tool schemas
- * carry `x-mcp-header` on `owner` and `repo`, and the `2026-07-28` transport
- * requires a client to mirror those argument values into `Mcp-Param-{name}`
- * request headers. `packages/proxy` does not, so GitHub refuses every call whose
- * schema is annotated — which is essentially all of them — with JSON-RPC
- * `-32020`. Nothing about the sheet, the vault, the listing or the credential is
- * wrong; the call is refused at the far end.
+ * **This case used to pin a gap and now pins the property.** GitHub's tool
+ * schemas carry `x-mcp-header` on `owner` and `repo`, and it requires those
+ * argument values mirrored into `Mcp-Param-{name}` request headers — on the
+ * legacy `2025-11-25` connection it negotiates, declining SEP-2243's optional
+ * headerless-legacy courtesy. Until #188 the proxy sent none, so GitHub refused
+ * every annotated tool with JSON-RPC `-32020`, which was essentially all of
+ * them. The old form of this case asserted that refusal verbatim and told
+ * whoever closed the gap to invert it; this is that inversion.
  *
- * It is written as an assertion on the refusal, not skipped, because that makes
- * it fail loudly the moment the gap closes and tells whoever closed it to invert
- * this case. A skipped test would stay silent and rot.
+ * No published SDK closes it either — the SDK mirrors only on a `2026-07-28`
+ * connection, which is spec-correct because `x-mcp-header` exists in no earlier
+ * revision. The headers here come from the codec vendored at
+ * `packages/proxy/src/vendor/mcp-param-headers.ts`. Filed upstream as
+ * modelcontextprotocol/typescript-sdk#2639.
  */
-function describeTheCallIsRefusedPendingHeaderMirroring(): void {
+function describeTheCallCompletes(): void {
   let rig: Rig | undefined;
 
   beforeAll(async () => {
@@ -200,7 +203,7 @@ function describeTheCallIsRefusedPendingHeaderMirroring(): void {
   }, SETUP_MS);
 
   it(
-    "is refused -32020 by GitHub because the proxy does not mirror x-mcp-header (known gap)",
+    "completes against GitHub, with x-mcp-header mirrored into Mcp-Param-* headers",
     async () => {
       const { agent, auditDb, budgetDb, surfaces } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -210,21 +213,25 @@ function describeTheCallIsRefusedPendingHeaderMirroring(): void {
       const reply = agent.slack.posted[0]?.text ?? "";
       expect(agent.slack.posted).toHaveLength(1);
 
-      // **Invert this when the client mirrors `x-mcp-header`**: the reply should
-      // then contain PR_TITLE_FRAGMENT, and the audit row's outcome should be
-      // `ran` with no error. Until then this is what GitHub says, verbatim.
-      expect(reply).toContain("missing Mcp-Param-owner header");
-      expect(reply).not.toContain(PR_TITLE_FRAGMENT);
+      // The answer came back, which is #130's acceptance. The fragment is a
+      // merged pull request's title: data an anonymous caller cannot get, so it
+      // is also the positive control this file uses in place of a recording
+      // upstream — the credential reached GitHub and GitHub answered from it.
+      expect(reply).toContain(PR_TITLE_FRAGMENT);
+      expect(reply).not.toContain("missing Mcp-Param-owner header");
 
-      // The proxy still wrote the call down, which is the property that does
-      // hold: a decided call leaves exactly one row whether or not the upstream
-      // answered usefully.
+      // One row, and now a `ran` one. The property held while the call was
+      // refused too — a decided call leaves exactly one row whether or not the
+      // upstream answered usefully — so what changed here is the outcome, not
+      // the accounting.
       const rows = auditRows(auditDb).slice(before);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         channel: CHANNEL,
         server: "github",
-        tool: "pull_request_read"
+        tool: "pull_request_read",
+        outcome: "ran",
+        result_is_error: 0
       });
       // The audit row holds a hash of the arguments and never a value, so this
       // is also the assertion that the log is safe to hand to an auditor.
@@ -241,7 +248,7 @@ function describeTheCallIsRefusedPendingHeaderMirroring(): void {
       // reports nothing.
       expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(1);
 
-      // And GitHub's refusal text is upstream-authored, so it is a surface too.
+      // And GitHub's answer is upstream-authored, so it is a surface too.
       expectNoSecret(surfaces(), PAT ?? "", "the GitHub token");
     },
     CASE_MS

@@ -25,10 +25,11 @@
 // is an injected `now()` here and nothing more.
 
 import type { McpServer } from "@getlibero/schema";
-import type { ToolCatalog, UpstreamToolDescription } from "./dispatch.js";
+import type { ToolCatalog, UpstreamCallDefinition, UpstreamToolDescription } from "./dispatch.js";
 import { createSilentLogger, type Logger } from "./log.js";
 import type { McpClient } from "./mcp-client.js";
 import { boundedToolDescription, boundedToolInputSchema } from "./mcp-bounds.js";
+import { type XMcpHeaderDeclaration, scanXMcpHeaderDeclarations } from "./vendor/mcp-param-headers.js";
 import { upstreamKey } from "./enforce.js";
 
 /**
@@ -103,6 +104,30 @@ export type ClientLease =
       readonly credential?: string;
     };
 
+/**
+ * The catalog, as the module that owns it sees it.
+ *
+ * Wider than the `ToolCatalog` seam in ./dispatch.ts, and the difference is the
+ * point. The listing route closes over `ToolCatalog` — one method, which
+ * describes — so that it structurally cannot feed a call. `definitionFor` does
+ * feed one, so it lives out here on the concrete type, reachable only by the
+ * dispatcher that already holds the pool and the vault.
+ */
+export interface McpCatalog extends ToolCatalog {
+  /**
+   * What one tool needs at call time, beyond its arguments.
+   *
+   * Answers from the same per-name resolutions `describe` fills, so a tool the
+   * listing route already walked for costs nothing here — which is the whole
+   * reason the cache was rekeyed onto the upstream. A cold cache, a dead
+   * upstream or a tool that declares nothing all answer with no declarations,
+   * and the call still goes out: a thin catalog has never been allowed to block
+   * a permitted call.
+   */
+  definitionFor(upstream: McpServer, tool: string): Promise<UpstreamCallDefinition>;
+  clear(): void;
+}
+
 export interface McpCatalogOptions {
   readonly lease: (upstream: McpServer) => ClientLease;
   readonly logger?: Logger;
@@ -126,6 +151,21 @@ type Described = ReadonlyMap<string, UpstreamToolDescription>;
  */
 interface Resolution {
   readonly published: UpstreamToolDescription | null;
+  /**
+   * The tool's `x-mcp-header` declarations, scanned from the schema the upstream
+   * actually sent.
+   *
+   * **From the raw schema, before `boundedToolInputSchema` has had it**, and
+   * that is a correctness requirement rather than an ordering preference. The
+   * bounding rules exist to decide what may enter a *model's context*: a schema
+   * over `MAX_TOOL_SCHEMA_BYTES`, or one whose `type` is not `object`, is
+   * dropped and the tool published thin. None of that has any bearing on which
+   * arguments a server wants mirrored into request headers — and reading the
+   * declarations off the published schema would mean a tool whose schema was too
+   * large to show the model silently lost its headers and had every call to it
+   * refused `-32020` at the far end, for a reason nothing in the log would name.
+   */
+  readonly paramDeclarations: readonly XMcpHeaderDeclaration[];
   readonly expiresAt: number;
 }
 
@@ -145,6 +185,15 @@ interface CacheEntry {
 type Walked = "complete" | "partial";
 
 const EMPTY: Described = new Map();
+
+/** A walk that never happened, for the lease that never opened. */
+const NOTHING_WALKED: ReadonlyMap<string, Walked_Entry> = new Map();
+
+/** What one walk learned about one tool: the two views, kept apart. */
+interface Walked_Entry {
+  readonly published: UpstreamToolDescription;
+  readonly paramDeclarations: readonly XMcpHeaderDeclaration[];
+}
 
 /**
  * The single-flight key: the upstream, and the names this walk is going after.
@@ -173,7 +222,7 @@ function walkKey(upstream: McpServer, missing: ReadonlySet<string>): string {
   return JSON.stringify([upstreamKey(upstream), [...missing].sort()]);
 }
 
-export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { clear(): void } {
+export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
   const cached = new Map<string, CacheEntry>();
@@ -246,7 +295,7 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
     upstream: McpServer,
     client: McpClient,
     wanted: ReadonlySet<string>,
-    described: Map<string, UpstreamToolDescription>,
+    described: Map<string, Walked_Entry>,
     budget: number
   ): Promise<Walked> => {
     let cursor: string | undefined;
@@ -278,7 +327,11 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
           unavailable(upstream, "truncated", { described: described.size });
           return "partial";
         }
-        described.set(entry.name, boundedEntry(upstream, entry.name, entry.description, entry.inputSchema));
+        described.set(entry.name, {
+          published: boundedEntry(upstream, entry.name, entry.description, entry.inputSchema),
+          // The raw schema, deliberately — see `Resolution.paramDeclarations`.
+          paramDeclarations: declarationsIn(entry.inputSchema)
+        });
       }
 
       if (described.size === wanted.size) return "complete";
@@ -310,7 +363,7 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
     upstream: McpServer,
     client: McpClient,
     wanted: ReadonlySet<string>,
-    described: Map<string, UpstreamToolDescription>,
+    described: Map<string, Walked_Entry>,
     allowance: number
   ): Promise<Walked> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -345,6 +398,20 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
     return fresh;
   };
 
+  /**
+   * A tool's `x-mcp-header` declarations, or none.
+   *
+   * An upstream that declares nothing, or whose schema the scan will not vouch
+   * for, gets no headers — which is also the safe answer under SEP-2243, whose
+   * intermediary note says infrastructure on an older negotiated revision SHOULD
+   * reject a request carrying header values it cannot validate. Headers go only
+   * to a server that asked for them in its own schema.
+   */
+  const declarationsIn = (rawSchema: unknown): readonly XMcpHeaderDeclaration[] => {
+    const scan = scanXMcpHeaderDeclarations(rawSchema);
+    return scan.valid ? scan.declarations : [];
+  };
+
   /** The answer, assembled from what is settled. Wanted order, published only. */
   const assemble = (entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
     const answer = new Map<string, UpstreamToolDescription>();
@@ -366,12 +433,17 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
   const merge = (
     entry: CacheEntry,
     missing: ReadonlySet<string>,
-    described: ReadonlyMap<string, UpstreamToolDescription>,
+    described: ReadonlyMap<string, Walked_Entry>,
     walked: Walked
   ): void => {
     const expiresAt = now() + (walked === "complete" ? CATALOG_TTL_MS : CATALOG_FAILURE_TTL_MS);
     for (const name of missing) {
-      entry.resolved.set(name, { published: described.get(name) ?? null, expiresAt });
+      const found = described.get(name);
+      entry.resolved.set(name, {
+        published: found?.published ?? null,
+        paramDeclarations: found?.paramDeclarations ?? [],
+        expiresAt
+      });
     }
   };
 
@@ -418,11 +490,11 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
         // Recorded like any other failure, so a sheet naming a credential the
         // vault does not hold costs one log line per half minute rather than
         // one per listing.
-        merge(entry, missing, EMPTY, "partial");
+        merge(entry, missing, NOTHING_WALKED, "partial");
         return;
       }
 
-      const described = new Map<string, UpstreamToolDescription>();
+      const described = new Map<string, Walked_Entry>();
       // What this answer may still spend of the cap. Names already carried are
       // in the answer whether or not the walk adds anything, so they count.
       const walked = await walkWithin(upstream, lease.client, missing, described, MAX_DESCRIBED_TOOLS - carried);
@@ -437,6 +509,15 @@ export function createMcpCatalog(options: McpCatalogOptions): ToolCatalog & { cl
   };
 
   return {
+    async definitionFor(upstream, tool) {
+      // Through `describe` rather than beside it, so the freshness rules, the
+      // single flight and the budget are the ones already argued rather than a
+      // second copy that drifts.
+      await describeUpstream(upstream, new Set([tool]));
+      const resolution = cached.get(upstreamKey(upstream))?.resolved.get(tool);
+      return { paramDeclarations: resolution?.paramDeclarations ?? [] };
+    },
+
     async describe(upstream, wanted) {
       if (wanted.length === 0) return EMPTY;
       return describeUpstream(upstream, new Set(wanted));
