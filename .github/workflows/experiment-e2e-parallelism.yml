@@ -51,8 +51,11 @@ jobs:
         run: |
           echo "cores: $(nproc)"
           start=$(date +%s)
-          pnpm --filter @getlibero/e2e test
-          status=$?
+          # `|| status=$?` rather than a bare call: the default shell is
+          # `bash -e`, which would exit before the duration is printed — and the
+          # failing run is the one whose numbers matter most.
+          status=0
+          pnpm --filter @getlibero/e2e test || status=$?
           echo "attempt ${{ matrix.attempt }}: $(( $(date +%s) - start ))s, exit $status"
           exit $status
 
@@ -76,7 +79,7 @@ jobs:
         run: |
           echo "cores: $(nproc)"
           start=$(date +%s)
-          pnpm --filter @getlibero/e2e exec vitest run --exclude '**/dist/**' --no-file-parallelism
-          status=$?
+          status=0
+          pnpm --filter @getlibero/e2e exec vitest run --exclude '**/dist/**' --no-file-parallelism || status=$?
           echo "serial control: $(( $(date +%s) - start ))s, exit $status"
           exit $status
