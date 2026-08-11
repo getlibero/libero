@@ -102,6 +102,33 @@ rig internals.
 If you find yourself needing one, add it to the rig rather than rebuilding a
 piece of it.
 
+## The one case that leaves the machine
+
+`src/github-live.test.ts` is #130's acceptance run against GitHub's hosted MCP
+server. It is skipped unless `LIBERO_GITHUB_PAT` is set, so CI collects it,
+reaches no network, and needs no secret:
+
+```sh
+pnpm -r build
+LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec vitest run src/github-live.test.ts
+```
+
+The token is planted through `startRig({ credentials })`, which is the **only**
+sanctioned use of that option and the one documented exception to
+`harness/vault.ts`'s rule that a rig plants a canary and never a plausible
+token. The canary is still there; nothing in that file names it.
+
+`src/github.test.ts` is the half CI runs: the same three claims against the fake
+configured to present the shape the real server does — a refused
+`server/discover` and the legacy `initialize` fallback, a session id it must
+carry, SSE framing, a paged catalog, and a description long enough to be
+truncated. That last one is not decoration. The proxy used to append its
+ellipsis *past* `MAX_TOOL_DESCRIPTION`, which is the same constant
+`PermittedTool.description` parses against, so any upstream with a description
+over 1,024 characters produced a listing the agent rejected as
+`malformed_response` — killing the task rather than shortening a sentence. No
+fixture in the suite had a description that long until this one did.
+
 ## Things that will cost you an afternoon otherwise
 
 **The positive control is not optional.** Every "the credential did not leak"
@@ -112,7 +139,15 @@ else. `expectCanaryReachedUpstream(upstream)` is that first half, and
 `src/smoke.test.ts` does both, in that order. Its second argument is the
 JSON-RPC method to look on, because the credential goes out on more than one
 kind of request: a case attacking the **listing** is controlled by
-`tools/list`, not by a call that may never have happened.
+`tools/list`, and one against a legacy upstream by `initialize`, not by a call
+that may never have happened.
+
+There is one case with no recording upstream to read a header off —
+`src/github-live.test.ts`, which calls the real GitHub — and it does not skip
+the control, it changes its shape: the endpoint answers 401 to an anonymous
+caller, so a tool result carrying a pull request's *title* is data the request
+did not carry and could only have come from an authenticated call. If you write
+a case against a real upstream, find that assertion before you write the scan.
 
 **The listing is a leak surface too, and the worse one.** A tool `description`
 and `inputSchema` are upstream-authored text that enters the model's context on

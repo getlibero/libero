@@ -72,21 +72,36 @@ export function surface(what: string, value: unknown): Surface {
 }
 
 /**
- * Throws naming the surface, if the canary is on any of them.
+ * Throws naming the surface, if `secret` is on any of them.
  *
- * The message carries the surrounding text rather than the canary alone,
- * because "it leaked" is not the useful half — "it leaked into the tool result
- * the model then summarised" is.
+ * The message carries the surrounding text rather than the value alone, because
+ * "it leaked" is not the useful half — "it leaked into the tool result the model
+ * then summarised" is.
+ *
+ * **The secret itself is masked out of that context, always.** For the canary
+ * the masking changes nothing: it is a constant in this file, greppable on
+ * purpose. It matters for `github-live.test.ts`, whose secret is a real personal
+ * access token — a failure message is written to a terminal and, if the run ever
+ * moves into CI, to a log nobody meant to hold a credential. Masking
+ * unconditionally rather than behind a flag is what keeps that true of the next
+ * caller too.
  */
-export function expectNoCanary(surfaces: readonly Surface[]): void {
-  const hits = surfaces.filter(s => s.text.includes(CANARY));
+export function expectNoSecret(surfaces: readonly Surface[], secret: string, label = "the credential"): void {
+  const hits = surfaces.filter(s => s.text.includes(secret));
   if (hits.length === 0) return;
   const detail = hits
     .map(hit => {
-      const at = hit.text.indexOf(CANARY);
+      const at = hit.text.indexOf(secret);
       const from = Math.max(0, at - 120);
-      return `  ${hit.what}: …${hit.text.slice(from, at + CANARY.length + 120)}…`;
+      const before = hit.text.slice(from, at);
+      const after = hit.text.slice(at + secret.length, at + secret.length + 120);
+      return `  ${hit.what}: …${before}<${label}>${after}…`;
     })
     .join("\n");
-  throw new Error(`e2e: the credential reached ${hits.length} agent-visible surface(s):\n${detail}`);
+  throw new Error(`e2e: ${label} reached ${hits.length} agent-visible surface(s):\n${detail}`);
+}
+
+/** `expectNoSecret` for the planted canary, which is what almost every case wants. */
+export function expectNoCanary(surfaces: readonly Surface[]): void {
+  expectNoSecret(surfaces, CANARY, "the credential");
 }

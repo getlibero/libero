@@ -18,7 +18,7 @@ const attempts = [
   {
     attack: 'Someone asks the agent to deploy to production, urgently, at 2am.',
     result: 'Held for a human.',
-    body: 'trigger_workflow is marked approval = "required", so the call stops in the proxy and an Approve card renders in the thread. Whoever clicks is recorded. Destructive verbs default to required whether or not anyone remembered to mark them.',
+    body: 'run_workflow is marked approval = "required" in the team sheet, so the call stops in the proxy and an Approve card renders in the thread. Whoever clicks is recorded. A tool whose name carries a destructive verb — delete, drop, transfer, deploy — is held whether or not anyone remembered to mark it.',
     tone: 'warn',
   },
   {

@@ -30,6 +30,14 @@ export interface PlantedVault {
  * The values are the secrets the suite then proves never leave the proxy, so
  * every caller should be planting a canary rather than a plausible-looking
  * token — see canary.ts for why a scan without a positive control is vacuous.
+ *
+ * **One documented exception**, `RigOptions.credentials`, and it is sound for
+ * the reason the rule exists rather than in spite of it: `github-live.test.ts`
+ * plants a real GitHub token, and its positive control is that GitHub answered
+ * at all — an unauthenticated call to the same endpoint is a 401, so a result
+ * carrying real repository data is proof the vault resolved and the credential
+ * was injected. A plausible-looking *fake* token is what must never appear
+ * here: it would satisfy neither control.
  */
 export function writeVault(cleanup: Cleanup, credentials: Readonly<Record<string, string>>): PlantedVault {
   const dir = mkdtempSync(join(tmpdir(), "libero-e2e-vault-"));

@@ -284,6 +284,66 @@ never from what the model wrote.
 The clock there is one-sided and the file says so: only the agent's scheduler is
 injectable, so a true `approval_expired` stays `approvals.test.ts`'s to prove.
 
+**#130 pointed the proxy at GitHub for real and is still open, because the call
+does not complete.** GitHub's tool schemas annotate `owner` and `repo` with
+`x-mcp-header`, and the Streamable HTTP transport requires a client to mirror
+those argument values into `Mcp-Param-{name}` request headers. This client does
+not, so GitHub answers `-32020` to essentially every tool call. Everything
+before that step works against the live server and is proven by
+`e2e/src/github-live.test.ts`: the ladder, the legacy `2025-11-25` handshake,
+the credential, the real catalog. See the MCP client section below for why the
+fix is not simply "write the mirroring" — the hand-rolled-vs-SDK decision is
+being re-opened first, and these two questions are coupled.
+
+**What #130 changed most is the docs.**
+GitHub's hosted server is `https://api.githubcopilot.com/mcp/`, and
+`channels/example/channel.toml` now points at it for real — two blocks, because
+**that server's configuration surface is its url path**: `/x/<toolset>` picks a
+toolset and a trailing `/readonly` drops every write tool, so one url is one
+toolset. The alternative is `X-MCP-Toolsets`/`X-MCP-Readonly`/`X-MCP-Tools`
+request headers, and **the sheet gains no field for those**: a headers field is a
+place to write a token into the one file whose defining property is that it holds
+none, and the path is already reviewed as part of the url.
+`site/src/content/docs/docs/github.md` is the walk from `vault.js set` to a `ran`
+row, and is in the sidebar under Start here.
+
+**The finding worth keeping is that the approval heuristic barely fires on
+GitHub.** `DESTRUCTIVE_VERBS` is delete/drop/transfer/deploy;
+`merge_pull_request`, `push_files`, `create_or_update_file`, `issue_write` and
+`pull_request_review_write` contain none of them, so they default to running
+unreviewed. `delete_file` is the one it catches. That is the heuristic behaving
+as designed — it is a default for the entry nobody thought about — but the
+starter sheet now says so in a comment and the docs say so in a table, because a
+starter that showed only the caught case would teach the wrong lesson.
+
+**And one real bug, which is what a real upstream is for.** `truncate` in
+`mcp-protocol.ts` appended its ellipsis *past* the limit, so
+`boundedToolDescription` returned 1,025 characters against a
+`MAX_TOOL_DESCRIPTION` of 1,024 — the same constant `PermittedTool.description`
+parses against, chosen to be one number precisely so the two ends agree. Any
+upstream with a description over the line therefore produced a listing the
+agent's own `ToolSource` rejected as `malformed_response`, which ends the task
+with "the tool proxy could not be reached" rather than costing it a sentence.
+GitHub's `pull_request_read` documents nine `method` values inline and is well
+past it. The old test asserted `toHaveLength(1025)` and so *encoded* the gap, the
+way `audit.test.ts` did for #124.
+
+**Two e2e files, and the split is what CI can hold.**
+`e2e/src/github.test.ts` runs #130's three acceptance bullets against the fake
+wearing the real server's shape — legacy `initialize` fallback, a session id,
+SSE framing, a paged catalog, an over-long description — none of which the
+default fake does, which is why it is not a copy of `smoke.test.ts`.
+`e2e/src/github-live.test.ts` is the acceptance run itself, against
+`api.githubcopilot.com`, skipped unless `LIBERO_GITHUB_PAT` is set. **Its
+positive control changes shape and that is the point**: there is no recording
+upstream to read a header off, so the control is that GitHub answered with data
+an anonymous caller cannot get — a merged pull request's title, which the
+request did not carry. `RigOptions.credentials` plants the token and is the one
+documented exception to `harness/vault.ts`'s plant-a-canary rule;
+`expectNoSecret` generalises `expectNoCanary` and **masks the value in its own
+failure message**, which is free for a canary that lives in source and is the
+whole point for a real token.
+
 **The agent calls tools, through the proxy and only through it.**
 `packages/agent/src/proxy/` is the client (#109): an mTLS transport over
 `node:https`, `ToolSource` over `GET /v1/tools`, `ToolExecutor` over
@@ -420,13 +480,31 @@ credential)` triple — the same `upstreamKey` enforcement compares, exported
 rather than restated so the two cannot drift.
 
 The client is hand-rolled rather than the SDK, and the reason is the custody
-argument rather than dependency count: `StreamableHTTPClientTransport` owns its
-own `fetch`, so the credential would be revealed outside `callUpstream`, and
-"redaction is total because sending is centralised" would become "because we
-wrapped it carefully" in the process holding every credential. The cost — this
-repo owning a moving protocol — is paid by one pinned constant and
-`.github/workflows/mcp-spec-watch.yml`, which files an issue when the spec moves
-past it.
+argument rather than dependency count: the credential must not be revealed
+outside `callUpstream`, or "redaction is total because sending is centralised"
+becomes "because we wrapped it carefully" in the process holding every
+credential.
+
+**Both halves of that record are now known to be wrong on the facts, and #130
+is what found out.** The premise was that `StreamableHTTPClientTransport` owns
+its own `fetch`; it takes one — `fetch?: FetchLike`, "used for all network
+requests", including the OAuth paths — so `callUpstream` could be the injected
+fetch and the custody argument is recoverable rather than lost. And the stated
+cost, "one pinned constant and `.github/workflows/mcp-spec-watch.yml`", was an
+underestimate by construction: that workflow triggers on *revision tags*, and
+the gap #130 hit is a **within-revision** feature (`x-mcp-header`) that GitHub
+enforces at `2025-11-25`, a revision we already claim to speak. It could not
+have fired. We also send no `Mcp-Method` or `Mcp-Name`, which are MUST-level for
+`2026-07-28`.
+
+So the principle stands and the cost model does not. Adopting the SDK is being
+re-evaluated on that evidence rather than defended or assumed — it is a
+phase-scale call touching the pool's `(transport, url, credential)` isolation
+keying, the `READABLE_RESPONSE_HEADERS` allowlist (which would have to widen
+from two headers to whatever the SDK reads, all still scrubbed), and a
+dependency tree inside the credential-holding process. **Do not implement more
+protocol here until that is decided**; the two questions are coupled and the
+second one is the larger.
 
 Three behaviours there are decisions rather than mechanics. **A server naming no
 version we speak fails closed** with no `tools/call` sent, rather than being

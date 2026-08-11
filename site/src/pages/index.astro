@@ -193,16 +193,17 @@ daily_tool_calls = 400
 <b>[[mcp_server]]</b>
 name       = <span>"github"</span>
 transport  = <span>"http"</span>
-url        = <span>"http://mcp-github:3001"</span>
+url        = <span>"https://api.githubcopilot.com/mcp/x/pull_requests"</span>
 credential = <span>"github_service_account"</span>
 
   <i># Tools not listed here do not exist</i>
   <i># as far as this channel is concerned.</i>
   <b>[[mcp_server.tool]]</b>
-  name = <span>"list_prs"</span>
+  name     = <span>"list_pull_requests"</span>
+  approval = <span>"none"</span>
 
   <b>[[mcp_server.tool]]</b>
-  name     = <span>"trigger_workflow"</span>
+  name     = <span>"merge_pull_request"</span>
   approval = <span>"required"</span>
 
 <b>[egress]</b>
@@ -234,22 +235,22 @@ enabled = false  <i># off by default, always</i></code></pre>
           </div>
           <div class="lb-row">
             <span class="lb-dot lb-dot--allowed"></span>
-            <span class="lb-row__name">github.list_prs</span>
+            <span class="lb-row__name">github.list_pull_requests</span>
             <span class="lb-row__value">executed</span>
           </div>
           <div class="lb-row">
             <span class="lb-dot lb-dot--allowed"></span>
-            <span class="lb-row__name">github.get_pull_request</span>
+            <span class="lb-row__name">github.pull_request_read</span>
             <span class="lb-row__value">executed</span>
           </div>
           <div class="lb-row">
             <span class="lb-dot lb-dot--warn"></span>
-            <span class="lb-row__name">github.trigger_workflow</span>
+            <span class="lb-row__name">github.merge_pull_request</span>
             <span class="lb-row__value">awaiting approval</span>
           </div>
           <div class="lb-row">
             <span class="lb-dot lb-dot--blocked"></span>
-            <span class="lb-row__name">github.delete_repo</span>
+            <span class="lb-row__name">github.delete_file</span>
             <span class="lb-row__value">not on allowlist</span>
           </div>
           <div class="lb-row">
@@ -263,9 +264,9 @@ enabled = false  <i># off by default, always</i></code></pre>
             <span class="lb-meta">expires in 15:00</span>
           </div>
           <div class="lb-stack lb-gap-8">
-            <span class="lb-mono" style="font-size:13px;">github.trigger_workflow</span>
+            <span class="lb-mono" style="font-size:13px;">github.merge_pull_request</span>
             <span class="lb-code lb-text-muted">
-              workflow: deploy-production.yml · ref: main
+              repo: getlibero/libero · pullNumber: 184 · merge_method: squash
             </span>
           </div>
           <p class="lb-small" style="color:var(--lb-text-soft);">

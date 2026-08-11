@@ -75,6 +75,10 @@ docker compose run --rm proxy node dist/vault.js list
 docker compose run --rm proxy node dist/vault.js remove github_service_account
 ```
 
+`github_service_account` is not a placeholder name — it is the one
+`channels/example/channel.toml` refers to, and the walk from that command to a
+served GitHub tool call is `site/src/content/docs/docs/github.md`.
+
 Running it in the container is the point: the vault file is in a container
 volume and the master key is in that container's environment, so editing from
 the host would mean putting the key on the host. Locally, `pnpm --filter

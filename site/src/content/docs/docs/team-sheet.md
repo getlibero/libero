@@ -52,22 +52,48 @@ daily_tool_calls = 400
 cache_read_weight  = 0.1                    # what a cached token costs
 cache_write_weight = 1.25
 
+# GitHub's hosted MCP server. For this server the url path is also the only
+# configuration Libero can reach: /x/<toolset> picks the toolset, a trailing
+# /readonly drops every write tool. See /docs/github/
 [[mcp_server]]
 name       = "github"
 transport  = "http"
-url        = "http://mcp-github:3001/mcp"
+url        = "https://api.githubcopilot.com/mcp/x/pull_requests"
 credential = "github_service_account"       # name only; value lives in the vault
 
   # Tools not listed here do not exist as far as this channel is concerned.
   [[mcp_server.tool]]
-  name             = "list_prs"
+  name             = "list_pull_requests"
+  approval         = "none"
   max_result_chars = 8000                   # this one lists; a channel-wide 32k is more
                                             # context than a PR list is worth. Overrides
                                             # [llm] max_result_chars for this tool alone.
 
   [[mcp_server.tool]]
-  name     = "trigger_workflow"
-  approval = "required"                     # held for a human Approve click
+  name     = "pull_request_read"
+  approval = "none"
+
+  [[mcp_server.tool]]
+  name     = "merge_pull_request"
+  approval = "required"                     # held for a human Approve click. Written out
+                                            # because the heuristic would NOT hold this
+                                            # one — "merge" is not a destructive verb.
+
+# A second toolset is a second block, because GitHub's scoping is the url.
+[[mcp_server]]
+name       = "github_repos"
+transport  = "http"
+url        = "https://api.githubcopilot.com/mcp/x/repos"
+credential = "github_service_account"       # one credential, however many blocks
+
+  [[mcp_server.tool]]
+  name     = "get_file_contents"
+  approval = "none"
+
+  [[mcp_server.tool]]
+  name = "delete_file"                      # no approval line at all: "delete" is a
+                                            # destructive verb, so the heuristic holds
+                                            # this one without being told to.
 
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
@@ -209,6 +235,14 @@ upstream is a process rather than an address, and a field that is silently ignor
 operator writes and then trusts. Either mistake is rejected at load, naming the block and the
 field, rather than surfacing as a failed call later.
 
+**The url is the whole endpoint, and there is no field for request headers.** Some servers put
+configuration in both — GitHub's hosted server scopes itself by `/x/<toolset>` and `/readonly` in
+the path *or* by `X-MCP-Toolsets` and `X-MCP-Readonly` headers. Only the path is reachable from a
+sheet, deliberately: a headers field would be a place to write a token into the one file that is
+meant to hold none, and the path is already reviewed as part of the url. Redirects are not
+followed, so a url that is nearly right fails the call rather than being corrected by the
+upstream. [Connecting GitHub](/docs/github/) works one through.
+
 Server, tool, and credential names are short identifiers: letters, digits, dot, dash, and
 underscore, starting with a letter or digit, up to 64 characters. The same shape applies wherever
 a name crosses between the agent and the proxy, so a name that validates in a sheet is a name that
@@ -239,13 +273,20 @@ approval costs one click and one line, and the alternative errs towards running 
 nobody reviewed. An explicit `approval` in the sheet always wins — the heuristic is only consulted
 when the entry says nothing.
 
+**It is a default, not a policy, and an upstream's naming decides how much of one it is.** GitHub
+is the worked example: `delete_file` is caught, and `merge_pull_request`, `push_files`,
+`create_or_update_file`, `issue_write` and `pull_request_review_write` are not, because none of
+them contains one of the four verbs. Read the tool names you are allowlisting and write
+`approval = "required"` where you mean it. The heuristic is what catches the entry you forgot to
+think about; it is not a substitute for having thought about them.
+
 `max_result_chars` on an entry overrides `[llm] max_result_chars` for that tool alone, in either
 direction. A tool that returns file listings usually wants less than the channel's default; one
 that returns diffs may want more. Most entries should name nothing and take the channel's number.
 
-Names are matched exactly. `GitHub` is not `github`, and a tool listed as `List_PRs` will not match
-a call to `list_prs` — the call is refused as an unlisted tool. If a tool you allowlisted is being
-refused, check the spelling before anything else. If the same tool appears twice they are resolved
+Names are matched exactly. `GitHub` is not `github`, and a tool listed as `List_Pull_Requests` will
+not match a call to `list_pull_requests` — the call is refused as an unlisted tool. If a tool you
+allowlisted is being refused, check the spelling before anything else. If the same tool appears twice they are resolved
 the same way in both fields: the stricter approval applies, and the smaller result bound applies.
 
 ### `[egress]`
@@ -258,11 +299,12 @@ answers to the same list.
 it — that block also carries the tool allowlist and the credential name, so the destination has
 already been stated by an admin, and restating it would add a second place to get it wrong.
 
-The two are separate on purpose. Listing `api.github.com` here so a GitHub MCP server can be
-reached would also let sandboxed code call the GitHub API directly, around the tool allowlist that
-is the whole reason for going through an MCP server. Listing the MCP server's own host would let
-sandboxed code dial the server. A channel can reach the GitHub MCP server without its sandbox
-reaching GitHub.
+The two are separate on purpose, and the starter sheet shows why by naming two different hosts. The
+GitHub MCP server is `api.githubcopilot.com`, declared in its `[[mcp_server]]` block; `api.github.com`
+in `[egress]` is the REST API, and it is there for sandboxed code. Listing the API here does not let
+anything dial the MCP server, and listing the MCP server's host here would — around the tool
+allowlist that is the whole reason for going through it. A channel can reach the GitHub MCP server
+without its sandbox reaching GitHub, and either grant can be made without the other.
 
 Default deny: a channel with no `[egress]` block reaches nothing. An entry is a host, optionally
 prefixed with `*.` — `api.github.com`, or `*.internal.example.com`. The wildcard stands for one or

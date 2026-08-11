@@ -1,3 +1,4 @@
+import { MAX_TOOL_DESCRIPTION } from "@getlibero/schema";
 import type { McpServer } from "@getlibero/schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHttpDispatcher } from "./http-dispatcher.js";
@@ -143,7 +144,12 @@ describe("what an upstream is allowed to say", () => {
     const { describe: ask } = harnessFor();
 
     const entry = (await ask(serverAt(fake.url), ["list_prs"])).get("list_prs");
-    expect(entry?.description).toHaveLength(1025);
+    // The bound exactly, marker included, because it is the same constant
+    // `PermittedTool.description` parses against — one character over and the
+    // agent rejects the whole listing as `malformed_response`, which ends the
+    // task rather than shortening a sentence. This case asserted 1025 before
+    // #130 and so encoded that gap.
+    expect(entry?.description).toHaveLength(MAX_TOOL_DESCRIPTION);
     expect(entry?.inputSchema).toEqual({ type: "object" });
   });
 

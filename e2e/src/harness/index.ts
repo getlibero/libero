@@ -4,7 +4,14 @@
 // else; the modules below are separate because they hold separate arguments,
 // not because a case is meant to compose them by hand.
 
-export { CANARY, CANARY_CREDENTIAL, expectCanaryReachedUpstream, expectNoCanary, surface } from "./canary.js";
+export {
+  CANARY,
+  CANARY_CREDENTIAL,
+  expectCanaryReachedUpstream,
+  expectNoCanary,
+  expectNoSecret,
+  surface
+} from "./canary.js";
 export type { Surface } from "./canary.js";
 
 export { createCleanup, guarded } from "./cleanup.js";
