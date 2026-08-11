@@ -19,9 +19,17 @@ on:
 permissions:
   contents: read
 
+# Two lanes, because the group serves two different needs. Deploys share the
+# one global `pages` lane and queue rather than cancel — GitHub Pages wants
+# deployments serialized. A pull request's build deploys nothing and must not
+# ride in that lane: a group holds at most one queued run, so several branches
+# pushed together would cancel each other's site-build — and a cancelled
+# *required* check on a PR that gets no further push never reports again.
+# Per-ref groups give every PR its own lane, where cancel-in-progress is the
+# right answer: the only run a new push cancels is the same PR's stale one.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('pages-{0}', github.ref) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Named site-build, not build: ci.yml already has a job called build, and a
