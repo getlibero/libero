@@ -421,3 +421,108 @@ describe("the catalog cache", () => {
     expect([...(await ask(upstream, ["list_prs", "merge_pr"])).keys()]).toEqual(["list_prs", "merge_pr"]);
   });
 });
+
+// #188 keyed the cache on the upstream alone and stores what is known per tool
+// name. The reason is the call path: it wants one tool's definition, and under
+// the old (upstream, exact-wanted-set) key that was a different question and so
+// a guaranteed miss — a five-page walk under a five-second budget, per call,
+// against an upstream that was walked seconds ago.
+describe("what one upstream is already known to offer", () => {
+  it("answers a single tool from a walk another question paid for", async () => {
+    fake = await startFakeMcpServer({ pageSize: 1 });
+    const { describe: ask } = harnessFor();
+    const upstream = serverAt(fake.url);
+
+    // The listing route's question: every tool this sheet names.
+    await ask(upstream, ["list_prs", "merge_pr"]);
+    const paid = fake.callsTo("tools/list").length;
+
+    // The call path's question, one tool. Under the old keying this walked again.
+    const one = await ask(upstream, ["merge_pr"]);
+
+    expect([...one.keys()]).toEqual(["merge_pr"]);
+    expect(fake.callsTo("tools/list")).toHaveLength(paid);
+  });
+
+  // Absence is a fact worth storing. Without it a sheet naming a tool the
+  // upstream does not offer re-walks that upstream on every listing and every
+  // call — the case a `null` resolution exists for.
+  it("remembers that a tool is not there, rather than looking again", async () => {
+    fake = await startFakeMcpServer();
+    const { describe: ask } = harnessFor();
+    const upstream = serverAt(fake.url);
+
+    // Asked as part of a wider question, so the second ask is a *different*
+    // question — which is exactly what the old keying could not answer, and why
+    // this is the discriminator rather than a repeat of the same request.
+    expect([...(await ask(upstream, ["list_prs", "no_such_tool"])).keys()]).toEqual(["list_prs"]);
+    const paid = fake.callsTo("tools/list").length;
+    expect(await ask(upstream, ["no_such_tool"])).toEqual(new Map());
+
+    expect(fake.callsTo("tools/list")).toHaveLength(paid);
+  });
+
+  it("asks again once what it learned has gone stale", async () => {
+    fake = await startFakeMcpServer();
+    const { describe: ask, advance } = harnessFor();
+    const upstream = serverAt(fake.url);
+
+    await ask(upstream, ["list_prs"]);
+    advance(CATALOG_TTL_MS + 1);
+    await ask(upstream, ["list_prs"]);
+
+    expect(fake.callsTo("tools/list")).toHaveLength(2);
+  });
+
+  // The cap bounds what enters a model's context, and definitions are re-sent
+  // every turn — so it has to hold across the *answer*, not across one walk.
+  // Merging is what makes that a live question: without a budget, a caller
+  // asking for a few names and then for many would carry the first answer plus
+  // a full cap's worth of the second.
+  it("holds the described-tools cap across a merged answer", async () => {
+    const catalog = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_unused, index) => ({
+      name: `tool_${String(index)}`,
+      description: "listed",
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({ catalog, pageSize: null });
+    const { describe: ask } = harnessFor();
+    const upstream = serverAt(fake.url);
+    const every = catalog.map(tool => tool.name);
+
+    await ask(upstream, every.slice(0, 30));
+    const described = await ask(upstream, every);
+
+    expect(described.size).toBeLessThanOrEqual(MAX_DESCRIBED_TOOLS);
+  });
+
+  // The walk's budget bounds what one question adds, but resolutions merge
+  // across questions: two narrow asks can together settle more names than the
+  // cap, and a later wide ask then finds everything fresh and walks nothing.
+  // The cap has to hold on the assembled answer itself, or the fully-cached
+  // path — the cheapest one — is the one path that can exceed it.
+  it("holds the cap when the whole answer is already cached", async () => {
+    const catalog = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_unused, index) => ({
+      name: `tool_${String(index)}`,
+      description: "listed",
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({ catalog, pageSize: null });
+    const { describe: ask, lines } = harnessFor();
+    const upstream = serverAt(fake.url);
+    const every = catalog.map(tool => tool.name);
+
+    await ask(upstream, every.slice(0, MAX_DESCRIBED_TOOLS));
+    await ask(upstream, every.slice(MAX_DESCRIBED_TOOLS));
+    const walksSoFar = fake.callsTo("tools/list").length;
+    const described = await ask(upstream, every);
+
+    expect(described.size).toBe(MAX_DESCRIBED_TOOLS);
+    // Wanted order is the sheet's order, so the operator's first hundred win.
+    expect(described.has("tool_0")).toBe(true);
+    expect(described.has(`tool_${String(MAX_DESCRIBED_TOOLS + 19)}`)).toBe(false);
+    // The wide ask was served from the cache — the cap did not force a re-walk.
+    expect(fake.callsTo("tools/list")).toHaveLength(walksSoFar);
+    expect(lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === "truncated")).toBe(true);
+  });
+});
