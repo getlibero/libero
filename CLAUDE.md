@@ -1079,6 +1079,17 @@ execution plan, not the spec.
 - **One tracking issue per workstream** (label `tracking`), holding native
   sub-issues. Sub-issues are sized to roughly one PR and state their own
   acceptance criteria.
+- **A tracking issue is scoped to the phase that opened it, and closes with
+  it.** Follow-on work accumulates under a tracker because there is nowhere else
+  to file it, so before the tracker closes that work is **re-homed**: a new
+  `parked` tracker where the group is a real workstream, a standalone `parked`
+  issue where it is not — a tracker for one issue is overhead. The rule this
+  enforces is that **a closed parent must never be the only place open work is
+  grouped**, because nobody opens closed issues and the grouping is then lost to
+  whoever picks the phase up. Phase 1 is the worked example: #34, #38 and #39
+  each named a deliverable and got it, their eleven parked children went to #210
+  and #211, and #118 and #62 were detached to stand alone beside #122 and #202,
+  which already did.
 - **Sequencing uses native issue dependencies** (blocked by / blocking), not
   prose. Sub-issues express containment; dependencies express order.
 - **Labels:** `area:*` says where in the tree (agent, proxy, schema, cli, e2e,

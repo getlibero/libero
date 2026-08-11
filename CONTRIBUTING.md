@@ -36,7 +36,11 @@ Everything is planned in public GitHub issues; there is no separate tracker.
 - **One tracking issue per workstream** (label `tracking`), broken into
   sub-issues sized to roughly one PR. Ordering is expressed with GitHub's
   blocked-by relationships, so filtering out blocked issues shows what is
-  workable right now.
+  workable right now. A tracker is scoped to the phase that opened it and closes
+  with it; work that surfaced underneath but belongs to a later phase is moved to
+  a new tracker or left to stand alone, so a closed issue is never the only place
+  open work is grouped. If a tracker you were watching closes, its remaining
+  sub-issues will say where they went.
 - **Out-of-phase work is parked, not rejected.** A valid bug report or feature
   that belongs to a later phase gets the `parked` label and no milestone, and
   is picked up when its phase opens. "X from a later phase does not exist yet"
