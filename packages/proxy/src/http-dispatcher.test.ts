@@ -9,11 +9,11 @@ import type { CallLimits } from "./enforce.js";
  * The channel's bound on a result, which every `callTool` now carries.
  *
  * Roomy on purpose: these cases are about the protocol and the transport, not
- * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ * about truncation. The bound's own behaviour is mcp-bounds.test.ts's.
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 import { createJsonLogger } from "./log.js";
-import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
+import { type FakeMcpServer, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 import { RedactionError } from "./redact.js";
 import type { CredentialLookup, Secret, Vault } from "./vault.js";
 
@@ -292,7 +292,19 @@ describe("an upstream asking for more input", () => {
     fake = await startFakeMcpServer();
     fake.respond = request =>
       request.rpc?.method === "tools/call"
-        ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: { resultType: "input_required" } } }
+        ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: completeResult({
+              resultType: "input_required",
+              // A conformant one: `inputRequests` is a map keyed by an
+              // identifier the server assigns, not a bare marker. A malformed
+              // one is refused too, but as a protocol error — which would let
+              // this case pass without exercising the refusal it is about.
+              inputRequests: {
+                ask: {
+                  method: "sampling/createMessage",
+                  params: { messages: [{ role: "user", content: { type: "text", text: "who?" } }], maxTokens: 64 }
+                }
+              }
+            }) } }
         : null;
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
@@ -302,6 +314,32 @@ describe("an upstream asking for more input", () => {
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(result.outcome === "ran" && result.result.content).toContain("does not answer for a channel");
     expect(lines.join("")).toContain("mcp_input_required");
+  });
+});
+
+describe("a credential revoked mid-session", () => {
+  // `unauthorized` is reachable on the call path, not only at connect: the
+  // upstream forgets the session, the reopen's re-initialize is answered 401.
+  // The default sentence's clauses are both false here — the 404 precedes
+  // dispatch, so the tool never ran — and the wording matches the connect-time
+  // case because the operator's fix is the same either way.
+  it("says the credential was rejected, not that the call was made", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
+
+    const warm = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    expect(warm.outcome === "ran" && warm.result.isError).toBe(false);
+
+    fake.expireSessions();
+    fake.respond = request =>
+      request.rpc?.method === "initialize" ? { status: 401, raw: "token revoked" } : null;
+
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    const content = result.outcome === "ran" ? result.result.content : "";
+
+    expect(result.outcome === "ran" && result.result.isError).toBe(true);
+    expect(content).toBe("The tool server rejected this proxy's credential for it. The call was not made.");
+    expect(content).not.toContain("token revoked");
   });
 });
 
@@ -505,7 +543,7 @@ describe("the two bounds on what comes back", () => {
           message: {
             jsonrpc: "2.0",
             id: request.rpc.id,
-            result: { content: [{ type: "text", text: "x".repeat(size) }] }
+            result: completeResult({ content: [{ type: "text", text: "x".repeat(size) }] })
           }
         }
       : null;

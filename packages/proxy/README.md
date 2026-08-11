@@ -6,9 +6,11 @@ specification.
 
 What is here today: mutual TLS, the rule that decides which channel a request
 belongs to, team-sheet enforcement on the call path, the credential vault,
-credential injection into outbound HTTP calls, and an MCP client that speaks the
-`2026-07-28` revision of the protocol to its upstreams, falling back to the
-`initialize` handshake for servers that predate it.
+credential injection into outbound HTTP calls, and an MCP client — the official
+SDK since #188 — that probes for the `2026-07-28` revision and falls back to the
+`initialize` handshake for servers that predate it. The SDK reaches the network
+only through `outbound.ts`'s guarded fetch, which is still the one function that
+reveals a credential and the one that scrubs the reply.
 
 - `tls.ts` — server options that refuse a client with no certificate the local
   CA signed. `requestCert` and `rejectUnauthorized` together, TLS 1.3 only.
@@ -102,29 +104,38 @@ credential injection into outbound HTTP calls, and an MCP client that speaks the
   handler catch and answers a constant 500 instead of serving bytes nobody could
   scrub. It also owns the prose a model reads when a call produced no answer,
   all of it from fixed templates.
-- `mcp-protocol.ts` — the wire format as pure functions: JSON-RPC framing, the
-  `_meta` every request carries, SSE-body extraction, and the mapping from
-  `CallToolResult` to the one string a `ToolResult` holds. No `Secret`, no
-  `fetch`, no I/O. Hand-rolled rather than taken from the SDK, and its header
-  argues why: the SDK's transport owns its own `fetch`, which would move the
-  credential out from under `callUpstream` and turn a one-grep guarantee into a
-  careful-wrapper one.
-- `mcp-client.ts` — one upstream's client, and the ladder that decides which
-  protocol it speaks. Probes `server/discover`; if the server *answers* with a
-  refusal of any shape, attempts the legacy `initialize` handshake exactly once
-  and caches the result for the client's life. A transport failure short-
-  circuits without a fallback — nothing answered, so there is nothing to fall
-  back from. Fails closed against a server that speaks no version we do, and
-  refuses an `input_required` result rather than answering it — that is an
-  upstream asking the proxy to speak for a channel, with no sheet entry and no
-  click behind it.
+- `mcp-bounds.ts` — what an upstream is allowed to say and how much of it:
+  the channel's bound on a result, the caps on a description and a schema, and
+  the per-entry rule for reading a page of a catalog. No `Secret`, no `fetch`,
+  no I/O. It is policy rather than protocol, which is why it outlived the wire
+  format it used to sit beside.
+- `mcp-client.ts` — one upstream's client, over `@modelcontextprotocol/client`
+  since #188, and **the only module in the tree that may import the SDK** (an
+  ESLint ban, a `boundary-check` grep and a test in `outbound.test.ts` each keep
+  it that way). What this file owns is the translation: it configures the client
+  so the proxy's refusals are structural, and it maps the SDK's open error
+  surface onto a closed set of failure words. From an SDK error it reads the
+  class and the numeric code and never a message — except the one relay that was
+  always upstream text and has always been scrubbed.
+
+  Four of its options invert an SDK default and each would fail quietly if
+  dropped, so each has a test that fails without it: `versionNegotiation:
+  { mode: "auto" }` (the SDK defaults to the legacy handshake with no probe),
+  `inputRequired: { autoFulfill: false }` (it defaults to *on*, which would let
+  an upstream drive elicitation and sampling from inside an ordinary
+  `tools/call`), `reconnectionOptions.maxRetries: 0`, and the absence of an
+  `authProvider` — without one the OAuth paths are unreachable rather than
+  merely unused. `toolDefinition` on every `callTool` disables the SDK's
+  header-mismatch recovery, which would re-POST an identical call.
 
   Replays exactly one signal, on the legacy path only: a 404 answering a request
   that carried a session id, which is the spec's way of saying the session is
   gone. That 404 is generated before the server dispatches anything, so the tool
-  did not run and there is no write to double. Nothing else is ever retried —
-  `2026-07-28` removed stream resumability, and re-issuing a `tools/call` is how
-  one write becomes two.
+  did not run and there is no write to double. The stale client is dropped
+  rather than closed, because closing aborts in-flight requests and the other
+  callers about to discover the same loss are still reading their own 404s.
+  Nothing else is ever retried — `2026-07-28` removed stream resumability, and
+  re-issuing a `tools/call` is how one write becomes two.
 - `mcp-pool.ts` — one client per upstream, keyed on the `(transport, url,
   credential)` triple `upstreamKey` defines in `enforce.ts`. Sharing that
   definition rather than restating it is what stops the pool from merging two
@@ -160,15 +171,34 @@ enforces by name.
 Still to come, with its own issue: the egress allowlist (#73).
 `http-dispatcher.ts` marks where the egress check slots in.
 
-The pinned protocol revision lives in one constant in `mcp-protocol.ts`, and is
-on its way out with the hand-rolled client (#188): once the official SDK owns the
-wire, keeping up with the specification is a dependency bump rather than a code
-change here. There is no watcher. There was one — a weekly cron that compared
+The proxy pins no protocol revision of its own any more. The SDK owns the wire
+since #188, so keeping up with the specification is a dependency bump rather
+than a code change here — and there is no watcher. There was one — a weekly cron that compared
 that constant against the specification's revision tags — and it was retired with
 #188 rather than repointed, because its only mechanism was grepping a constant
 that will not exist and its own header conceded the fatal limit: it fired on
 revision *tags*, so a within-revision change was invisible to it. That is exactly
 the gap (`x-mcp-header`) that #130 hit, and the watcher was green throughout.
+
+**One property narrowed with adoption, and it is worth knowing before you meet
+it.** The proxy's rule for a catalog is that an unreadable *entry* is skipped
+and only an unreadable *page* is refused — a partial catalog costs the model
+accuracy, while a refused one costs every tool beside the bad entry its schema.
+The client asks for a page against a permissive schema precisely to keep that,
+and on the `2025-11-25` era it works: a tool whose `inputSchema` is not an object,
+or is missing, is published thin and the rest of the page survives.
+
+On `2026-07-28` it does not. The SDK validates a result against the
+specification's shape before any caller-supplied schema, and a single
+non-conforming entry fails the whole page — which the proxy then reports as a
+protocol error and falls back to the sheet's thin entries for every tool. There
+is no relaxation flag, and the bytes it rejected never reach us.
+
+What is lost is graceful degradation, not a permission: the listing still names
+every tool the sheet allows, and the sheet is still enforced on the call. Every
+upstream in production today negotiates the legacy era, GitHub included.
+`mcp-catalog.test.ts` pins both halves so this is a decision on the record rather
+than something to rediscover.
 
 **What replaces it is a review obligation, not a job.** An
 `@modelcontextprotocol/*` bump lands inside the process that holds every tool

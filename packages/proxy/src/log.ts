@@ -17,9 +17,11 @@
 // wants, and greppable without a parser.
 
 import type { AuditOutcome } from "@getlibero/schema";
-// A type-only edge to a module that imports nothing at all, so no cycle and no
-// dependency — the same reason `AuditOutcome` comes from the schema above.
-import type { McpDialect } from "./mcp-protocol.js";
+// A type-only edge, so no cycle and no runtime dependency — the same reason
+// `AuditOutcome` comes from the schema above. It moved here from the retired
+// wire-format module with #188: the SDK frames the messages now, and the era a
+// connection settled on is a word about the answer rather than about the wire.
+import type { McpDialect } from "./mcp-client.js";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -106,7 +108,7 @@ export interface LogFields {
    * would make this a cardinality problem; this is the proxy's own branch, and
    * the branch has two arms.
    *
-   * Written as ./mcp-protocol.ts's type rather than repeated here, for the
+   * Written as ./mcp-client.ts's type rather than repeated here, for the
    * reason `outcome` below is written as the schema's.
    */
   protocol?: McpDialect;

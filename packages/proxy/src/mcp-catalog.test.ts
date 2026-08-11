@@ -10,7 +10,13 @@ import {
   MAX_CATALOG_PAGES,
   MAX_DESCRIBED_TOOLS
 } from "./mcp-catalog.js";
-import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
+import {
+  type FakeMcpServer,
+  type FakeReply,
+  completeListResult,
+  completeResult,
+  startFakeMcpServer
+} from "./mcp-fake-server.js";
 import { DEFAULT_UPSTREAM_TIMEOUT_MS } from "./outbound.js";
 import type { CredentialLookup, Secret, Vault } from "./vault.js";
 
@@ -126,7 +132,7 @@ describe("describing a sheet's tools from an upstream", () => {
     fake = await startFakeMcpServer();
     fake.respond = request =>
       request.rpc?.method === "tools/list"
-        ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: { tools: [], nextCursor: "always" } } }
+        ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: completeListResult({ tools: [], nextCursor: "always" }) } }
         : null;
     const { describe: ask, lines } = harnessFor();
 
@@ -157,6 +163,7 @@ describe("what an upstream is allowed to say", () => {
     // The class this rules out is the one that fails a whole turn rather than
     // one tool: the agent casts this straight into the provider's definition.
     fake = await startFakeMcpServer({
+      protocol: "legacy",
       catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema: { type: "string" } }]
     });
     const { describe: ask, lines } = harnessFor();
@@ -180,7 +187,7 @@ describe("what an upstream is allowed to say", () => {
   });
 
   it("says nothing about a tool the upstream described with nothing", async () => {
-    fake = await startFakeMcpServer({ catalog: [{ name: "list_prs" }] });
+    fake = await startFakeMcpServer({ protocol: "legacy", catalog: [{ name: "list_prs" }] });
     const { describe: ask, lines } = harnessFor();
 
     expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({});
@@ -194,7 +201,8 @@ describe("what an upstream is allowed to say", () => {
   it("caps how many tools one upstream may describe", async () => {
     const many = Array.from({ length: MAX_DESCRIBED_TOOLS + 5 }, (_, i) => ({
       name: `tool_${String(i)}`,
-      description: "d"
+      description: "d",
+      inputSchema: { type: "object" as const }
     }));
     fake = await startFakeMcpServer({ catalog: many });
     const { describe: ask, lines } = harnessFor();
@@ -211,22 +219,69 @@ describe("what an upstream is allowed to say", () => {
   });
 
   it("reaches a sheet's tool that the upstream listed behind a hundred decoys", async () => {
-    const decoys = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_, i) => ({ name: `decoy_${String(i)}` }));
-    fake = await startFakeMcpServer({ catalog: [...decoys, { name: "list_prs", description: "Lists PRs." }] });
+    const decoys = Array.from({ length: MAX_DESCRIBED_TOOLS + 20 }, (_, i) => ({
+      name: `decoy_${String(i)}`,
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({
+      catalog: [...decoys, { name: "list_prs", description: "Lists PRs.", inputSchema: { type: "object" } }]
+    });
     const { describe: ask } = harnessFor();
 
-    expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({ description: "Lists PRs." });
+    expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({
+      description: "Lists PRs.",
+      inputSchema: { type: "object" }
+    });
+  });
+
+  // **The tolerance above is the legacy era's, and #188 is where that became
+  // true.** The proxy's rule is that an unreadable *entry* is skipped and only
+  // an unreadable *page* is refused, because a partial catalog costs the model
+  // accuracy while a refused one costs every tool beside the bad entry its
+  // schema. The client asks for a page against a permissive schema precisely to
+  // keep that — and on `2026-07-28` it does not survive, because the SDK
+  // validates the result against the specification's shape *before* any
+  // caller-supplied schema, and we never see the bytes it rejected.
+  //
+  // Pinned rather than left to be rediscovered. What is lost is graceful
+  // degradation, not a permission: a thin catalog still names every tool the
+  // sheet allows, and the proxy still enforces the sheet on the call. Every
+  // upstream in production today negotiates legacy, GitHub included.
+  it("loses that tolerance on the modern era, where the specification is enforced above us", async () => {
+    const catalog = [
+      { name: "list_prs", description: "Lists PRs.", inputSchema: { type: "object" as const } },
+      { name: "malformed", inputSchema: { type: "string" as const } }
+    ];
+
+    fake = await startFakeMcpServer({ protocol: "legacy", catalog });
+    expect([...(await harnessFor().describe(serverAt(fake.url), ["list_prs", "malformed"])).keys()]).toEqual([
+      "list_prs",
+      "malformed"
+    ]);
+    await dispatcher?.close();
+    await fake.close();
+
+    fake = await startFakeMcpServer({ protocol: "stateless", catalog });
+    expect(await harnessFor().describe(serverAt(fake.url), ["list_prs", "malformed"])).toEqual(new Map());
   });
 });
 
 describe("when the upstream cannot be asked", () => {
-  it.each([
-    ["a body that is not MCP", { raw: "not json" }, "protocol_error"],
-    ["a result with no tools", { message: { jsonrpc: "2.0", id: 2, result: {} } }, "protocol_error"],
-    ["a 500", { status: 500, raw: "boom" }, "http_error"]
+  // The replies are factories so the one that answers with a *result* can echo
+  // the request's own id. A client numbers its requests however it likes, and an
+  // answer to an id nobody asked about is no answer at all — which this suite
+  // would see as a timeout rather than as the refusal it is testing for.
+  it.each<[string, (id: number | undefined) => FakeReply, string]>([
+    ["a body that is not MCP", () => ({ raw: "not json" }), "protocol_error"],
+    [
+      "a result with no tools",
+      id => ({ message: { jsonrpc: "2.0", id, result: completeResult({}) } }),
+      "protocol_error"
+    ],
+    ["a 500", () => ({ status: 500, raw: "boom" }), "http_error"]
   ])("answers empty and logs a reason for %s", async (_label, reply, reason) => {
     fake = await startFakeMcpServer();
-    fake.respond = request => (request.rpc?.method === "tools/list" ? reply : null);
+    fake.respond = request => (request.rpc?.method === "tools/list" ? reply(request.rpc.id) : null);
     const { describe: ask, lines } = harnessFor();
 
     expect(await ask(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
@@ -247,7 +302,7 @@ describe("when the upstream cannot be asked", () => {
             message: {
               jsonrpc: "2.0",
               id: request.rpc.id,
-              result: { tools: [{ name: "list_prs", description: "y".repeat(200_000) }], nextCursor: null }
+              result: completeListResult({ tools: [{ name: "list_prs", description: "y".repeat(200_000) }], nextCursor: null })
             }
           }
         : null;

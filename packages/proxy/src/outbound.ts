@@ -295,7 +295,7 @@ export interface UpstreamRequest {
    *
    * That is the whole of the split this file cares about. The companion bound —
    * how much of a *result* reaches the model — is the channel's own token spend
-   * and does live in the sheet; it is applied in ./mcp-protocol.ts, and nothing
+   * and does live in the sheet; it is applied in ./mcp-bounds.ts, and nothing
    * here knows about it.
    */
   readonly maxBodyBytes?: number;
@@ -608,7 +608,25 @@ export interface GuardedFetchOptions {
   readonly secret: Secret | undefined;
   readonly credentialName?: string;
   readonly timeoutMs?: number;
-  readonly maxBodyBytes?: number;
+  /**
+   * How many bytes of a response to hold, or a function asked per request.
+   *
+   * **The function form is what restores the control-plane bound.** The
+   * hand-rolled client chose this per call site — 64 KiB for the version probe,
+   * the legacy handshake, its acknowledgement and the session-termination
+   * `DELETE`, and the deployment's full bound for everything else — because a
+   * server answering the *handshake* with megabytes has shown it is not speaking
+   * MCP, and cutting that off early costs nothing that could have been used.
+   *
+   * A `fetch` has no call sites to choose at: every request arrives through the
+   * one function. It cannot tell a handshake from a call either, short of
+   * parsing the body it is carrying. So the caller — which knows exactly which
+   * phase its connection is in — answers the question per request instead, and
+   * is handed the verb, which is the one phase marker the request itself
+   * carries: a `DELETE` is always session termination, whatever phase the
+   * connection believes it is in.
+   */
+  readonly maxBodyBytes?: number | ((method: UpstreamMethod) => number);
   /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
   readonly fetch?: typeof globalThis.fetch;
 }
@@ -681,6 +699,8 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
       throw new UpstreamError("redirected");
     }
 
+    const bound = typeof options.maxBodyBytes === "function" ? options.maxBodyBytes(method) : options.maxBodyBytes;
+
     const response = await callUpstream({
       url: String(url),
       method,
@@ -692,7 +712,7 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
       secret: options.secret,
       ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
       ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      ...(options.maxBodyBytes !== undefined ? { maxBodyBytes: options.maxBodyBytes } : {}),
+      ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
     });
 

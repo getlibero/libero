@@ -9,10 +9,20 @@ import type { CallLimits } from "./enforce.js";
  * The channel's bound on a result, which every `callTool` now carries.
  *
  * Roomy on purpose: these cases are about the protocol and the transport, not
- * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ * about truncation. The bound's own behaviour is mcp-bounds.test.ts's.
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
+/**
+ * A credential long enough to be one.
+ *
+ * **Not a one-character stand-in, and that is not fussiness.** `redactSecrets`
+ * replaces every occurrence of the value in a response, so a needle of `"v"`
+ * rewrites the `v` inside `supportedVersions` in the upstream's own handshake —
+ * which used to be invisible only because the hand-rolled client's replies
+ * happened to contain no `v`. A fixture that quietly corrupts the bytes under
+ * test is a fixture that will one day fail for a reason nobody can find.
+ */
 const VALUE = "ghp_live_token_do_not_log";
 
 function secretOf(value: string): Secret {
@@ -52,11 +62,11 @@ describe("one client per upstream", () => {
 
     const a = pool.acquire(
       upstreamOf({ name: "github", transport: "http", url: fake.url, credential: "c" }),
-      secretOf("v")
+      secretOf(VALUE)
     );
     const b = pool.acquire(
       upstreamOf({ name: "gh", transport: "http", url: fake.url, credential: "c", tool: [{ name: "get_issue" }] }),
-      secretOf("v")
+      secretOf(VALUE)
     );
 
     expect(a).toBe(b);
@@ -86,8 +96,8 @@ describe("one client per upstream", () => {
   ])("never shares a client across %s", (_label, left, right) => {
     const pool = createMcpPool({ scheme: "bearer" });
 
-    const a = pool.acquire(upstreamOf(left), secretOf("v"));
-    const b = pool.acquire(upstreamOf(right), secretOf("v"));
+    const a = pool.acquire(upstreamOf(left), secretOf(VALUE));
+    const b = pool.acquire(upstreamOf(right), secretOf(VALUE));
 
     expect(a).not.toBe(b);
     expect(pool.size).toBe(2);

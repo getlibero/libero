@@ -26,6 +26,18 @@ const PROXY_IMPORT_BAN = {
     "SECURITY BOUNDARY: the agent may not import the proxy. Tools are reached only via the proxy's HTTP API."
 };
 
+// The MCP SDK is the proxy's one third-party network client, and it is allowed
+// in exactly one module. `mcp-client.ts` is where the SDK's open error surface
+// is mapped onto the closed `McpFailure` set and where the guarded fetch is
+// installed; a second importer would be a second way to reach an upstream, one
+// that had not passed through ./outbound.ts. Bare package specifiers, so the
+// path globs the other bans use would not catch it.
+const MCP_SDK_BAN = {
+  group: ["@modelcontextprotocol", "@modelcontextprotocol/*"],
+  message:
+    "Only packages/proxy/src/mcp-client.ts may import the MCP SDK. It is the module that installs the guarded fetch and maps the SDK's errors onto the closed McpFailure set; reaching an upstream anywhere else would bypass both."
+};
+
 const SLACK_SDK_BAN = {
   group: ["@slack/*"],
   message:
@@ -56,7 +68,7 @@ export default tseslint.config(
       "apps/server/**/*.{ts,mts,cts,js,mjs,cjs}"
     ],
     rules: {
-      "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN] }]
+      "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN, MCP_SDK_BAN] }]
     }
   },
   {
@@ -112,7 +124,7 @@ export default tseslint.config(
     // cannot import @slack/* cannot quietly start needing a socket.
     files: ["packages/gateway/src/**/*.{ts,mts,cts,js,mjs,cjs}"],
     rules: {
-      "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN, SLACK_SDK_BAN] }]
+      "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN, SLACK_SDK_BAN, MCP_SDK_BAN] }]
     }
   },
   {
@@ -128,7 +140,7 @@ export default tseslint.config(
       "packages/gateway/src/slack/web-api.test.ts"
     ],
     rules: {
-      "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN] }]
+      "no-restricted-imports": ["error", { patterns: [PROXY_IMPORT_BAN, MCP_SDK_BAN] }]
     }
   },
   {
@@ -144,6 +156,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: ["**/team-sheet-store*", "**/enforce*", "@getlibero/proxy"],
               message:
@@ -175,6 +188,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: [
                 "**/vault*",
@@ -211,6 +225,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: ["**/vault*", "@getlibero/proxy"],
               message:
@@ -237,6 +252,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: ["**/vault*", "@getlibero/proxy"],
               message:
@@ -310,6 +326,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: [
                 "**/team-sheet-store*",
@@ -345,6 +362,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: ["@slack/*"],
               message:
@@ -397,6 +415,7 @@ export default tseslint.config(
         "error",
         {
           patterns: [
+            MCP_SDK_BAN,
             {
               group: [
                 "@getlibero/proxy",
@@ -415,6 +434,21 @@ export default tseslint.config(
           ]
         }
       ]
+    }
+  },
+  {
+    // The allowance, and it must stay last: `no-restricted-imports` is replaced
+    // by the last block that matches, so anything after this would silently
+    // re-ban the SDK in the one module entitled to it.
+    //
+    // Restated rather than inherited — this block deliberately clears the rule
+    // rather than narrowing it, because the module's whole job is to hold the
+    // SDK. What keeps that honest is not this config but ./outbound.test.ts's
+    // greps, which assert there is one `reveal()` in the tree and that no other
+    // source file names the SDK at all.
+    files: ["packages/proxy/src/mcp-client.ts", "packages/proxy/src/mcp-client.test.ts"],
+    rules: {
+      "no-restricted-imports": "off"
     }
   }
 );

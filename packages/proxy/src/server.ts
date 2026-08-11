@@ -5,12 +5,27 @@
 // a security property in its own right.
 //
 // The rule, stated as what is actually enforced rather than as "zero": nothing
-// third-party here beyond what reading a team sheet requires — today zod and
-// smol-toml, reached through @getlibero/schema, each with no dependencies of
-// its own and both on the licence allowlist. A framework, a logger, an HTTP
-// client, or a TOML parser this process pulls in directly are all things a
-// reviewer should reject. The claim was previously "zero", which was never
-// quite true: zod has been in this tree since the first team-sheet import.
+// third-party here beyond what reading a team sheet and speaking MCP require,
+// and each of those was a decision with a written record. Reading a sheet is
+// zod and smol-toml, reached through @getlibero/schema. Speaking MCP is
+// `@modelcontextprotocol/client` and its tree, adopted in #185 after a
+// dependency audit, a custody spike and a licence check, and implemented in
+// #188. A framework, a logger, a TOML parser, or a *second* HTTP client this
+// process pulls in directly are all still things a reviewer should reject. The
+// claim was previously "zero", which was never quite true: zod has been in this
+// tree since the first team-sheet import.
+//
+// The MCP client is allowed the one thing nothing else here is — it drives the
+// wire — and what makes that acceptable is that it cannot reach the network
+// except through the `fetch` ./mcp-client.ts hands it, which is ./outbound.ts's
+// guarded fetch: still the only function that reveals a credential, still the
+// only one that scrubs a reply. An ESLint ban, a `boundary-check` grep and a
+// test in outbound.test.ts each keep the SDK inside that one module.
+//
+// A version bump of it is a security review rather than a chore, for the reason
+// this paragraph exists at all: it lands inside the process that holds every
+// credential in the deployment. See packages/proxy/README.md for the two
+// questions such a review has to answer.
 //
 // Every request that reaches a route has already proved two things: it opened
 // a connection with a certificate the local CA signed, and that certificate

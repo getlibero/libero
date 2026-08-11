@@ -14,6 +14,18 @@ updates:
     groups:
       core-minor-and-patch:
         update-types: ["minor", "patch"]
+        # The MCP SDK never joins the monthly bundle, and that is the whole
+        # trigger for a review obligation that would otherwise be prose. It runs
+        # inside the process holding every tool credential, so a bump is a
+        # security review: read the changelog, and answer the two questions a
+        # version diff does not — whether anything new lets an upstream ask the
+        # client to act on a channel's behalf (the `input_required` shape, which
+        # is a refusal decision before it is an implementation one), and whether
+        # the servers this deployment talks to speak the revision yet.
+        # packages/proxy/README.md carries that in full. Grouped with twenty
+        # other packages it would be a line in a diff nobody reads; on its own it
+        # is a PR with a name that says what it is.
+        exclude-patterns: ["@modelcontextprotocol/*"]
     ignore:
       # @types/node tracks the engines floor, not the newest Node.
       - dependency-name: "@types/node"

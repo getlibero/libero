@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { type McpClient, createMcpClient } from "./mcp-client.js";
-import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
-import { MCP_PROTOCOL_VERSION, METHOD_NOT_FOUND } from "./mcp-protocol.js";
+import { type FakeMcpServer, type FakeReply, startFakeMcpServer } from "./mcp-fake-server.js";
+// Written down here rather than imported from the client, for the reason
+// ./mcp-fake-server.ts states: a test that shares its constants with the code
+// under test cannot catch that code disagreeing with a real server.
+const MCP_PROTOCOL_VERSION = "2026-07-28";
+const METHOD_NOT_FOUND = -32601;
 import type { Secret } from "./vault.js";
 import type { CallLimits } from "./enforce.js";
 
@@ -9,7 +13,7 @@ import type { CallLimits } from "./enforce.js";
  * The channel's bound on a result, which every `callTool` now carries.
  *
  * Roomy on purpose: these cases are about the protocol and the transport, not
- * about truncation. The bound's own behaviour is mcp-protocol.test.ts's.
+ * about truncation. The bound's own behaviour is mcp-bounds.test.ts's.
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
@@ -316,6 +320,22 @@ describe("version negotiation", () => {
     expect(fake?.callsTo("tools/call")).toHaveLength(0);
   });
 
+  // The SDK's own legacy list reaches back to the HTTP+SSE revisions, whose
+  // results arrive on the standalone GET stream the guarded fetch answers 405 —
+  // so accepting this handshake would make every call a thirty-second timeout
+  // with a wrong word at the end. The hand-rolled client failed closed on
+  // exactly this list; `supportedProtocolVersions` is what keeps the SDK doing
+  // the same, and this is the test that fails without it.
+  it.each(["2024-11-05", "2024-10-07"])("fails closed on the HTTP+SSE era (%s) rather than calling into a void", async version => {
+    const client = await clientFor({ protocol: "legacy", legacyVersion: version });
+
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
+      outcome: "connect_failed",
+      failure: "unsupported_protocol"
+    });
+    expect(fake?.callsTo("tools/call")).toHaveLength(0);
+  });
+
   // A server that refused the probe and then refused the handshake has said it
   // twice, and there is no third rung.
   it("names a server that answers neither rung as unsupported", async () => {
@@ -482,12 +502,24 @@ describe("when nothing answered the probe", () => {
   // The deliberate non-trigger: a well-formed request answered 200 with bytes
   // that are not MCP is a broken server or an edge proxy rather than an old
   // one, and it has already shown it is not speaking the protocol.
+  //
+  // **`unsupported_protocol` rather than `protocol_error`, and the resolution
+  // is genuinely lost.** The hand-rolled ladder told an unreadable probe answer
+  // apart from a version both ends failed to agree on; the SDK reports both as
+  // one era-negotiation failure and there is nothing on the error to tell them
+  // apart. The model-facing sentence — "does not speak a version of MCP this
+  // proxy supports" — is true of a server answering HTML to the probe, and the
+  // property this case is really about is the one still asserted below: no
+  // second attempt is made.
   it("reports an unreadable probe answer without a second attempt", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
     fake.respond = request => (request.rpc?.method === "server/discover" ? { raw: "<html>hello</html>" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({ outcome: "connect_failed", failure: "protocol_error" });
+    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
+      outcome: "connect_failed",
+      failure: "unsupported_protocol"
+    });
     expect(fake.callsTo("initialize")).toHaveLength(0);
   });
 });
@@ -511,6 +543,38 @@ describe("when the call fails", () => {
       outcome: "called",
       result: { content: "no such repo", isError: true }
     });
+  });
+
+  // The permissive `CallEnvelope` is what keeps this reaching `blockText`'s
+  // placeholder branch: with no caller schema the SDK validates the result
+  // against the specification's closed content union, and one forward-revision
+  // block beside ordinary text would fail the entire call — losing an answer
+  // the upstream actually returned. Legacy era; the modern era validates
+  // spec-first above any caller schema, the same narrowing the catalog pins.
+  it("renders an unrecognized content block as a placeholder rather than failing the call", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    fake.respond = request =>
+      request.rpc?.method === "tools/call"
+        ? {
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: {
+                content: [
+                  { type: "text", text: "the answer" },
+                  { type: "hologram", uri: "mcp://clip" }
+                ]
+              }
+            }
+          }
+        : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
+    expect(outcome.outcome).toBe("called");
+    const content = outcome.outcome === "called" ? outcome.result.content : "";
+    expect(content).toContain("the answer");
+    expect(content).toContain("[unsupported content block: hologram]");
   });
 
   it("relays a JSON-RPC error with its code", async () => {
@@ -549,12 +613,14 @@ describe("when the call fails", () => {
     fake.respond = request => (request.rpc?.method === "tools/call" ? { status: 429, raw: "slow down" } : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
-    expect(await client.callTool("list_prs", {}, LIMITS)).toEqual({
-      outcome: "call_failed",
-      failure: "http_error",
-      status: 429,
-      detail: "slow down"
-    });
+    const outcome = await client.callTool("list_prs", {}, LIMITS);
+    expect(outcome).toMatchObject({ outcome: "call_failed", failure: "http_error", status: 429 });
+    // Contained rather than equal: the detail is the SDK's error message, which
+    // wraps the upstream's body in a fixed preamble of its own. The body is
+    // what matters and it is there — and it is safe to relay for the reason it
+    // always was, that it reached this process through `callUpstream` and was
+    // scrubbed before the SDK ever saw it.
+    expect(outcome.outcome === "call_failed" && outcome.detail).toContain("slow down");
   });
 
   // The one relay `parseRpcResponse` never bounds, bounded where it is born:
@@ -585,7 +651,20 @@ describe("an upstream asking for more input", () => {
             message: {
               jsonrpc: "2.0",
               id: request.rpc.id,
-              result: { resultType: "input_required", inputRequests: [{ type: "sampling" }] }
+              // A conformant one: `inputRequests` is a map keyed by an
+              // identifier the server assigns, not an array. Written correctly
+              // on purpose — a malformed one is refused too, but as a protocol
+              // error, which would let this case pass without ever exercising
+              // the refusal it is about.
+              result: {
+                resultType: "input_required",
+                inputRequests: {
+                  ask: {
+                    method: "sampling/createMessage",
+                    params: { messages: [{ role: "user", content: { type: "text", text: "who?" } }], maxTokens: 64 }
+                  }
+                }
+              }
             }
           }
         : null;
@@ -707,6 +786,35 @@ describe("when the session is lost", () => {
     expect(fake.callsTo("initialize")).toHaveLength(1);
   });
 
+  // The reopen clears `session` before its handshake resolves, and that window
+  // is one `ensureOpen` has to know about: a fresh call arriving inside it sees
+  // neither a session nor an `opening` and would start a second full ladder —
+  // a `server/discover` against a server already known to be legacy — racing
+  // the reopen, with the loser's session dropped unterminated at the upstream.
+  it("rides a reopen in flight rather than starting a second ladder", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    expect((await client.callTool("warm", {}, LIMITS)).outcome).toBe("called");
+    fake.expireSessions();
+
+    // Fired the moment the reopen's `initialize` is on the wire — exactly the
+    // window where `session` is cleared and only `reopening` knows better.
+    let straggler: ReturnType<McpClient["callTool"]> | undefined;
+    fake.respond = request => {
+      if (request.rpc?.method === "initialize" && straggler === undefined) {
+        straggler = client.callTool("b", {}, LIMITS);
+      }
+      return null;
+    };
+
+    expect((await client.callTool("a", {}, LIMITS)).outcome).toBe("called");
+    expect((await straggler)?.outcome).toBe("called");
+    // One probe at first contact, and no second: the straggler rode the reopen.
+    expect(fake.callsTo("server/discover")).toHaveLength(1);
+    expect(fake.callsTo("initialize")).toHaveLength(2);
+  });
+
   // The generation check and the single flight, together. Round-trip count is
   // the visible half; the half that matters is that a straggler's 404 does not
   // invalidate a session two other calls were about to use.
@@ -747,6 +855,30 @@ describe("listing an upstream's catalog", () => {
       await fake.close();
       fake = undefined;
     }
+  });
+
+  // Serializers that spell an absent field `null` are commonplace — Go's
+  // encoding/json without omitempty, most Java frameworks — and a page refused
+  // over its cursor blanks the catalog of every tool on it. `CatalogPage`
+  // vouches for the envelope only; the cursor's reading is `parseToolsList`'s,
+  // which treats anything but a non-empty string as end-of-pagination.
+  it("treats a null cursor as end-of-pagination rather than refusing the page", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: { tools: [{ name: "list_prs", description: "Lists PRs." }], nextCursor: null }
+            }
+          }
+        : null;
+    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+
+    const outcome = await client.listTools(undefined, undefined);
+    expect(outcome).toMatchObject({ outcome: "listed", nextCursor: null });
+    expect(outcome.outcome === "listed" && outcome.tools.map(tool => tool.name)).toEqual(["list_prs"]);
   });
 
   it("names no tool in the transport headers, because a listing names none", async () => {
@@ -812,12 +944,20 @@ describe("listing an upstream's catalog", () => {
     });
   });
 
-  it.each([
-    ["a body that is not MCP", { raw: "not json" }],
-    ["a result with no tools array", { message: { jsonrpc: "2.0", id: 2, result: { resultType: "complete" } } }]
+  // The reply echoes the request's own id rather than naming one, because a
+  // client is entitled to number its requests however it likes and an answer to
+  // an id nobody asked about is not a malformed *result* — it is no answer at
+  // all, which this suite would see as a timeout rather than as the refusal it
+  // is testing for.
+  it.each<[string, (id: number | undefined) => FakeReply]>([
+    ["a body that is not MCP", () => ({ raw: "not json" })],
+    [
+      "a result with no tools array",
+      id => ({ message: { jsonrpc: "2.0", id, result: { resultType: "complete" } } })
+    ]
   ])("refuses %s", async (_label, reply) => {
     fake = await startFakeMcpServer();
-    fake.respond = request => (request.rpc?.method === "tools/list" ? reply : null);
+    fake.respond = request => (request.rpc?.method === "tools/list" ? reply(request.rpc.id) : null);
     const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
 
     expect(await client.listTools(undefined, undefined)).toEqual({
