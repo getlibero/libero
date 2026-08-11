@@ -70,6 +70,11 @@ daily_tool_calls = 400
 cache_read_weight  = 0.1
 cache_write_weight = 1.25
 
+# How far into either budget this channel gets before it is told once, in the
+# thread, that it is close. The call carrying the notice still runs. Set to 0
+# for no warning.
+warn_at = 0.8
+
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
 # can reach: /x/<toolset> picks the toolset and a trailing /readonly drops every
@@ -283,8 +288,28 @@ docker compose run --rm proxy node dist/budget.js show  C024BE91L
 (Until the images build — see [self-hosting](/docs/self-hosting) — run the same entrypoint
 directly: `pnpm budget` in `apps/proxy-server`.)
 
-A soft limit that warns in-thread before the hard one bites is on the roadmap and is not built:
-today the hard limit is the only one, and it refuses rather than warns.
+**The soft limit.** `warn_at` is how far into either budget a channel gets before it is told, once,
+in the thread. The call that carries the notice still runs — only `daily_tokens` and
+`daily_tool_calls` stop anything — and the message names the limit and the channel's position
+against it:
+
+> Budget: this channel has made 320 of its 400 daily tool calls. Calls run until it reaches the
+> limit.
+
+It is a fraction of the hard limits rather than a pair of soft numbers, so a sheet cannot express a
+warning that fires after the refusal it exists to precede, and raising `daily_tokens` moves the
+warning with it rather than leaving a stale number behind. `warn_at = 0` turns it off; anything at
+or past `1` is rejected at load, naming the field.
+
+Once per channel per day, per limit — a warning repeated on every call after the threshold is a
+warning nobody reads. The two limits are two facts, so a channel told about its tokens can still be
+told about its tool calls. A `budget.js reset` re-arms it along with the counters, and the day's
+rollover does the same. The proxy is what decides and what remembers, so a channel cannot be warned
+twice by asking twice.
+
+The notice is addressed to the people in the channel and is never shown to the model: the remedy is
+a larger number in this file, which is not something a model can reach for, and a sentence in a tool
+result would be re-sent as context on every later turn of the task.
 
 ### `[[mcp_server]]`
 

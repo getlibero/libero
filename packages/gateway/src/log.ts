@@ -28,7 +28,8 @@ export interface LogFields {
    * "identified", "reconnecting", "disconnected", "auth_rejected", "stopping".
    * Dispatch: "mention", "replied", "follow_up", "ignored", "handler_failed",
    * "post_failed", "message_failed". Tools: "task", "tools_unavailable",
-   * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed".
+   * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed",
+   * "budget_warning".
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
    * "team_sheet_unreadable". Message store: "store_opened",
    * "store_unavailable", "store_write_failed". Attribution:
@@ -194,6 +195,17 @@ export interface LogFields {
    * and writes no audit row for it, correctly.
    */
   tool?: string;
+  /**
+   * Which daily budget limit a channel was warned about — `daily_tokens` or
+   * `daily_tool_calls`, on `budget_warning` and nothing else (#99).
+   *
+   * A code from a closed set (`BudgetLimit`), and the same word the sheet's
+   * `[budget]` block uses, so the line names the field an operator would edit.
+   * The channel's position against it is deliberately not here: it is in the
+   * thread, where the people who can ask for a larger number are, and the
+   * meter's own file is what an operator queries for a count.
+   */
+  limit?: string;
 }
 
 export interface Logger {

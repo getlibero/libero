@@ -39,6 +39,7 @@ import type {
 } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
+import { budgetWarningMessage, type BudgetWarning } from "@getlibero/schema";
 import type { TaskReply, TaskRequest, TaskRunner, TaskSettings } from "./types.js";
 
 /**
@@ -115,7 +116,7 @@ const CAP_NOTE: Partial<Record<AgentStopReason, string>> = {
  * is told when a task does not simply succeed, and it is worth testing without
  * a loop, a model, or a socket in the way.
  */
-export function replyFor(result: AgentTaskResult): TaskReply | undefined {
+export function replyFor(result: AgentTaskResult, warning?: BudgetWarning): TaskReply | undefined {
   // The gateway is stopping and the operator asked for quiet. Posting a
   // shutdown notice into every open thread is noise at exactly the moment
   // nobody is watching.
@@ -124,8 +125,17 @@ export function replyFor(result: AgentTaskResult): TaskReply | undefined {
   const note = CAP_NOTE[result.stopReason];
   const text = result.text.trim();
 
-  if (text === "") return { text: note ?? NO_ANSWER };
-  return { text: note === undefined ? text : `${text}\n\n${note}` };
+  // Appended, in the order a reader wants them: the answer, then why it stopped
+  // if it stopped, then what the channel has left. Each is a fact about a
+  // different thing, which is why they are separate paragraphs and not a
+  // sentence — and the budget line is last because it is the only one that is
+  // not about this task.
+  const trailer = [note, warning === undefined ? undefined : budgetWarningMessage(warning)].filter(
+    (line): line is string => line !== undefined
+  );
+
+  const body = text === "" ? (trailer.length === 0 ? NO_ANSWER : "") : text;
+  return { text: [body, ...trailer].filter(line => line !== "").join("\n\n") };
 }
 
 export interface TaskRunnerOptions {
@@ -169,6 +179,23 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
 
     const channel = request.key.channel;
 
+    /**
+     * The soft budget warning, if the proxy handed one back on a served call.
+     *
+     * Held for the reply rather than posted where it happens, and that is the
+     * boundary rather than a preference: `SlackSurface` withholds
+     * `postThreadReply` from this process precisely so a handler cannot post out
+     * of band, and a notice is not the exception a card is — a card's lifetime
+     * outlives the task that raised it, and this one does not. So it travels the
+     * way every other thing a task has to say travels: on the answer.
+     *
+     * **First one wins.** The proxy claims a channel's warning once a day, so a
+     * second is not something it can send; `??=` is what keeps that true here if
+     * it ever does, rather than a last-write-wins that would depend on which
+     * tool call finished last.
+     */
+    let warning: BudgetWarning | undefined;
+
     // One client per task, holding this channel's certificate and no other's.
     // Both halves come from the same object because they share the mapping from
     // the name the model calls to the (server, tool) pair the proxy takes — a
@@ -201,7 +228,24 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           task: taskId,
           user: requestingUser,
           tool: name
-        })
+        }),
+      // The channel crossed its soft budget limit on a call that ran (#99).
+      // Logged here and relayed in the reply below; the model is not told, for
+      // the reason `onBudgetWarning` gives.
+      //
+      // `warn`, on `tool_not_permitted`'s terms: nothing is broken and nothing
+      // was denied, but a channel four fifths through its day is a thing an
+      // operator wants to see before the refusals start.
+      onBudgetWarning: crossed => {
+        warning ??= crossed;
+        logger.log("warn", {
+          event: "budget_warning",
+          channel,
+          eventId: request.traceId,
+          task: taskId,
+          limit: crossed.limit
+        });
+      }
     });
 
     // Same channel, same certificate, and pinned the same way: what a task cost
@@ -291,7 +335,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
       turns: result.turns
     });
 
-    return replyFor(result);
+    return replyFor(result, warning);
   };
 }
 

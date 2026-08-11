@@ -5,7 +5,7 @@
 // what the client does with an answer once it has one — which is where the
 // refusal path, the name mapping, and the request body live.
 
-import { ToolCall as WireToolCall } from "@getlibero/schema";
+import { ToolCall as WireToolCall, type BudgetWarning } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
 import type { ToolCall } from "../completion/types.js";
 import type { ToolCallAttribution } from "../loop/types.js";
@@ -639,5 +639,130 @@ describe("a call the proxy could not answer", () => {
     await expect(client.execute(call("list_prs"), ATTRIBUTION)).rejects.toThrow(
       /^proxy client: the tool call failed$/
     );
+  });
+});
+
+// The soft budget warning the proxy hands back on a served call (#99). This
+// client's whole share of it is to pass it out: it does not word it, does not
+// decide whether it should have arrived, and does not show it to the model.
+describe("relaying the soft budget warning", () => {
+  const WARNING = { limit: "daily_tool_calls", spent: 320, cap: 400 } as const;
+
+  /** As `ready`, plus the warning seam and what it collected. */
+  async function watching(
+    answers: Parameters<typeof fakeTransport>[0] = {},
+    onHeld?: HeldCallPrompter
+  ): Promise<{
+    client: ReturnType<typeof createProxyToolClient>;
+    warnings: BudgetWarning[];
+  }> {
+    const fake = fakeTransport(answers);
+    const warnings: BudgetWarning[] = [];
+    const client = createProxyToolClient({
+      transport: fake.transport,
+      channel: CHANNEL,
+      onBudgetWarning: warning => void warnings.push(warning),
+      ...(onHeld !== undefined ? { onHeld } : {})
+    });
+    await client.list();
+    return { client, warnings };
+  }
+
+  it("passes on a warning that came back with a result", async () => {
+    const { client, warnings } = await watching({
+      call: () => ({
+        status: 200,
+        body: { outcome: "ran", id: "call-1", result: { content: "ok" }, warning: WARNING }
+      })
+    });
+
+    const result = await client.execute(call("list_prs"), ATTRIBUTION);
+
+    // The result is untouched: a notice is not an error and does not change
+    // what the model is handed.
+    expect(result).toEqual({ content: "ok", isError: false });
+    expect(warnings).toEqual([WARNING]);
+  });
+
+  // The ordinary case. Most calls are nowhere near a limit, and a channel that
+  // has already been told today is not told again — both arrive here as an
+  // answer with no warning on it.
+  it("says nothing when the answer carries none", async () => {
+    const { client, warnings } = await watching();
+    await client.execute(call("list_prs"), ATTRIBUTION);
+    expect(warnings).toEqual([]);
+  });
+
+  // The proxy decides on the call it serves, and an approved call is served by
+  // the re-submission — so that is where its warning arrives.
+  it("passes on a warning that came back with an approved call", async () => {
+    let asked = 0;
+    const { client, warnings } = await watching({
+      call: () => {
+        asked += 1;
+        return asked === 1
+          ? {
+              status: 200,
+              body: {
+                outcome: "held",
+                id: "call-1",
+                refusal: { reason: "approval_required", server: "github", tool: "merge_pr" },
+                ticket: { id: "apr_01JQ0000000000000000000000", expiresAt: Date.now() + 60_000 }
+              }
+            }
+          : {
+              status: 200,
+              body: { outcome: "ran", id: "call-1", result: { content: "merged" }, warning: WARNING }
+            };
+      }
+    },
+    // A prompter, so the hold is waited out and re-submitted rather than
+    // relayed as a refusal. What it does with the card is ../approvals'.
+    async () => {}
+    );
+
+    const result = await client.execute(call("merge_pr"), ATTRIBUTION);
+
+    expect(result).toEqual({ content: "merged", isError: false });
+    expect(warnings).toEqual([WARNING]);
+  });
+
+  // A refusal is an answer about a call that did not happen, and there is no
+  // field on one to carry a notice. This client relays whatever it is handed,
+  // so what makes that true is the shape: `ToolCallResponse` is strict, and a
+  // refusal wearing a warning does not parse at all.
+  it("cannot be handed a warning on a refusal", async () => {
+    const { client, warnings } = await watching({
+      call: () => ({
+        status: 200,
+        body: {
+          outcome: "refused",
+          id: "call-1",
+          refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" },
+          warning: WARNING
+        }
+      })
+    });
+
+    await expect(client.execute(call("list_prs"), ATTRIBUTION)).rejects.toBeInstanceOf(
+      ProxyClientError
+    );
+    expect(warnings).toEqual([]);
+  });
+
+  // Nothing wires one in production, and a client without the seam must still
+  // serve the call rather than fail on a notice it cannot deliver.
+  it("drops the notice when nobody is listening", async () => {
+    const { client } = await ready({
+      call: () => ({
+        status: 200,
+        body: { outcome: "ran", id: "call-1", result: { content: "ok" }, warning: WARNING }
+      })
+    });
+
+    expect(await client.execute(call("list_prs"), ATTRIBUTION)).toEqual({
+      content: "ok",
+      isError: false
+    });
   });
 });

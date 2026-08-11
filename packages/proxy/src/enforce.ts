@@ -19,6 +19,7 @@ import { BUILTIN_SERVER } from "@getlibero/schema";
 import type {
   ApprovalMode,
   BudgetLimit,
+  BudgetWarning,
   BuiltinToolName,
   McpServer,
   PermittedTool,
@@ -96,18 +97,38 @@ export interface EnforcementInput {
  * carrying a cached upstream, is that second lookup made worse: a whole ticket
  * lifetime stale rather than milliseconds.
  *
+ * **`warning` rides wherever `target` does, and `null` is an answer** (#99). It
+ * is the soft budget limit crossed, which is a fact about a call that runs — so
+ * it belongs on the two outcomes a call can be served from, and a `refuse` has
+ * no room for it because nothing was served. It is on `hold` and not only on
+ * `allow` because an approved call is served from a `hold`: the re-submission is
+ * enforced again, the tool still requires approval, and the server dispatches
+ * after redeeming the ticket. A warning only on `allow` would be a warning no
+ * approved call ever carried.
+ *
+ * Not optional, so that a server composing an answer has to say what it did with
+ * it. `decide` says whether the threshold is crossed and nothing more — whether
+ * the channel is *told* is a question about what it has already been told today,
+ * which is state, which this file does not have and must not grow.
+ *
  * Enforcement itself knows nothing about tickets. `decide` is pure, has no
  * clock, and reads no approval state — it answers "may this channel call this",
  * and whether a human approved this exact call is a different question answered
  * elsewhere. Neither question is allowed to stand in for the other.
  */
 export type Decision =
-  | { readonly outcome: "allow"; readonly target: Target; readonly limits: CallLimits }
+  | {
+      readonly outcome: "allow";
+      readonly target: Target;
+      readonly limits: CallLimits;
+      readonly warning: BudgetWarning | null;
+    }
   | {
       readonly outcome: "hold";
       readonly target: Target;
       readonly refusal: ToolRefusal;
       readonly limits: CallLimits;
+      readonly warning: BudgetWarning | null;
     }
   | { readonly outcome: "refuse"; readonly refusal: ToolRefusal };
 
@@ -324,6 +345,43 @@ function exhaustedLimit(sheet: TeamSheet, spend: BudgetSpend): BudgetLimit | nul
 }
 
 /**
+ * Which daily limit, if either, has passed the soft threshold (#99).
+ *
+ * Called **only after `exhaustedLimit` has answered `null`**, and the ordering
+ * is the third acceptance bullet rather than a preference: a channel that goes
+ * from below the threshold to past the hard limit in one call is refused, and a
+ * refusal carries no warning, so it is never told only about the soft one. The
+ * two functions cannot both speak about the same call.
+ *
+ * Same order as the function above — tokens, then calls — so a channel past both
+ * thresholds gets the same answer every time, and the same `>=`: `warn_at` names
+ * the point at which a channel is near enough to be told, and a channel exactly
+ * on it is on it.
+ *
+ * `warn_at = 0` is off, and it short-circuits rather than being compared: every
+ * spend is `>= 0`, so without this a sheet turning the warning off would warn on
+ * the very first call of the day.
+ *
+ * The threshold is computed rather than stored, which is what makes an edit to
+ * `daily_tokens` move the warning with it — the meter holds raw counts and this
+ * file holds every number that interprets them, exactly as with the cache
+ * weights.
+ */
+function crossedThreshold(sheet: TeamSheet, spend: BudgetSpend): BudgetWarning | null {
+  const fraction = sheet.budget.warn_at;
+  if (fraction === 0) return null;
+
+  const tokens = billableTokens(sheet, spend);
+  if (tokens >= sheet.budget.daily_tokens * fraction) {
+    return { limit: "daily_tokens", spent: tokens, cap: sheet.budget.daily_tokens };
+  }
+  if (spend.toolCalls >= sheet.budget.daily_tool_calls * fraction) {
+    return { limit: "daily_tool_calls", spent: spend.toolCalls, cap: sheet.budget.daily_tool_calls };
+  }
+  return null;
+}
+
+/**
  * The decision.
  *
  * Order is load-bearing. The allowlist resolves first, because whether a tool
@@ -376,17 +434,22 @@ export function decide(input: EnforcementInput): Decision {
   }
 
   const limits = resolveLimits(sheet, tools);
+  // Read once and carried to whichever answer this becomes: the threshold is a
+  // fact about the channel's day, not about which of the two served outcomes the
+  // approval rule picks.
+  const warning = crossedThreshold(sheet, spend);
 
   if (resolveApproval(tools, call.tool) === "required") {
     return {
       outcome: "hold",
       target: { kind: "mcp", upstream },
       refusal: { reason: "approval_required", server: call.server, tool: call.tool },
-      limits
+      limits,
+      warning
     };
   }
 
-  return { outcome: "allow", target: { kind: "mcp", upstream }, limits };
+  return { outcome: "allow", target: { kind: "mcp", upstream }, limits, warning };
 }
 
 /**
@@ -437,17 +500,19 @@ function decideBuiltin(
 
   const target: Target = { kind: "builtin", tool: first.name };
   const limits = resolveLimits(sheet, entries);
+  const warning = crossedThreshold(sheet, spend);
 
   if (resolveApproval(entries, call.tool) === "required") {
     return {
       outcome: "hold",
       target,
       refusal: { reason: "approval_required", server: call.server, tool: call.tool },
-      limits
+      limits,
+      warning
     };
   }
 
-  return { outcome: "allow", target, limits };
+  return { outcome: "allow", target, limits, warning };
 }
 
 /**

@@ -434,7 +434,9 @@ describe("which upstream an allow names", () => {
         kind: "mcp",
         upstream: expect.objectContaining({ name: "github", transport: "http" })
       },
-      limits: { maxResultChars: expect.any(Number) }
+      limits: { maxResultChars: expect.any(Number) },
+      // Nowhere near either threshold on a channel that has spent nothing.
+      warning: null
     });
   });
 
@@ -627,6 +629,109 @@ describe("the budget seam", () => {
     });
     expect(decision.outcome).toBe("refuse");
     expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("budget_exhausted");
+  });
+});
+
+// The soft limit (#99). The decision's whole share of it: whether the threshold
+// is crossed. Whether the channel is *told* is a question about what it has
+// already been told today, which is the meter's state and not this file's.
+describe("the soft budget threshold", () => {
+  const call = callTo("github", "list_prs");
+
+  /** The decision's warning, or undefined where there is no room for one. */
+  const warningOf = (decision: Decision) => (decision.outcome === "refuse" ? undefined : decision.warning);
+
+  // The sheet's 1000 tokens and 10 calls against the default 0.8.
+  it("answers null below the threshold and the warning at it", () => {
+    expect(warningOf(decide({ sheet, call, spend: spending(799, 0) }))).toBeNull();
+    expect(warningOf(decide({ sheet, call, spend: spending(800, 0) }))).toEqual({
+      limit: "daily_tokens",
+      spent: 800,
+      cap: 1000
+    });
+  });
+
+  it("names the tool-call limit when that is the one that crossed", () => {
+    expect(warningOf(decide({ sheet, call, spend: spending(0, 7) }))).toBeNull();
+    expect(warningOf(decide({ sheet, call, spend: spending(0, 8) }))).toEqual({
+      limit: "daily_tool_calls",
+      spent: 8,
+      cap: 10
+    });
+  });
+
+  // Tokens first, as `exhaustedLimit` does, so a channel past both thresholds
+  // gets the same answer on every call rather than one that depends on order.
+  it("is deterministic when both thresholds are crossed", () => {
+    const spend = spending(900, 9);
+    expect(warningOf(decide({ sheet, call, spend }))).toEqual(warningOf(decide({ sheet, call, spend })));
+    expect(warningOf(decide({ sheet, call, spend }))?.limit).toBe("daily_tokens");
+  });
+
+  // The third acceptance bullet, and the reason the soft check runs after the
+  // hard one: a channel that crosses both in a single call is refused, and a
+  // refusal has no room for a warning to be the only thing it says.
+  it("refuses rather than warning when the hard limit is reached", () => {
+    const decision = decide({ sheet, call, spend: spending(1000, 0) });
+    expect(decision.outcome).toBe("refuse");
+    expect(decision.outcome === "refuse" && decision.refusal.reason).toBe("budget_exhausted");
+    expect(warningOf(decision)).toBeUndefined();
+  });
+
+  // `0` is off, and it has to short-circuit: every spend is `>= 0`, so a
+  // comparison alone would warn on the first call of the day.
+  it("says nothing at all when the sheet turns it off", () => {
+    const off = sheetOf({ ...BASE, budget: { ...BASE.budget, warn_at: 0 } });
+    expect(warningOf(decide({ sheet: off, call, spend: spending(0, 0) }))).toBeNull();
+    expect(warningOf(decide({ sheet: off, call, spend: spending(999, 9) }))).toBeNull();
+  });
+
+  it("moves with the sheet's fraction", () => {
+    const early = sheetOf({ ...BASE, budget: { ...BASE.budget, warn_at: 0.5 } });
+    expect(warningOf(decide({ sheet: early, call, spend: spending(500, 0) }))?.limit).toBe("daily_tokens");
+    expect(warningOf(decide({ sheet, call, spend: spending(500, 0) }))).toBeNull();
+  });
+
+  // The threshold is computed from the live sheet, so raising the hard limit
+  // moves the warning with it — the thing an absolute pair of soft values could
+  // not do without a second edit.
+  it("follows an edit to the hard limit", () => {
+    const raised = sheetOf({ ...BASE, budget: { ...BASE.budget, daily_tokens: 10_000 } });
+    expect(warningOf(decide({ sheet, call, spend: spending(900, 0) }))?.cap).toBe(1000);
+    expect(warningOf(decide({ sheet: raised, call, spend: spending(900, 0) }))).toBeNull();
+  });
+
+  // The weighted total, not the raw counts: the same number the refusal is
+  // decided against, so the two cannot disagree about where a channel stands.
+  it("reports the weighted token total", () => {
+    const spend: BudgetSpend = { ...NO_SPEND, inputTokens: 700, cacheReadTokens: 1_500 };
+    // 700 + 1500 × 0.1 = 850, over the 800 threshold and under the 1000 limit.
+    expect(warningOf(decide({ sheet, call, spend }))).toEqual({
+      limit: "daily_tokens",
+      spent: 850,
+      cap: 1000
+    });
+  });
+
+  // A hold carries it for the same reason it carries an upstream: an approved
+  // call is served from the hold, so a warning only on `allow` would be one no
+  // approved call ever delivered.
+  it("rides a hold as well as an allow", () => {
+    const held = decide({ sheet, call: callTo("github", "trigger_workflow"), spend: spending(900, 0) });
+    expect(held.outcome).toBe("hold");
+    expect(warningOf(held)).toEqual({ limit: "daily_tokens", spent: 900, cap: 1000 });
+  });
+
+  // A built-in spends the channel's meter, so it reports the channel's
+  // position — the same five steps, and the same `crossedThreshold`.
+  it("rides a built-in the same way", () => {
+    const withHistory = sheetOf({ ...BASE, builtin: [{ name: "search_channel_history" }] });
+    const decision = decide({
+      sheet: withHistory,
+      call: { ...callTo("libero", "search_channel_history") },
+      spend: spending(0, 9)
+    });
+    expect(warningOf(decision)).toEqual({ limit: "daily_tool_calls", spent: 9, cap: 10 });
   });
 });
 
@@ -1082,7 +1187,8 @@ describe("a built-in tool", () => {
     expect(decision).toEqual({
       outcome: "allow",
       target: { kind: "builtin", tool: "search_channel_history" },
-      limits: { maxResultChars: expect.any(Number) }
+      limits: { maxResultChars: expect.any(Number) },
+      warning: null
     });
     // Nothing on this decision could send the call to a server.
     expect(upstreamOf(decision)).toBeUndefined();

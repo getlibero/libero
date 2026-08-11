@@ -13,7 +13,7 @@ import type { BudgetDb } from "./budget-db.js";
 import type { SpendMeter, SpendRecord } from "./dispatch.js";
 import type { BudgetSpend } from "./enforce.js";
 import type { Logger } from "./log.js";
-import type { TokenUsageReport } from "@getlibero/schema";
+import type { BudgetLimit, TokenUsageReport } from "@getlibero/schema";
 
 /**
  * How long a reported turn id is remembered.
@@ -68,6 +68,14 @@ export function createSqliteSpendMeter(options: SpendMeterOptions): SpendMeter {
 
     recordToolCall(channel: string): void {
       db.addToolCall(channel, utcDay(now()));
+    },
+
+    claimWarning(channel: string, limit: BudgetLimit): boolean {
+      // The day the *warning* belongs to is the day the spend belongs to, read
+      // from the same clock at the moment of the call. A channel that crosses
+      // its threshold at 23:59 and again at 00:01 is two days and two warnings,
+      // which is the rollover the counters already have.
+      return db.claimWarning(channel, utcDay(now()), limit);
     },
 
     recordTokens(channel: string, turn: string, usage: TokenUsageReport): SpendRecord {
