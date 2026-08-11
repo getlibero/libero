@@ -14,8 +14,8 @@
     "test": "vitest run --exclude '**/dist/**'"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
+    "@anthropic-ai/sdk": "^0.116.0",
     "@getlibero/schema": "workspace:*",
-    "openai": "^7.3.0"
+    "openai": "^7.4.0"
   }
 }
