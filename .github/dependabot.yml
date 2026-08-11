@@ -30,6 +30,23 @@ updates:
       # @types/node tracks the engines floor, not the newest Node.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # vite 8 is the Rolldown release, and it moved lightningcss from an
+      # optional peerDependency — never installed, which is why 7 passes — to a
+      # hard dependency. lightningcss is MPL-2.0, which is not in the license
+      # gate's allowlist, so every vite 8 PR fails `build` on a policy question
+      # rather than on anything a rebase fixes. Reopening it monthly is noise
+      # against a decision that is deliberately deferred (#202).
+      #
+      # Pinning is cheap right now: vite is a root devDependency that exists
+      # only because vitest uses its transform pipeline — there is no vite
+      # config in this repository and no dev server is ever started — and
+      # vite@7.3 sits in the same support tier as vite@8.1, "important fixes and
+      # security patches", rather than in the security-only tier below it.
+      #
+      # Remove this when #202 is decided, or sooner if vitest requires vite 8:
+      # that is the forcing function, and it makes the decision anyway.
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /site
     schedule:
