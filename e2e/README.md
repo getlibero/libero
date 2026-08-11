@@ -29,6 +29,25 @@ is only a local concern.
 
 `openssl` must be on `PATH` — `scripts/dev-certs.sh` mints the certificates.
 
+**The files run in parallel, and the absence of `--no-file-parallelism` is a
+decision rather than an omission.** The flag was here from the rig's first
+commit with no stated reason, and it cost 49 of the build job's 73 seconds:
+`e2e` depends on every package, so `pnpm -r` schedules it last and the runner's
+other cores idle through it.
+
+Nothing in the rig needs the serialisation. A case gets its own temporary
+directory, its own certificates, its own vault, budget and audit files, and its
+own proxy process — and that process binds `PROXY_PORT: "0"`, so the OS picks
+the port precisely so nothing has to reserve one and race the rest of the host.
+Ten runs on CI's four-core hardware were green at 20–28s against a 48s serial
+control on the same runner class, which is what changed this from a plausible
+argument into a measured one (#205).
+
+If you add a case that needs a resource it cannot get a private copy of, isolate
+that case rather than restoring the flag — `describe.sequential` is the smaller
+instrument, and re-serialising the whole suite to protect one file is how the 49
+seconds came back.
+
 ## The shape
 
 ```
