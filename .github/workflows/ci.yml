@@ -27,13 +27,40 @@ jobs:
       - name: Build
         # tsc --noEmit in the typecheck step misses emit-only failures; catch
         # them here rather than in the release workflow.
+        #
+        # There is deliberately no Typecheck step beside this one. Every package
+        # builds with `tsc -p tsconfig.json` and typechecks with the same
+        # invocation plus `--noEmit`, over the same project and the same files —
+        # so `pnpm typecheck` is a strict subset of what this step already did,
+        # and could only fail where this one had. The root script stays, because
+        # skipping emit is the faster answer while you are working; it just has
+        # nothing left to say once a build has passed.
         run: pnpm -r build
-      - name: Lint (includes agent→proxy import ban)
-        run: pnpm lint
-      - name: Typecheck
-        run: pnpm typecheck
       - name: Tests
         run: pnpm test
+
+  lint-and-license:
+    # Lint and the license gate read the source tree and node_modules, never
+    # `dist` — so neither has any reason to wait behind a build, and behind one
+    # is where they were. On their own runner they cost wall-clock nothing,
+    # because the build job is longer than this whole job.
+    #
+    # The cost is a second install. It is paid in parallel and it is small: the
+    # store is cached, so the install step measures about three seconds.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          # The same floor as the build job, for the same FTS5 reason. Neither
+          # of these steps opens a database, but a second Node version in one
+          # workflow is a thing to explain rather than a thing to inherit.
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint (includes agent→proxy import ban)
+        run: pnpm lint
       - name: License gate (fails on copyleft)
         run: pnpm license-check
 
