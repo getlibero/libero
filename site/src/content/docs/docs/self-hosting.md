@@ -114,6 +114,25 @@ Socket Mode means there is no Request URL to configure anywhere — not for even
 interactivity. The gateway dials out and holds the connection open, which is why the deployment
 publishes no ports.
 
+### Creating it
+
+Paste the checked-in manifest rather than setting fields by hand. At
+[api.slack.com/apps](https://api.slack.com/apps): **Create New App → From an app manifest**, choose
+your workspace, and paste
+[`deploy/slack-app-manifest.yml`](https://github.com/getlibero/libero/blob/main/deploy/slack-app-manifest.yml)
+into the YAML tab. It declares the scopes, the events, Socket Mode and interactivity, so nothing in
+the rest of this section has to be configured — the tables below are why each line is granted, and
+the manifest is the thing you paste. Nothing in it is specific to one workspace.
+
+Two lines to delete if the agent serves only public channels: `groups:history` and
+`message.groups`. Everything else is called by the code as it stands; the manifest grants nothing
+for a feature that does not exist, and says beside each line what needs it.
+
+Then generate the app-level token, install to the workspace, and invite the app to each channel you
+have written a team sheet for. The app icon is the one field the manifest cannot carry —
+`design/brand/app-icon-fullbleed-1024.png` in the repository is the file to upload, and the app
+works without it.
+
 ### Tokens
 
 | Token | Where it comes from | Env var |

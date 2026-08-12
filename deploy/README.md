@@ -80,3 +80,36 @@ mints only what is missing — a client certificate in service must not be
 replaced silently, because each channel's team sheet pins the fingerprint of the
 one it accepts (#79). `--rotate` then `--promote` replaces one with no downtime;
 `--print-pins` prints what to paste into a sheet, and when each expires.
+
+## The Slack app manifest
+
+`slack-app-manifest.yml` is what an operator pastes into *Create New App → From
+an app manifest*. It is the only file here that configures something outside the
+deployment, and it is checked in for the reason the compose file is: the scopes
+are a list of checkboxes, and a wrong one is a permission granted for years.
+
+**One file with commented sections, rather than a minimal one and a full one.**
+The scopes that answer a mention are a strict subset of the set that also fills
+the message store, so two files would say the same thing twice and fall out of
+step the first time a scope moves. What one file costs a reader is two comments
+naming the lines to delete — `groups:history` and `message.groups`, for a
+deployment serving only public channels; what two would cost is a second file to
+remember to edit.
+
+**It is exact, and staying exact is the whole thing to check when it changes.**
+The failure a manifest invites is a scope that outlives the feature that needed
+it — nobody notices a permission that is merely unused. So every line carries the
+call or the event that needs it, and a scope granted for work that has not landed
+names its issue instead. The scope and event tables in
+`site/src/content/docs/docs/self-hosting.md` are the long-form version of those
+comments and are meant to agree with them line for line.
+
+Two fields it sets that no code would notice: `always_online: false`, so a
+workspace can see the gateway is down rather than being told it is up, and
+`token_rotation_enabled: false`, because the gateway reads `SLACK_BOT_TOKEN` from
+its environment and never writes one back — rotation on would expire the token
+the deployment holds.
+
+Not a Slack Marketplace listing. Distributing a Libero app through the directory
+would mean Slack review and this project holding a distributed app's identity;
+what this file describes is an app an operator creates in their own workspace.

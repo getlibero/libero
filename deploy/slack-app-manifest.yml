@@ -1,0 +1,104 @@
+# Libero's Slack app, as a manifest.
+#
+# Create the app from it: api.slack.com/apps -> Create New App -> From an app
+# manifest -> choose your workspace -> paste this into the YAML tab. Nothing
+# here is specific to one workspace, so it is safe to copy.
+#
+# It sets every field the gateway needs, Socket Mode included, so there is no
+# Request URL to configure anywhere. Two tokens come out of it, and both belong
+# in the gateway's environment:
+#
+#   SLACK_APP_TOKEN  xapp-...  Basic Information -> App-Level Tokens ->
+#                              Generate, with the connections:write scope. It is
+#                              shown once; copy it then.
+#   SLACK_BOT_TOKEN  xoxb-...  Install App -> Install to Workspace.
+#
+# Then invite the app to each channel you have written a team sheet for. A
+# channel with no sheet is one the app is in and does nothing for.
+#
+# Every scope and event below is one the code calls today, and each is commented
+# with what calls it. Nothing is granted for a feature that does not exist. The
+# scope tables at https://getlibero.com/docs/self-hosting#the-slack-app say why
+# each is granted at more length than a comment can; the two are meant to agree,
+# so change them together.
+#
+# This is a manifest for an app you create in your own workspace. It is not a
+# Slack Marketplace listing and not a distributed app: nobody but you holds its
+# tokens or its identity.
+
+display_information:
+  name: Libero
+  description: Self-hosted AI teammate. Answers mentions, and reaches tools only through a proxy that enforces a per-channel allowlist.
+  # The brand green, --lb-accent in design/tokens.css. A manifest cannot read a
+  # CSS variable, so this is the one place in the repository that value is
+  # retyped; change it here when the token changes. Slack draws it behind the
+  # app icon, which is uploaded by hand rather than declared here —
+  # design/brand/app-icon-fullbleed-1024.png is the file to upload.
+  background_color: "#1BA85A"
+
+features:
+  bot_user:
+    display_name: Libero
+    # Presence follows the socket rather than being pinned online, so a
+    # workspace can see that the gateway is down without asking it anything.
+    always_online: false
+  app_home:
+    home_tab_enabled: false
+    # Libero is not addressable by direct message. A task runs as a channel —
+    # that is what selects the team sheet and the client certificate — and a DM
+    # has no sheet behind it, so there is nothing to authorize it against.
+    # Hence no message.im subscription and no im:history below.
+    messages_tab_enabled: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Receiving the mention that starts a task.
+      - app_mentions:read
+      # chat.postMessage and chat.update: replies, approval cards, and the live
+      # checklist — a card goes amber, then green or red, in place.
+      - chat:write
+      # Ordinary channel messages: thread follow-ups, and the per-channel
+      # message store a task's transcript is drawn from. Without it the agent
+      # answers mentions and remembers nothing.
+      - channels:history
+      # The same, for private channels. Delete this line, and message.groups
+      # below, if the agent serves only public channels.
+      - groups:history
+      # users.info, for display names. Without it every author in the
+      # transcript is a raw U... id and the agent logs user_lookup_failed with
+      # missing_scope.
+      - users:read
+      #
+      # auth.test needs no scope. The gateway calls it once before opening the
+      # socket, to learn its own user id: a message that mentions the app
+      # arrives on both subscriptions below, and only an id tells the two copies
+      # apart.
+
+settings:
+  event_subscriptions:
+    bot_events:
+      # The trigger.
+      - app_mention
+      # Messages that are not mentions. Deletions and edits ride this
+      # subscription as subtypes rather than as events of their own, so
+      # mirroring them into the store adds nothing here.
+      - message.channels
+      # The private-channel half of the line above; pairs with groups:history.
+      - message.groups
+  interactivity:
+    # Approve once / Deny are Slack interactions, and the approver's identity
+    # arrives in the click payload — the one identity in the system Slack
+    # vouches for rather than the agent asserting it. Left off, a card goes up
+    # and stays amber. No Request URL: clicks come down the same socket.
+    is_enabled: true
+  # The gateway dials out and holds the connection open, which is why the
+  # deployment publishes no ports.
+  socket_mode_enabled: true
+  # One workspace, installed by its own admin. Org-wide deployment is a
+  # different install path and is not what this file describes.
+  org_deploy_enabled: false
+  # Bot token rotation is a refresh flow the gateway does not implement: it
+  # reads SLACK_BOT_TOKEN from its environment and does not write it back.
+  # Turning this on would expire the token the deployment holds.
+  token_rotation_enabled: false
