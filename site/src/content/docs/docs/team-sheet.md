@@ -167,10 +167,10 @@ max_result_chars = 8000                       # whole messages come back; a chan
                                               # conversation to put in front of the
                                               # model at once.
 
-# Where traffic may go when this sheet does not already say. The MCP servers
-# above are NOT listed here: declaring a url in [[mcp_server]] is what
-# authorizes it. This list is for the destinations nothing pinned — the
-# code-execution sandbox today. Keeping them apart is why allowing the GitHub
+# Where traffic may go when this sheet does not already say. PARSED BUT NOT YET
+# ENFORCED — see the note below. The MCP servers above are NOT listed here:
+# declaring a url in [[mcp_server]] is what authorizes it. This list is for the
+# destinations nothing pinned. Keeping them apart is why allowing the GitHub
 # MCP server (api.githubcopilot.com) does not also let sandboxed code call
 # api.github.com directly, and why allowing the API does not let it dial the
 # MCP server.
@@ -181,6 +181,7 @@ max_result_chars = 8000                       # whole messages come back; a chan
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 
+# Proactive posting. PARSED BUT NOT YET READ — phase 4; see the note below.
 [ambient]
 enabled  = false                            # off by default, always
 schedule = "0 9 * * 1-5"
@@ -447,9 +448,19 @@ Slack token and inventing a name would be worse than showing an id.
 
 ### `[egress]`
 
-Where traffic may go when the sheet does not already say. The code-execution sandbox has no
-network at all unless this list grants it, and anything later that takes a URL as an argument
-answers to the same list.
+Where traffic may go when the sheet does not already say — the code-execution sandbox, and
+anything later that takes a URL as an argument.
+
+:::note[Validated today, enforced when its first caller lands]
+Nothing in the deployment consults this list yet, because nothing in it reaches a destination the
+sheet has not already pinned. Entries are still parsed and checked when the sheet loads, so a
+malformed one is rejected where you can see it rather than sitting inert in a list you believe
+grants something — but a channel's `[egress]` block currently permits and forbids nothing. The
+surface that needs it is a code-execution sandbox, which is later work; the matcher and its
+adversarial tests are [#73](https://github.com/getlibero/libero/issues/73), and wiring the first
+caller is [#219](https://github.com/getlibero/libero/issues/219). Write the block as though it
+were enforced — everything below is the contract it will be enforced against.
+:::
 
 **A server's own `url` does not go here.** Declaring it under `[[mcp_server]]` is what authorizes
 it — that block also carries the tool allowlist and the credential name, so the destination has
@@ -470,12 +481,20 @@ more subdomain labels and nothing else: `*.internal.example.com` matches
 `internal.example.com.attacker.com`. There is no allow-all pattern; a bare `*` is rejected when
 the sheet loads, along with a wildcard anywhere but the leftmost label.
 
-Redirects are not followed. An upstream answering `302` would send the proxy to a host no sheet
-named, so the call fails instead.
+Redirects are not followed, and that half **is** live today: an upstream answering `302` would
+send the proxy to a host no sheet named, so the call fails instead.
 
 ### `[ambient]`
 
-Proactive posting. Disabled by default, always, and metered by the same budget as everything else.
+Proactive posting: the agent starting a task nobody asked for, on a schedule.
+
+:::note[Parsed today, unread]
+Nothing reads this block yet. `enabled` and `schedule` are accepted when the sheet loads and no
+code in either service consults them, so setting `enabled = true` does nothing at all rather than
+turning something on. Ambient work is phase 4 on the [roadmap](/docs/roadmap) — heartbeat,
+`schedule_task`, and rate limits, all behind the same budget as everything else — and the block is
+here so a sheet written today does not have to change shape when it lands.
+:::
 
 ## How changes are applied
 

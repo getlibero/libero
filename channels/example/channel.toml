@@ -148,13 +148,20 @@ max_result_chars = 8000                       # whole messages come back; a chan
                                               # conversation to put in front of the
                                               # model at once.
 
-# Where traffic may go when this sheet does not already say. The MCP servers
-# above are NOT listed here: declaring a url in [[mcp_server]] is what
-# authorizes it. This list is for the destinations nothing pinned — the
-# code-execution sandbox today. Keeping them apart is why allowing the GitHub
-# MCP server (api.githubcopilot.com) does not also let sandboxed code call
-# api.github.com directly, and why allowing the API does not let it dial the
-# MCP server.
+# Where traffic may go when this sheet does not already say.
+#
+# PARSED BUT NOT YET ENFORCED. Nothing in the deployment reaches a destination
+# this sheet has not already pinned, so nothing consults this list — entries are
+# validated when the sheet loads and permit nothing and forbid nothing. The
+# surface that needs it is a code-execution sandbox, which is later work (#219).
+# Write the list as though it were enforced; it is the contract it will be
+# enforced against.
+#
+# The MCP servers above are NOT listed here: declaring a url in [[mcp_server]]
+# is what authorizes it. This list is for the destinations nothing pinned.
+# Keeping them apart is why allowing the GitHub MCP server
+# (api.githubcopilot.com) does not also let sandboxed code call api.github.com
+# directly, and why allowing the API does not let it dial the MCP server.
 #
 # Default deny. "*." stands for one or more subdomain labels, so
 # *.internal.example.com covers build.internal.example.com but not
@@ -162,6 +169,11 @@ max_result_chars = 8000                       # whole messages come back; a chan
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 
+# Proactive posting: the agent starting a task nobody asked for, on a schedule.
+#
+# PARSED BUT NOT YET READ. No code in either service consults these two fields,
+# so `enabled = true` turns nothing on. Ambient work is phase 4; the block is
+# here so a sheet written today keeps its shape when it lands.
 [ambient]
 enabled  = false                            # off by default, always
 schedule = "0 9 * * 1-5"

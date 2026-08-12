@@ -48,9 +48,9 @@ logger.log("info", { event: "vault_opened", count: vault.size });
 
 // Defence in depth, and worth being precise about what it does: it keeps the
 // key out of anything that later dumps `process.env`, and out of the
-// environment of any child process (compose mounts the Docker socket for the
-// sandbox runner). It does *not* change /proc/<pid>/environ on Linux, which
-// still reflects the environment the process started with.
+// environment of any child process this one comes to spawn — #154's stdio
+// transport is the first that would. It does *not* change /proc/<pid>/environ
+// on Linux, which still reflects the environment the process started with.
 delete process.env.PROXY_VAULT_KEY;
 
 // Also before anything binds, and for the same reason as the vault: a budget
