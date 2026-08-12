@@ -21,6 +21,14 @@ jobs:
           # 24.0. `node-version: 22` resolved to a 22.x past 22.16, so CI would
           # have passed while the stated floor of 22.13 failed on an operator's
           # machine with `no such module: fts5`.
+          #
+          # `@types/node`'s major follows this same floor — `^24` in core,
+          # matching `engines`, and `^22` in packages/cli, which publishes
+          # `engines: >=22`. That is this hazard pointed the other way: types
+          # ahead of the runtime typecheck the tree against APIs an operator on
+          # the supported floor does not have, and nothing here would fail.
+          # `pnpm update` offers the newest major; take it when a floor moves
+          # and not before.
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
