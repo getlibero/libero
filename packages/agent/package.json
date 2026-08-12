@@ -17,5 +17,8 @@
     "@anthropic-ai/sdk": "^0.116.0",
     "@getlibero/schema": "workspace:*",
     "openai": "^7.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3"
   }
 }

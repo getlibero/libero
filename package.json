@@ -22,7 +22,7 @@
     "boundary-check": "sh scripts/boundary-check.sh"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.13.3",
     "eslint": "^10.8.1",
     "license-checker-rseidelsohn": "^5.0.1",
     "typescript": "^6.0.3",
