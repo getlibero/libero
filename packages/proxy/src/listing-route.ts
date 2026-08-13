@@ -47,10 +47,10 @@ import { type CatalogAnswer, NO_CATALOG_ANSWER, type ToolCatalog } from "./dispa
 import { permittedToolSourcesFromState, upstreamKey } from "./enforce.js";
 import type { Logger } from "./log.js";
 import type { RequestContext, RouteHandler, RouteResponse } from "./server.js";
-import type { TeamSheetStore } from "./team-sheet-store.js";
+import type { TeamSheetSource } from "./team-sheet-store.js";
 
 export interface ListingRouteOptions {
-  readonly sheets: TeamSheetStore;
+  readonly sheets: TeamSheetSource;
   readonly catalog: ToolCatalog;
   readonly logger: Logger;
   /** The server's `ok`, passed in so this module frames nothing itself. */

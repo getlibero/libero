@@ -166,7 +166,7 @@ export type {
 } from "./approvals.js";
 
 export { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
-export type { SheetState, TeamSheetStoreOptions } from "./team-sheet-store.js";
+export type { SheetState, TeamSheetSource, TeamSheetStoreOptions } from "./team-sheet-store.js";
 
 export { createJsonLogger, createSilentLogger } from "./log.js";
 export type { LogFields, Logger, LogLevel } from "./log.js";

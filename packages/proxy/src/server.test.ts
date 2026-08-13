@@ -76,6 +76,21 @@ let certs: string;
 let foreignCerts: string;
 let channelsRoot: string;
 let sheets: TeamSheetStore;
+/**
+ * Sheet reads the shared server has caused, counted at the boundary it holds.
+ *
+ * Not a spy on the store, and that is the whole point. `TeamSheetStore`'s
+ * watcher refreshes a channel by calling `this.resolve` — so a spy on the
+ * instance counts the store keeping itself current as though a request had
+ * asked it something. `beforeEach` deletes the channels root and rewrites the
+ * sheet before every test in this file, which means those refreshes are always
+ * in flight and land whenever the OS delivers the event. That is what made
+ * "adds no team-sheet read of its own" fail about one run in five (#243).
+ *
+ * Counting here counts what a request caused, because this is the view the
+ * server was handed and the watcher does not go through it.
+ */
+let serverSheetReads = 0;
 let dispatcher: ToolDispatcher & { seen: ResolvedToolCall[] };
 /**
  * The real meter over a real file, not a stand-in.
@@ -318,7 +333,12 @@ beforeAll(() => {
       key: join(certs, "proxy", "server.key"),
       ca: join(certs, "ca.pem")
     }),
-    sheets,
+    sheets: {
+      resolve: channel => {
+        serverSheetReads += 1;
+        return sheets.resolve(channel);
+      }
+    },
     spend: meter,
     dispatcher,
     catalog: createUnavailableCatalog(),
@@ -1691,19 +1711,22 @@ describe("reporting spend", () => {
   // route itself asks the sheet nothing. So it is measured against a route that
   // demonstrably reads no sheet of its own rather than against zero, which
   // keeps it from pinning how many reads the gate happens to make.
+  //
+  // It counts `serverSheetReads` rather than spying on the store, and #243 is
+  // why: a spy on the instance also catches the watcher refreshing itself, and
+  // `beforeEach` rewrites the sheet before every test in this file, so those
+  // refreshes are always in flight. The assertion was measuring the weather
+  // about one run in five. See the counter's own comment for the boundary.
   it("adds no team-sheet read of its own", async () => {
-    const resolve = vi.spyOn(sheets, "resolve");
-    try {
-      await call("/v1/whoami", clientCert(certs, CHANNEL));
-      const gateOnly = resolve.mock.calls.length;
-      expect(gateOnly).toBeGreaterThan(0);
+    const before = serverSheetReads;
+    await call("/v1/whoami", clientCert(certs, CHANNEL));
+    const gateOnly = serverSheetReads - before;
+    expect(gateOnly).toBeGreaterThan(0);
 
-      resolve.mockClear();
-      await post("/v1/spend", { turn, usage });
-      expect(resolve.mock.calls.length).toBe(gateOnly);
-    } finally {
-      resolve.mockRestore();
-    }
+    const beforeSpend = serverSheetReads;
+    await post("/v1/spend", { turn, usage });
+
+    expect(serverSheetReads - beforeSpend).toBe(gateOnly);
   });
 
   it("logs the report without a verdict, because it made none", async () => {
