@@ -9,5 +9,7 @@ export * from "./tool-listing.js";
 export * from "./refusal.js";
 export * from "./budget-warning.js";
 export * from "./spend-report.js";
+export * from "./price-table.js";
+export * from "./parse-price-table.js";
 export * from "./approval.js";
 export * from "./audit.js";

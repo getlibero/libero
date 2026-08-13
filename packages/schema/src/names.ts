@@ -59,6 +59,46 @@ export const DestinationHost = z
   .regex(/^[A-Za-z0-9.:_-]+$/, "must be a host, without scheme, path, or query");
 
 /**
+ * The model that served a turn, as the provider echoed it back.
+ *
+ * **Not `identifier()`, because real model ids do not fit one.** The value is
+ * whatever the provider's response envelope carries, and the shapes in the wild
+ * use separators the short-identifier alphabet rejects:
+ * `us.anthropic.claude-sonnet-4-5-20250929-v1:0`,
+ * `accounts/fireworks/models/llama-v3p1-70b-instruct`, `models/gemini-2.5-pro`,
+ * `meta-llama/Llama-3.3-70B-Instruct-Turbo`, `qwen2.5:7b`. Slash and colon are
+ * in the alphabet because rejecting them would reject Bedrock, Fireworks,
+ * Gemini, Together and Ollama — every deployment this field exists to price.
+ *
+ * Bounded at 128, matching `TurnId` in ./spend-report.ts for the same reason:
+ * it lands in a SQLite key, in log lines, and in a sentence a channel reads when
+ * its model is not priced.
+ *
+ * **The leading character must be alphanumeric, and that is what reserves the
+ * meter's sentinels.** `packages/proxy/src/budget-db.ts` keys token counts by
+ * model and needs two values no provider can produce — one for counts that
+ * predate the price table, one for a report that named no model — and it spells
+ * them `(legacy)` and `(unreported)`. A parenthesis is outside this alphabet
+ * entirely, so the reservation holds at parse rather than by convention, the way
+ * `BUILTIN_SERVER`'s does. Do not widen the alphabet to admit one without moving
+ * those sentinels first.
+ *
+ * **This is a dimension of a count, never a permission.** It selects a price and
+ * nothing else; the argument for why that is sound, and what a model the price
+ * table does not know costs a channel, is on `SpendReport` in ./spend-report.ts.
+ */
+export const ModelId = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/,
+    "must be a model id: letters, digits, dot, dash, underscore, colon, slash"
+  );
+
+export type ModelId = z.infer<typeof ModelId>;
+
+/**
  * The Slack user whose mention started the task, as the agent asserts it.
  *
  * Bounded for the same reason a server name is: it lands in a refusal, in the

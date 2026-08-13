@@ -255,12 +255,39 @@ export const TeamSheet = z.object({
     .object({
       daily_tokens: z.number().int().positive().default(1_000_000),
       daily_tool_calls: z.number().int().positive().default(200),
+      // The invoice, in US dollars (#62). PARSED BUT NOT YET ENFORCED — a sheet
+      // setting it today is metered exactly as one that does not.
+      //
+      // **Beside `daily_tokens`, never instead of it.** Tokens are the right
+      // unit for a runaway brake and must work with no pricing knowledge at all:
+      // a self-hosted Ollama channel has no dollar cost, and a router picking a
+      // model absent from any price table still needs stopping. They are the
+      // wrong unit for a *budget* — with the model switching per task the same
+      // sixty thousand tokens is an order-of-magnitude cost swing, and the number
+      // an operator wrote stops meaning what they thought it meant. Both are
+      // optional and whichever binds first refuses.
+      //
+      // Optional with no default, unlike every other field here, because there
+      // is no figure that is right for a channel whose operator has not said one.
+      // A default token count is a brake; a default dollar cap is a bill.
+      //
+      // A float, and the only one in the cost path. It is an authored number,
+      // converted to integer micro-units once at decision time — the accounting
+      // itself accumulates nothing derived, and the proxy's price table is
+      // integers throughout. See ./price-table.ts.
+      daily_usd: z.number().positive().optional(),
       // What a cached token is worth against `daily_tokens`. Cache reads and
       // cache writes bill differently from ordinary input tokens, and by how
       // much is the provider's decision, not ours — so it is an operator
       // setting rather than a constant. The defaults are Anthropic's ratios;
       // a channel pins its provider by pinning `[llm] model`, which is what
       // makes a per-channel weight a per-provider weight.
+      //
+      // That last sentence is about these weights and does not extend to
+      // `daily_usd` above. A weight is per channel because the operator wrote
+      // it here; a price is per *model*, resolved against whichever model the
+      // provider says it served, which under a router need not be the one this
+      // sheet asked for.
       //
       // The meter stores the raw counts, so a weight edit applies to spend
       // already recorded today, on the next call. `0` is legal and means a

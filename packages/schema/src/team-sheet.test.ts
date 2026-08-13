@@ -305,6 +305,34 @@ describe("defaults", () => {
     expect(sheet.ambient.enabled).toBe(false);
   });
 
+  // The one field here with no default, and deliberately (#62). Every other
+  // number in this block is a brake and has a figure that is safe to assume; a
+  // dollar cap is a bill, and there is none that is right for an operator who
+  // has not named one. Absent must therefore stay distinguishable from zero.
+  it("leaves daily_usd absent rather than defaulting it", () => {
+    const sheet = TeamSheet.parse({ channel: minimalChannel() });
+    expect(sheet.budget.daily_usd).toBeUndefined();
+    expect("daily_usd" in sheet.budget).toBe(false);
+  });
+
+  it("takes a dollar cap beside the token one, and refuses a non-positive figure", () => {
+    const capped = (budget: Record<string, unknown>) =>
+      TeamSheet.safeParse({ channel: minimalChannel(), budget });
+
+    // Both, which is the case the two limits are written to allow: whichever
+    // binds first refuses, and a channel on self-hosted models keeps the token
+    // brake with no spend to cap.
+    expect(capped({ daily_usd: 25, daily_tokens: 500_000 }).success).toBe(true);
+    // A float, unlike every other budget field. It is money.
+    expect(capped({ daily_usd: 0.05 }).success).toBe(true);
+    expect(capped({ daily_usd: 0 }).success).toBe(false);
+    expect(capped({ daily_usd: -1 }).success).toBe(false);
+
+    const refused = capped({ daily_usd: 0 });
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues[0]?.path).toEqual(["budget", "daily_usd"]);
+  });
+
   // A weight is a price ratio, not a count: fractional is the normal case, and
   // zero is a deliberate setting meaning a cache read costs nothing here.
   it("accepts a fractional or zero cache weight and rejects a negative one", () => {

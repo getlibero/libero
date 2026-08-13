@@ -176,6 +176,30 @@ export interface LogFields {
    */
   tokens?: number;
   /**
+   * The model a report named, as the provider echoed it back (#62).
+   *
+   * Same trust class as `tokens` above and logged for the same reason: it comes
+   * out of the provider's response envelope rather than from anything the model
+   * wrote, and nothing about a model id is a secret. Bounded by `ModelId` at the
+   * parse, so it cannot become an unbounded string in a log line.
+   *
+   * **This is what an operator reads to write a price.** The team sheet's
+   * `[llm] model` records what was asked for; under a router the served id
+   * differs, and it is the served one a price table has to be keyed by. Absent
+   * when the report named none — the bucket the meter files those under is the
+   * meter's business, and printing it here would read as this route's choice.
+   */
+  model?: string;
+  /**
+   * Which price table produced a figure: the digest of the file's bytes (#62).
+   *
+   * Observed rather than declared, so it cannot be wrong about what it
+   * summarises — see `digestOf` in ./price-table-store.ts. Logged at load so an
+   * operator can tie a running proxy's prices to a commit in the repository they
+   * keep the file in. A price table holds model ids and integers and no secret.
+   */
+  version?: string;
+  /**
    * An approval ticket id.
    *
    * This file's rule is that no field may hold a credential value or a hash of

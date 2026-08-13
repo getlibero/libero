@@ -64,6 +64,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
+import { LEGACY_MODEL } from "@getlibero/schema";
 import type { Logger } from "./log.js";
 
 /**
@@ -84,13 +85,48 @@ export function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-/** The counters for one channel on one day. Raw counts; no weighting here. */
+/**
+ * One model's tokens, for one channel on one day.
+ *
+ * The dimension #62 added. What a token *costs* depends on which model spent it,
+ * and under a router that is not knowable from the team sheet — so the meter
+ * records it beside the counts and the price table joins them at decision time.
+ *
+ * `model` is whatever the provider echoed back, or one of the two ids this
+ * module writes itself (`LEGACY_MODEL`, `UNREPORTED_MODEL` in
+ * @getlibero/schema). It is a **dimension of a count and never a permission**:
+ * it selects a price and nothing else.
+ */
+export interface ModelSpend {
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+}
+
+/**
+ * The counters for one channel on one day. Raw counts; no weighting here.
+ *
+ * **The four totals and `byModel` are the same rows, asked two ways**, and the
+ * totals are summed from the buckets rather than stored beside them — so there
+ * is one number on disk and no pair that can drift. Two limits ask two
+ * questions: `daily_tokens` weighs the day's tokens by the sheet's cache ratios
+ * and does not care what spent them, and `daily_usd` has to know, because that
+ * is the whole difference between the two units.
+ *
+ * The totals stay flat rather than making every caller fold `byModel` because
+ * the token limit is unchanged by any of this, and a shape that forced its
+ * arithmetic to be rewritten would be inviting a behaviour change into a
+ * feature that is not supposed to have one.
+ */
 export interface DailySpend {
   readonly toolCalls: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
+  readonly byModel: readonly ModelSpend[];
 }
 
 export const NO_SPEND: DailySpend = {
@@ -98,7 +134,8 @@ export const NO_SPEND: DailySpend = {
   inputTokens: 0,
   outputTokens: 0,
   cacheReadTokens: 0,
-  cacheWriteTokens: 0
+  cacheWriteTokens: 0,
+  byModel: []
 };
 
 /**
@@ -118,24 +155,77 @@ export const NO_SPEND: DailySpend = {
  * and simply never warns; a build with it creates the table on open, since the
  * schema runs before this check. Neither direction can produce a wrong number,
  * so neither is worth an operator's outage.
+ *
+ * **Version 2 moved the token counts into their own table, keyed by model**
+ * (#62), and that precedent explicitly does not apply: the columns it moved are
+ * counters, which is precisely what this number guards. It is also the version
+ * that gave this file a migration at all — until it, `checkVersion` could only
+ * stamp or refuse, so a shape change had no way forward that did not go through
+ * an operator deleting their spend.
+ *
+ * Unlike the audit log's versions, this one is a **data move rather than a
+ * widening**, so "what happens to a row that fails" needs its own answer: none
+ * can. Every v1 row maps to exactly one `channel_spend` row and at most one
+ * `channel_token_spend` row, by a total function with no constraint to violate.
+ * Check that again before adding a version 3.
  */
-export const BUDGET_SCHEMA_VERSION = 1;
+export const BUDGET_SCHEMA_VERSION = 2;
 
+/**
+ * The two spend tables, parameterised on their names.
+ *
+ * One source for each, for `auditTableDdl`'s reason: `rebuildBudgetTables` has
+ * to build tables *identical* to the ones a fresh file gets and rename them into
+ * place, and two copies of these columns would agree the day they were written
+ * and drift on some later one. There is a test that opens a created file and a
+ * migrated one and compares what SQLite says the tables are.
+ *
+ * **They are two tables because a tool call has no model.** Keying one table on
+ * `(channel, day, model)` would force `addToolCall` to invent one, and the row
+ * it invented would carry a real tool-call count with zeroed token columns — one
+ * key meaning two different things. The split also says something worth being
+ * able to read off the schema: `daily_tool_calls` is the limit that holds under
+ * full compromise of the agent process, and nothing #62 added touches its table.
+ *
+ * The argument is always a module-private literal. It is never input, and it
+ * cannot be: nothing outside this file can call these.
+ */
+const channelSpendDdl = (table: string, ifNotExists: boolean): string => `
+CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
+  channel    TEXT    NOT NULL,
+  day        TEXT    NOT NULL,
+  tool_calls INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (channel, day)
+) WITHOUT ROWID`;
+
+const tokenSpendDdl = (table: string, ifNotExists: boolean): string => `
+CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
+  channel            TEXT    NOT NULL,
+  day                TEXT    NOT NULL,
+  model              TEXT    NOT NULL,
+  input_tokens       INTEGER NOT NULL DEFAULT 0,
+  output_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (channel, day, model)
+) WITHOUT ROWID`;
+
+/**
+ * What a file must have before `migrate` can look at it.
+ *
+ * `turn_report` and `budget_warning` are unchanged across both versions and
+ * carry no column the migration touches, so they and the one index sit here
+ * rather than being deferred the way the audit log's are — there is no version
+ * on which creating them would fail.
+ */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS channel_spend (
-  channel            TEXT    NOT NULL,
-  day                TEXT    NOT NULL,
-  tool_calls         INTEGER NOT NULL DEFAULT 0,
-  input_tokens       INTEGER NOT NULL DEFAULT 0,
-  output_tokens      INTEGER NOT NULL DEFAULT 0,
-  cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (channel, day)
-) WITHOUT ROWID;
+${channelSpendDdl("channel_spend", true)};
+
+${tokenSpendDdl("channel_token_spend", true)};
 
 CREATE TABLE IF NOT EXISTS turn_report (
   channel TEXT    NOT NULL,
@@ -155,23 +245,41 @@ CREATE TABLE IF NOT EXISTS budget_warning (
 CREATE INDEX IF NOT EXISTS turn_report_at ON turn_report (at);
 `;
 
-/** A row of `channel_spend`, as SQLite hands it back. */
-interface SpendRow {
-  readonly tool_calls: number;
-  readonly input_tokens: number;
-  readonly output_tokens: number;
-  readonly cache_read_tokens: number;
-  readonly cache_write_tokens: number;
-}
+/**
+ * A row of `channel_token_spend`, as SQLite hands it back.
+ *
+ * Indexed rather than declared as named properties, because `all()` is typed as
+ * a bag of `SQLOutputValue` and a direct assertion to a named shape is one TS
+ * refuses without a detour through `unknown` — which would assert more than this
+ * module knows. The column list is three lines above the read.
+ */
+type TokenRow = Record<string, unknown>;
 
-function toDailySpend(row: SpendRow | undefined): DailySpend {
-  if (row === undefined) return NO_SPEND;
+const count = (row: TokenRow, column: string): number => (row[column] as number | undefined) ?? 0;
+
+/**
+ * The day's counters, from the two rows sets that hold them.
+ *
+ * The four totals are summed here, from the same buckets that are handed back —
+ * so they are a projection of what is being returned rather than a second read
+ * that could disagree with it. Nothing on disk holds a total.
+ */
+function toDailySpend(toolCalls: number, rows: readonly TokenRow[]): DailySpend {
+  const byModel = rows.map(row => ({
+    model: String(row["model"]),
+    inputTokens: count(row, "input_tokens"),
+    outputTokens: count(row, "output_tokens"),
+    cacheReadTokens: count(row, "cache_read_tokens"),
+    cacheWriteTokens: count(row, "cache_write_tokens")
+  }));
+
   return {
-    toolCalls: row.tool_calls,
-    inputTokens: row.input_tokens,
-    outputTokens: row.output_tokens,
-    cacheReadTokens: row.cache_read_tokens,
-    cacheWriteTokens: row.cache_write_tokens
+    toolCalls,
+    inputTokens: byModel.reduce((sum, bucket) => sum + bucket.inputTokens, 0),
+    outputTokens: byModel.reduce((sum, bucket) => sum + bucket.outputTokens, 0),
+    cacheReadTokens: byModel.reduce((sum, bucket) => sum + bucket.cacheReadTokens, 0),
+    cacheWriteTokens: byModel.reduce((sum, bucket) => sum + bucket.cacheWriteTokens, 0),
+    byModel
   };
 }
 
@@ -199,7 +307,14 @@ export interface BudgetDb {
    * transaction: a crash between them would leave the turn marked as counted
    * with its tokens never added, which is spend lost in silence.
    */
-  addTurnTokens(channel: string, day: string, turn: string, atMs: number, usage: TurnTokens): boolean;
+  addTurnTokens(
+    channel: string,
+    day: string,
+    turn: string,
+    atMs: number,
+    model: string,
+    usage: TurnTokens
+  ): boolean;
   /**
    * Take this channel's one warning for this limit today, if it is still there.
    *
@@ -258,16 +373,21 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
     // right answer; SQLITE_BUSY back to a serving request is not.
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec(SCHEMA);
-    checkVersion(db, file);
+    migrate(db, file);
   } catch (error) {
     db.close();
     throw error;
   }
 
   const statements = {
-    read: db.prepare(
-      `SELECT tool_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-         FROM channel_spend WHERE channel = ? AND day = ?`
+    readCalls: db.prepare(`SELECT tool_calls FROM channel_spend WHERE channel = ? AND day = ?`),
+    // Ordered, so that two processes reading one day agree on the order of the
+    // buckets. Nothing depends on which order, only that it is not the file's
+    // insertion history — a `budget show` whose rows moved between runs reads
+    // as data changing when nothing did.
+    readTokens: db.prepare(
+      `SELECT model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+         FROM channel_token_spend WHERE channel = ? AND day = ? ORDER BY model`
     ),
     addCall: db.prepare(
       `INSERT INTO channel_spend (channel, day, tool_calls) VALUES (?, ?, 1)
@@ -278,10 +398,10 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
          ON CONFLICT (channel, turn) DO NOTHING`
     ),
     addTokens: db.prepare(
-      `INSERT INTO channel_spend
-         (channel, day, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-       VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (channel, day) DO UPDATE SET
+      `INSERT INTO channel_token_spend
+         (channel, day, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (channel, day, model) DO UPDATE SET
            input_tokens       = input_tokens       + excluded.input_tokens,
            output_tokens      = output_tokens      + excluded.output_tokens,
            cache_read_tokens  = cache_read_tokens  + excluded.cache_read_tokens,
@@ -292,9 +412,19 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
          ON CONFLICT (channel, day, budget_limit) DO NOTHING`
     ),
     clearSpend: db.prepare(`DELETE FROM channel_spend WHERE channel = ? AND day = ?`),
+    clearTokens: db.prepare(`DELETE FROM channel_token_spend WHERE channel = ? AND day = ?`),
     clearTurns: db.prepare(`DELETE FROM turn_report WHERE channel = ? AND day = ?`),
     clearWarnings: db.prepare(`DELETE FROM budget_warning WHERE channel = ? AND day = ?`),
-    days: db.prepare(`SELECT day FROM channel_spend WHERE channel = ? ORDER BY day`),
+    // Both tables, because either can hold a day the other does not: a channel
+    // whose turns all failed before a tool call has tokens and no calls, and one
+    // whose agent never reported has calls and no tokens. A `budget show` that
+    // missed such a day would report zero for a day with spend in it.
+    days: db.prepare(
+      `SELECT day FROM channel_spend WHERE channel = ?
+         UNION
+       SELECT day FROM channel_token_spend WHERE channel = ?
+        ORDER BY day`
+    ),
     // The one statement in this file with no `WHERE channel = ?`, on purpose:
     // it expires retry-dedupe rows by age alone and never touches
     // channel_spend, so no channel's counters can move through it. Anything
@@ -306,14 +436,16 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
 
   return {
     readSpend(channel, day) {
-      return toDailySpend(statements.read.get(channel, day) as SpendRow | undefined);
+      const calls = statements.readCalls.get(channel, day) as { tool_calls: number } | undefined;
+      const tokens = statements.readTokens.all(channel, day) as TokenRow[];
+      return toDailySpend(calls?.tool_calls ?? 0, tokens);
     },
 
     addToolCall(channel, day) {
       statements.addCall.run(channel, day);
     },
 
-    addTurnTokens(channel, day, turn, atMs, usage) {
+    addTurnTokens(channel, day, turn, atMs, model, usage) {
       // IMMEDIATE takes the write lock up front. Two concurrent reports that
       // both began as readers would otherwise deadlock upgrading it.
       db.exec("BEGIN IMMEDIATE");
@@ -329,6 +461,7 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
         statements.addTokens.run(
           channel,
           day,
+          model,
           usage.inputTokens,
           usage.outputTokens,
           usage.cacheReadTokens,
@@ -350,15 +483,18 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
     },
 
     clearDay(channel, day) {
-      // All three tables, in one transaction. Clearing the counters and leaving
+      // All four tables, in one transaction. Clearing the counters and leaving
       // this channel's turn ids behind would let a retry of an already-counted
       // turn re-spend a budget that was just reset; leaving the warning behind
       // would give the channel a reset day it cannot be warned about, which is
       // the same class of half-reset and the reason a reset re-arms rather than
-      // merely re-zeroes.
+      // merely re-zeroes. Since #62 the token counts are their own table, and
+      // one cleared without the other is a channel reset in one unit and not
+      // the other — which is the same half-reset one table down.
       db.exec("BEGIN IMMEDIATE");
       try {
         statements.clearSpend.run(channel, day);
+        statements.clearTokens.run(channel, day);
         statements.clearTurns.run(channel, day);
         statements.clearWarnings.run(channel, day);
         db.exec("COMMIT");
@@ -369,7 +505,7 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
     },
 
     daysWithSpend(channel) {
-      return (statements.days.all(channel) as { day: string }[]).map(row => row.day);
+      return (statements.days.all(channel, channel) as { day: string }[]).map(row => row.day);
     },
 
     pruneTurnReportsBefore(atMs) {
@@ -383,22 +519,118 @@ export function openBudgetDb(options: BudgetDbOptions): BudgetDb {
 }
 
 /**
- * Read the version, or claim the file if it has none.
+ * Whether a table has this column, asked of SQLite rather than inferred.
  *
- * A file with no row is either brand new or one this build just created, and
- * both are ours to stamp. A row we do not recognise is not: refusing to start
- * is the only answer that cannot corrupt a counter.
+ * The same structural question `audit-db.ts` asks, for the same reason: the
+ * rebuild reads the table's actual shape instead of trusting a version number,
+ * so an operator who deleted the stamp from a file that has rows in it does not
+ * get their token counts silently zeroed. `schema_version` carries no trigger,
+ * so that is a thing they can do.
+ *
+ * The table name is a module-private literal at every call site and cannot be
+ * input.
  */
-function checkVersion(db: DatabaseSync, file: string): void {
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some(entry => entry["name"] === column);
+}
+
+/**
+ * Rebuild the spend tables into the shape this build writes, keeping every count.
+ *
+ * One procedure rather than one per version pair, for `rebuildAuditTable`'s
+ * reason: the DDL builders above are by construction the *current* tables, so a
+ * ladder would need a frozen v1 literal beside them — the second copy of these
+ * columns that their doc exists to prevent.
+ *
+ * **Where a v1 file's tokens go.** They were recorded before the meter knew what
+ * spent them, so there is no honest model id to give them and inventing one
+ * would be a price applied to spend that never met it. They go to
+ * `LEGACY_MODEL`, which the price table answers at **zero** — `daily_usd` did
+ * not exist when they were spent, so no sheet asked for them to be capped, and
+ * charging them would refuse a channel on the morning after an upgrade for spend
+ * its operator never opted into. They still count in full against `daily_tokens`,
+ * which is the limit that *was* in force. The bucket can only carry rows dated on
+ * or before this migration, so it ages out with one UTC day.
+ *
+ * **An all-zero v1 row produces no bucket.** The `WHERE` below is not an
+ * optimisation: a channel that made tool calls and never reported a token would
+ * otherwise gain a `(legacy)` row of four zeroes, which reads as "this channel
+ * has unpriceable spend" to anything looking at the buckets, and is false.
+ *
+ * **No row can fail**, which is the property `BUDGET_SCHEMA_VERSION`'s doc asks
+ * each version to establish for itself. Every v1 row maps to one `channel_spend`
+ * row and at most one `channel_token_spend` row; there is no constraint for a
+ * copied value to violate, because the destination's only new column is one this
+ * procedure supplies. That is a weaker claim than the audit log's widenings and
+ * had to be checked separately — this is a data move, not a relaxed CHECK.
+ *
+ * The scratch table is named for what it is rather than for a version, and for
+ * the same reason `tool_call_audit_rebuilt` is.
+ */
+function rebuildBudgetTables(db: DatabaseSync): void {
+  // Read before the transaction opens: a question about the tables as they
+  // stand, whose answer decides whether there is anything to move.
+  const carriesTokens = hasColumn(db, "channel_spend", "input_tokens");
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(channelSpendDdl("channel_spend_rebuilt", false));
+    db.exec(`
+      INSERT INTO channel_spend_rebuilt (channel, day, tool_calls)
+      SELECT channel, day, tool_calls FROM channel_spend
+    `);
+    // Already created by SCHEMA on every path that reaches here; stated again so
+    // this procedure is complete on its own terms rather than depending on the
+    // order two module-level constants happen to run in.
+    db.exec(tokenSpendDdl("channel_token_spend", true));
+    if (carriesTokens) {
+      // Bound rather than interpolated. It is a module constant and not input,
+      // so this is not a live injection — but every value in this file is bound
+      // and an exception would be the one a later reader copies.
+      db.prepare(
+        `INSERT INTO channel_token_spend
+           (channel, day, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+         SELECT channel, day, ?,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+           FROM channel_spend
+          WHERE input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0`
+      ).run(LEGACY_MODEL);
+    }
+    db.exec("DROP TABLE channel_spend");
+    db.exec("ALTER TABLE channel_spend_rebuilt RENAME TO channel_spend");
+    db.exec("DELETE FROM schema_version");
+    db.exec(`INSERT INTO schema_version (version) VALUES (${BUDGET_SCHEMA_VERSION})`);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/**
+ * Bring the file to the version this build writes, or refuse to start.
+ *
+ * A version we do not recognise still means refusing to start — the rule this
+ * file had before it had a migration at all, and the only answer that cannot
+ * corrupt a counter.
+ *
+ * **The absent-row case runs the rebuild too**, for the reason `audit-db.ts`
+ * gives: `db.exec(SCHEMA)` and the version stamp are two commits, so a process
+ * that died between them left a file with an older table and no stamp, and
+ * stamping that current without looking would leave v1 token columns sitting
+ * beside an empty bucket table — every count still on disk and none of it
+ * metered. On a file this build just created the rebuild copies zero rows and
+ * costs a handful of DDL statements once, at startup.
+ */
+function migrate(db: DatabaseSync, file: string): void {
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
-  if (row === undefined) {
-    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(BUDGET_SCHEMA_VERSION);
+  if (row !== undefined && row.version === BUDGET_SCHEMA_VERSION) return;
+  if (row === undefined || row.version === 1) {
+    rebuildBudgetTables(db);
     return;
   }
-  if (row.version !== BUDGET_SCHEMA_VERSION) {
-    throw new Error(
-      `proxy budget: ${file} is schema version ${row.version}, and this build writes ` +
-        `version ${BUDGET_SCHEMA_VERSION}`
-    );
-  }
+  throw new Error(
+    `proxy budget: ${file} is schema version ${row.version}, and this build writes ` +
+      `version ${BUDGET_SCHEMA_VERSION} with no migration from ${row.version}`
+  );
 }

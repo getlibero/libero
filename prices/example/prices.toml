@@ -1,0 +1,83 @@
+# Example price table — copy to a path you set as PROXY_PRICE_TABLE.
+#
+# What a model's tokens cost, so that `[budget] daily_usd` in a team sheet can
+# mean something. The proxy meters raw token counts per channel per model and
+# joins them against this file when it decides a call; nothing here is stored
+# with the counts, so correcting a price re-prices spend already recorded today,
+# on the channel's next call.
+#
+# Nothing in this file is a secret, and nothing in it is a permission. It decides
+# what spend costs, never what a channel may do — that is the team sheet's, and
+# a model absent from this file cannot be priced rather than being allowed less.
+#
+# THE PROXY SHIPS NO DEFAULT TABLE. A price list baked into a released image goes
+# stale on the provider's schedule and is then trusted. If no channel sets
+# `daily_usd`, you need no file at all and PROXY_PRICE_TABLE can stay unset.
+#
+# THE NUMBERS BELOW ARE AN EXAMPLE, NOT A QUOTE. Providers change prices and
+# this file is not updated when they do. Copy the shape, then fill in the figures
+# from your provider's own pricing page and review them the way you review a team
+# sheet. A wrong price here is a channel capped at the wrong number, in the
+# direction the mistake points.
+
+# UNITS: micro-USD per MILLION tokens, as integers.
+#
+# Money is not a float — a budget that accumulates a fraction per token drifts,
+# and the drift is invisible until someone disputes a refusal. Per million rather
+# than per token because a per-token price in micro-USD would round to zero for
+# every model on the market, and a table of zeroes is a table nobody can review.
+#
+#   $3.00 per million input tokens  ->  input = 3_000_000
+#   $0.30 per million cache reads   ->  cache_read = 300_000
+#
+# All four tiers are required. Cache reads run about a tenth of input price and
+# cache writes above it, so a table that gave them one number would be wrong by
+# an order of magnitude on a cache-heavy agent — which is every agent here.
+#
+# `0` is legal and means free: a self-hosted model with a real dollar cost of
+# nothing, priced honestly. Leaving a model out is the different statement that
+# its spend cannot be priced at all, and a channel with `daily_usd` set is
+# refused rather than metered at zero when it spends on one.
+
+[[model]]
+id          = "claude-sonnet-4-6"
+input       = 3_000_000
+output      = 15_000_000
+cache_write = 3_750_000
+cache_read  = 300_000
+
+[[model]]
+id          = "claude-opus-4-6"
+input       = 15_000_000
+output      = 75_000_000
+cache_write = 18_750_000
+cache_read  = 1_500_000
+
+[[model]]
+id          = "claude-haiku-4-5"
+input       = 1_000_000
+output      = 5_000_000
+cache_write = 1_250_000
+cache_read  = 100_000
+
+# A self-hosted model behind the LiteLLM sidecar or an Ollama endpoint. Priced at
+# zero because it is: the electricity is not on the provider's invoice, and this
+# is how you say so without leaving the model unpriced, which would refuse every
+# call the moment a channel set `daily_usd`.
+[[model]]
+id          = "qwen2.5:7b"
+input       = 0
+output      = 0
+cache_write = 0
+cache_read  = 0
+
+# The id must be the one the PROVIDER ECHOES BACK, not the one your team sheet
+# asks for. They are usually the same and are not always: a router resolves an
+# alias, and Bedrock and Vertex carry their own prefixes. The proxy logs the
+# model on every spend report (`spend_reported`), which is where to read the
+# spelling this file needs. Some real ones, for shape:
+#
+#   us.anthropic.claude-sonnet-4-5-20250929-v1:0
+#   accounts/fireworks/models/llama-v3p1-70b-instruct
+#   meta-llama/Llama-3.3-70B-Instruct-Turbo
+#   models/gemini-2.5-pro

@@ -34,9 +34,16 @@ export type { BuiltinDispatcherOptions } from "./builtin-dispatcher.js";
 // The budget meter. Real, and required by any composition that also has a real
 // dispatcher — see `assertServableComposition`.
 export { NO_SPEND, openBudgetDb, utcDay, BUDGET_SCHEMA_VERSION } from "./budget-db.js";
-export type { BudgetDb, BudgetDbOptions, DailySpend, TurnTokens } from "./budget-db.js";
+export type { BudgetDb, BudgetDbOptions, DailySpend, ModelSpend, TurnTokens } from "./budget-db.js";
 export { TURN_RETENTION_MS, createSqliteSpendMeter, openSpendMeter } from "./budget-meter.js";
 export type { SpendMeterOptions } from "./budget-meter.js";
+
+// The price table (#62). Read at every decision so a corrected price re-prices
+// today's spend on the next call; absent is legal and prices nothing, which is
+// the fail-closed answer for a channel capped in dollars. Nothing consults it
+// yet — `budget.daily_usd` parses and is not enforced in this build.
+export { NO_PRICES, openPriceTableStore } from "./price-table-store.js";
+export type { PriceLookup, PriceTableStore, PriceTableStoreOptions } from "./price-table-store.js";
 
 // The operator's paths on the meter, exported for the budget CLI and reached by
 // nothing in the server. See the header of ./budget-admin.ts.

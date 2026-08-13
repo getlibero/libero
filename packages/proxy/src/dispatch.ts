@@ -78,10 +78,19 @@ export interface ToolCallRecorder {
  * wider, so it cannot read a counter either.
  */
 export interface TokenRecorder {
+  /**
+   * `model` is the id the provider echoed back, or absent when it echoed none
+   * (#62). It is a **dimension of the count** — which row the tokens land in —
+   * and never an authorization input: an implementation may not read a sheet on
+   * it, and an absent one is metered under a reserved bucket rather than being
+   * refused here. What that bucket costs a channel is `./enforce.ts`'s answer,
+   * on the next call, from the sheet.
+   */
   recordTokens(
     channel: string,
     turn: string,
-    usage: TokenUsageReport
+    usage: TokenUsageReport,
+    model?: string
   ): SpendRecord | Promise<SpendRecord>;
 }
 

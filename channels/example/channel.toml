@@ -57,6 +57,28 @@ follow_up_window_seconds = 900                   # replies in a worked thread ne
 daily_tokens     = 2_000_000
 daily_tool_calls = 400
 
+# The invoice, in US dollars (#62).
+#
+# PARSED BUT NOT YET ENFORCED. The field validates when the sheet loads and
+# nothing consults it yet; a channel setting it today is metered exactly as one
+# that does not. Write it as though it were enforced — it is the contract it will
+# be enforced against.
+#
+# Beside daily_tokens rather than instead of it. Tokens are the right unit for a
+# runaway brake and need no pricing knowledge at all, which is what a channel on
+# self-hosted models wants; they are the wrong unit for a budget, because with
+# the model switching per task the same 60k tokens is an order-of-magnitude cost
+# swing. Set both and whichever binds first refuses.
+#
+# Priced against the model the PROVIDER SAYS IT SERVED, not the one [llm] model
+# above asks for — under a router those differ, which is the whole reason this
+# field exists. Spend on a model absent from the proxy's price table cannot be
+# priced, and a channel with this set is refused rather than metered at zero.
+# There is no default: a default token count is a brake, a default dollar cap is
+# a bill. Commented out here because a starter sheet must not invent one.
+#
+# daily_usd = 25.00
+
 # What a cached token costs against daily_tokens. Cache reads and cache writes
 # bill differently from ordinary input tokens; how differently is your
 # provider's decision. These are Anthropic's ratios. Set cache_read_weight = 0

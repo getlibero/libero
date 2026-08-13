@@ -71,6 +71,46 @@ describe("the token report", () => {
   });
 });
 
+// Which model spent them (#62). A sibling of `usage` rather than a field inside
+// it, because that block promises a field-for-field correspondence with the
+// agent's own `TokenUsage` and a model id is not one of the counts.
+describe("the model that served the turn", () => {
+  it("carries the id the provider echoed back", () => {
+    const report = SpendReport.parse({ ...wire, model: "claude-sonnet-4-6" });
+    expect(report.model).toBe("claude-sonnet-4-6");
+  });
+
+  // Optional, and it has to stay that way. A required field would make every
+  // report from a provider that echoes nothing a 400 — which loses the counts
+  // and fails *open* on `daily_tokens`, the limit that catches a runaway loop.
+  // What an absent model costs a channel is the proxy's answer, not the wire's:
+  // the tokens land in a bucket no price table can name.
+  it("parses a report that names no model", () => {
+    const report = SpendReport.parse(wire);
+    expect(report.model).toBeUndefined();
+  });
+
+  it("stays outside the usage block, where an unknown field is still refused", () => {
+    expect(
+      SpendReport.safeParse({ ...wire, usage: { ...wire.usage, model: "claude-sonnet-4-6" } }).success
+    ).toBe(false);
+  });
+
+  // The meter writes two model ids of its own and neither can arrive on the
+  // wire, which is what makes the reservation structural rather than a check.
+  it("refuses the two ids the meter reserves for itself", () => {
+    for (const reserved of ["(legacy)", "(unreported)"]) {
+      expect(SpendReport.safeParse({ ...wire, model: reserved }).success).toBe(false);
+    }
+  });
+
+  it("refuses a model id that is empty, unbounded, or carries whitespace", () => {
+    for (const model of ["", "x".repeat(129), "claude sonnet", "/leading"]) {
+      expect(SpendReport.safeParse({ ...wire, model }).success).toBe(false);
+    }
+  });
+});
+
 describe("the turn id", () => {
   // The whole idempotency story rests on this value, and it lands in a SQLite
   // key and in log lines, so it is bounded like every other name that crosses.

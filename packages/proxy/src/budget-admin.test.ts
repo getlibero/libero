@@ -90,7 +90,7 @@ describe("showing a channel", () => {
   it("reports the day and the raw counters", async () => {
     const meter = meterAt(NOON);
     await meter.recordToolCall(CHANNEL);
-    await meter.recordTokens(CHANNEL, "t1", usage);
+    await meter.recordTokens(CHANNEL, "t1", usage, "claude-sonnet-4-6");
 
     expect(readChannelSpend(db, CHANNEL, NOON)).toEqual({
       day: "2026-08-04",
@@ -99,7 +99,16 @@ describe("showing a channel", () => {
         inputTokens: 120,
         outputTokens: 8,
         cacheReadTokens: 100,
-        cacheWriteTokens: 20
+        cacheWriteTokens: 20,
+        byModel: [
+          {
+            model: "claude-sonnet-4-6",
+            inputTokens: 120,
+            outputTokens: 8,
+            cacheReadTokens: 100,
+            cacheWriteTokens: 20
+          }
+        ]
       }
     });
   });
