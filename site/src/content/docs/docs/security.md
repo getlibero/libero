@@ -115,6 +115,12 @@ bound the exposure and keep it out of the decisions that matter:
   `[llm] max_result_chars` before it enters the model's context, truncated with a line that says
   it was. The two are owned by different people on purpose: the first spends memory in a process
   every channel shares, the second spends one channel's own token budget.
+- **And the calls themselves are bounded.** `PROXY_MAX_UPSTREAM_CONCURRENCY` — eight by default,
+  a deployment setting — caps how many calls run against one server at once, which is the factor
+  the byte bound above is multiplied by: a server that accepts connections and never answers can
+  hold at most that many reads, rather than as many as the channels naming it can start. It also
+  stops one busy channel from spending a shared server's rate limit on every other channel's
+  behalf. Past the limit a call waits briefly and is then told it was not made.
 
 Those caps limit how much a hostile server can spend of a channel's context and of the proxy's
 memory. They are not a mitigation for what it says there. **What accepts that exposure is the act of naming the server in

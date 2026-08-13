@@ -72,6 +72,18 @@ export interface HttpDispatcherOptions {
    * `McpPoolOptions`.
    */
   readonly maxResponseBytes?: number;
+  /**
+   * The deployment's bound on concurrent calls to one upstream, from
+   * `PROXY_MAX_UPSTREAM_CONCURRENCY`. Absent means
+   * `DEFAULT_UPSTREAM_CONCURRENCY`.
+   *
+   * Beside `maxResponseBytes` and for its reason: it bounds what this process
+   * spends against one upstream, which every channel naming that upstream
+   * shares. See the note on `McpPoolOptions`.
+   */
+  readonly maxUpstreamConcurrency?: number;
+  /** How long a call waits for a permit. For tests; see `QUEUE_WAIT_MS`. */
+  readonly queueWaitMs?: number;
   readonly logger?: Logger;
   /**
    * The catalog cache's clock, for tests.
@@ -147,6 +159,27 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
     if (outcome.failure === "too_large") {
       return "The tool server's handshake was larger than this proxy will accept. The call was not made.";
     }
+    // Its own sentence because the one below would name the wrong party: the
+    // tool server could have been reached perfectly well, and was not asked.
+    // This proxy was already running as many calls to it as it allows and none
+    // finished while this one waited. Worth saying plainly rather than as a
+    // reachability failure, because the two have opposite fixes — one is the
+    // operator's upstream, the other is `PROXY_MAX_UPSTREAM_CONCURRENCY` or a
+    // channel making more calls at once than the deployment was sized for.
+    if (outcome.failure === "busy") {
+      return "This proxy is already running as many calls to that tool server as it allows, and none finished in time. The call was not made.";
+    }
+    // The `call_failed` arm has had this sentence since the legacy handshake
+    // landed; this arm needs it since #159, which made this the *designed*
+    // shutdown path rather than a narrow race. `close()` opens the pool's
+    // limiters so a call queued for a permit is woken rather than stranded, and
+    // what it is woken into is a client that has already flipped closed — so it
+    // never reaches a request and the outcome is a connect failure. The default
+    // below would say the server could not be reached, which names a server that
+    // is fine and was never asked.
+    if (outcome.failure === "closed") {
+      return "The proxy is shutting down. The call was not made.";
+    }
     return `The tool server could not be reached: ${outcome.failure}. The call was not made.`;
   }
 
@@ -193,10 +226,34 @@ function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | 
 }
 
 /** Which log line a failure deserves, and under what reason code. */
-function failureEvent(failure: McpFailure): "mcp_protocol_error" | "mcp_input_required" | "upstream_failed" {
+function failureEvent(
+  failure: McpFailure
+): "mcp_protocol_error" | "mcp_input_required" | "upstream_saturated" | "upstream_failed" {
   if (failure === "protocol_error" || failure === "unsupported_protocol") return "mcp_protocol_error";
   if (failure === "input_required") return "mcp_input_required";
+  // Not `upstream_failed`, which would file this under the upstream's name for
+  // something the upstream did not do — it was never asked. An operator grepping
+  // for a failing server should not find these, and an operator wondering
+  // whether to raise `PROXY_MAX_UPSTREAM_CONCURRENCY` should find nothing else.
+  if (failure === "busy") return "upstream_saturated";
   return "upstream_failed";
+}
+
+/**
+ * How loudly a failure is written down.
+ *
+ * `error` is the default because a call that produced no answer usually means
+ * something an operator has to fix. The two exceptions are the conditions that
+ * clear on their own: an upstream asking for input, and an upstream this proxy
+ * is already running its full allowance of calls against. Saturation at a
+ * healthy deployment under load is a capacity fact, and one `error` line per
+ * queued call is how a working system pages somebody.
+ *
+ * A function rather than a second ternary at the call site, because the list of
+ * exceptions is now long enough to be a decision rather than a special case.
+ */
+function failureLevel(failure: McpFailure): "warn" | "error" {
+  return failure === "input_required" || failure === "busy" ? "warn" : "error";
 }
 
 export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispatcher {
@@ -205,6 +262,10 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
     scheme: SCHEME,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.maxResponseBytes !== undefined ? { maxResponseBytes: options.maxResponseBytes } : {}),
+    ...(options.maxUpstreamConcurrency !== undefined
+      ? { maxUpstreamConcurrency: options.maxUpstreamConcurrency }
+      : {}),
+    ...(options.queueWaitMs !== undefined ? { queueWaitMs: options.queueWaitMs } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
   });
 
@@ -372,7 +433,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
           return { outcome: "ran", result: outcome.result };
         }
 
-        logger.log(outcome.failure === "input_required" ? "warn" : "error", {
+        logger.log(failureLevel(outcome.failure), {
           event: failureEvent(outcome.failure),
           channel: call.channel,
           server: call.server,

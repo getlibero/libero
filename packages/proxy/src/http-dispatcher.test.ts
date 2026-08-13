@@ -81,6 +81,16 @@ function stdioServer(): McpServer {
   return { name: "github", transport: "stdio", credential: CRED, tool: [{ name: "list_prs" }] };
 }
 
+/** Polls rather than sleeps, per the convention in team-sheet-store.test.ts. */
+async function until(predicate: () => boolean, label: string, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 /** Captures every log line the dispatcher writes, for the leak assertions. */
 function capturingLogger(): { lines: string[]; logger: ReturnType<typeof createJsonLogger> } {
   const lines: string[] = [];
@@ -266,6 +276,114 @@ describe("an upstream that does not answer", () => {
     expect(content).not.toContain("edge proxy");
     expect(content).not.toContain("502");
     expect(content).not.toContain(SECRET);
+  });
+});
+
+// The pool's permit gate seen from the outside (#159): what a model is told, and
+// what an operator finds in the log. The limit's own behaviour is
+// mcp-pool.test.ts's and the semaphore's is semaphore.test.ts's.
+describe("an upstream already running as many calls as this proxy allows", () => {
+  it("tells the model it was not called, without blaming the server", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({
+      vault: vaultOf({ [CRED]: SECRET }),
+      logger,
+      maxUpstreamConcurrency: 1,
+      queueWaitMs: 25
+    });
+
+    // Two identical calls at a one-permit upstream that answers no `tools/call`.
+    // Exactly one of them holds the permit and hangs; the other waits out
+    // `queueWaitMs` and gives up. Which is which is a race and does not matter —
+    // that is what makes this deterministic without polling for it. `held` is
+    // awaited at the end, once the fake is gone and its request has failed.
+    const held = dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    // A failure, not a refusal: nothing was denied, and the proxy did not break.
+    expect(result.outcome).toBe("ran");
+    expect(result.outcome === "ran" && result.result.isError).toBe(true);
+    expect(result.outcome === "ran" && result.result.content).toBe(
+      "This proxy is already running as many calls to that tool server as it allows, and none finished in time. The call was not made."
+    );
+    // Not "could not be reached", which would send an operator to check a server
+    // that is perfectly healthy and was never asked.
+    expect(result.outcome === "ran" && result.result.content).not.toContain("could not be reached");
+
+    // Filed under its own event, so a search for a failing upstream does not
+    // turn these up and a search for a saturated one turns up nothing else.
+    expect(lines.join("")).toContain("upstream_saturated");
+    expect(lines.join("")).not.toContain("upstream_failed");
+    expect(lines.join("")).not.toContain(SECRET);
+
+    await dispatcher.close();
+    await fake.close();
+    fake = undefined;
+    await held;
+  });
+
+  // At `warn`, not `error`. Saturation at a healthy deployment under load clears
+  // on its own, and one error line per queued call is how a working system pages
+  // somebody at three in the morning.
+  it("writes the line at warn rather than error", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({
+      vault: vaultOf({ [CRED]: SECRET }),
+      logger,
+      maxUpstreamConcurrency: 1,
+      queueWaitMs: 25
+    });
+
+    const held = dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    const saturated = lines.filter(line => line.includes("upstream_saturated"));
+    expect(saturated).not.toHaveLength(0);
+    for (const line of saturated) {
+      expect(JSON.parse(line)).toMatchObject({ level: "warn", reason: "busy" });
+    }
+
+    await dispatcher.close();
+    await fake.close();
+    fake = undefined;
+    await held;
+  });
+});
+
+// Shutdown reaches `failureText` through `connect_failed` since #159: the pool
+// opens its limiters so a queued call is woken rather than stranded, and what it
+// wakes into is a client that has already flipped closed. That arm's default
+// sentence blames the upstream, which is the wrong party for a server nobody
+// asked anything.
+describe("a call queued for a permit when the proxy shuts down", () => {
+  it("is told the proxy is shutting down, not that the server was unreachable", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const dispatcher = createHttpDispatcher({
+      vault: vaultOf({ [CRED]: SECRET }),
+      maxUpstreamConcurrency: 1,
+      // Long enough that the wait cannot be what ends this call: the close is.
+      queueWaitMs: 30_000
+    });
+
+    const held = dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+    // Reaches the fake, so the permit is spoken for before the second call asks.
+    await until(() => fake?.callsTo("tools/call").length === 1, "the upstream to be saturated");
+    const queued = dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
+
+    await dispatcher.close();
+    const result = await queued;
+
+    expect(result.outcome).toBe("ran");
+    expect(result.outcome === "ran" && result.result.content).toBe(
+      "The proxy is shutting down. The call was not made."
+    );
+    expect(result.outcome === "ran" && result.result.content).not.toContain("could not be reached");
+
+    await fake.close();
+    fake = undefined;
+    await held;
   });
 });
 
