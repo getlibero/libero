@@ -113,6 +113,7 @@ export type {
 // reply" true by construction rather than by convention. Their tests import
 // them from ./outbound.js directly.
 export {
+  DEFAULT_UPSTREAM_CONCURRENCY,
   DEFAULT_UPSTREAM_RESPONSE_BYTES,
   DEFAULT_UPSTREAM_TIMEOUT_MS,
   UpstreamError,

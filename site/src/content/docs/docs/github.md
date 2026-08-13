@@ -257,6 +257,10 @@ The messages are deliberately specific about what did and did not happen.
   hosted server should produce; if you see it, the url is reaching something else.
 - *"The tool server's answer was larger than this proxy will accept."* — `PROXY_MAX_RESPONSE_BYTES`,
   a deployment setting, 4 MiB by default. The call was made; the answer was discarded.
+- *"This proxy is already running as many calls to that tool server as it allows."* —
+  `PROXY_MAX_UPSTREAM_CONCURRENCY`, 8 by default. Nothing is wrong with GitHub: the call queued
+  behind others to the same server and none finished in time. Raise it if your token's rate limit
+  has room, or leave it — the model is told plainly and can try again.
 
 The token appears in none of these, in no log line, and in no result relayed to the model. If you
 ever find it in one, that is a security bug and [SECURITY.md](https://github.com/getlibero/libero/blob/main/SECURITY.md)

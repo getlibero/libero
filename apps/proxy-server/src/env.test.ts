@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { DEFAULT_UPSTREAM_RESPONSE_BYTES } from "@getlibero/proxy";
+import { DEFAULT_UPSTREAM_CONCURRENCY, DEFAULT_UPSTREAM_RESPONSE_BYTES } from "@getlibero/proxy";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HOST,
@@ -10,6 +10,7 @@ import {
   channelsRootFromEnv,
   hostFromEnv,
   maxResponseBytesFromEnv,
+  maxUpstreamConcurrencyFromEnv,
   portFromEnv,
   requiredEnv,
   vaultFileFromEnv,
@@ -89,6 +90,33 @@ describe("maxResponseBytesFromEnv", () => {
 
   it("accepts a number far above the default", () => {
     expect(maxResponseBytesFromEnv({ PROXY_MAX_RESPONSE_BYTES: "67108864" })).toBe(67_108_864);
+  });
+});
+
+describe("maxUpstreamConcurrencyFromEnv", () => {
+  it("defaults when unset or empty", () => {
+    expect(maxUpstreamConcurrencyFromEnv({})).toBe(DEFAULT_UPSTREAM_CONCURRENCY);
+    expect(maxUpstreamConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: "" })).toBe(DEFAULT_UPSTREAM_CONCURRENCY);
+  });
+
+  it("takes the operator's number", () => {
+    expect(maxUpstreamConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: "16" })).toBe(16);
+  });
+
+  // One is a setting, not a mistake: an upstream that permits a single
+  // concurrent call is a real thing, and serialising against it is what an
+  // operator would be asking for.
+  it("accepts one", () => {
+    expect(maxUpstreamConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: "1" })).toBe(1);
+  });
+
+  // Zero is every call refused rather than "no limit", per the bound above. No
+  // ceiling either — the operator who knows what their upstream tolerates is the
+  // only one who could set one.
+  it.each(["0", "-4", "8.5", "eight", "unlimited"])("refuses %j", raw => {
+    expect(() => maxUpstreamConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: raw })).toThrow(
+      /PROXY_MAX_UPSTREAM_CONCURRENCY/
+    );
   });
 });
 

@@ -24,6 +24,7 @@ import {
   channelsRootFromEnv,
   hostFromEnv,
   maxResponseBytesFromEnv,
+  maxUpstreamConcurrencyFromEnv,
   portFromEnv,
   priceTableFromEnv,
   requiredEnv,
@@ -97,10 +98,15 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // the deployment's rather than a channel's: it bounds this process's heap, which
 // every channel shares. The channel's own bound on a result rides on each
 // decision instead. See `maxResponseBytesFromEnv`.
+//
+// `maxUpstreamConcurrency` is read here for that reason and one more: it bounds
+// what this process spends against a single upstream, which no channel owns and
+// several may name at once (#159).
 const mcp = createHttpDispatcher({
   vault,
   logger,
-  maxResponseBytes: maxResponseBytesFromEnv(process.env)
+  maxResponseBytes: maxResponseBytesFromEnv(process.env),
+  maxUpstreamConcurrency: maxUpstreamConcurrencyFromEnv(process.env)
 });
 
 // The other arm, and it holds a directory path where the one above holds a

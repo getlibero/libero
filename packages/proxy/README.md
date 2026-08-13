@@ -149,7 +149,11 @@ reveals a credential and the one that scrubs the reply.
 - `mcp-pool.ts` — one client per upstream, keyed on the `(transport, url,
   credential)` triple `upstreamKey` defines in `enforce.ts`. Sharing that
   definition rather than restating it is what stops the pool from merging two
-  blocks enforcement treats as distinct.
+  blocks enforcement treats as distinct. It also gates that client behind
+  `PROXY_MAX_UPSTREAM_CONCURRENCY` permits, so the calls every channel rides
+  through one client are counted (#159).
+- `semaphore.ts` — FIFO permits with a bounded wait, and a waiter that gave up
+  leaves the queue rather than being handed a permit nobody is waiting for.
 - `mcp-fake-server.ts` — a real `node:http` MCP server for the tests, speaking
   either protocol and holding real session state on the legacy one, with the
   knobs the leak assertions need: both framings, an upstream that echoes its
@@ -460,6 +464,7 @@ and logs one `catalog_unavailable` line with a closed `reason`:
 | answer was not a `tools/list` | `protocol_error` |
 | 5s budget or 5-page walk ran out | `budget_exhausted` / `truncated` |
 | body past `PROXY_MAX_RESPONSE_BYTES` | `too_large` |
+| no permit within the queue wait | `busy` |
 
 That is safe because a listing is not the enforcement: a missing schema costs
 the model accuracy, never the channel a permission. The one thing that does not
@@ -559,6 +564,40 @@ what that column is for: it exists to correlate with the next turn's input
 tokens, and those are driven by what the model was handed rather than by what the
 upstream sent. The original size is not lost — it is in the notice the model
 reads.
+
+### The third bound, which makes the other two multiply out
+
+`PROXY_MAX_UPSTREAM_CONCURRENCY` (default 8) is how many calls the proxy will
+run against one upstream at once (#159). It belongs beside the wire bound and is
+owned by the same principal, for a reason the other two do not have: it is the
+factor the wire bound was always being multiplied by. One `McpClient` per
+upstream is shared by every channel naming it, and until this landed nothing
+counted the calls riding one — so a deployment's worst case against an upstream
+that accepts connections and never answers was 4 MiB, times the three-to-fivefold
+decoding overhead, times an unbounded number of concurrent calls. The product is
+now something an operator can compute.
+
+It is also the fairness bound. Channels sharing an upstream share whatever rate
+limit its credential carries, and one busy channel could spend all of it.
+
+**"One upstream" is `upstreamKey` — `(transport, url, credential)`.** So two
+sheet blocks pointing at one host under two different credentials get a limit
+each, which is the right reading (two identities, two rate limits at the far end)
+and also the way to run 2N calls at one host. Worth knowing when sizing it.
+
+A call arriving past the limit **waits** rather than being turned away: FIFO, for
+a few seconds, and then answered `busy` — `outcome: "ran"` with `isError`, the
+same shape a timeout takes, because nothing was denied. Queueing rather than
+refusing is deliberate. The budget meter counts a tool call at the moment the
+proxy commits to serving it, which is *before* dispatch, so an immediate refusal
+would charge a channel's `daily_tool_calls` for a call that never happened and
+then charge it again for the retry. The wait is bounded because the agent
+abandons its request after 30 seconds, and a permit coming free for a caller that
+has stopped listening spends a saturated upstream's scarce capacity on nobody.
+
+Listings are gated too — a `tools/list` walk is a credentialed request to the
+same upstream — and a walk that loses degrades to the thin catalog, which has
+never been allowed to block a permitted call.
 
 Answers are cached for five minutes, thirty seconds on a failure or a partial
 walk, and single-flighted — so a client polling the route does not become

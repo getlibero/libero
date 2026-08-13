@@ -95,6 +95,31 @@ export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
 export const DEFAULT_UPSTREAM_RESPONSE_BYTES = 4_194_304;
 
 /**
+ * How many calls the proxy will run against one upstream at once.
+ *
+ * The third of these bounds and the one that makes the other two add up. The
+ * timeout says how long a single call may hold a socket and the cap above says
+ * how much heap it may hold while it does — but until this landed there was no
+ * bound on *how many* held either at the same time, so the worst case an
+ * operator could compute against one black-holing upstream was thirty seconds
+ * times four megabytes times an unbounded count. This is the missing factor.
+ *
+ * **Eight, and the number is a guess about upstreams rather than about this
+ * process.** It is high enough that no ordinary deployment reaches it — a task's
+ * tool calls run one at a time, so the ceiling is roughly how many channels are
+ * mid-task at once — and low enough that a single busy channel cannot spend a
+ * shared upstream's rate limit on behalf of every other channel naming it. An
+ * operator who knows their upstream's actual limit should set
+ * `PROXY_MAX_UPSTREAM_CONCURRENCY`; this is what to do when nobody has said.
+ *
+ * A default rather than a constant, on `DEFAULT_UPSTREAM_RESPONSE_BYTES`'s
+ * argument: what one upstream tolerates is a deployment fact this repo cannot
+ * know. No ceiling, for its reason too — capping the principal who owns the
+ * heap would be advice rather than a boundary.
+ */
+export const DEFAULT_UPSTREAM_CONCURRENCY = 8;
+
+/**
  * How much of a control-plane answer the proxy will read.
  *
  * The version probe, the legacy `initialize` handshake, its acknowledgement, and

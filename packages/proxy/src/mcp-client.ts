@@ -116,7 +116,14 @@ export type McpFailure =
   | "unsupported_protocol"
   | "unauthorized"
   | "input_required"
-  | "closed";
+  | "closed"
+  // The one member nothing in this file produces. `mcp-pool.ts` gates a client
+  // behind a per-upstream permit and answers this when none came free in time —
+  // a call that was never sent, which is why it rides `connect_failed`. It is
+  // declared here rather than beside the pool because this is the closed set
+  // every reader of an outcome switches over, and a second failure vocabulary
+  // is how two of them drift.
+  | "busy";
 
 /**
  * What one `tools/call` came to.

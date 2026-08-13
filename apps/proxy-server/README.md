@@ -43,11 +43,13 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_HOST` | `127.0.0.1` | empty means the default; compose sets `0.0.0.0`, on a bridge that publishes no ports |
 | `PROXY_PORT` | `8443` | |
 | `PROXY_MAX_RESPONSE_BYTES` | `4194304` | how much of an upstream's answer to hold before abandoning it |
+| `PROXY_MAX_UPSTREAM_CONCURRENCY` | `8` | how many calls to run against one upstream at once |
 
-`PROXY_MAX_RESPONSE_BYTES` is the one knob here that is a capacity decision
-rather than an address. Past it a response is abandoned mid-read — the reader is
-cancelled, nothing is decoded, and the call comes back as `too_large` — which is
-what stops one upstream from spending this process's memory without limit.
+`PROXY_MAX_RESPONSE_BYTES` and `PROXY_MAX_UPSTREAM_CONCURRENCY` are the two
+knobs here that are capacity decisions rather than addresses. Past the first a
+response is abandoned mid-read — the reader is cancelled, nothing is decoded, and
+the call comes back as `too_large` — which is what stops one upstream from
+spending this process's memory without limit.
 
 It is deliberately **not** a team sheet field, unlike the companion bound on how
 much of a result reaches the model (`[llm] max_result_chars`). That one is
@@ -61,6 +63,28 @@ Raising it costs more than the number says. Budget roughly three to five times
 its value per concurrent call: the decoded string, the redaction pass's output
 copy, and the parsed object graph all exist at once. Four megabytes is
 comfortably above any real `tools/list` catalog and any ordinary tool answer.
+
+`PROXY_MAX_UPSTREAM_CONCURRENCY` is the factor that makes "per concurrent call"
+a quantity rather than an open question. One client per upstream is shared by
+every channel naming it, and until this landed nothing counted the calls riding
+it — so the worst case against one upstream that accepts connections and never
+answers was the response bound, times its decoding overhead, times an unbounded
+number of calls. With it, that product is something you can multiply out against
+the container's memory limit.
+
+It is a fairness setting as well as a capacity one. Channels sharing an upstream
+share its rate limit, because they share the credential the upstream sees; the
+limit stops one busy channel from spending all of it. A call arriving past the
+limit waits a few seconds for one ahead of it and is then answered *"this proxy
+is already running as many calls to that tool server as it allows"* — a failed
+call the model can see and retry, not a refusal, because nothing was denied.
+
+Like the bound above it is **not** a team sheet field, and here the reason is
+sharper than a shared heap: there is nowhere in a sheet to put it. An upstream is
+a `(transport, url, credential)` tuple that any number of channels may name, so
+two sheets could disagree about it and whichever loaded first would win. Eight is
+a guess about tool servers rather than about this process — set it to what yours
+tolerates. One is a legitimate answer, and there is no ceiling.
 
 Everything without a default is required, and a missing one stops the process at
 startup rather than degrading. For the TLS paths the reason is that a proxy

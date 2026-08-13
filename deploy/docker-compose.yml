@@ -182,6 +182,16 @@ services:
       # channel *can* set is how much of a result reaches its model, in
       # [llm] max_result_chars.
       PROXY_MAX_RESPONSE_BYTES: 4194304
+      # How many calls this process will run against one tool server at once.
+      # The factor that makes the bound above a number you can multiply out:
+      # worst case against one misbehaving upstream is that value, times its
+      # three-to-five-fold decoding overhead, times this.
+      #
+      # Also a fairness setting. Every channel naming one url and one credential
+      # shares this budget, so a busy channel cannot spend a shared server's rate
+      # limit on the others' behalf. A call past the limit waits briefly and is
+      # then told it was not made.
+      PROXY_MAX_UPSTREAM_CONCURRENCY: 8
       PROXY_TLS_CERT: /etc/libero/certs/proxy/server.pem
       PROXY_TLS_KEY: /etc/libero/certs/proxy/server.key
       # Client certs are verified against this CA and nothing else. A client

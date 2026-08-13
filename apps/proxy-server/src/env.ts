@@ -1,7 +1,12 @@
 // Environment parsing for the proxy process, apart from index.ts so the
 // rules — and their failure modes — can be tested without starting a listener.
 
-import { DEFAULT_UPSTREAM_RESPONSE_BYTES, VAULT_KEY_BYTES, parseVaultKey } from "@getlibero/proxy";
+import {
+  DEFAULT_UPSTREAM_CONCURRENCY,
+  DEFAULT_UPSTREAM_RESPONSE_BYTES,
+  VAULT_KEY_BYTES,
+  parseVaultKey
+} from "@getlibero/proxy";
 import type { VaultKey } from "@getlibero/proxy";
 
 /**
@@ -264,6 +269,44 @@ export function maxResponseBytesFromEnv(env: Env): number {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`proxy: PROXY_MAX_RESPONSE_BYTES is not a positive byte count: ${raw}`);
+  }
+  return parsed;
+}
+
+/**
+ * How many calls the proxy will run against one upstream at once:
+ * `PROXY_MAX_UPSTREAM_CONCURRENCY`, defaulting to eight.
+ *
+ * A deployment setting on the same argument as the bound above, and the two
+ * multiply: what one bad upstream can cost this process is the response cap
+ * times its three-to-five-fold decoding overhead times *this*. Until this
+ * landed the last factor was unbounded, so the product was not a number an
+ * operator could compute.
+ *
+ * **It is also not a team sheet field, and here the reason is sharper than
+ * "shared heap".** There is nowhere in a sheet to put it. An upstream is a
+ * `(transport, url, credential)` tuple that any number of channels may name,
+ * and a limit on it is a claim about the far end rather than about a channel —
+ * so two sheets could disagree, and whichever one loaded first would win. The
+ * `max_result_chars` split is the model to follow: a channel says what reaches
+ * its own model, the deployment says what this process spends on its behalf.
+ *
+ * Optional with a default, per `maxResponseBytesFromEnv`, and this one fails
+ * loudly too: a saturated wait puts `upstream_saturated` in the log and a
+ * sentence naming this variable in front of the model.
+ *
+ * No ceiling, and no floor beyond "positive". One is a legitimate setting — an
+ * upstream that permits a single concurrent call is a real thing, and serialising
+ * against it is what an operator would be asking for.
+ */
+export function maxUpstreamConcurrencyFromEnv(env: Env): number {
+  const raw = env.PROXY_MAX_UPSTREAM_CONCURRENCY;
+  // "" alongside undefined, per `maxResponseBytesFromEnv`: a blanked-out line is
+  // a setting removed, not a limit of zero, which here would refuse every call.
+  if (raw === undefined || raw === "") return DEFAULT_UPSTREAM_CONCURRENCY;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`proxy: PROXY_MAX_UPSTREAM_CONCURRENCY is not a positive count: ${raw}`);
   }
   return parsed;
 }

@@ -1,7 +1,9 @@
 import { type McpServer, TeamSheet as TeamSheetSchema } from "@getlibero/schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
-import { type HttpUpstream, createMcpPool } from "./mcp-pool.js";
+import type { McpClient, McpOutcome } from "./mcp-client.js";
+import { CATALOG_BUDGET_MS } from "./mcp-catalog.js";
+import { LISTING_QUEUE_WAIT_MS, QUEUE_WAIT_MS, type HttpUpstream, createMcpPool } from "./mcp-pool.js";
 import type { Secret } from "./vault.js";
 import type { CallLimits } from "./enforce.js";
 import type { UpstreamCallDefinition } from "./dispatch.js";
@@ -222,5 +224,196 @@ describe("closing", () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+/**
+ * The permit gate (#159).
+ *
+ * Every case here is built on `hangOn`, so saturation is a fact rather than a
+ * race: the calls holding permits are ones the fake has recorded and will never
+ * answer, and the calls waiting for permits give up after `BRIEF` and say so.
+ * Nothing asserts on elapsed time, and there is no clock to fake.
+ *
+ * The fake can hold a request open but cannot release one, so the other half —
+ * a released permit reaching the next caller — is proved in semaphore.test.ts
+ * where a permit can be handed back by hand.
+ */
+describe("the concurrency limit", () => {
+  /** Long enough that reaching it would mean the assertion after it is already wrong. */
+  const PATIENT = 30_000;
+
+  /** Short enough to spend, for the callers meant to give up. */
+  const BRIEF = 25;
+
+  /** Polls rather than sleeps, per the convention in team-sheet-store.test.ts. */
+  async function until(predicate: () => boolean, label: string, ms = 3000): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    throw new Error(`timed out waiting for ${label}`);
+  }
+
+  /**
+   * `count` concurrent calls at one upstream, collecting outcomes as they land.
+   *
+   * The returned promises are not all awaitable: the ones that win permits hang
+   * at the fake by construction. `settled` is what a case asserts against, and
+   * `drain` is how the test ends without leaving a request in flight.
+   */
+  function fire(client: McpClient, count: number) {
+    const settled: McpOutcome[] = [];
+    const calls = Array.from({ length: count }, (_unused, index) =>
+      client.callTool(`tool_${String(index)}`, {}, LIMITS, NO_HEADERS).then(outcome => {
+        settled.push(outcome);
+        return outcome;
+      })
+    );
+    return { settled, drain: () => Promise.allSettled(calls) };
+  }
+
+  it("sends no more than the limit to one upstream at once", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 2, queueWaitMs: BRIEF });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const { settled, drain } = fire(client, 4);
+    await until(() => settled.length === 2, "the two queued calls to give up");
+
+    // The two that never got a permit, and the upstream never heard of them.
+    expect(settled).toHaveLength(2);
+    for (const outcome of settled) {
+      expect(outcome).toEqual({ outcome: "connect_failed", failure: "busy" });
+    }
+    expect(fake.callsTo("tools/call")).toHaveLength(2);
+
+    // Closing the fake is what lets the two held calls settle; without it they
+    // wait out the client's own timeout and this file leaks a request.
+    await pool.close();
+    await fake.close();
+    fake = undefined;
+    await drain();
+  });
+
+  // **The positive control, and it is load-bearing.** The case above also passes
+  // on a build where the calls were never made at all — an upstream that saw two
+  // `tools/call`s and an upstream that saw two because the other two were
+  // dropped on the floor look identical from the count alone. This is the run
+  // that proves the fixture can deliver four.
+  it("sends all of them when the limit is not reached", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 4, queueWaitMs: BRIEF });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const { settled, drain } = fire(client, 4);
+    await until(() => fake?.callsTo("tools/call").length === 4, "all four calls to reach the upstream");
+
+    // Nobody waited, so nobody gave up.
+    expect(settled).toHaveLength(0);
+
+    await pool.close();
+    await fake.close();
+    fake = undefined;
+    await drain();
+  });
+
+  // The bucket is `upstreamKey`, so one saturated upstream is one saturated
+  // upstream — not a proxy that has stopped calling anything.
+  it("counts each upstream separately", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const other = await startFakeMcpServer();
+    try {
+      const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 1, queueWaitMs: BRIEF });
+      const saturated = pool.acquire(upstreamOf({ name: "a", transport: "http", url: fake.url }), undefined);
+      const free = pool.acquire(upstreamOf({ name: "b", transport: "http", url: other.url }), undefined);
+      if (saturated === null || free === null) throw new Error("the pool handed out nothing");
+
+      const held = fire(saturated, 1);
+      await until(() => fake?.callsTo("tools/call").length === 1, "the first upstream to be saturated");
+
+      // The second upstream's permit was never contended for.
+      expect(await free.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
+      // And the first is still saturated, so this is not a limit that lapsed.
+      expect(await saturated.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
+        outcome: "connect_failed",
+        failure: "busy"
+      });
+
+      await pool.close();
+      await fake.close();
+      fake = undefined;
+      await held.drain();
+    } finally {
+      await other.close();
+    }
+  });
+
+  // **The invariant `LISTING_QUEUE_WAIT_MS` exists to keep**, asserted rather
+  // than left to a comment. A listing waits inside the catalog's own race, so a
+  // wait at or above that budget means a queued walk can never win: the permit
+  // arrives after the catalog has already answered `partial`, which caches empty
+  // `paramDeclarations` for thirty seconds and sends every call to a SEP-2243
+  // upstream without its `Mcp-Param-*` headers.
+  it("gives a listing less time than the catalog will wait for the whole walk", () => {
+    expect(LISTING_QUEUE_WAIT_MS).toBeLessThan(CATALOG_BUDGET_MS);
+    // And less than a call's, because a thin catalog costs accuracy while a
+    // refused call costs the call.
+    expect(LISTING_QUEUE_WAIT_MS).toBeLessThan(QUEUE_WAIT_MS);
+  });
+
+  // The same ordering as behaviour, and through the test override, so the
+  // relationship survives a `queueWaitMs` that shortens both.
+  it("lets a listing give up while a call is still waiting", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 1, queueWaitMs: 1000 });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const held = fire(client, 1);
+    await until(() => fake?.callsTo("tools/call").length === 1, "the upstream to be saturated");
+
+    let calling = false;
+    const call = client.callTool("list_prs", {}, LIMITS, NO_HEADERS).then(outcome => {
+      calling = true;
+      return outcome;
+    });
+
+    // The listing gives up first, and the call is demonstrably still queued when
+    // it does — which is the ordering, stated without measuring either one.
+    expect(await client.listTools(undefined, undefined)).toEqual({ outcome: "connect_failed", failure: "busy" });
+    expect(calling).toBe(false);
+    expect(await call).toEqual({ outcome: "connect_failed", failure: "busy" });
+
+    await pool.close();
+    await fake.close();
+    fake = undefined;
+    await held.drain();
+  });
+
+  // Shutdown must not strand a caller waiting for a permit that is never coming.
+  // It is woken, meets a client that has already flipped closed, and gets the
+  // sentence that belongs to shutting down rather than the one about saturation.
+  it("wakes a queued call when the pool closes", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 1, queueWaitMs: PATIENT });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const held = fire(client, 1);
+    await until(() => fake?.callsTo("tools/call").length === 1, "the upstream to be saturated");
+    const queued = client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+
+    await pool.close();
+
+    // `closed`, not `busy`. The permit was never the reason this call failed.
+    expect(await queued).toEqual({ outcome: "connect_failed", failure: "closed" });
+
+    await fake.close();
+    fake = undefined;
+    await held.drain();
   });
 });

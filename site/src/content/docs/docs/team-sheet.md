@@ -248,6 +248,12 @@ the wire bound spends memory in a process every channel shares, so it belongs to
 sized that process. If tool answers are being refused rather than truncated, that is the number to
 raise, and it is not in this file.
 
+`PROXY_MAX_UPSTREAM_CONCURRENCY` is the operator's for a sharper reason: there is nowhere in this
+file to put it. It caps how many calls run against one tool server at once, and a tool server is a
+url and a credential that any number of channels may name — so two sheets could disagree about it
+and whichever loaded first would win. If calls are coming back saying the proxy is already running
+as many as it allows, that is the number to raise, and it is not in this file either.
+
 `follow_up_window_seconds` is a third kind of setting again: it decides whether there is a *next*
 task at all. After the agent has worked in a thread, a reply in that thread reaches it with no
 mention, for this long after the last answer — the clock restarts each time, so a conversation that
