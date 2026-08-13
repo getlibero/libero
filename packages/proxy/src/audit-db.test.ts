@@ -81,6 +81,12 @@ describe("appending", () => {
         arguments_sha256: "a".repeat(64),
         outcome: "ran",
         refusal_reason: null,
+        // #62's three. Null on a row that is neither a budget refusal nor a
+        // priced decision, which is most rows — and null here reads as "no such
+        // figure", never as zero.
+        budget_limit: null,
+        day_spend_micro_usd: null,
+        price_version: null,
         result_bytes: 12,
         result_is_error: 0,
         approver: null,
@@ -491,8 +497,16 @@ describe("migrating a version 1 file", () => {
       const after = rows(old);
       expect(after.map(row => row.id)).toEqual([1, 2, 3]);
       expect(after.map(row => row.task)).toEqual(before.map(row => row.task));
-      // Every v1 column survives untouched; the one v1 lacked is null on old rows.
-      expect(after[0]).toEqual({ ...before[0], ticket: null });
+      // Every v1 column survives untouched; the four v1 lacked are null on old
+      // rows. Null is the honest value rather than a gap — those rows really had
+      // no ticket, no budget limit and no priced figure.
+      expect(after[0]).toEqual({
+        ...before[0],
+        ticket: null,
+        budget_limit: null,
+        day_spend_micro_usd: null,
+        price_version: null
+      });
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
     } finally {
       migrated.close();
@@ -506,7 +520,7 @@ describe("migrating a version 1 file", () => {
   it("reaches the current version in one rebuild, whatever it skipped", () => {
     const migrated = openAuditDb({ file: old });
     try {
-      expect(versionOf(old)).toBe(3);
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
       expect(tableSql(old, "tool_call_audit_rebuilt")).toBe("");
       expect(rows(old)).toHaveLength(3);
     } finally {
@@ -639,6 +653,157 @@ describe("migrating a version 1 file", () => {
   });
 });
 
+// #62's three columns. Their own block because what they assert is not that the
+// writer stores what it is given — the block above covers that — but that null
+// stays a *reading* rather than becoming a zero, which is the distinction the
+// whole feature's honesty rests on.
+describe("the priced columns", () => {
+  it("stores a budget limit, a day figure, and the table that priced it", () => {
+    db.append(
+      record({
+        outcome: "refused",
+        refusalReason: "budget_exhausted",
+        budgetLimit: "daily_usd",
+        daySpendMicroUsd: 25_000_000,
+        priceVersion: "a3f1c02e5b7d9e14"
+      })
+    );
+
+    expect(rows(file)[0]).toMatchObject({
+      budget_limit: "daily_usd",
+      day_spend_micro_usd: 25_000_000,
+      price_version: "a3f1c02e5b7d9e14"
+    });
+  });
+
+  // A channel that priced nothing has no figure, and a channel that priced
+  // nothing *and spent nothing* still has no figure. Zero would say the meter
+  // computed a total and got nought, which is a different claim.
+  it("keeps an absent figure absent rather than storing zero", () => {
+    db.append(record({ outcome: "ran" }));
+
+    const row = rows(file)[0];
+    expect(row?.["day_spend_micro_usd"]).toBeNull();
+    expect(row?.["price_version"]).toBeNull();
+  });
+
+  // A real zero is legal and distinct: a channel capped in dollars whose day has
+  // cost nothing yet was priced, and the row says so.
+  it("stores a genuine zero, which is not the same as absent", () => {
+    db.append(record({ outcome: "ran", daySpendMicroUsd: 0, priceVersion: "a3f1c02e5b7d9e14" }));
+
+    expect(rows(file)[0]).toMatchObject({ day_spend_micro_usd: 0, price_version: "a3f1c02e5b7d9e14" });
+  });
+
+  // The column is constrained to the sheet's own keys, so a limit that is not a
+  // limit cannot reach the log even through a caller that bypassed the types.
+  it("refuses a budget limit outside the three the meter keeps", () => {
+    const raw = new DatabaseSync(file);
+    try {
+      expect(() =>
+        raw
+          .prepare(
+            `INSERT INTO tool_call_audit
+               (at, channel, requesting_user, task, request_id, call_id, server, tool,
+                arguments_sha256, outcome, budget_limit)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(NOON, CHANNEL, "U0ALICE", "t-1", "r-1", "toolu_1", "github", "x", "a".repeat(64), "refused", "daily_pounds")
+      ).toThrow();
+    } finally {
+      raw.close();
+    }
+  });
+
+  // The round trip, through the reader the audit CLI actually uses rather than
+  // through raw SQL: a column the writer fills and the mapper drops is an empty
+  // field in a CSV nobody notices.
+  it("reads the three back out through the reader", () => {
+    db.append(
+      record({
+        outcome: "refused",
+        refusalReason: "budget_exhausted",
+        budgetLimit: "daily_usd",
+        daySpendMicroUsd: 25_000_000,
+        priceVersion: "a3f1c02e5b7d9e14"
+      })
+    );
+    db.close();
+
+    const reader = openAuditReader({ file });
+    try {
+      const [entry] = reader.page({});
+      expect(entry).toMatchObject({
+        budgetLimit: "daily_usd",
+        daySpendMicroUsd: 25_000_000,
+        priceVersion: "a3f1c02e5b7d9e14"
+      });
+    } finally {
+      reader.close();
+      db = openAuditDb({ file });
+    }
+  });
+});
+
+// Version 3 is version 2's table with a wider CHECK, so a v3 file is a v2
+// fixture with a different stamp — which is precisely why this case matters: the
+// rebuild reads columns rather than the stamp, and v3 is the first source where
+// the three columns #62 adds are the *only* difference.
+describe("migrating a version 3 file", () => {
+  let old: string;
+
+  beforeEach(() => {
+    old = join(dir, "v3.db");
+    writeV2File(old, 3);
+    const raw = new DatabaseSync(old);
+    try {
+      raw.prepare("UPDATE schema_version SET version = 3").run();
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("adds the three columns as null and keeps everything else", () => {
+    const before = rows(old);
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(rows(old)).toEqual(
+        before.map(row => ({
+          ...row,
+          budget_limit: null,
+          day_spend_micro_usd: null,
+          price_version: null
+        }))
+      );
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("stores a priced row afterwards, which the old table had nowhere to put", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      migrated.append(
+        record({
+          outcome: "refused",
+          refusalReason: "budget_exhausted",
+          budgetLimit: "daily_usd",
+          daySpendMicroUsd: 4_120_000,
+          priceVersion: "a3f1c02e5b7d9e14"
+        })
+      );
+      expect(rows(old).at(-1)).toMatchObject({
+        budget_limit: "daily_usd",
+        day_spend_micro_usd: 4_120_000,
+        price_version: "a3f1c02e5b7d9e14"
+      });
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
 describe("migrating a version 2 file", () => {
   let old: string;
 
@@ -657,7 +822,16 @@ describe("migrating a version 2 file", () => {
     const migrated = openAuditDb({ file: old });
     try {
       const after = rows(old);
-      expect(after).toEqual(before);
+      // Every v2 column unchanged, plus #62's three as null: those rows carried
+      // no priced figure because nothing was priced when they were written.
+      expect(after).toEqual(
+        before.map(row => ({
+          ...row,
+          budget_limit: null,
+          day_spend_micro_usd: null,
+          price_version: null
+        }))
+      );
       expect(after.map(row => row.ticket)).toEqual(["tk-1", "tk-2", "tk-3"]);
       expect(after.map(row => row.approver)).toEqual(["U0BOSS", "U0BOSS", "U0BOSS"]);
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);

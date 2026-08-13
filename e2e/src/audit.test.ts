@@ -255,7 +255,8 @@ it(
 
     expect(header).toBe(
       "id,at,channel,requesting_user,task,request_id,call_id,server,tool,arguments_sha256," +
-        "outcome,refusal_reason,result_bytes,result_is_error,approver,ticket"
+        "outcome,refusal_reason,budget_limit,day_spend_micro_usd,price_version," +
+        "result_bytes,result_is_error,approver,ticket"
     );
     expect(records.length).toBeGreaterThanOrEqual(6);
     expect(csv).toContain("list_prs");

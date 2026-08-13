@@ -260,6 +260,29 @@ indexing keeps working. And a field beginning with `=`, `+`, `-` or `@` is a
 formula to a spreadsheet: `call_id` is model-authored, and this export records
 what was written rather than altering it, so open it as text if that matters.
 
+### The priced columns
+
+Since #62 a row also carries `budget_limit` — which of the three daily limits
+stopped the call — and, when the channel caps spend in dollars,
+`day_spend_micro_usd` with the `price_version` that produced it.
+
+**`day_spend_micro_usd` is the channel's running total for the UTC day at the
+moment of that decision, not what the call cost.** There is no per-call cost, for
+the reason there is no per-call token count: money is spent by model turns rather
+than by tool calls, and a per-call figure would be an apportionment invented for
+the column. What it answers is "why was this refused" and "how close was this
+one".
+
+`price_version` is the digest of the price table's bytes. Without it the figure
+is unreproducible — prices change, and a number with no record of what computed
+it cannot be checked against anything later. With it, the row plus your git
+history re-derives the decision.
+
+Both are **absent rather than zero** when nothing was priced: a channel with no
+`daily_usd` consults no table, and spend on a model the table cannot price has no
+total. A genuine `0` is a different fact — a channel that is capped in dollars and
+has spent nothing yet — and the two are stored differently on purpose.
+
 ## Pending approvals do not survive a restart
 
 The approval broker's tickets live in memory. There is no environment variable,

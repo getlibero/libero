@@ -95,6 +95,15 @@ export const AUDIT_CSV_COLUMNS: readonly Column[] = [
   // output; an export is data, and a reader filtering on this wants a value it
   // can compare rather than prose that might be re-worded.
   { header: "refusal_reason", of: e => optional(e.refusalReason) },
+  // #62. `budget_limit` is which limit bound; the other two are the channel's
+  // running total at the moment of the decision and the price table that
+  // computed it — **not** what this call cost, which is not a quantity. Empty
+  // rather than `0` when nothing was priced, so a reader summing the column is
+  // summing figures that exist. Micro-USD, integer, because a CSV column of
+  // dollars-and-cents is a column somebody's spreadsheet will re-round.
+  { header: "budget_limit", of: e => optional(e.budgetLimit) },
+  { header: "day_spend_micro_usd", of: e => optional(e.daySpendMicroUsd) },
+  { header: "price_version", of: e => optional(e.priceVersion) },
   { header: "result_bytes", of: e => optional(e.resultBytes) },
   { header: "result_is_error", of: e => optional(e.resultIsError) },
   { header: "approver", of: e => optional(e.approver) },

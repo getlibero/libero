@@ -114,7 +114,11 @@ describe("the column contract", () => {
 
   it("puts the headers in the header row", () => {
     expect(csvHeader()).toBe(AUDIT_CSV_COLUMNS.map(column => column.header).join(","));
-    expect(csvHeader().split(",")).toHaveLength(16);
+    // The number moves with the table — nineteen since #62 added `budget_limit`,
+    // `day_spend_micro_usd` and `price_version`. It is here as a second pair of
+    // eyes on the count rather than as a contract: the case above is what pins
+    // the headers to the table's own columns.
+    expect(csvHeader().split(",")).toHaveLength(19);
   });
 });
 

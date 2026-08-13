@@ -29,6 +29,14 @@ export interface AuditRow {
   readonly arguments_sha256: string;
   readonly outcome: string;
   readonly refusal_reason: string | null;
+  /**
+   * #62. Which limit bound, the channel's running total at the moment of the
+   * decision, and the price table that computed it — not what the call cost,
+   * which is not a quantity. Null when nothing was priced.
+   */
+  readonly budget_limit: string | null;
+  readonly day_spend_micro_usd: number | null;
+  readonly price_version: string | null;
   readonly result_bytes: number | null;
   readonly result_is_error: number | null;
   readonly approver: string | null;

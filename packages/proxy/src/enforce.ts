@@ -397,6 +397,47 @@ type PricedSpend =
   | { readonly ok: true; readonly microUsd: bigint }
   | { readonly ok: false; readonly refusal: ToolRefusal };
 
+/**
+ * What a channel has spent today and which table said so (#62).
+ *
+ * The figure the audit log records against a decision, so a past budget decision
+ * can be re-derived later — a number with no record of what priced it cannot be
+ * checked against anything. `null` when there is nothing to record: a sheet with
+ * no `daily_usd` consults no table, and spend the table cannot price has no
+ * total. Absent means "no figure exists", never "zero".
+ *
+ * **The day's running total, not this call's cost.** There is no per-call cost,
+ * for the reason there is no per-call token count — money is spent by model
+ * turns rather than by tool calls. This is the number the comparison was made
+ * against.
+ *
+ * Exported so the server records exactly what the decision compared, through the
+ * same function rather than a second computation that could disagree with it.
+ */
+export interface DaySpend {
+  readonly microUsd: bigint;
+  readonly priceVersion: string;
+}
+
+export function priceDaySpend(
+  sheet: TeamSheet,
+  spend: BudgetSpend,
+  prices: PriceLookup
+): DaySpend | null {
+  if (sheet.budget.daily_usd === undefined) return null;
+  const priced = pricedSpend(spend, prices);
+  return priced.ok ? { microUsd: priced.microUsd, priceVersion: prices.version } : null;
+}
+
+/** The same, for a caller holding the store's state rather than a sheet. */
+export function priceDaySpendFromState(
+  state: SheetState,
+  spend: BudgetSpend,
+  prices: PriceLookup
+): DaySpend | null {
+  return state.status === "active" ? priceDaySpend(state.sheet, spend, prices) : null;
+}
+
 function pricedSpend(spend: BudgetSpend, prices: PriceLookup): PricedSpend {
   let microUsd = 0n;
 

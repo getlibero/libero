@@ -82,7 +82,7 @@ import {
   type ToolCatalog,
   type ToolDispatcher
 } from "./dispatch.js";
-import { decideFromState } from "./enforce.js";
+import { decideFromState, priceDaySpendFromState } from "./enforce.js";
 import { matchesPin, resolveChannel } from "./identity.js";
 import { createListingRoute } from "./listing-route.js";
 import { createJsonLogger, type Logger } from "./log.js";
@@ -447,7 +447,24 @@ export function createProxyServer(options: ProxyServerOptions): Server {
     // Synchronous, and deliberately not in the `Promise.all` above: a sheet
     // resolve is per channel and may touch disk, while this is one in-memory
     // object for the whole process.
-    const decision = decideFromState(state, call, spend, options.prices?.current() ?? NO_PRICES);
+    const priceView = options.prices?.current() ?? NO_PRICES;
+    const decision = decideFromState(state, call, spend, priceView);
+
+    /**
+     * What the channel had spent today when the decision above was made, and
+     * which price table said so (#62).
+     *
+     * Recorded on every row this request writes, so a past budget decision can
+     * be re-derived: prices change, and a figure with no record of what computed
+     * it cannot be checked against anything later.
+     *
+     * **The same function the decision used**, rather than a second computation
+     * of the same thing — a row whose figure disagreed with the comparison it
+     * documents would be worse than no figure. `null` when nothing was priced,
+     * which is a sheet with no `daily_usd` or spend the table cannot price, and
+     * it stays absent rather than becoming a zero.
+     */
+    const daySpend = priceDaySpendFromState(state, spend, priceView);
 
     /**
      * Whether `audit` below was entered, read only by the catch at the bottom of
@@ -534,6 +551,22 @@ export function createProxyServer(options: ProxyServerOptions): Server {
           argumentsSha256,
           outcome: event.outcome,
           ...(event.reason !== undefined ? { refusalReason: event.reason } : {}),
+          // Which limit bound, taken off the refusal the decision produced
+          // rather than re-derived: it is the one fact `budget_exhausted`
+          // carried that the table had no column for, and re-deriving it here
+          // would be a second opinion about a comparison already made.
+          ...(decision.outcome === "refuse" && decision.refusal.reason === "budget_exhausted"
+            ? { budgetLimit: decision.refusal.limit }
+            : {}),
+          ...(daySpend === null
+            ? {}
+            : {
+                // Number(), because a bigint would not survive JSON and this is
+                // exact past nine billion dollars. The bigint exists so the
+                // arithmetic cannot drift, not so the column can hold one.
+                daySpendMicroUsd: Number(daySpend.microUsd),
+                priceVersion: daySpend.priceVersion
+              }),
           ...(event.approver !== undefined ? { approver: event.approver } : {}),
           ...(event.ticket !== undefined ? { ticket: event.ticket } : {}),
           ...(event.result !== undefined

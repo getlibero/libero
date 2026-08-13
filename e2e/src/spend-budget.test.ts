@@ -156,6 +156,25 @@ function describeDollarCapWithModelSwitch(): void {
       // and the token limit here is five hundred times what was spent.
       expect(JSON.stringify(model.seen)).toContain(SPEND_BUDGET);
 
+      // And the row says the same thing an operator will read months later
+      // (#62). `budget_limit` is what makes `budget_exhausted` a complete
+      // sentence in the audit CLI rather than "the budget ran out".
+      expect(rows[2]?.budget_limit).toBe("daily_usd");
+
+      // The figure the comparison was made against, plus what priced it — the
+      // pair that makes a past budget decision reproducible once prices have
+      // moved on. **The day's running total, not this call's cost**: fifty-two
+      // dollars across three turns, against a ten-dollar cap.
+      expect(rows[2]?.day_spend_micro_usd).toBe(52_000_000);
+      expect(rows[2]?.price_version).toMatch(/^[0-9a-f]{16}$/);
+
+      // The served rows carry it too, so "how close was this one" is answerable
+      // for calls that ran and not only for the one that was stopped.
+      expect(rows[0]?.day_spend_micro_usd).toBe(1_000_000);
+      expect(rows[1]?.day_spend_micro_usd).toBe(2_000_000);
+      // One table priced all three, so the digest is the same on every row.
+      expect(new Set(rows.map(row => row.price_version)).size).toBe(1);
+
       // The claim the whole feature rests on, in two numbers. Two cheap turns
       // are far under the cap and one dear turn is over it, on identical token
       // counts — so what refused this channel was the price and nothing else.
@@ -272,7 +291,15 @@ function describeUnpricedModelServedWithoutTheCap(): void {
       await agent.slack.deliverMention(mention("Ev00000062"));
 
       expect(upstream.callsTo("tools/call")).toHaveLength(2);
-      expect(auditRows(auditDb).map(row => row.outcome)).toEqual(["ran", "ran"]);
+      const rows = auditRows(auditDb);
+      expect(rows.map(row => row.outcome)).toEqual(["ran", "ran"]);
+
+      // **No figure on any row**, because nothing was priced — and absent is the
+      // honest record rather than a zero, which would claim the meter computed a
+      // total and got nought. This is the control for the priced case above.
+      expect(rows.map(row => row.day_spend_micro_usd)).toEqual([null, null]);
+      expect(rows.map(row => row.price_version)).toEqual([null, null]);
+
       // And the model was told nothing about prices, which is the half an
       // outcome assertion cannot show.
       const seen = JSON.stringify(model.seen);
