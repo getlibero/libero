@@ -30,7 +30,8 @@ import type {
   SlackEnvelope,
   SlackGateway,
   SlackInteractionEnvelope,
-  SocketSource
+  SocketSource,
+  StopOptions
 } from "./types.js";
 
 /**
@@ -177,6 +178,73 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   // so a busy workspace's message traffic would flush every remembered mention
   // id within seconds.
   const seen = new Set<string>();
+
+  // Dispatches that have started and not finished, so `stop()` can wait for
+  // them (#118). The set is the only place "in flight" is observable: the
+  // source calls a listener and does not keep the promise, and everything a
+  // task does — the model turn, the tool calls, the spend report it sends on
+  // the way out — happens inside one of these.
+  //
+  // Interactions are tracked alongside mentions and messages even though a
+  // click is short. A decision in flight is a card mid-repaint and a task
+  // waiting on the verdict; dropping it at exit leaves the amber card an
+  // operator would have to explain.
+  const inFlight = new Set<Promise<void>>();
+
+  /** Registers a listener that records itself as in flight while it runs. */
+  function tracked<T>(dispatcher: (envelope: T) => Promise<void>): (envelope: T) => Promise<void> {
+    return envelope => {
+      // `.finally` returns a new promise, and it is that one the set holds and
+      // the callback deletes — the callback runs in a microtask, well after the
+      // assignment, so the reference is always resolved by the time it is read.
+      const running = dispatcher(envelope).finally(() => {
+        inFlight.delete(running);
+      });
+      inFlight.add(running);
+      return running;
+    };
+  }
+
+  /**
+   * Waits for in-flight dispatches, for at most `ms`.
+   *
+   * `allSettled` rather than `all`: the three dispatchers catch their own
+   * failures, but a drain that rejected on one would abandon the rest, and
+   * this runs on the way to an exit where there is nobody left to catch it.
+   *
+   * The timer goes through `schedule` so a test drives the bound without
+   * waiting real seconds, and is cancelled when the drain wins so it is not
+   * left holding the event loop open in a process that had no other reason to
+   * stay up.
+   */
+  async function drain(ms: number): Promise<void> {
+    if (inFlight.size === 0) return;
+
+    const started = now();
+    const pending = inFlight.size;
+    let cancelBound: (() => void) | undefined;
+    const bound = new Promise<"timeout">(resolve => {
+      cancelBound = schedule(ms, () => {
+        resolve("timeout");
+      });
+    });
+
+    const outcome = await Promise.race([
+      Promise.allSettled([...inFlight]).then(() => "drained" as const),
+      bound
+    ]);
+    cancelBound?.();
+
+    if (outcome === "timeout") {
+      // `warn`, not `error`: nothing is broken and the bound did what it was
+      // for. What it costs is named rather than implied — `dispatches` is how
+      // many are about to be abandoned, read at the timeout rather than at the
+      // start, so it counts what is still running and not what began.
+      logger.log("warn", { event: "drain_timeout", drainMs: ms, dispatches: inFlight.size });
+      return;
+    }
+    logger.log("info", { event: "drained", dispatches: pending, durationMs: now() - started });
+  }
 
   function remember(eventId: string): void {
     seen.add(eventId);
@@ -606,9 +674,9 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       // `onDecision` and no `onMessage`: an unacknowledged envelope is
       // redelivered, so a gateway that simply did not subscribe would be
       // retried at forever.
-      source.onMention(dispatch);
-      source.onMessage(dispatchMessage);
-      source.onInteraction(dispatchInteraction);
+      source.onMention(tracked(dispatch));
+      source.onMessage(tracked(dispatchMessage));
+      source.onInteraction(tracked(dispatchInteraction));
       source.onDrop(handleDrop);
       connecting = true;
       try {
@@ -618,7 +686,9 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       }
     },
 
-    async stop(): Promise<void> {
+    // `stopOptions` rather than `options`, which is the whole `GatewayOptions`
+    // object this closure was built from and is still in scope here.
+    async stop(stopOptions?: StopOptions): Promise<void> {
       if (state === "stopped") return;
       state = "stopped";
       logger.log("info", { event: "stopping" });
@@ -629,6 +699,11 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       wakePending?.();
       wakePending = undefined;
       await source.close();
+      // After the close, not before: draining first would be draining a set
+      // that is still being added to. `state` is already `stopped`, so a
+      // dispatch that started before this call returns without running its
+      // handler, and one that arrives during the close is acked and dropped.
+      if (stopOptions?.drainMs !== undefined) await drain(stopOptions.drainMs);
     }
   };
 }

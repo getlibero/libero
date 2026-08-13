@@ -78,6 +78,16 @@ services:
       - proxy
     networks: [libero]
     restart: unless-stopped
+    # Explicit, because the shutdown path now depends on the number (#118).
+    # SIGTERM cancels every task and then waits up to SHUTDOWN_DRAIN_MS — eight
+    # seconds — for the cancelled tasks to report their last turn's spend and
+    # repaint their checklist cards. Docker's default grace period is ten
+    # seconds, which leaves that drain no room, and a SIGKILL through it loses
+    # exactly what the drain exists to save. Twenty is the drain plus room for
+    # a slow Slack call, not a number a long task can finish inside: a task's
+    # own bound is the channel's `max_task_seconds`, five minutes by default,
+    # and shutdown does not wait for it.
+    stop_grace_period: 20s
 
   proxy:
     image: ghcr.io/getlibero/proxy:latest

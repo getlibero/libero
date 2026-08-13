@@ -446,18 +446,37 @@ production dependencies and nothing else, and sets no ENTRYPOINT, so `CMD` is
 
 ## Shutting down
 
-`SIGTERM` or `SIGINT` aborts every task in flight and closes the socket. A
-cancelled task posts nothing: the operator asked for quiet, and an answer
-arriving after the socket closed has nowhere to go. A second signal exits
-immediately, and exiting with a session's `store.db` still open is safe rather
-than merely tolerated: the store runs in WAL with `synchronous = FULL`, so a
-committed row survives a hard kill and nothing is buffered waiting for a close.
-The cost is at most one answer that was already cancelled, and the one turn each
-in-flight task was reporting.
-That under-reports rather than over-reports, so the budget fails open, and the
-proxy's own tool-call meter is unaffected either way. Draining before exit is
-#118, which also has to settle whether a task finishing during the drain gets
-to post.
+`SIGTERM` or `SIGINT` aborts every task in flight, closes the socket, and then
+waits up to `SHUTDOWN_DRAIN_MS` — eight seconds — for the cancelled tasks to
+finish unwinding before exiting.
+
+**A cancelled task still posts nothing, and the drain does not change that.**
+The reason is policy rather than plumbing: a reply goes out over the Web API and
+not the socket, so a post after the close would in fact succeed. The gateway
+refuses it anyway (`state !== "running"` on both dispatch paths) and `replyFor`
+has nothing to return for a `cancelled` task. The operator asked for quiet, and
+an answer landing in a thread minutes after the person asked — from a process
+that is on its way out — is worse than silence.
+
+**What the drain saves is the accounting.** A cancelled task does two things on
+its way out: it reports the turn it had already completed to the proxy's meter,
+and it repaints its checklist card terminal. Both were being killed mid-flight
+by the exit (#118). Eight seconds is sized from their own deadlines — the spend
+client's is five seconds, and the card is one Slack call — not from how long a
+task can run. That number is the channel's `max_task_seconds`, five minutes by
+default, and no shutdown waits for it: `deploy/docker-compose.yml` sets
+`stop_grace_period: 20s` and SIGKILL follows it. **A task that was mid-turn
+loses its answer, and always did.**
+
+Exceeding the bound is logged, not silent: `drain_timeout` carries the bound and
+how many dispatches were abandoned. What that costs is the last turn's spend for
+each of them — the meter under-reports rather than over-reports, so the budget
+fails open, and the proxy's own tool-call meter is unaffected either way.
+
+A second signal exits immediately, cutting the drain short. Exiting with a
+session's `store.db` still open is safe rather than merely tolerated: the store
+runs in WAL with `synchronous = FULL`, so a committed row survives a hard kill
+and nothing is buffered waiting for a close.
 
 If Slack refuses the credentials after startup — a revoked or rotated token —
 the process logs `gateway_dead` and exits non-zero rather than staying up

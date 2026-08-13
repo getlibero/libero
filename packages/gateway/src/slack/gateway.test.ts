@@ -501,6 +501,198 @@ describe("createGateway", () => {
     expect(slack.connected()).toBe(false);
   });
 
+  describe("draining on stop", () => {
+    /**
+     * A handler that blocks until the test lets it go.
+     *
+     * `finished` is what a drain assertion needs and a resolved promise cannot
+     * give: the question is whether `stop()` returned *before* the handler got
+     * to its own last line, and only the handler can say when that was.
+     */
+    function blockingHandler(): {
+      handler: MentionHandler;
+      release: () => void;
+      finished: () => boolean;
+    } {
+      let release: (() => void) | undefined;
+      let finished = false;
+      return {
+        finished: () => finished,
+        release: () => release?.(),
+        handler: async () => {
+          await new Promise<void>(resolve => {
+            release = resolve;
+          });
+          finished = true;
+          return undefined;
+        }
+      };
+    }
+
+    it("waits for a dispatch that was already running", async () => {
+      const clock = manualClock();
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const blocked = blockingHandler();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: blocked.handler,
+        scheduler: clock.scheduler,
+        logger
+      });
+
+      await gateway.start();
+      const inFlight = slack.deliverMention();
+      await flush();
+
+      let stopped = false;
+      const stopping = gateway.stop({ drainMs: 8_000 }).then(() => {
+        stopped = true;
+      });
+      await flush();
+
+      // The socket is closed and dispatching has stopped, but the drain is
+      // still holding: this is the window the spend report lands in.
+      expect(slack.connected()).toBe(false);
+      expect(stopped).toBe(false);
+      expect(blocked.finished()).toBe(false);
+
+      blocked.release();
+      await stopping;
+      await inFlight;
+
+      expect(blocked.finished()).toBe(true);
+      expect(lines).toContainEqual(expect.objectContaining({ event: "drained", dispatches: 1 }));
+      // The bound was cancelled rather than left holding the process open.
+      expect(clock.pending()).toEqual([]);
+    });
+
+    it("gives up at the bound, and says how much it abandoned", async () => {
+      const clock = manualClock();
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const blocked = blockingHandler();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: blocked.handler,
+        scheduler: clock.scheduler,
+        logger
+      });
+
+      await gateway.start();
+      void slack.deliverMention();
+      await flush();
+
+      let stopped = false;
+      const stopping = gateway.stop({ drainMs: 8_000 }).then(() => {
+        stopped = true;
+      });
+      await flush();
+      expect(stopped).toBe(false);
+      expect(clock.pending()).toEqual([8_000]);
+
+      await clock.fire();
+      await stopping;
+
+      // Exceeding the bound is logged rather than silent, and the handler is
+      // still running: a drain abandons work, it does not cancel it. What
+      // cancels a task is the composing app's own signal, before `stop()`.
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          event: "drain_timeout",
+          drainMs: 8_000,
+          dispatches: 1
+        })
+      );
+      expect(blocked.finished()).toBe(false);
+    });
+
+    it("drains a click, not only a mention", async () => {
+      const clock = manualClock();
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      let release: (() => void) | undefined;
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        onDecision: () =>
+          new Promise<void>(resolve => {
+            release = resolve;
+          }),
+        scheduler: clock.scheduler,
+        logger
+      });
+
+      await gateway.start();
+      const inFlight = slack.deliverDecision({ ticketId: TICKET.id });
+      await flush();
+
+      let stopped = false;
+      const stopping = gateway.stop({ drainMs: 8_000 }).then(() => {
+        stopped = true;
+      });
+      await flush();
+      expect(stopped).toBe(false);
+
+      release?.();
+      await stopping;
+      await inFlight;
+
+      expect(lines).toContainEqual(expect.objectContaining({ event: "drained", dispatches: 1 }));
+    });
+
+    it("returns without waiting when no drain was asked for", async () => {
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const blocked = blockingHandler();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: blocked.handler,
+        logger
+      });
+
+      await gateway.start();
+      const inFlight = slack.deliverMention();
+      await flush();
+
+      // The pre-#118 contract, and still the default: a composing app that has
+      // not said how long it can wait gets the socket closed and nothing else.
+      await gateway.stop();
+      expect(blocked.finished()).toBe(false);
+      expect(lines.some(line => line.event === "drained")).toBe(false);
+
+      blocked.release();
+      await inFlight;
+    });
+
+    it("schedules no timer and logs nothing when nothing is in flight", async () => {
+      const clock = manualClock();
+      const slack = createStubSlack();
+      const { logger, lines } = captureLogger();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        scheduler: clock.scheduler,
+        logger
+      });
+
+      await gateway.start();
+      await slack.deliverMention();
+      await gateway.stop({ drainMs: 8_000 });
+
+      // A quiet shutdown is the common one, and a `drained: 0` line on every
+      // restart would be noise rather than information.
+      expect(clock.pending()).toEqual([]);
+      expect(lines.some(line => line.event === "drained")).toBe(false);
+    });
+  });
+
   it("stops dispatching once stopped, and stops twice without complaint", async () => {
     const slack = createStubSlack();
     const { handler, seen } = recordingHandler("late");

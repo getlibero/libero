@@ -64,6 +64,32 @@ cards.
 stopped does not get to post" stays a property of the dispatcher rather than a
 habit of every caller.
 
+### Stopping, and how long it waits
+
+`stop()` closes the socket and resolves. `stop({ drainMs })` also waits up to
+`drainMs` for the dispatches that were already running — a mention, a message,
+or a click whose handler had not returned yet — and then resolves either way,
+logging `drained` or `drain_timeout` with how many it waited for or abandoned.
+
+**Draining does not buy answers, and it cannot.** A handler that finishes during
+the drain still does not post: the `state !== "running"` guard on both dispatch
+paths is checked after the handler returns, and that is unchanged. What the
+drain buys is whatever a handler does on its own way out, which for a composing
+app is bookkeeping — in `apps/server` (#118) the turn's spend report and the
+checklist card's terminal edit, both of which the process exit was killing.
+
+**There is no default bound, on purpose.** How long a shutdown may take is a
+property of the orchestrator's grace period, which this package cannot see:
+overrunning it is a SIGKILL, which loses strictly more than resolving early
+would have. So the number belongs to the composing app, next to its own
+`stop_grace_period`, and `stop()` with no argument behaves exactly as it did
+before the option existed.
+
+**A drain abandons work; it does not cancel it.** Cancelling is the composing
+app's, through whatever signal it handed the layers below — `apps/server` aborts
+every task *before* calling `stop`, which is what makes eight seconds enough to
+drain something that is otherwise capped in minutes.
+
 ### The third subscription: ordinary messages
 
 Since #176 there is an `onMessage` beside `onMention`, and `toMessage` beside

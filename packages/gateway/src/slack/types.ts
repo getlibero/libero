@@ -436,6 +436,27 @@ export interface AppIdentity {
   userId(): Promise<string>;
 }
 
+/** How long `stop()` waits for handlers that were already running. */
+export interface StopOptions {
+  /**
+   * Wait up to this long for in-flight dispatches to finish before resolving.
+   *
+   * Omitted, `stop()` closes the socket and resolves, which is what it did
+   * before #118 — a handler still running is left to whatever the composing
+   * app does next. That is the default because how long a shutdown may take is
+   * the composing app's to decide against its orchestrator's grace period, not
+   * this package's to assume: exceeding it is a SIGKILL, which loses strictly
+   * more than resolving early would have.
+   *
+   * What draining buys is bookkeeping, not answers. A handler that finishes
+   * during the drain still does not post — see the `state !== "running"` guard
+   * on both dispatch paths — so what a drain saves is whatever the handler
+   * does on its own way out. In `apps/server` that is the turn's spend report
+   * and the checklist's terminal edit.
+   */
+  drainMs?: number;
+}
+
 /** The adapter's lifecycle, and all of it. */
 export interface SlackGateway {
   /**
@@ -443,8 +464,12 @@ export interface SlackGateway {
    * refused the credentials, which no amount of retrying changes.
    */
   start(): Promise<void>;
-  /** Stops dispatching and closes the socket. Safe to call more than once. */
-  stop(): Promise<void>;
+  /**
+   * Stops dispatching, closes the socket, and optionally waits out the
+   * handlers that were already running. Safe to call more than once — a second
+   * call resolves immediately and does not drain again.
+   */
+  stop(options?: StopOptions): Promise<void>;
 }
 
 /**
