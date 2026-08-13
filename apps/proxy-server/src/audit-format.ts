@@ -107,8 +107,29 @@ export function showLines(entry: AuditEntry): string[] {
     // The sentence the channel was given, from the schema and never from a
     // string written here — and absent rather than invented when the row does
     // not carry the facts it needs. See `auditRefusalMessage`.
-    const sentence = auditRefusalMessage(entry.refusalReason, entry.server, entry.tool);
+    const sentence = auditRefusalMessage(
+      entry.refusalReason,
+      entry.server,
+      entry.tool,
+      entry.budgetLimit
+    );
     if (sentence !== null) lines.push(`               ${sentence}`);
+    // Which limit bound, as its own line as well as inside the sentence: an
+    // operator scanning a page of refusals reads the left column, and the
+    // sentence is a paragraph in.
+    if (entry.budgetLimit !== undefined) lines.push(`limit          ${entry.budgetLimit}`);
+  }
+
+  // Only on rows where something was priced. A `not recorded` line on every row
+  // of a deployment that caps no channel in dollars would be a line that is
+  // never anything, which is the opposite of what this output is for.
+  if (entry.daySpendMicroUsd !== undefined) {
+    lines.push(
+      // Labelled as the day's, because the reflex is to read a figure on a
+      // call's row as that call's cost — and there is no such quantity.
+      `spend today    ${usd(entry.daySpendMicroUsd)} (channel, UTC day, at this decision)`,
+      `price table    ${entry.priceVersion ?? "not recorded"}`
+    );
   }
 
   lines.push(
@@ -119,4 +140,16 @@ export function showLines(entry: AuditEntry): string[] {
   );
 
   return lines;
+}
+
+/**
+ * Micro-USD as a person reads it.
+ *
+ * Two fraction digits and a pinned locale, matching `budgetWarningMessage` in
+ * @getlibero/schema — the figure a channel was shown and the figure an operator
+ * reads afterwards must not be formatted two different ways.
+ */
+function usd(microUsd: number): string {
+  const dollars = microUsd / 1_000_000;
+  return `$${dollars.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }

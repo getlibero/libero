@@ -118,7 +118,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
-import type { AuditOutcome, AuditRecord, RefusalReason } from "@getlibero/schema";
+import type { AuditOutcome, AuditRecord, BudgetLimit, RefusalReason } from "@getlibero/schema";
 import type { Logger } from "./log.js";
 
 /**
@@ -146,7 +146,7 @@ import type { Logger } from "./log.js";
  * A file from the future is still a startup failure, and so is a file from a
  * past this build has no migration from.
  */
-export const AUDIT_SCHEMA_VERSION = 3;
+export const AUDIT_SCHEMA_VERSION = 4;
 
 /**
  * The table, parameterised on its name.
@@ -183,6 +183,15 @@ CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
                      ('ran', 'held', 'refused', 'unavailable', 'unanswered',
                       'approved', 'denied', 'expired')),
   refusal_reason   TEXT,
+  -- #62. Nullable, and null is a reading rather than a gap: a row that is not a
+  -- budget refusal has no limit, and a channel that priced nothing has no
+  -- figure. See AuditRecord in @getlibero/schema for what each means, and in
+  -- particular that day_spend_micro_usd is the channel's running total at the
+  -- moment of the decision and never this call's cost.
+  budget_limit     TEXT CHECK (budget_limit IS NULL OR budget_limit IN
+                     ('daily_tokens', 'daily_tool_calls', 'daily_usd')),
+  day_spend_micro_usd INTEGER,
+  price_version    TEXT,
   result_bytes     INTEGER,
   result_is_error  INTEGER,
   approver         TEXT,
@@ -296,9 +305,9 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
     append: db.prepare(
       `INSERT INTO tool_call_audit
          (at, channel, requesting_user, task, request_id, call_id, server, tool,
-          arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error, approver,
-          ticket)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
+          price_version, result_bytes, result_is_error, approver, ticket)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
   } satisfies Record<string, StatementSync>;
 
@@ -318,6 +327,9 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
         record.argumentsSha256,
         record.outcome,
         record.refusalReason ?? null,
+        record.budgetLimit ?? null,
+        record.daySpendMicroUsd ?? null,
+        record.priceVersion ?? null,
         record.resultBytes ?? null,
         // NULL rather than 0 when the call did not run: a refusal has no result,
         // and 0 would read as a tool that succeeded and said nothing.
@@ -406,8 +418,8 @@ export interface AuditReader {
  */
 const AUDIT_COLUMNS = `
   id, at, channel, requesting_user, task, request_id, call_id, server, tool,
-  arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
-  approver, ticket`;
+  arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
+  price_version, result_bytes, result_is_error, approver, ticket`;
 
 /**
  * The WHERE clause and its bound values.
@@ -480,6 +492,11 @@ function rowToEntry(row: Record<string, unknown>): AuditEntry {
     argumentsSha256: row["arguments_sha256"] as string,
     outcome: row["outcome"] as AuditOutcome,
     ...(row["refusal_reason"] === null ? {} : { refusalReason: row["refusal_reason"] as RefusalReason }),
+    ...(row["budget_limit"] === null ? {} : { budgetLimit: row["budget_limit"] as BudgetLimit }),
+    ...(row["day_spend_micro_usd"] === null
+      ? {}
+      : { daySpendMicroUsd: Number(row["day_spend_micro_usd"]) }),
+    ...(row["price_version"] === null ? {} : { priceVersion: row["price_version"] as string }),
     ...(row["result_bytes"] === null ? {} : { resultBytes: row["result_bytes"] as number }),
     ...(row["result_is_error"] === null ? {} : { resultIsError: row["result_is_error"] === 1 }),
     ...(row["approver"] === null ? {} : { approver: row["approver"] as string }),
@@ -682,6 +699,16 @@ function rebuildAuditTable(db: DatabaseSync): void {
   // Read before the transaction opens: it is a question about the table as it
   // stands, and the answer decides one expression in the copy below.
   const ticket = hasColumn(db, "tool_call_audit", "ticket") ? "ticket" : "NULL";
+  // #62's three, each answered the same way: a row written before the column
+  // existed had no such figure, and `NULL` is what "no figure exists" already
+  // reads as on every row that was never priced. So the copy loses nothing and
+  // invents nothing — which is the check `AUDIT_SCHEMA_VERSION` asks a new
+  // version to make for itself.
+  const budgetLimit = hasColumn(db, "tool_call_audit", "budget_limit") ? "budget_limit" : "NULL";
+  const daySpend = hasColumn(db, "tool_call_audit", "day_spend_micro_usd")
+    ? "day_spend_micro_usd"
+    : "NULL";
+  const priceVersion = hasColumn(db, "tool_call_audit", "price_version") ? "price_version" : "NULL";
 
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -689,12 +716,12 @@ function rebuildAuditTable(db: DatabaseSync): void {
     db.exec(`
       INSERT INTO tool_call_audit_rebuilt
         (id, at, channel, requesting_user, task, request_id, call_id, server, tool,
-         arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
-         approver, ticket)
+         arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
+         price_version, result_bytes, result_is_error, approver, ticket)
       SELECT
          id, at, channel, requesting_user, task, request_id, call_id, server, tool,
-         arguments_sha256, outcome, refusal_reason, result_bytes, result_is_error,
-         approver, ${ticket}
+         arguments_sha256, outcome, refusal_reason, ${budgetLimit}, ${daySpend},
+         ${priceVersion}, result_bytes, result_is_error, approver, ${ticket}
         FROM tool_call_audit
        ORDER BY id
     `);
@@ -742,7 +769,7 @@ function rebuildAuditTable(db: DatabaseSync): void {
 function migrate(db: DatabaseSync, file: string): void {
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
   if (row !== undefined && row.version === AUDIT_SCHEMA_VERSION) return;
-  if (row === undefined || row.version === 1 || row.version === 2) {
+  if (row === undefined || row.version === 1 || row.version === 2 || row.version === 3) {
     rebuildAuditTable(db);
     return;
   }

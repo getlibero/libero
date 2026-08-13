@@ -619,6 +619,27 @@ null every `ticket`.
 There is no retention command and a delete-based one should not be added;
 rotation is the shape.
 
+### The priced columns, and what they are not
+
+Version 4 adds `budget_limit`, `day_spend_micro_usd` and `price_version` (#62).
+The migration gives every older row `NULL` for each, which is a widening in the
+sense that matters: the columns are nullable, no existing row can fail the copy,
+and `NULL` is already what these columns read as on any row that was never
+priced. An old row saying "no figure exists" is true rather than a gap.
+
+**Neither figure is a per-call cost.** `audit.ts`'s `resultBytes` already refuses
+to invent a per-call token count, on the ground that tokens are spent by model
+turns rather than by tool calls; money is spent the same way. What the row
+carries is the channel's running total for the day *as the decision saw it*, and
+the digest of the table that priced it — the pair that makes a past budget
+decision reproducible.
+
+The figure comes from `priceDaySpend` in `enforce.ts`, which is the function the
+decision itself used, rather than a second computation in `server.ts`: a row
+whose number disagreed with the comparison it documents would be worse than no
+row. `budget_limit` is taken off the refusal the decision produced for the same
+reason.
+
 ## Certificates
 
 `scripts/dev-certs.sh` mints the CA, the server certificate, and one client

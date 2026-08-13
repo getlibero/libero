@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { refusalMessage } from "./refusal.js";
-import type { RefusalReason } from "./refusal.js";
+import type { BudgetLimit, RefusalReason } from "./refusal.js";
 
 /**
  * One row of the audit log: what the proxy did with one tool call.
@@ -116,6 +116,49 @@ export interface AuditRecord {
   /** Set when the call did not run. The enumerated reason, never prose. */
   readonly refusalReason?: RefusalReason;
   /**
+   * Which daily limit stopped the call, on a `budget_exhausted` row (#62).
+   *
+   * The one fact `budget_exhausted` carries that the table had no column for,
+   * which is why `auditRefusalMessage` answered `null` for it. Three limits made
+   * that gap worse — "the budget ran out" without saying which sends an operator
+   * to one of three numbers — so the column exists and the sentence completes.
+   *
+   * Absent on every row that is not a budget refusal. It is not a summary of the
+   * channel's position; it is which comparison came back false.
+   */
+  readonly budgetLimit?: BudgetLimit;
+  /**
+   * The channel's spend so far **today**, in integer micro-USD, as the decision
+   * saw it (#62).
+   *
+   * **Not what this call cost.** There is no such quantity, for the reason
+   * `resultBytes` gives about tokens: money is spent by model turns, not by tool
+   * calls, and a per-call figure would be an apportionment invented for the
+   * column. This is the running total the comparison was made against — the
+   * number that answers "why was this refused" and "how close was this one".
+   *
+   * Absent whenever nothing was priced: a channel whose sheet sets no
+   * `daily_usd` consults no price table, and one whose spend includes a model
+   * the table cannot price has no total to record. Absent therefore means "no
+   * figure exists", never "zero".
+   *
+   * Micro-USD because a budget is money and money is not a float. As a JS number
+   * it is exact past nine billion dollars, which is not a bound anyone will meet.
+   */
+  readonly daySpendMicroUsd?: number;
+  /**
+   * Which price table produced `daySpendMicroUsd`: the digest of its bytes.
+   *
+   * Without it the figure is unreproducible — prices change, and a number with
+   * no record of what computed it cannot be checked against anything later. With
+   * it, the row plus the operator's git history is enough to re-derive the
+   * decision.
+   *
+   * Set exactly when `daySpendMicroUsd` is, and for the same reason: it records
+   * what priced a figure, so a row with no figure has nothing to attribute.
+   */
+  readonly priceVersion?: string;
+  /**
    * The size of the result handed back, in bytes, when the call ran.
    *
    * Not tokens. Tokens are spent by model turns rather than by tool calls, so a
@@ -218,7 +261,8 @@ export interface AuditRecord {
 export function auditRefusalMessage(
   reason: RefusalReason,
   server: string,
-  tool: string
+  tool: string,
+  budgetLimit?: BudgetLimit
 ): string | null {
   switch (reason) {
     case "no_team_sheet":
@@ -236,22 +280,27 @@ export function auditRefusalMessage(
     case "approval_denied":
     case "approval_mismatch":
       return refusalMessage({ reason, server, tool });
+    // Completed by the row's own `budget_limit` column since #62. It stays
+    // `null` when that column is absent rather than guessing: rows written
+    // before version 4 have no limit recorded, and naming one would be the
+    // fabricated fact this function exists to refuse.
+    case "budget_exhausted":
+      return budgetLimit === undefined ? null : refusalMessage({ reason, limit: budgetLimit });
     // Carries no facts beyond the reason, so the row is already complete (#62).
     // It is the one of the two pricing faults that can be reconstructed, and
     // that asymmetry is the point: "no model was reported" is the whole fact,
     // where "this model has no price" is not.
     case "model_unreported":
       return refusalMessage({ reason });
-    // The four the table cannot complete. Listed rather than defaulted, so a
+    // The three the table cannot complete. Listed rather than defaulted, so a
     // new reason is a compile error here and a decision rather than a silent
     // `null` — `refusalMessage`'s totality would otherwise stop at this door.
     //
-    // `model_not_priced` joins them for `budget_exhausted`'s reason and keeps it
-    // after the audit log gains a `budget_limit` column: that column says which
-    // *limit* bound, and this needs the *model*, which is a different fact and
-    // not one a row about a tool call has any business carrying. Inventing one
-    // would name a model the record never observed.
-    case "budget_exhausted":
+    // `model_not_priced` stays here even now the table has a `budget_limit`
+    // column: that column says which *limit* bound, and this needs the *model*,
+    // which is a different fact and not one a row about a tool call has any
+    // business carrying. Inventing one would name a model the record never
+    // observed.
     case "model_not_priced":
     case "egress_denied":
     case "credential_unresolved":
