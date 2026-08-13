@@ -42,7 +42,7 @@ The end-to-end security suite is written (#41). It runs the proxy as its real bu
 
 GitHub is behind the dispatcher and the governed path completes against it for real (#130) — allowlist, approval, budget, call, redaction, audit — so the served-call path is no longer proven only against a fake. Both images build from `deploy/docker-compose.yml` and CI builds them on every change (#86), so `docker compose -f deploy/docker-compose.yml up` starts a deployment from a clean checkout. The soft in-thread budget warning reaches the channel before a hard limit refuses anything, and `search_channel_history` is a proxied built-in the model can call on demand (#64).
 
-The gaps that matter, at phase 1's close. `@getlibero/cli` has `init` and `channel`; `doctor` is not built yet, so a deployment's wiring is checked by starting it (#217). Certificate revocation is still an edit to a team sheet, and there is no CRL by design — rotation is two commands with that edit between them, without downtime. `[egress]` is validated when a sheet loads and enforced nowhere, because the surface it governs — a code-execution sandbox — is later work (#219); `[ambient]` is parsed and unread until phase 4. Memory is the per-channel store, its index, and read-back into a task's context; curation and semantic recall are phase 2.
+The gaps that matter, at phase 1's close. Certificate revocation is an edit to a team sheet, and there is no CRL by design — rotation is two commands with that edit between them, without downtime. `[egress]` is validated when a sheet loads and enforced nowhere, because the surface it governs — a code-execution sandbox — is later work (#219); `[ambient]` is parsed and unread until phase 4. Memory is the per-channel store, its index, and read-back into a task's context; curation and semantic recall are phase 2.
 
 See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
@@ -55,13 +55,14 @@ Two services. The **gateway + agent** (service 1) connects to Slack over Socket 
 ```bash
 npx @getlibero/cli init                          # writes deploy/.env, generates the vault master key
 npx @getlibero/cli channel add C024BE91L         # a team sheet and the certificate that speaks for it
+npx @getlibero/cli doctor                        # says what is still wrong before you start anything
 docker compose -f deploy/docker-compose.yml up   # starts gateway+agent and proxy
 ```
 
-Run all three from the root of a checkout, and fill the Slack tokens and the provider key in
-`deploy/.env` before the last. The channel starts able to call nothing; granting it a tool is an
-edit to the sheet `channel add` wrote, which [self-hosting](https://getlibero.com/docs/self-hosting)
-walks through.
+Run these from the root of a checkout, and fill the Slack tokens and the provider key in
+`deploy/.env` before the last two — `doctor` names whatever is still missing. The channel starts
+able to call nothing; granting it a tool is an edit to the sheet `channel add` wrote, which
+[self-hosting](https://getlibero.com/docs/self-hosting) walks through.
 
 ## Repository layout
 

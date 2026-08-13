@@ -60,6 +60,40 @@ export function assignedNames(text: string): Map<string, boolean> {
   return found;
 }
 
+/**
+ * The same lines, as values.
+ *
+ * `init` never needed this — the rule above is that a value it never rewrites
+ * is a value it never has to understand — but `doctor` does: whether the vault
+ * key decodes to 32 bytes, whether the provider is one of two, whether the
+ * token that says `xoxb-` is in the variable that wants one.
+ *
+ * It stays a subset of what Compose reads, and deliberately: one pair of
+ * matching surrounding quotes is stripped and nothing else is interpreted — no
+ * escapes, no interpolation, no multi-line values. Everything it hands back is
+ * therefore either the value Compose will see or a value doctor should not
+ * pronounce on, and every caller checks a *shape*, so an unparsed oddity
+ * surfaces as a check that failed loudly rather than as a wrong answer.
+ */
+export function assignedValues(text: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(line);
+    if (match === null) continue;
+    // The last assignment wins here, because that is the one Compose reads —
+    // the opposite of `assignedNames`, which records the first because that is
+    // the one a fill would rewrite. Both are right for what they are for.
+    found.set(match[1] as string, unquote((match[2] as string).trim()));
+  }
+  return found;
+}
+
+function unquote(value: string): string {
+  const quoted = /^"(.*)"$|^'(.*)'$/.exec(value);
+  if (quoted === null) return value;
+  return (quoted[1] ?? quoted[2]) as string;
+}
+
 /** The whole file, for a path that does not exist yet. */
 export function renderEnvFile(header: readonly string[], blocks: readonly EnvBlock[]): string {
   const lines: string[] = [...header.map(commentLine), ""];
