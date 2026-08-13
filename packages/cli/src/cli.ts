@@ -15,8 +15,9 @@
 // the services — and the services' own entrypoints own what lives in their
 // volumes.
 
-import { EXIT_OK, EXIT_USAGE } from "./io.js";
+import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import type { CliIo } from "./io.js";
+import { nodeTooOld } from "./node-version.js";
 import { runInitCommand, USAGE as INIT_USAGE } from "./init-cli.js";
 import { runChannelCommand, USAGE as CHANNEL_USAGE } from "./channel-cli.js";
 import { runDoctorCommand, USAGE as DOCTOR_USAGE } from "./doctor-cli.js";
@@ -85,6 +86,15 @@ const ELSEWHERE: Readonly<Record<string, string>> = {
  * vault entrypoint has the same shape for the same kind of reason.
  */
 export async function runCli(io: CliIo): Promise<number> {
+  // Before anything reads a file. `engines` is advisory — npm warns and runs
+  // the package regardless — so an unsupported runtime has to be refused here
+  // or it is not refused at all.
+  const tooOld = io.nodeVersion === undefined ? null : nodeTooOld(io.nodeVersion);
+  if (tooOld !== null) {
+    io.err(tooOld);
+    return EXIT_ERROR;
+  }
+
   const [command, ...rest] = io.argv;
 
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {

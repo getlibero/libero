@@ -1,12 +1,14 @@
 {
   "name": "@getlibero/cli",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Libero CLI — the host-authored half of a deployment: init, channel add, doctor.",
+  "keywords": ["libero", "slack", "ai-agent", "self-hosted", "mcp", "devops"],
   "license": "MIT",
   "type": "module",
   "bin": { "libero": "dist/index.js" },
-  "files": ["dist/index.js", "dist/dev-certs.sh", "README.md"],
+  "files": ["dist/index.js", "dist/dev-certs.sh", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
   "repository": { "type": "git", "url": "https://github.com/getlibero/libero.git", "directory": "packages/cli" },
+  "bugs": { "url": "https://github.com/getlibero/libero/issues" },
   "homepage": "https://getlibero.com",
   "engines": { "node": ">=24.0.0" },
   "scripts": {

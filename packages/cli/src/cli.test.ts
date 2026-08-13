@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EXIT_OK, EXIT_USAGE } from "./io.js";
+import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { VERSION, runCli } from "./cli.js";
 
 interface Run {
@@ -9,12 +9,13 @@ interface Run {
   text: string;
 }
 
-async function run(argv: string[]): Promise<Run> {
+async function run(argv: string[], nodeVersion = "24.13.3"): Promise<Run> {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runCli({
     argv,
     cwd: "/nowhere",
+    nodeVersion,
     out: line => void out.push(line),
     err: line => void err.push(line)
   });
@@ -51,6 +52,24 @@ describe("dispatch", () => {
 
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toEqual([`libero ${VERSION}`]);
+  });
+});
+
+describe("the runtime floor", () => {
+  it("refuses an unsupported Node before reading anything, and exits 1", async () => {
+    // `engines` is advisory — npm warns and runs the package regardless — so
+    // an unsupported runtime is refused here or it is not refused at all.
+    const result = await run(["init"], "22.20.0");
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(result.err.join("\n")).toContain("needs Node 24");
+    expect(result.out).toEqual([]);
+  });
+
+  it("does not get in the way on a supported one", async () => {
+    const result = await run(["--version"], "26.7.0");
+
+    expect(result.code).toBe(EXIT_OK);
   });
 });
 

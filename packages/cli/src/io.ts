@@ -14,6 +14,12 @@ export interface CliIo {
   readonly argv: readonly string[];
   /** Where paths resolve from. `process.cwd()` in the real thing. */
   readonly cwd: string;
+  /**
+   * The runtime, checked against this package's `engines` floor before
+   * anything else runs. Injected rather than read from `process` so a test can
+   * be an old Node without being run on one.
+   */
+  readonly nodeVersion?: string;
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
 }

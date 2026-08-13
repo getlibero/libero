@@ -1,6 +1,14 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# Generated into packages/cli by its build, so that the one published package
+# ships a licence and the terms of everything esbuild inlines into its bundle.
+# Both are copies of files that live elsewhere in this repository or in
+# node_modules — the sources are what you edit, and CI packs the tarball and
+# checks that these arrived.
+packages/cli/LICENSE
+packages/cli/THIRD-PARTY-NOTICES.md
 .env
 .env.*
 !.env.example

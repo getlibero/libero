@@ -59,7 +59,19 @@ export function runDevCerts(script: string, args: readonly string[], cwd: string
     // being driven. Unset, the script is exactly what it was.
     env: { ...process.env, DEV_CERTS_SELF_CMD: "libero channel" }
   });
-  if (result.error !== undefined) throw result.error;
+  if (result.error !== undefined) {
+    // The one failure worth translating. `spawnSync sh ENOENT` on a host
+    // without a POSIX shell — Windows, most usefully — says nothing about what
+    // the operator is missing or which commands still work without it.
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(
+        "channel needs a POSIX shell and openssl on PATH, and `sh` was not found. " +
+          "init and doctor need neither; on Windows, run this from WSL or Git Bash."
+      );
+    }
+    throw result.error;
+  }
   return {
     code: result.status ?? 1,
     out: lines(result.stdout),
