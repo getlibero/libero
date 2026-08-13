@@ -9,10 +9,10 @@ interface Run {
   text: string;
 }
 
-function run(argv: string[]): Run {
+async function run(argv: string[]): Promise<Run> {
   const out: string[] = [];
   const err: string[] = [];
-  const code = runCli({
+  const code = await runCli({
     argv,
     cwd: "/nowhere",
     out: line => void out.push(line),
@@ -22,32 +22,32 @@ function run(argv: string[]): Run {
 }
 
 describe("dispatch", () => {
-  it("prints usage on stdout and exits 2 with no arguments", () => {
-    const result = run([]);
+  it("prints usage on stdout and exits 2 with no arguments", async () => {
+    const result = await run([]);
 
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.out.join("\n")).toContain("usage: libero <command>");
     expect(result.err).toEqual([]);
   });
 
-  it.each(["--help", "-h", "help"])("prints usage on stdout and exits 0 for %s", word => {
-    const result = run([word]);
+  it.each(["--help", "-h", "help"])("prints usage on stdout and exits 0 for %s", async word => {
+    const result = await run([word]);
 
     expect(result.code).toBe(EXIT_OK);
     expect(result.out.join("\n")).toContain("usage: libero <command>");
     expect(result.err).toEqual([]);
   });
 
-  it("sends an unknown command to stderr and exits 2", () => {
-    const result = run(["provision"]);
+  it("sends an unknown command to stderr and exits 2", async () => {
+    const result = await run(["provision"]);
 
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.err.join("\n")).toContain("libero: unknown command: provision");
     expect(result.out).toEqual([]);
   });
 
-  it("prints a version", () => {
-    const result = run(["--version"]);
+  it("prints a version", async () => {
+    const result = await run(["--version"]);
 
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toEqual([`libero ${VERSION}`]);
@@ -63,16 +63,16 @@ describe("the boundary #98 settled", () => {
     ["vault", "node dist/vault.js"],
     ["budget", "node dist/budget.js"],
     ["audit", "node dist/audit.js"]
-  ])("refuses %s, and says where it actually lives", (command, entrypoint) => {
-    const result = run([command]);
+  ])("refuses %s, and says where it actually lives", async (command, entrypoint) => {
+    const result = await run([command]);
 
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.err.join("\n")).toContain(`libero: unknown command: ${command}`);
     expect(result.err.join("\n")).toContain(entrypoint);
   });
 
-  it("says in its usage that those three are deliberately elsewhere", () => {
-    const result = run(["--help"]);
+  it("says in its usage that those three are deliberately elsewhere", async () => {
+    const result = await run(["--help"]);
 
     expect(result.text).toContain("deliberately not commands");
   });

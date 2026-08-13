@@ -19,6 +19,7 @@ import { EXIT_OK, EXIT_USAGE } from "./io.js";
 import type { CliIo } from "./io.js";
 import { runInitCommand, USAGE as INIT_USAGE } from "./init-cli.js";
 import { runChannelCommand, USAGE as CHANNEL_USAGE } from "./channel-cli.js";
+import { runDoctorCommand, USAGE as DOCTOR_USAGE } from "./doctor-cli.js";
 
 /**
  * Substituted by ./build.mjs at bundle time.
@@ -35,6 +36,7 @@ const USAGE = [
   "",
   "  init         write the deployment's environment file and generate the vault master key",
   "  channel add  create a channel's team sheet and the certificate that speaks for it",
+  "  doctor       read a deployment's wiring back and report what is wrong with it",
   "",
   "Libero's two services run in containers and own what is inside their own",
   "volumes. This command owns the other half: what an operator authors on the",
@@ -53,12 +55,10 @@ const USAGE = [
   "  docker compose -f deploy/docker-compose.yml run --rm proxy \\",
   "    node dist/audit.js list --channel C024BE91L",
   "",
-  "doctor is the next command and is not built yet.",
-  "",
   "Reads no environment. Every path is resolved from the working directory."
 ].join("\n");
 
-const COMMANDS = ["init", "channel"] as const;
+const COMMANDS = ["init", "channel", "doctor"] as const;
 type Command = (typeof COMMANDS)[number];
 
 function isCommand(value: string): value is Command {
@@ -68,7 +68,8 @@ function isCommand(value: string): value is Command {
 /** Each command's own usage, so `libero <command> --help` reaches it. */
 const HELP: Readonly<Record<Command, string>> = {
   init: INIT_USAGE,
-  channel: CHANNEL_USAGE
+  channel: CHANNEL_USAGE,
+  doctor: DOCTOR_USAGE
 };
 
 /** The three the proxy's entrypoints own, named so the error can say where. */
@@ -78,7 +79,12 @@ const ELSEWHERE: Readonly<Record<string, string>> = {
   audit: "node dist/audit.js"
 };
 
-export function runCli(io: CliIo): number {
+/**
+ * Async because `doctor` ends with a mutual-TLS probe, and nothing else here
+ * needs to be — `init` and `channel` return a resolved number. The proxy's
+ * vault entrypoint has the same shape for the same kind of reason.
+ */
+export async function runCli(io: CliIo): Promise<number> {
   const [command, ...rest] = io.argv;
 
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
@@ -113,5 +119,7 @@ export function runCli(io: CliIo): number {
       return runInitCommand(io, rest);
     case "channel":
       return runChannelCommand(io, rest);
+    case "doctor":
+      return runDoctorCommand(io, rest);
   }
 }

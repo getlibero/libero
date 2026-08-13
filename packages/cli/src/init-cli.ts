@@ -35,9 +35,10 @@
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ModelId } from "@getlibero/schema";
+import { NO_COMPOSE_FILE, findCompose } from "./compose.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
 import { mergeEnvFile, renderEnvFile } from "./env-file.js";
@@ -54,19 +55,6 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
 /** Named because three places have to agree about it, one of them a warning. */
 const VAULT_KEY = "PROXY_VAULT_KEY";
 
-/**
- * The compose file names, in Compose's own precedence, under the two
- * directories worth looking in: `deploy/` for a checkout of this repository,
- * and the working directory itself for an operator who has pulled a compose
- * file somewhere of their own.
- */
-const COMPOSE_DIRS = ["deploy", "."] as const;
-const COMPOSE_NAMES = [
-  "compose.yaml",
-  "compose.yml",
-  "docker-compose.yaml",
-  "docker-compose.yml"
-] as const;
 
 export const USAGE = [
   "usage: libero init [--file PATH] [--provider NAME] [--model ID]",
@@ -190,17 +178,9 @@ function parseInit(argv: readonly string[]): InitOptions {
 
 /** Compose's rule, applied by hand: the `.env` beside the compose file. */
 function beside(cwd: string): string {
-  for (const dir of COMPOSE_DIRS) {
-    for (const name of COMPOSE_NAMES) {
-      const candidate = resolve(cwd, dir, name);
-      if (existsSync(candidate)) return join(dirname(candidate), ".env");
-    }
-  }
-  throw new Error(
-    "libero: no compose file under deploy/ or in this directory, so there is " +
-      "nowhere an environment file would be read from. Run this from a checkout " +
-      "of the repository, or name the file with --file."
-  );
+  const found = findCompose(cwd);
+  if (found === null) throw new Error(`libero: ${NO_COMPOSE_FILE}`);
+  return found.envFile;
 }
 
 function write(io: CliIo, file: string, options: InitOptions): number {

@@ -20,9 +20,7 @@ exhaustion, held destructive calls, and channel isolation.
 Both services build as images from the compose file, so
 `docker compose -f deploy/docker-compose.yml up` starts a deployment from a clean checkout.
 
-What is not finished: `@getlibero/cli` has `init`, but not `channel add` or `doctor`, so
-registering a channel is still creating a directory by hand and pasting a fingerprint into a team
-sheet. Certificate rotation and revocation are manual —
+What is not finished: certificate rotation and revocation are manual —
 possible without downtime, and driven by a shell script and an edit to a team sheet rather than by
 anything automated. Do not run this against a workspace you care about.
 :::
@@ -36,10 +34,11 @@ Socket Mode, which is the main reason Socket Mode was chosen.
 ```bash
 npx @getlibero/cli init                          # writes deploy/.env, generates the vault master key
 npx @getlibero/cli channel add C024BE91L         # a team sheet and the certificate that speaks for it
+npx @getlibero/cli doctor                        # says what is still wrong before you start anything
 docker compose -f deploy/docker-compose.yml up   # starts gateway+agent and proxy
 ```
 
-All three run from the root of a checkout. `channel add` mints the local CA and the proxy's server
+All of these run from the root of a checkout. `channel add` mints the local CA and the proxy's server
 certificate on its first run as well as the channel's own, so `sh scripts/dev-certs.sh` is the same
 step done by hand — see [pinning a channel's certificate](#pinning-a-channels-certificate). An
 optional LiteLLM sidecar is included for models without first-class support.
@@ -301,6 +300,12 @@ docker compose -f deploy/docker-compose.yml run --rm --entrypoint curl proxy \
   --cert /path/to/client-C024BE91L.pem --key /path/to/client-C024BE91L.key \
   https://proxy:8443/v1/whoami            # -> {"channel":"C024BE91L"}
 ```
+
+`libero doctor` checks the same pairing from the host without needing anything running: it reads
+every sheet, compares each pin against the certificate on disk, and reports both directions — a pin
+with no certificate, and a certificate no sheet pins. It ends with this same `/v1/whoami` probe when
+the environment names a reachable `PROXY_URL`, and skips it with this command when compose owns the
+address.
 
 `/v1/whoami` is the probe for all of this: 200 with the channel id means the certificate
 authenticated and its fingerprint is pinned, and 401 means one of the two is not true. The proxy's

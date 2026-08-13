@@ -4,7 +4,7 @@
 
 import { runCli } from "./cli.js";
 
-process.exitCode = runCli({
+process.exitCode = await runCli({
   argv: process.argv.slice(2),
   cwd: process.cwd(),
   out: line => process.stdout.write(`${line}\n`),

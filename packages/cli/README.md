@@ -21,7 +21,7 @@ So the vault, the budget and the audit log are deliberately not commands here.
 - `libero init` — write the deployment's environment file and generate the vault master key
 - `libero channel add` — register a channel: its team sheet, and the certificate that speaks for it
 - `libero channel rotate` / `promote` / `pins` — replace a channel's key without downtime
-- `libero doctor` — check a deployment's wiring *(not built yet)*
+- `libero doctor` — read a deployment's wiring back and report what is wrong with it
 
 ### `init`
 
@@ -89,6 +89,46 @@ service restarts.
 Certificates are minted by `scripts/dev-certs.sh`, a copy of which ships in this package — Node
 cannot sign an X.509 certificate, so every path shells out to `openssl` in the end and the choice is
 between one implementation and two. It needs `sh` and `openssl` on the host.
+
+### `doctor`
+
+```bash
+npx @getlibero/cli doctor
+```
+
+Reads the deployment's host-side configuration back and reports what is wrong with it, one line
+per check, no colour. Exits 1 if anything failed; a warning is not a failure.
+
+```
+ok    env file         deploy/.env, 10 assignments
+ok    AGENT_MODEL      claude-sonnet-4-6
+fail  provider key     ANTHROPIC_API_KEY is empty, and AGENT_PROVIDER is anthropic
+ok    vault key        32 bytes, base64
+skip  roots            not in this file; compose sets them to /data/channels and /data/store inside the containers
+ok    C024BE91L        sheet parses, certificate pinned, expires in 364 days
+fail  stray certs      no sheet pins client-C0OLD.pem. Key material nothing will accept — delete it, or pin it
+```
+
+**It reads and never writes.** The two things most worth checking here are a master key and the
+fingerprints a team sheet pins, and a command that repaired either could destroy a vault or widen a
+channel's authorization while claiming to diagnose it. It opens no vault — it cannot; the vault is
+in a container volume and the key is in the proxy's environment — and prints no credential.
+
+**A check that cannot run says `skip`, and `skip` is not a pass.** On a compose deployment the two
+channels roots, the store root and the three database paths are set in the compose file to paths
+*inside a container*, and the proxy publishes no port to the host. Those checks run when the
+environment file supplies the values — which is the case when you are running the two processes
+directly — and are skipped with the reason when it does not. A checker that reported them healthy
+because it could not find them would be worse than one that did not check them at all.
+
+The certificate check runs in **both directions**. A sheet pinning a fingerprint with no certificate
+is a channel answered 401 on every call, which is loud. A certificate on disk that no sheet pins is
+key material nothing will accept — what a retired channel or a half-finished rotation leaves
+behind — and nothing else in the system would ever mention it.
+
+The last check is a real mutual-TLS `GET /v1/whoami`, which proves the whole chain at once: the
+connection authenticated, the CN resolved to a channel, and the sheet pins the fingerprint that
+arrived. `--offline` skips it.
 
 ## Packaging
 
