@@ -89,6 +89,24 @@ export interface CompletionResponse {
   toolCalls: ToolCall[];
   stopReason: StopReason;
   usage: TokenUsage;
+  /**
+   * The model that actually served this turn, as the provider echoed it back.
+   *
+   * **Not `CompletionRequest.model`, and never filled in from it** (#62). What
+   * was asked for is the channel's `[llm] model` or `AGENT_MODEL`; what served
+   * it can differ, because a LiteLLM sidecar resolves an alias and Bedrock and
+   * Vertex carry their own prefixes. The tool proxy service prices a channel's
+   * spend by this value, so substituting the requested id would price a router's
+   * `smart` as `smart` — silently wrong in exactly the deployment a dollar cap
+   * exists for. A provider that echoes nothing leaves this absent, and absent is
+   * an answer.
+   *
+   * Adapters omit anything that is not a well-formed `ModelId` rather than pass
+   * it along. The spend report is a strict wire schema, so a malformed id would
+   * fail the whole request and lose that turn's token counts — the degradation
+   * has to be "unreported", never "lost".
+   */
+  model?: string;
   /** Echo back on the assistant message built from this response. */
   providerState?: unknown;
 }

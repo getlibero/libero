@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ModelId } from "./names.js";
 
 /**
  * What one turn cost, as the agent reports it to the proxy's budget meter.
@@ -82,9 +83,43 @@ export const TokenUsageReport = z
   })
   .strict();
 
+/**
+ * Which model spent them, as the provider echoed it back — a sibling of `usage`
+ * rather than a field inside it.
+ *
+ * `TokenUsageReport` promises a field-for-field correspondence with `TokenUsage`
+ * in packages/agent/src/completion/types.ts, so that the agent's parse of a
+ * provider response maps onto it without a translation step. A model id is not
+ * one of those counts and putting it there would either break the promise or
+ * force the agent's type to grow a field it has no use for.
+ *
+ * **The served model, not the requested one** (#62). The agent asks for whatever
+ * `[llm] model` or `AGENT_MODEL` says; a router may serve something else, and it
+ * is what actually ran that has a price. Both adapters read it off the response
+ * envelope beside the counts. So this is exactly as forgeable as they are — a
+ * prompt-injected model has no reach into the envelope, and a compromised agent
+ * process could write anything, which is the assumption the security model
+ * already states.
+ *
+ * **Optional, and absent is not free.** A provider that echoes nothing, an agent
+ * older than this field, or a gateway that strips it all produce a report with no
+ * model. The proxy meters those tokens under a reserved bucket that no price
+ * table can name, so a channel whose sheet sets `budget.daily_usd` is refused
+ * until the day rolls over or an operator resets it, while a channel that caps
+ * only tokens and tool calls is unaffected. That asymmetry is the point: the
+ * cheapest lie available to a compromised agent — name no model, be metered at
+ * zero — is the one that stops it, and naming a *cheaper* model buys only what
+ * under-reporting the counts already buys.
+ *
+ * The field must stay optional rather than required. A required one would make
+ * every report from a provider that echoes nothing a 400, which loses the token
+ * counts entirely and fails **open** on `daily_tokens` — the limit that catches
+ * a runaway loop.
+ */
 export const SpendReport = z
   .object({
     turn: TurnId,
+    model: ModelId.optional(),
     usage: TokenUsageReport
   })
   .strict();

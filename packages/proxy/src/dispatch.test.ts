@@ -20,7 +20,14 @@ import type { CallLimits } from "./enforce.js";
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
-const noSpend = { toolCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+const noSpend = {
+  toolCalls: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  byModel: []
+};
 
 /** The shape ./budget-meter.ts supplies, without the file underneath it. */
 const realMeter: SpendMeter = {

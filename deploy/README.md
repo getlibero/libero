@@ -73,6 +73,29 @@ every open on the proxy's side is read-only, because a WAL reader creates the
 `-shm`/`-wal` sidecars and `:ro` would fail at the first search. The read-only-ness
 is `{ readOnly: true }` on the connection, not the mount.
 
+`../prices` is bind-mounted `:ro` into the proxy alone, beside the channels
+directory and for the same reason: both are host-authored, reviewed, and written
+by nobody at runtime. It is inert until `PROXY_PRICE_TABLE` names a file inside
+it. The three databases stay in named volumes — the line `CLAUDE.md` draws is
+that the CLI owns what the operator authors on the host and the proxy's own
+entrypoints own what the services own inside their volumes, and a price table is
+authored.
+
+## Upgrading across #62: proxy first
+
+**Upgrade the proxy before the agent.** The spend report gained a `model` field,
+`SpendReport` is a strict schema, and an *old* proxy answers 400 to a body
+carrying a field it does not know. So a new agent against an old proxy fails
+every spend report: `daily_tokens` runs blind while `daily_tool_calls` keeps
+working — the meter failing open, quietly, for as long as the pair is mismatched.
+
+The other order is fine. A new proxy accepts an old agent's reports exactly as
+before; they arrive without a model, land in the `(unreported)` bucket, and
+change nothing for a channel that has not set `budget.daily_usd`.
+
+`docker compose up -d` on both at once is also fine — it is only a staged rollout
+that holds one at the old image that has the window.
+
 `certs/` holds the CA, the proxy's keypair, and one client certificate per
 channel, laid out by role so each container mounts only its slice and the CA key
 is mounted into neither. `scripts/dev-certs.sh` mints them, and re-running it

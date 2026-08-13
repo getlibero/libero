@@ -39,6 +39,7 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_BUDGET_DB` | — | the daily budget meter |
 | `PROXY_AUDIT_DB` | — | the append-only audit log |
 | `PROXY_STORE_ROOT` | — | the agent's per-channel message stores, read read-only for `search_channel_history` |
+| `PROXY_PRICE_TABLE` | *(none)* | **optional.** What a model's tokens cost, for `[budget] daily_usd` |
 | `PROXY_HOST` | `127.0.0.1` | empty means the default; compose sets `0.0.0.0`, on a bridge that publishes no ports |
 | `PROXY_PORT` | `8443` | |
 | `PROXY_MAX_RESPONSE_BYTES` | `4194304` | how much of an upstream's answer to hold before abandoning it |
@@ -123,6 +124,55 @@ docker compose run --rm proxy node dist/budget.js show  C024BE91L
 docker compose run --rm proxy node dist/budget.js reset C024BE91L
 docker compose run --rm proxy node dist/budget.js prune
 ```
+
+`show` prints the day's totals and then the same tokens split by the model that
+spent them. Two of those ids are the meter's own: `(unreported)` is spend whose
+report named no model, and `(legacy)` is spend recorded before the meter had the
+column at all. Neither can arrive from a provider — `ModelId` has no parenthesis
+— and they behave oppositely, which is why they are two values and not one
+"unknown". See the price table below.
+
+## The price table
+
+`PROXY_PRICE_TABLE` is what a model's tokens cost, so that a team sheet's
+`[budget] daily_usd` can mean something. Micro-USD per million tokens, as
+integers, with all four tiers named per model — cache reads run about a tenth of
+input price, so a table that gave them one number would be wrong by an order of
+magnitude on a cache-heavy agent. `prices/example/prices.toml` is the documented
+starter file.
+
+**The only optional path this service reads**, and the only one where absent is
+not a misconfiguration: a workspace that caps its channels in tokens and tool
+calls needs no prices. It is safe to be optional because absent fails *closed* —
+with no table every model is unpriced, and a channel whose sheet sets
+`daily_usd` is refused rather than metered at zero. The deployments that need
+the variable are exactly the ones that stop working without it.
+
+**There is no default table**, and there should not be one: a price list baked
+into a released image goes stale on the provider's schedule and is then trusted.
+
+Host-authored and read-only, so it is bind-mounted beside `../channels` rather
+than living in a named volume like the three databases. Re-read when it changes,
+so correcting a price takes effect on the next call with no restart — cost is
+computed from the raw counts at decision time rather than accumulated, which is
+the same property `cache_read_weight` already has. A file that stops parsing
+keeps the last good table and says so in the log; a file that is *removed* drops
+it, because serving prices out of bytes that are no longer on disk is serving a
+number nobody can review.
+
+**Key it by the model the provider echoed back, not the one `[llm] model` asks
+for.** Under a router they differ, and that difference is the whole reason
+`daily_usd` exists. The proxy logs the served id on every spend report
+(`spend_reported`), which is where to read the spelling this file needs.
+
+The version recorded against a decision is the **digest of the file's bytes**,
+not a line in it — a declared version is a claim about the bytes that nothing
+checks. It is logged at load, so an operator can tie a running proxy's prices to
+a commit in whatever repository they keep the file in.
+
+> `budget.daily_usd` is **parsed and not yet enforced** in this build. The field
+> validates, the table loads, and no decision reads either. Enforcement is the
+> second of #62's three parts.
 
 ## The channel message stores
 

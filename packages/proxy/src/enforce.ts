@@ -56,6 +56,29 @@ export interface BudgetSpend {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
+  /**
+   * The same tokens, split by the model that spent them (#62).
+   *
+   * The four totals above answer `daily_tokens`, which weighs a day's tokens by
+   * the sheet's cache ratios and does not care what produced them. A dollar cap
+   * has to care, because that is the entire difference between the two units —
+   * so the meter keeps the split and the price table joins it here, at decision
+   * time, exactly as the cache weights are applied here rather than stored.
+   *
+   * A projection of the same rows rather than a second read, so the totals and
+   * the buckets cannot disagree. Nothing consults it yet: `budget.daily_usd`
+   * parses and is not enforced in this build.
+   */
+  readonly byModel: readonly ModelSpend[];
+}
+
+/** One model's share of a channel's day. See `BudgetSpend.byModel`. */
+export interface ModelSpend {
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
 }
 
 export interface EnforcementInput {

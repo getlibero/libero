@@ -27,6 +27,20 @@
 // A per-user rule or a trusted-reporter shortcut belongs on /v1/tools/call, or
 // nowhere.
 //
+// **#62 added a `model` to the body, and none of the above changed.** The id the
+// provider echoed back is a *dimension of the count* — it decides which row the
+// tokens are filed under, the way the day already does — and this route still
+// resolves nothing from it, reads no sheet to interpret it, and answers 200
+// either way. What a model costs is the price table's, joined against these
+// counts in ./enforce.ts on the next call, from the channel's own sheet. The
+// three defences above hold verbatim and the ESLint rule is unchanged.
+//
+// The distinction to keep, if a later change wants more from this field: a
+// dimension may select a *price*, and may never select a *permission*. A report
+// that named a model this deployment cannot price does not get refused here —
+// nothing is being asked for — it lands in a bucket, and the channel's next call
+// is the thing that gets an answer.
+//
 // What this route *does* share with the enforcing one, and must: the channel
 // comes from the client certificate and from nowhere else. The body is strict
 // and has no channel field, so an agent that tries to report on another
@@ -74,14 +88,21 @@ export function createSpendRoute(options: SpendRouteOptions): RouteHandler {
       };
     }
 
-    const { turn, usage } = parsed.data;
-    const record = await meter.recordTokens(ctx.channel, turn, usage);
+    const { turn, model, usage } = parsed.data;
+    const record = await meter.recordTokens(ctx.channel, turn, usage, model);
 
     logger.log("info", {
       event: "spend_reported",
       requestId: ctx.requestId,
       channel: ctx.channel,
       report: record.outcome,
+      // Which model the counts are filed under, which is the spelling an
+      // operator needs when they write a price for it — the sheet's `[llm]
+      // model` is what was *asked for*, and under a router the two differ.
+      // Omitted rather than logged as a placeholder when the agent named none:
+      // the meter's substitution is the meter's, and a log line that showed it
+      // here would read as though this route had chosen something.
+      ...(model === undefined ? {} : { model }),
       // Raw, unweighted: this route knows no team sheet and therefore no
       // weights. What the budget was charged is decided in ./enforce.ts.
       tokens:

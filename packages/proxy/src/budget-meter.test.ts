@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { UNREPORTED_MODEL } from "@getlibero/schema";
 import { NO_SPEND, openBudgetDb } from "./budget-db.js";
 import { TURN_RETENTION_MS, createSqliteSpendMeter, openSpendMeter } from "./budget-meter.js";
 import type { BudgetDb } from "./budget-db.js";
@@ -10,11 +11,21 @@ import type { SpendMeter } from "./dispatch.js";
 const CHANNEL = "C0ENGINEERING";
 const OTHER = "C0DESIGN";
 
+const MODEL = "claude-sonnet-4-6";
+
 const usage = {
   inputTokens: 120,
   outputTokens: 8,
   cacheReadInputTokens: 100,
   cacheCreationInputTokens: 20
+};
+
+/** The same four numbers as the meter's columns name them. */
+const COUNTS = {
+  inputTokens: 120,
+  outputTokens: 8,
+  cacheReadTokens: 100,
+  cacheWriteTokens: 20
 };
 
 /** 2026-08-04T12:00:00Z — midday, so a test can move either way from it. */
@@ -55,20 +66,46 @@ describe("counting", () => {
   // cached token is worth is a team sheet setting and the meter does not know
   // it. A meter that stored a weighted total would bake today's weights in.
   it("keeps the four token counts apart and unweighted", async () => {
-    await meter.recordTokens(CHANNEL, "t1", usage);
+    await meter.recordTokens(CHANNEL, "t1", usage, MODEL);
     expect(await meter.read(CHANNEL)).toEqual({
       toolCalls: 0,
       inputTokens: 120,
       outputTokens: 8,
       cacheReadTokens: 100,
-      cacheWriteTokens: 20
+      cacheWriteTokens: 20,
+      byModel: [{ model: MODEL, ...COUNTS }]
     });
   });
 
   it("accumulates across turns", async () => {
-    await meter.recordTokens(CHANNEL, "t1", usage);
-    await meter.recordTokens(CHANNEL, "t2", usage);
+    await meter.recordTokens(CHANNEL, "t1", usage, MODEL);
+    await meter.recordTokens(CHANNEL, "t2", usage, MODEL);
     expect((await meter.read(CHANNEL)).outputTokens).toBe(16);
+  });
+
+  // The substitution #62 put here, and the one line of this module that touches
+  // the model at all. It names a bucket — it does not decide anything, and a
+  // channel whose sheet sets no `daily_usd` is metered exactly as before.
+  it("files a report that named no model under the reserved bucket", async () => {
+    await meter.recordTokens(CHANNEL, "t1", usage);
+
+    const spend = await meter.read(CHANNEL);
+    expect(spend.byModel).toEqual([{ model: UNREPORTED_MODEL, ...COUNTS }]);
+    // The totals are untouched by the substitution, which is what makes this
+    // inert for `daily_tokens`.
+    expect(spend.inputTokens).toBe(120);
+  });
+
+  // Two of them, and they must not merge: "no model was named" and "this model
+  // was named" are different facts, and one of them is the one a dollar cap
+  // refuses on.
+  it("keeps the reserved bucket apart from a named model's", async () => {
+    await meter.recordTokens(CHANNEL, "t1", usage);
+    await meter.recordTokens(CHANNEL, "t2", usage, MODEL);
+
+    const spend = await meter.read(CHANNEL);
+    expect(spend.byModel.map(bucket => bucket.model)).toEqual([UNREPORTED_MODEL, MODEL]);
+    expect(spend.inputTokens).toBe(240);
   });
 });
 
@@ -180,7 +217,7 @@ describe("surviving a restart", () => {
   // a proxy restarted at noon reads the same numbers it wrote at eleven.
   it("reads back what it wrote before the process went away", async () => {
     await meter.recordToolCall(CHANNEL);
-    await meter.recordTokens(CHANNEL, "t1", usage);
+    await meter.recordTokens(CHANNEL, "t1", usage, MODEL);
     db.close();
 
     db = openBudgetDb({ file });
@@ -190,7 +227,8 @@ describe("surviving a restart", () => {
       inputTokens: 120,
       outputTokens: 8,
       cacheReadTokens: 100,
-      cacheWriteTokens: 20
+      cacheWriteTokens: 20,
+      byModel: [{ model: MODEL, ...COUNTS }]
     });
   });
 

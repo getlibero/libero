@@ -27,12 +27,14 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   CHANNEL,
+  SERVED_MODEL,
   TURN_TOKENS,
   auditRows,
   calls,
   rigOf,
   runBudgetCli,
   says,
+  servedBy,
   spendFor,
   startRig,
   withUsage
@@ -65,6 +67,7 @@ describeTokenCapAtTheBoundary();
 describeReportingNothing();
 describeReplayedTurnIds();
 describeCacheWeighting();
+describeServedModel();
 describeSoftLimitWarning();
 
 function describeToolCallCapAndReset(): void {
@@ -354,6 +357,98 @@ function describeCacheWeighting(): void {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.cacheReadTokens).toBeGreaterThanOrEqual(2 * CACHE_READS);
       expect(spend.inputTokens + spend.outputTokens).toBeLessThan(100);
+    },
+    CASE_MS
+  );
+}
+
+// The dimension #62 added to the meter, end to end. Nothing here enforces a
+// dollar cap — `daily_usd` parses and is not read in this build — so what this
+// proves is the *plumbing* the cap will rest on: that the model the provider
+// echoed reaches the proxy's counters through five hops and a strict wire
+// schema, and that a turn naming none lands somewhere no price table can reach.
+//
+// Worth having before the enforcement rather than with it. If the id does not
+// arrive, a dollar cap built on top refuses every channel in the deployment, and
+// the failure would look like a pricing bug rather than a plumbing one.
+function describeServedModel(): void {
+  let rig: Rig | undefined;
+
+  /** Not `SERVED_MODEL`: a router's answer differs from what the sheet asked. */
+  const ROUTED = "claude-opus-4-6";
+
+  beforeAll(async () => {
+    rig = await startRig({
+      sheets: {
+        [CHANNEL]: {
+          credential: "e2e_canary",
+          tools: [{ name: "list_prs", approval: "none" }],
+          dailyTokens: 1_000_000,
+          dailyToolCalls: 200
+        }
+      },
+      script: [
+        call("call-1"),
+        // The same task, served by something else. A LiteLLM sidecar resolving
+        // an alias mid-day is the case, and it is the one `[llm] model` cannot
+        // describe.
+        servedBy(call("call-2"), ROUTED),
+        // And a provider that echoed nothing at all.
+        servedBy(call("call-3"), undefined),
+        says("Three checked.")
+      ]
+    });
+  }, SETUP_MS);
+
+  afterAll(async () => {
+    await rig?.stop();
+  }, SETUP_MS);
+
+  it(
+    "meters each turn against the model that served it, and names the unreported ones",
+    async () => {
+      const { agent, upstream, budgetDb } = rigOf(rig);
+
+      await agent.slack.deliverMention(mention("Ev00000058"));
+
+      // Nothing was refused: this build prices nothing, so the counters moved
+      // and every call ran. That is the control for everything below — a case
+      // where calls were refused would prove the plumbing by accident.
+      expect(upstream.callsTo("tools/call")).toHaveLength(3);
+
+      const spend = spendFor(budgetDb, CHANNEL);
+      const buckets = new Map(spend.byModel.map(bucket => [bucket.model, bucket]));
+
+      // Four turns — three calls and the answer — across three buckets.
+      expect([...buckets.keys()].sort()).toEqual(["(unreported)", ROUTED, SERVED_MODEL].sort());
+
+      const tokensIn = (model: string): number => {
+        const bucket = buckets.get(model);
+        return bucket === undefined ? -1 : bucket.inputTokens + bucket.outputTokens;
+      };
+
+      // Sized off the script rather than written as numbers: turns 1 and 4 ran
+      // on the sheet's model, turn 2 on the router's answer, turn 3 on nothing.
+      // Asserting the exact split is what makes this a test of attribution
+      // rather than of arithmetic — a meter that filed every turn under one id
+      // would still total correctly.
+      expect(tokensIn(SERVED_MODEL)).toBe(2 * TURN_TOKENS);
+      expect(tokensIn(ROUTED)).toBe(TURN_TOKENS);
+      expect(tokensIn("(unreported)")).toBe(TURN_TOKENS);
+
+      // The totals still read as they always did. `daily_tokens` is summed
+      // across the buckets, so splitting them changed no limit that existed
+      // before this.
+      expect(spend.inputTokens + spend.outputTokens).toBe(4 * TURN_TOKENS);
+      expect(spend.toolCalls).toBe(3);
+
+      // The operator's read of which spelling to price, which is the thing they
+      // cannot get from the team sheet.
+      await rigOf(rig).proxy.waitForLog({
+        event: "spend_reported",
+        channel: CHANNEL,
+        model: ROUTED
+      });
     },
     CASE_MS
   );

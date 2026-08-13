@@ -1264,7 +1264,8 @@ describe("composing the proxy", () => {
             inputTokens: 0,
             outputTokens: 0,
             cacheReadTokens: 0,
-            cacheWriteTokens: 0
+            cacheWriteTokens: 0,
+            byModel: []
           }),
           recordToolCall: () => {},
           recordTokens: () => ({ outcome: "recorded" as const }),

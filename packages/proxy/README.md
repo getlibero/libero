@@ -236,6 +236,71 @@ resolves from the channel's team sheet with the rest of policy, at decision
 time, so an operator changes it with a sheet edit rather than an agent release.
 `apps/proxy-server/README.md` documents loading secrets into the vault.
 
+### Two spend tables, and which model spent what
+
+Since #62 the meter records **which model** a turn's tokens went to, because a
+dollar cap cannot be resolved without it and the team sheet cannot answer:
+`[llm] model` is optional, and when it is absent the real model is `AGENT_MODEL`
+in the agent process's env, which this service cannot see. Under a router the
+sheet is wrong even when it is set.
+
+Tool calls and tokens are now **two tables**, not one re-keyed table.
+`channel_spend` is `(channel, day)` and holds `tool_calls`;
+`channel_token_spend` is `(channel, day, model)` and holds the four counts. A
+tool call has no model, so one table keyed on all three would force
+`addToolCall` to invent one — and the row it invented would carry a real count
+beside zeroed token columns, one key meaning two things. The split also puts
+something worth reading straight into the schema: `daily_tool_calls` is the limit
+that holds under full compromise of the agent process, and nothing #62 added
+touches its table.
+
+**Cost is never accumulated.** The meter stores raw counts and the price table
+joins them at decision time, exactly as the cache weights are applied rather than
+stored — so correcting a mistyped price re-prices spend already recorded today,
+on the channel's next call. A price table is operator-authored config and will
+eventually contain a typo; under a stored total the only remedy would be
+`budget reset`, which also discards the spend that was right. `BudgetSpend`
+carries both the day's totals and the split, and the totals are summed from the
+split rather than read separately, so the two cannot disagree.
+
+**Two reserved model ids**, because they look alike and behave oppositely.
+`(legacy)` is what the version-2 migration files pre-#62 counts under; it is
+priced at **zero**, since `daily_usd` did not exist when those tokens were spent
+and charging them would refuse a channel on the morning after an upgrade. It can
+only appear on rows dated on or before the migration, so it ages out with one UTC
+day. `(unreported)` is what the meter files a report that named no model under;
+it is deliberately **unpriceable**, so a channel capped in dollars fails closed.
+The remedies differ — "add a price" against "diagnose the agent" — which is why
+one "unknown" would not do. Neither can arrive on the wire: `ModelId`'s alphabet
+has no parenthesis, so the reservation holds at parse rather than by convention,
+the way `BUILTIN_SERVER`'s does.
+
+**Version 2 is also the first migration this file has had.** `checkVersion` could
+previously only stamp or refuse, so a shape change had no path forward that did
+not go through an operator deleting their spend. `rebuildBudgetTables` follows
+`audit-db.ts`'s `rebuildAuditTable`, including asking the table what it has
+rather than trusting the stamp. Unlike the audit log's versions this one is a
+**data move rather than a widening**, so "what happens to a row that fails" needed
+its own answer: none can, because every v1 row maps by a total function to one
+`channel_spend` row and at most one bucket. Check that again before adding a
+version 3.
+
+**The report route still decides nothing.** The model is a dimension of a count —
+it selects which row the tokens land in, the way the day already does — and
+`spend-route.ts` resolves no sheet, imports nothing that could, and answers 200
+either way. Its ESLint rule is unchanged. The line to hold: a dimension may
+select a *price*, and may never select a *permission*.
+
+`price-table-store.ts` is where a table is read: absent is legal and prices
+nothing, a parse failure keeps the last good table, and a removed file drops it.
+It pairs a stat with a watcher for `team-sheet-store.ts`'s reason — correcting a
+digit in a price changes neither the file's size nor its inode, which is exactly
+the edit a stat cannot see.
+
+> `budget.daily_usd` is **parsed and not yet enforced**. `enforce.ts` reads the
+> totals and not the split, and no decision consults a price. Enforcement is the
+> second of #62's three parts.
+
 ### The soft limit
 
 `[budget] warn_at` is a **fraction** of each hard limit rather than a pair of

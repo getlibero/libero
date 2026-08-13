@@ -73,7 +73,11 @@ function spending(tokens: number, toolCalls: number): BudgetSpend {
     inputTokens: tokens,
     outputTokens: 0,
     cacheReadTokens: 0,
-    cacheWriteTokens: 0
+    cacheWriteTokens: 0,
+    // Empty, and every case in this file leaves it so: nothing here enforces
+    // `daily_usd` yet, and the token limit reads the totals above rather than
+    // the split. The cases that exercise the split arrive with the dollar cap.
+    byModel: []
   };
 }
 

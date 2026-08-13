@@ -132,7 +132,14 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
     // cost is settled the moment the provider answered, and the caller's meter
     // should hear it while the task is still running rather than after. A hook
     // that throws ends the task — see its contract in ./types.ts.
-    await options.onTurn?.(response.usage, turns);
+    await options.onTurn?.({
+      usage: response.usage,
+      turn: turns,
+      // Absent when the provider echoed nothing, and absent it stays: the loop
+      // knows `request.model` and deliberately does not substitute it. See
+      // `CompletedTurn.model`.
+      ...(response.model === undefined ? {} : { model: response.model })
+    });
     if (response.text !== "") text = response.text;
 
     messages.push({

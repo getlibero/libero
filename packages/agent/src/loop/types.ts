@@ -150,6 +150,29 @@ export type AgentStopReason =
   /** The caller's signal aborted — shutdown, or a human cancelling the task. */
   | "cancelled";
 
+/**
+ * What one model turn cost, as `onTurn` reports it.
+ *
+ * An object rather than positional arguments, because #62 added a third field
+ * and it is optional: `onTurn(usage, 3, undefined)` reads as nothing at a call
+ * site, and the next field would read as less. The two that were already here
+ * keep their meaning exactly.
+ */
+export interface CompletedTurn {
+  usage: TokenUsage;
+  /** Which turn of this task, from 1. Makes a per-turn id `<task>.<n>`. */
+  turn: number;
+  /**
+   * The model that served it, when the provider echoed one (#62).
+   *
+   * Passed through from `CompletionResponse.model` without interpretation — in
+   * particular **not** defaulted to the model that was requested, which under a
+   * router is a different thing and is the reason this exists. See that field
+   * for the whole argument.
+   */
+  model?: string;
+}
+
 export interface AgentTaskOptions {
   completion: CompletionClient;
   toolSource: ToolSource;
@@ -207,7 +230,7 @@ export interface AgentTaskOptions {
    * vanish. A caller that can fail swallows its own failure and says so where
    * it has a logger.
    */
-  onTurn?: (usage: TokenUsage, turn: number) => void | Promise<void>;
+  onTurn?: (turn: CompletedTurn) => void | Promise<void>;
   /**
    * Where each tool call has got to, called as the loop dispatches them (#68).
    *

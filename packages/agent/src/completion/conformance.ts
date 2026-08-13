@@ -109,6 +109,21 @@ export function runCompletionConformance(harness: CompletionHarness): void {
       expect(response.usage.cacheReadInputTokens).toBe(100);
     });
 
+    // #62: the tool proxy service prices a channel's spend by the model that
+    // actually served a turn, and only this end can see it.
+    //
+    // **Asked for one id, served another**, which is the whole case. A router —
+    // the LiteLLM sidecar in the compose file — resolves an alias, so the
+    // requested id is not the priced one, and an adapter that quietly answered
+    // with `request.model` would price a channel's opus turns at its alias's
+    // rate and look right doing it. The fixtures echo `test-model`; this asks
+    // for something else so the two cannot be confused.
+    it("carries the model the provider served, not the one that was asked for", async () => {
+      const { response } = await run("text", { model: "router-alias" });
+
+      expect(response.model).toBe("test-model");
+    });
+
     it("returns a tool call with parsed arguments alongside text", async () => {
       const { response } = await run("tool-call");
 

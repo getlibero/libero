@@ -51,15 +51,50 @@ export function withUsage(response: CompletionResponse, usage: TokenUsage): Comp
   return { ...response, usage };
 }
 
+/**
+ * The model the scripted provider says it served (#62).
+ *
+ * Every turn carries it, because a real provider echoes one on every response
+ * and a rig whose turns silently had none would meter its whole suite under the
+ * proxy's `(unreported)` bucket — which is a state worth reaching deliberately
+ * and never by accident.
+ */
+export const SERVED_MODEL = "claude-sonnet-4-6";
+
+/**
+ * The same turn, served by a different model, or by none.
+ *
+ * `withUsage`'s shape and its argument: a decoration rather than a parameter on
+ * `calls`/`says`, because the model is irrelevant to every case that is not
+ * about pricing. Passing `undefined` is the provider that echoed nothing, which
+ * is the case a dollar cap has to fail closed on — spelled explicitly, so a
+ * script cannot arrive at it by forgetting.
+ */
+export function servedBy(
+  response: CompletionResponse,
+  model: string | undefined
+): CompletionResponse {
+  if (model === undefined) {
+    // Deleted from a copy rather than set to `undefined`. `CompletionResponse`
+    // has `exactOptionalPropertyTypes` behind it, and the agent's spend client
+    // reads absence rather than the value — a present key holding `undefined`
+    // is a different thing from a provider that echoed nothing.
+    const stripped = { ...response };
+    delete stripped.model;
+    return stripped;
+  }
+  return { ...response, model };
+}
+
 /** One turn's answer: text and stop. */
 export function says(text: string): CompletionResponse {
-  return { text, toolCalls: [], stopReason: "end_turn", usage: { ...USAGE } };
+  return { text, toolCalls: [], stopReason: "end_turn", usage: { ...USAGE }, model: SERVED_MODEL };
 }
 
 /** One turn's answer: call a tool. `name` is the flat name the listing published. */
 export function calls(name: string, args: Record<string, unknown>, id = "call-1"): CompletionResponse {
   const toolCall: ToolCall = { id, name, arguments: args };
-  return { text: "", toolCalls: [toolCall], stopReason: "tool_use", usage: { ...USAGE } };
+  return { text: "", toolCalls: [toolCall], stopReason: "tool_use", usage: { ...USAGE }, model: SERVED_MODEL };
 }
 
 /**

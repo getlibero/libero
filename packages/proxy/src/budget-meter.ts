@@ -13,6 +13,7 @@ import type { BudgetDb } from "./budget-db.js";
 import type { SpendMeter, SpendRecord } from "./dispatch.js";
 import type { BudgetSpend } from "./enforce.js";
 import type { Logger } from "./log.js";
+import { UNREPORTED_MODEL } from "@getlibero/schema";
 import type { BudgetLimit, TokenUsageReport } from "@getlibero/schema";
 
 /**
@@ -78,10 +79,18 @@ export function createSqliteSpendMeter(options: SpendMeterOptions): SpendMeter {
       return db.claimWarning(channel, utcDay(now()), limit);
     },
 
-    recordTokens(channel: string, turn: string, usage: TokenUsageReport): SpendRecord {
+    recordTokens(channel: string, turn: string, usage: TokenUsageReport, model?: string): SpendRecord {
       const at = now();
       const today = utcDay(at);
-      const recorded = db.addTurnTokens(channel, today, turn, at, {
+      // **Naming a bucket, not deciding anything.** A report that named no model
+      // is metered under a reserved id no price table can answer, so a channel
+      // capped in dollars is refused on its next call rather than metered at
+      // zero — but that refusal is `enforce.ts`'s, made from the sheet, exactly
+      // like every other. Nothing here reads a sheet or knows what `daily_usd`
+      // is; this line picks which row the counts land in. See
+      // `UNREPORTED_MODEL` in @getlibero/schema for why absent must not be
+      // spelled the same way as the migration's `(legacy)`.
+      const recorded = db.addTurnTokens(channel, today, turn, at, model ?? UNREPORTED_MODEL, {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         cacheReadTokens: usage.cacheReadInputTokens,
