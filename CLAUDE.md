@@ -50,7 +50,7 @@ Phase 1, closing. What exists:
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the daily budget meter, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel message store — one SQLite file per channel, an FTS5 index, the delete and edit paths, and a read-only opener the proxy uses |
-| `packages/cli` | Placeholder npm release |
+| `packages/cli` | The operator's host-side commands — `init` today, `channel add` and `doctor` next (#217). The only npm-published package, shipped as one bundled file |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `budget` and `audit` entrypoints for the operator |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model |
@@ -335,9 +335,22 @@ the compose file already draws, now written down: **the CLI owns what the
 operator authors on the host** (`../channels`, `./certs`, the env file — all
 bind-mounted `:ro` into the services, and all still `libero init` /
 `channel add` / `doctor`'s), **and the proxy's own entrypoints own what the
-services own inside their volumes**. It defers rather than dodges the packaging
-question — `@getlibero/schema` is `private` too, so `doctor` will have to answer
-it — and that belongs to `doctor`.
+services own inside their volumes**.
+
+**The packaging question #98 deferred is answered in #217: the CLI imports
+`@getlibero/schema` and esbuild inlines it.** `packages/cli/build.mjs` bundles
+the entry point into a single `dist/index.js` carrying the schema, zod and
+smol-toml, so the published manifest declares **no dependencies at all** and
+`@getlibero/schema` stays `private`. That is a build-time inline of the one
+source of truth, not a vendored copy: there is no second checked-in definition to
+drift, and `pnpm -r build` fails the moment the schema's exports change. The
+workspace edge lives in `devDependencies` and `release-cli.yml` deletes that
+field before publishing, because `npm publish` — unlike pnpm's — does not rewrite
+`workspace:*` and would ship a specifier no registry client can resolve. CI packs
+the tarball and asserts both halves on every pull request. The rule this leaves:
+**a shape both services agree on is imported here, never restated** — the CLI
+validating a model id or a team sheet differently from the proxy would be a
+second answer to what a deployment is.
 
   Three things about the reader are settled. **It is a second connection, opened
   `readOnly`**, so SQLite refuses a write before the append-only triggers have
@@ -448,3 +461,8 @@ optional properties reject explicit `undefined`.
 `@getlibero/cli` is the only npm-published package; everything else ships as
 Docker images built from `deploy/docker-compose.yml`. Pushing a `cli-v*` tag
 triggers `release-cli.yml`, which publishes with npm provenance attestations.
+
+It publishes **one file and no dependencies**: `packages/cli/build.mjs` bundles
+`@getlibero/schema` in with esbuild, and the workflow deletes `devDependencies`
+before `npm publish` so the workspace edge never reaches the registry. See the
+#98 paragraph above for why that, rather than publishing the schema.

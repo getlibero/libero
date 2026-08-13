@@ -22,13 +22,15 @@ jobs:
           # have passed while the stated floor of 22.13 failed on an operator's
           # machine with `no such module: fts5`.
           #
-          # `@types/node`'s major follows this same floor — `^24` in core,
-          # matching `engines`, and `^22` in packages/cli, which publishes
-          # `engines: >=22`. That is this hazard pointed the other way: types
-          # ahead of the runtime typecheck the tree against APIs an operator on
-          # the supported floor does not have, and nothing here would fail.
-          # `pnpm update` offers the newest major; take it when a floor moves
-          # and not before.
+          # `@types/node`'s major follows this same floor, and there is now one
+          # floor: `^24` everywhere, matching `engines: >=24` everywhere.
+          # packages/cli was the exception at `^22` while it printed three lines
+          # and published `engines: >=22`; #217 gave it commands that share code
+          # with core, so it moved. That pin is this hazard pointed the other
+          # way — types ahead of the runtime typecheck the tree against APIs an
+          # operator on the supported floor does not have, and nothing here
+          # would fail. `pnpm update` offers the newest major; take it when a
+          # floor moves and not before.
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
@@ -44,6 +46,35 @@ jobs:
         # skipping emit is the faster answer while you are working; it just has
         # nothing left to say once a build has passed.
         run: pnpm -r build
+      - name: The CLI publishes one file and no dependency
+        # `@getlibero/cli` is the only package anyone installs from npm, and it
+        # depends on `@getlibero/schema`, which is private and never published.
+        # esbuild inlines the schema into dist/index.js, so the published
+        # manifest declares nothing to resolve — and release-cli.yml deletes
+        # devDependencies before publishing, because npm (unlike pnpm) does not
+        # rewrite `workspace:*` and would ship a specifier no client can install.
+        #
+        # Asserted on every pull request rather than discovered at a tag, and in
+        # a copy of the manifest so nothing here mutates the tree for the steps
+        # that follow.
+        working-directory: packages/cli
+        run: |
+          work=$(mktemp -d)
+          cp package.json "$work/package.json.orig"
+          trap 'mv "$work/package.json.orig" package.json; rm -rf "$work" ./*.tgz' EXIT
+          npm pkg delete devDependencies
+          npm pack --pack-destination "$work" --silent > /dev/null
+          tarball=$(ls "$work"/*.tgz)
+          tar -tzf "$tarball" | sort
+          tar -xzOf "$tarball" package/package.json > "$work/manifest.json"
+          node -e '
+            const m = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (m.dependencies) throw new Error("published manifest declares dependencies");
+            if (JSON.stringify(m).includes("workspace:")) throw new Error("published manifest carries a workspace: spec");
+          ' "$work/manifest.json"
+          tar -xzOf "$tarball" package/dist/index.js > "$work/bundle.js"
+          head -1 "$work/bundle.js" | grep -qx '#!/usr/bin/env node'
+          ! grep -q '"@getlibero/' "$work/bundle.js"
       - name: Tests
         run: pnpm test
 
@@ -147,7 +178,7 @@ jobs:
             tests=$(count 'find /app \( -path "/app/dist/*" -o -path "*/@getlibero/*" \) -name "*.test.js" | wc -l')
             [ "$tests" = "0" ] || { echo "::error::$image carries $tests compiled test file(s)."; failed=1; }
 
-            toolchain=$(count 'ls /app/node_modules/.pnpm 2>/dev/null | grep -cE "^(typescript|vitest|eslint|vite)@" || true')
+            toolchain=$(count 'ls /app/node_modules/.pnpm 2>/dev/null | grep -cE "^(typescript|vitest|eslint|vite|esbuild)@" || true')
             [ "$toolchain" = "0" ] || { echo "::error::$image carries $toolchain build-toolchain package(s) — the --prod prune did not happen."; failed=1; }
           done
           exit $failed

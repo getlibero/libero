@@ -17,11 +17,12 @@ exercised end to end. The end-to-end suite that attacks all of this exists: it c
 over real mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget
 exhaustion, held destructive calls, and channel isolation.
 
-Both services build as images from the compose file, so `docker compose up` starts a deployment
-from a clean checkout.
+Both services build as images from the compose file, so
+`docker compose -f deploy/docker-compose.yml up` starts a deployment from a clean checkout.
 
-What is not finished: `@getlibero/cli` is a placeholder release, so the `init` command on this page
-is target UX rather than something you can run. Certificate rotation and revocation are manual —
+What is not finished: `@getlibero/cli` has `init`, but not `channel add` or `doctor`, so
+registering a channel is still creating a directory by hand and pasting a fingerprint into a team
+sheet. Certificate rotation and revocation are manual —
 possible without downtime, and driven by a shell script and an edit to a team sheet rather than by
 anything automated. Do not run this against a workspace you care about.
 :::
@@ -33,20 +34,28 @@ service writes on a volume of its own. No inbound ports: the gateway connects ou
 Socket Mode, which is the main reason Socket Mode was chosen.
 
 ```bash
-npx @getlibero/cli init      # scaffolds config + secrets on the host
-sh scripts/dev-certs.sh      # mints the mutual-TLS material (see below)
-docker compose up            # starts gateway+agent and proxy
+npx @getlibero/cli init                          # writes deploy/.env, generates the vault master key
+sh scripts/dev-certs.sh                          # mints the mutual-TLS material (see below)
+docker compose -f deploy/docker-compose.yml up   # starts gateway+agent and proxy
 ```
 
-`init` writes the host configuration and generates `PROXY_VAULT_KEY`, the master key that encrypts
-the vault; `docker compose up` starts both services from `deploy/docker-compose.yml`. An optional
-LiteLLM sidecar is included for models without first-class support.
+All three run from the root of a checkout. An optional LiteLLM sidecar is included for models
+without first-class support.
 
-The full environment contract is `.env.example` at the repository root, and most of it is
-required with no default — the Slack tokens, the provider key, `AGENT_PROVIDER` and
+**There are two environment files, and they are different documents.** `init` writes
+`deploy/.env`: the operator's half of a compose deployment — the two Slack tokens, the provider
+and model, the completion key, the optional price table, and `PROXY_VAULT_KEY`, the master key
+that encrypts the vault. It goes beside the compose file because that is where Compose looks —
+with no `--project-directory` the project directory is the directory holding the compose file —
+so an `.env` at the repository root is read by nothing. Everything else the services need is set
+in the compose file itself, because those are paths inside a container.
+
+`.env.example` at the repository root is the other one: the full contract for **running the two
+processes directly**, with host-relative paths, and a superset of what compose reads. Most of it
+is required with no default — the Slack tokens, the provider key, `AGENT_PROVIDER` and
 `AGENT_MODEL`, the channels roots for both services, the agent's `AGENT_STORE_ROOT`, the proxy's
-TLS material, and the vault, budget, and audit paths (compose sets the in-container paths itself;
-the file says which). A missing one is a startup failure that names itself. `PROXY_BUDGET_DB`,
+TLS material, and the vault, budget, and audit paths. A missing one is a startup failure that
+names itself. `PROXY_BUDGET_DB`,
 `PROXY_AUDIT_DB`, `AGENT_STORE_ROOT` and `PROXY_STORE_ROOT` get their own paragraphs under
 [operating it](#operating-it) because they are the four where a wrong value fails quietly rather
 than loudly.
@@ -55,8 +64,8 @@ Credentials go into the vault from inside the proxy container, so the master key
 exist on the host:
 
 ```bash
-docker compose run --rm proxy node dist/vault.js set github_service_account < token.txt
-docker compose run --rm proxy node dist/vault.js list    # names only
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js set github_service_account < token.txt
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js list    # names only
 ```
 
 The value is read from stdin rather than an argument, because `ps` shows arguments to every user
@@ -270,7 +279,7 @@ yet. Confirm with:
 
 ```bash
 # From the compose network — the proxy publishes no port to the host.
-docker compose run --rm --entrypoint curl proxy \
+docker compose -f deploy/docker-compose.yml run --rm --entrypoint curl proxy \
   --cacert /etc/libero/certs/ca.pem \
   --cert /path/to/client-C024BE91L.pem --key /path/to/client-C024BE91L.key \
   https://proxy:8443/v1/whoami            # -> {"channel":"C024BE91L"}
@@ -327,12 +336,12 @@ files are not.
 requester, its arguments' hash, its result, and its approver if it had one.
 
 ```bash
-docker compose run --rm proxy node dist/audit.js list --channel C024BE91L
-docker compose run --rm proxy node dist/audit.js list --since 2026-08-04 --outcome refused
-docker compose run --rm proxy node dist/audit.js show 1422      # one row in full
-docker compose run --rm proxy node dist/audit.js ticket tk-8f2c1b   # one approval's lifecycle
-docker compose run --rm proxy node dist/audit.js open           # held or approved, unresolved
-docker compose run --rm proxy node dist/audit.js csv > audit.csv
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js list --channel C024BE91L
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js list --since 2026-08-04 --outcome refused
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js show 1422      # one row in full
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js ticket tk-8f2c1b   # one approval's lifecycle
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js open           # held or approved, unresolved
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js csv > audit.csv
 ```
 
 Filters compose — channel, date range, server, tool, outcome — and nothing matching is an empty
@@ -351,8 +360,8 @@ warn_at` is told once that day, in the thread, on a call that still runs. A rese
 warning along with the counters.
 
 ```bash
-docker compose run --rm proxy node dist/budget.js show  C024BE91L   # today's counters
-docker compose run --rm proxy node dist/budget.js reset C024BE91L   # clears today only
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/budget.js show  C024BE91L   # today's counters
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/budget.js reset C024BE91L   # clears today only
 ```
 
 The reset is a second process against the proxy's own database rather than a request to the proxy,

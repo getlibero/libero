@@ -39,9 +39,23 @@ jobs:
       # id-token and generates the provenance attestation itself. pnpm 9's
       # publish silently ignores --provenance (0.0.1 shipped unattested), and
       # the runner's bundled npm predates trusted publishing, hence npm@latest
-      # and a direct npm publish. The package has no workspace deps to rewrite,
-      # so publishing from the package directory is safe.
+      # and a direct npm publish.
       - run: npm install -g npm@latest
+      - name: Drop the build-only dependencies from what is published
+        # The package has one workspace dependency, `@getlibero/schema`, and it
+        # is a dependency of the *build*: packages/cli/build.mjs inlines the
+        # schema into dist/index.js with esbuild, so an installer needs it for
+        # nothing. It has to leave the manifest, because npm — unlike pnpm —
+        # does not rewrite `workspace:*`, and publishing that literal specifier
+        # would put a version no registry client can resolve into the one
+        # package people install. That is what makes publishing from this
+        # directory safe; without this step it stopped being true.
+        #
+        # The whole field, rather than the one entry: every dependency here is
+        # build-only by construction, and an installer reads none of them. CI
+        # asserts the packed result on every pull request.
+        run: npm pkg delete devDependencies
+        working-directory: packages/cli
       - name: Publish with provenance
         run: npm publish --access public
         working-directory: packages/cli
