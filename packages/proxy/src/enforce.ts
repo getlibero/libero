@@ -15,10 +15,15 @@
 // heuristic below reads the tool's *name*, which comes from the team sheet's
 // allowlist and not from the model.
 
-import { BUILTIN_SERVER } from "@getlibero/schema";
+import {
+  BUILTIN_SERVER,
+  MICRO_USD_PER_USD,
+  UNREPORTED_MODEL,
+  costMicroUsd,
+  usdToMicroUsd
+} from "@getlibero/schema";
 import type {
   ApprovalMode,
-  BudgetLimit,
   BudgetWarning,
   BuiltinToolName,
   McpServer,
@@ -28,6 +33,7 @@ import type {
   ToolEntry,
   ToolRefusal
 } from "@getlibero/schema";
+import type { PriceLookup } from "./price-table-store.js";
 import type { SheetState } from "./team-sheet-store.js";
 
 /**
@@ -66,8 +72,7 @@ export interface BudgetSpend {
    * time, exactly as the cache weights are applied here rather than stored.
    *
    * A projection of the same rows rather than a second read, so the totals and
-   * the buckets cannot disagree. Nothing consults it yet: `budget.daily_usd`
-   * parses and is not enforced in this build.
+   * the buckets cannot disagree.
    */
   readonly byModel: readonly ModelSpend[];
 }
@@ -90,6 +95,20 @@ export interface EnforcementInput {
    */
   readonly call: ResolvedToolCall;
   readonly spend: BudgetSpend;
+  /**
+   * The operator's price table, read at decision time (#62).
+   *
+   * Passed in rather than resolved here for the reason nothing else in this file
+   * reaches anything: `decide` is pure, and a function that could open a file
+   * would be a function the model's process timing could influence. The server
+   * reads the store's current view per call, so a corrected price re-prices
+   * today's spend on the next call — the same freshness a sheet edit has.
+   *
+   * Consulted **only** when the channel's sheet sets `budget.daily_usd`. A
+   * channel capped in tokens and tool calls is decided exactly as it was before
+   * prices existed, whatever this holds.
+   */
+  readonly prices: PriceLookup;
 }
 
 /**
@@ -355,15 +374,91 @@ function billableTokens(sheet: TeamSheet, spend: BudgetSpend): number {
 }
 
 /**
- * Which daily limit, if either, is spent.
+ * What today's spend has cost, in micro-USD, or which bucket stopped it (#62).
  *
- * Tokens are checked before tool calls so that a channel over both gets the
- * same answer every time. `>=` because a channel that has spent exactly its
- * limit has no budget left for the next call.
+ * The join the whole feature rests on: raw counts per model on one side, the
+ * operator's price table on the other, multiplied here rather than accumulated
+ * anywhere. That is the same shape `billableTokens` has, and it buys the same
+ * thing — correcting a mistyped price re-prices spend already recorded today, on
+ * the channel's next call.
+ *
+ * **Fails closed on a bucket the table cannot price.** A model absent from the
+ * table is like a tool absent from the allowlist: the answer is a refusal, not a
+ * meter reading of zero. That is the decision that keeps a router from silently
+ * becoming an uncapped spend path — an alias resolving to something nobody
+ * priced would otherwise cost nothing forever.
+ *
+ * The two faults are distinguished because their remedies are: `(unreported)` is
+ * a bucket only this proxy writes, and it means the agent named no model, which
+ * is an agent to upgrade rather than a price to add. It is checked first because
+ * it is the more specific statement about the same condition.
  */
-function exhaustedLimit(sheet: TeamSheet, spend: BudgetSpend): BudgetLimit | null {
-  if (billableTokens(sheet, spend) >= sheet.budget.daily_tokens) return "daily_tokens";
-  if (spend.toolCalls >= sheet.budget.daily_tool_calls) return "daily_tool_calls";
+type PricedSpend =
+  | { readonly ok: true; readonly microUsd: bigint }
+  | { readonly ok: false; readonly refusal: ToolRefusal };
+
+function pricedSpend(spend: BudgetSpend, prices: PriceLookup): PricedSpend {
+  let microUsd = 0n;
+
+  for (const bucket of spend.byModel) {
+    if (bucket.model === UNREPORTED_MODEL) {
+      return { ok: false, refusal: { reason: "model_unreported" } };
+    }
+    const price = prices.priceFor(bucket.model);
+    if (price === undefined) {
+      return { ok: false, refusal: { reason: "model_not_priced", model: bucket.model } };
+    }
+    microUsd += costMicroUsd(price, bucket);
+  }
+
+  return { ok: true, microUsd };
+}
+
+/**
+ * Which daily limit, if any, is spent — or which pricing fault stops the call.
+ *
+ * **Order is load-bearing, and it is not the order the limits are declared in.**
+ *
+ * Pricing faults come first, because a channel whose spend cannot be priced has
+ * an unknown position against its dollar cap, so no comparison below it is
+ * trustworthy. Answering `daily_tokens` to a channel that is actually blocked on
+ * an unpriced model would send an operator to raise a number that is not the
+ * problem.
+ *
+ * Then `daily_usd`, then tokens, then tool calls. Dollars before tokens because
+ * it is the more specific statement and the one the operator asked for; tokens
+ * before tool calls for the reason that ordering already had, so a channel over
+ * several gets the same answer every time.
+ *
+ * `>=` throughout, because a channel that has spent exactly its limit has no
+ * budget left for the next call.
+ *
+ * **A sheet with no `daily_usd` never consults the price table**, which is what
+ * keeps a self-hosted channel on an unpriced model working exactly as it did.
+ * The pricing faults are conditional on the cap, not on the spend: they are not
+ * "this deployment is misconfigured", they are "this channel cannot be capped as
+ * its sheet asks".
+ */
+function exhaustedLimit(
+  sheet: TeamSheet,
+  spend: BudgetSpend,
+  prices: PriceLookup
+): ToolRefusal | null {
+  const cap = sheet.budget.daily_usd;
+  if (cap !== undefined) {
+    const priced = pricedSpend(spend, prices);
+    if (!priced.ok) return priced.refusal;
+    if (priced.microUsd >= usdToMicroUsd(cap)) {
+      return { reason: "budget_exhausted", limit: "daily_usd" };
+    }
+  }
+
+  if (billableTokens(sheet, spend) >= sheet.budget.daily_tokens) {
+    return { reason: "budget_exhausted", limit: "daily_tokens" };
+  }
+  if (spend.toolCalls >= sheet.budget.daily_tool_calls) {
+    return { reason: "budget_exhausted", limit: "daily_tool_calls" };
+  }
   return null;
 }
 
@@ -390,9 +485,36 @@ function exhaustedLimit(sheet: TeamSheet, spend: BudgetSpend): BudgetLimit | nul
  * file holds every number that interprets them, exactly as with the cache
  * weights.
  */
-function crossedThreshold(sheet: TeamSheet, spend: BudgetSpend): BudgetWarning | null {
+function crossedThreshold(
+  sheet: TeamSheet,
+  spend: BudgetSpend,
+  prices: PriceLookup
+): BudgetWarning | null {
   const fraction = sheet.budget.warn_at;
   if (fraction === 0) return null;
+
+  // Dollars first, matching `exhaustedLimit`'s order so the limit a channel is
+  // warned about is the one it will later be refused for. `warn_at` covers all
+  // three limits because it is documented as a fraction of *each* hard limit,
+  // and a dollar cap that could be crossed with no warning would be the one
+  // limit whose first sign was a refusal.
+  //
+  // A pricing fault yields no warning rather than a warning about it. This is
+  // only reached when `exhaustedLimit` has already answered `null`, and it
+  // answers a fault before it answers a threshold — so if pricing were broken,
+  // the call would have been refused rather than served with a notice. The
+  // `ok` check is what makes that unreachable case explicit instead of an
+  // assumption.
+  const cap = sheet.budget.daily_usd;
+  if (cap !== undefined) {
+    const priced = pricedSpend(spend, prices);
+    if (priced.ok) {
+      const spent = Number(priced.microUsd) / Number(MICRO_USD_PER_USD);
+      if (spent >= cap * fraction) {
+        return { limit: "daily_usd", spent, cap };
+      }
+    }
+  }
 
   const tokens = billableTokens(sheet, spend);
   if (tokens >= sheet.budget.daily_tokens * fraction) {
@@ -414,7 +536,7 @@ function crossedThreshold(sheet: TeamSheet, spend: BudgetSpend): BudgetWarning |
  * human is never asked to approve a call that would have been refused anyway.
  */
 export function decide(input: EnforcementInput): Decision {
-  const { sheet, call, spend } = input;
+  const { sheet, call, spend, prices } = input;
 
   // Before the allowlist scan, because `serversNamed` would answer empty for the
   // reserved name and refuse `server_not_allowed` even on a sheet that grants
@@ -426,7 +548,7 @@ export function decide(input: EnforcementInput): Decision {
   // answer. That is what makes matching on the name safe here rather than a
   // shadowing hazard.
   if (call.server === BUILTIN_SERVER) {
-    return decideBuiltin(sheet, call, spend);
+    return decideBuiltin(sheet, call, spend, prices);
   }
 
   const servers = serversNamed(sheet, call.server);
@@ -451,16 +573,16 @@ export function decide(input: EnforcementInput): Decision {
     return refuse({ reason: "server_ambiguous", server: call.server, tool: call.tool });
   }
 
-  const limit = exhaustedLimit(sheet, spend);
-  if (limit !== null) {
-    return refuse({ reason: "budget_exhausted", limit });
+  const overspent = exhaustedLimit(sheet, spend, prices);
+  if (overspent !== null) {
+    return refuse(overspent);
   }
 
   const limits = resolveLimits(sheet, tools);
   // Read once and carried to whichever answer this becomes: the threshold is a
   // fact about the channel's day, not about which of the two served outcomes the
   // approval rule picks.
-  const warning = crossedThreshold(sheet, spend);
+  const warning = crossedThreshold(sheet, spend, prices);
 
   if (resolveApproval(tools, call.tool) === "required") {
     return {
@@ -501,7 +623,8 @@ export function decide(input: EnforcementInput): Decision {
 function decideBuiltin(
   sheet: TeamSheet,
   call: ResolvedToolCall,
-  spend: BudgetSpend
+  spend: BudgetSpend,
+  prices: PriceLookup
 ): Decision {
   if (sheet.builtin.length === 0) {
     return refuse({ reason: "server_not_allowed", server: call.server });
@@ -516,14 +639,14 @@ function decideBuiltin(
     return refuse({ reason: "tool_not_allowed", server: call.server, tool: call.tool });
   }
 
-  const limit = exhaustedLimit(sheet, spend);
-  if (limit !== null) {
-    return refuse({ reason: "budget_exhausted", limit });
+  const overspent = exhaustedLimit(sheet, spend, prices);
+  if (overspent !== null) {
+    return refuse(overspent);
   }
 
   const target: Target = { kind: "builtin", tool: first.name };
   const limits = resolveLimits(sheet, entries);
-  const warning = crossedThreshold(sheet, spend);
+  const warning = crossedThreshold(sheet, spend, prices);
 
   if (resolveApproval(entries, call.tool) === "required") {
     return {
@@ -705,7 +828,8 @@ export function permittedToolSourcesFromState(state: SheetState): PermittedToolS
 export function decideFromState(
   state: SheetState,
   call: ResolvedToolCall,
-  spend: BudgetSpend
+  spend: BudgetSpend,
+  prices: PriceLookup
 ): Decision {
   switch (state.status) {
     case "absent":
@@ -713,6 +837,6 @@ export function decideFromState(
     case "unusable":
       return refuse({ reason: "team_sheet_unreadable" });
     case "active":
-      return decide({ sheet: state.sheet, call, spend });
+      return decide({ sheet: state.sheet, call, spend, prices });
   }
 }

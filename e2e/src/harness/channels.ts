@@ -48,8 +48,27 @@ export interface SheetSpec {
    * that nothing asserts on.
    */
   readonly maxHistoryMessages?: number;
+  /**
+   * The loop's own per-task token ceiling, `[llm] max_tokens_per_task`.
+   *
+   * Written out only by cases whose turns report large counts — a spend case
+   * needs a turn to cost a readable number of dollars, which means a million
+   * tokens, which is five times the schema's default. Left alone the loop would
+   * end the task on its own cap and the case would prove nothing about the
+   * proxy's meter, quietly and with the same number of upstream calls.
+   */
+  readonly maxTokensPerTask?: number;
   readonly dailyTokens?: number;
   readonly dailyToolCalls?: number;
+  /**
+   * The dollar cap (#62). Absent by default, and that default is load-bearing.
+   *
+   * A sheet without it never consults the price table at all, so every case in
+   * this suite that is not about pricing keeps the behaviour it had before
+   * prices existed — including the ones whose scripted model reports a model no
+   * table prices. Setting it is what turns the price table into a gate.
+   */
+  readonly dailyUsd?: number;
   /**
    * What a cached token is worth against `dailyTokens`.
    *
@@ -160,6 +179,9 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           `[llm]`,
           `max_task_seconds = ${spec.maxTaskSeconds ?? 30}`,
           `max_tool_calls_per_task = ${spec.maxToolCallsPerTask ?? 5}`,
+          ...(spec.maxTokensPerTask !== undefined
+            ? [`max_tokens_per_task = ${spec.maxTokensPerTask}`]
+            : []),
           ...(spec.maxHistoryMessages !== undefined
             ? [`max_history_messages = ${spec.maxHistoryMessages}`]
             : []),
@@ -167,6 +189,7 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           `[budget]`,
           `daily_tokens = ${spec.dailyTokens ?? 1_000_000}`,
           `daily_tool_calls = ${spec.dailyToolCalls ?? 200}`,
+          ...(spec.dailyUsd !== undefined ? [`daily_usd = ${spec.dailyUsd}`] : []),
           ...(spec.cacheReadWeight !== undefined ? [`cache_read_weight = ${spec.cacheReadWeight}`] : []),
           ...(spec.cacheWriteWeight !== undefined ? [`cache_write_weight = ${spec.cacheWriteWeight}`] : []),
           ...(spec.warnAt !== undefined ? [`warn_at = ${spec.warnAt}`] : []),

@@ -272,7 +272,22 @@ than of the process: a proxy restarted at noon reads the same counters it wrote 
 new day reads as zero because it is a key nothing has written yet. Yesterday's counters stay where
 they are.
 
-**The two limits are not equally strong, and the difference is worth knowing before you rely on
+`daily_usd` caps the invoice. Tokens are the right unit for a runaway brake and need no pricing
+knowledge at all — a self-hosted channel has no dollar cost, and a router picking a model absent
+from any price table still needs stopping — but they are the wrong unit for a *budget*: with the
+model switching per task the same 60,000 tokens is an order-of-magnitude cost swing, and the number
+you wrote stops meaning what you thought. Set it beside `daily_tokens` rather than instead of it,
+and whichever binds first refuses. It is the one field in this block with no default, because a
+default token count is a brake and a default dollar cap is a bill.
+
+It is priced against the model the **provider says it served**, not against `[llm] model` above.
+Under a router those differ, which is the whole reason the field exists. Spend on a model absent
+from the proxy's [price table](/docs/price-table/) cannot be priced, so a channel with `daily_usd`
+set is **refused** rather than metered at zero — a cap whose position cannot be computed is not a
+cap. The same holds for spend an older agent reported without naming a model at all; the two are
+different refusals with different remedies, and the proxy's log names which.
+
+**The limits are not equally strong, and the difference is worth knowing before you rely on
 one.**
 
 `daily_tool_calls` is counted by the proxy from calls it serves. It needs nobody's cooperation and
@@ -288,6 +303,9 @@ assumption — and that scenario yields the union of that agent's channel tool s
 larger problem than an under-reported token count. The limit is worth having because it catches
 what actually costs money: a runaway loop, a retry storm, an expensive model swapped into a sheet.
 
+`daily_usd` inherits `daily_tokens`' standing exactly: it is computed from the same reported
+counts, so it holds against a prompt-injected model and not against a compromised agent process.
+
 `cache_read_weight` and `cache_write_weight` decide what a cached token costs against
 `daily_tokens`. Cache reads and cache writes bill differently from ordinary input tokens, and by
 how much is your provider's decision — so these are settings rather than constants. The defaults
@@ -295,9 +313,16 @@ are Anthropic's ratios. A channel pins its provider by pinning `[llm] model`, wh
 per-channel weight a per-provider weight; set `cache_read_weight = 0` to stop counting cache reads
 against the budget at all.
 
-The meter stores the four raw counts — input, output, cache read, cache write — and the weights are
-applied when a call is decided. So changing a weight re-prices spend already recorded today, on the
-channel's next call, rather than only what comes after the edit.
+That last point is about **these weights only** and does not extend to `daily_usd`. A weight is per
+channel because you wrote it here; a price is per *model*, resolved against whichever model the
+provider says it served — which under a router need not be the one this sheet asked for.
+
+The meter stores the four raw counts — input, output, cache read, cache write — per model, and both
+the weights and the prices are applied when a call is decided. So changing a weight, or correcting a
+mistyped price, re-prices spend already recorded today on the channel's next call, rather than only
+what comes after the edit. That is the reason cost is computed rather than accumulated: a price
+table will eventually contain a typo, and under a stored total the only remedy would be a reset that
+also discards the spend that was right.
 
 The limit is enforced within a small overshoot: the proxy reads the counters, decides, and then
 records, so calls in flight at the same moment for one channel can each be admitted against the
@@ -319,7 +344,7 @@ docker compose run --rm proxy node dist/budget.js show  C024BE91L
 (Until the images build — see [self-hosting](/docs/self-hosting) — run the same entrypoint
 directly: `pnpm budget` in `apps/proxy-server`.)
 
-**The soft limit.** `warn_at` is how far into either budget a channel gets before it is told, once,
+**The soft limit.** `warn_at` is how far into any of the budgets a channel gets before it is told, once,
 in the thread. The call that carries the notice still runs — only `daily_tokens` and
 `daily_tool_calls` stop anything — and the message names the limit and the channel's position
 against it:

@@ -59,11 +59,6 @@ daily_tool_calls = 400
 
 # The invoice, in US dollars (#62).
 #
-# PARSED BUT NOT YET ENFORCED. The field validates when the sheet loads and
-# nothing consults it yet; a channel setting it today is metered exactly as one
-# that does not. Write it as though it were enforced — it is the contract it will
-# be enforced against.
-#
 # Beside daily_tokens rather than instead of it. Tokens are the right unit for a
 # runaway brake and need no pricing knowledge at all, which is what a channel on
 # self-hosted models wants; they are the wrong unit for a budget, because with
@@ -74,8 +69,13 @@ daily_tool_calls = 400
 # above asks for — under a router those differ, which is the whole reason this
 # field exists. Spend on a model absent from the proxy's price table cannot be
 # priced, and a channel with this set is refused rather than metered at zero.
+# Spend reported by an agent that named no model cannot be priced either, and
+# refuses the same way — that one is an agent to look at rather than a price to
+# add, and the two refusals say which.
+#
 # There is no default: a default token count is a brake, a default dollar cap is
-# a bill. Commented out here because a starter sheet must not invent one.
+# a bill. Commented out here because a starter sheet must not invent one. Set it
+# and the proxy needs a price table; see PROXY_PRICE_TABLE and prices/example/.
 #
 # daily_usd = 25.00
 

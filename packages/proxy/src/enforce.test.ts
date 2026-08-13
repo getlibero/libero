@@ -1,4 +1,8 @@
 import {
+  LEGACY_MODEL,
+  PriceTable,
+  UNREPORTED_MODEL,
+  priceFor,
   type McpServer,
   type ResolvedToolCall,
   type TeamSheet,
@@ -8,10 +12,11 @@ import { describe, expect, it } from "vitest";
 import {
   type BudgetSpend,
   type Decision,
+  type EnforcementInput,
   type Target,
   DESTRUCTIVE_VERBS,
-  decide,
-  decideFromState,
+  decide as decideWithPrices,
+  decideFromState as decideFromStateWithPrices,
   isDestructiveName,
   permittedToolSources,
   permittedToolSourcesFromState,
@@ -21,6 +26,36 @@ import {
   resolveLimits,
   upstreamKey
 } from "./enforce.js";
+import { NO_PRICES } from "./price-table-store.js";
+import type { PriceLookup } from "./price-table-store.js";
+
+/**
+ * `decide` with a price table supplied, defaulting to none (#62).
+ *
+ * Almost every case in this file is about the allowlist, approvals or the token
+ * limits, and none of those consult a price — a sheet with no `budget.daily_usd`
+ * never reaches the table at all. Threading `prices: NO_PRICES` through a
+ * hundred call sites would be a hundred lines saying the same irrelevant thing.
+ *
+ * The default is `NO_PRICES` rather than a stub table on purpose: it is the
+ * value a deployment with no `PROXY_PRICE_TABLE` really gets, so a case that
+ * forgets to pass one is exercising a real configuration rather than a fiction.
+ * The pricing cases pass a table explicitly, and say so.
+ */
+function decide(input: Omit<EnforcementInput, "prices"> & { prices?: PriceLookup }): Decision {
+  const { prices, ...rest } = input;
+  return decideWithPrices({ ...rest, prices: prices ?? NO_PRICES });
+}
+
+/** The same, for the state-resolving half. */
+function decideFromState(
+  state: Parameters<typeof decideFromStateWithPrices>[0],
+  call: ResolvedToolCall,
+  spend: BudgetSpend,
+  prices: PriceLookup = NO_PRICES
+): Decision {
+  return decideFromStateWithPrices(state, call, spend, prices);
+}
 
 /** Parsed through the real schema, so no test asserts against a shape a sheet could not have. */
 function sheetOf(input: unknown): TeamSheet {
@@ -809,6 +844,219 @@ describe("weighting cached tokens against the daily limit", () => {
     // 999 + 0.5 = 999.5, which is under 1000 and stays under.
     expect(decide({ sheet, call, spend }).outcome).toBe("allow");
     expect(decide({ sheet, call, spend: { ...spend, cacheReadTokens: 10 } }).outcome).toBe("refuse");
+  });
+});
+
+// The dollar cap (#62). Everything above this point is about a channel that
+// caps tokens and tool calls, and none of it consults a price — which is itself
+// one of the properties here, asserted rather than assumed.
+describe("the dollar cap", () => {
+  const call = callTo("github", "list_prs");
+  const warningOf = (decision: Decision) => (decision.outcome === "refuse" ? undefined : decision.warning);
+
+  /** $3/Mtok in, $15 out, $3.75 cache write, $0.30 cache read. */
+  const SONNET = {
+    id: "claude-sonnet-4-6",
+    input: 3_000_000,
+    output: 15_000_000,
+    cache_write: 3_750_000,
+    cache_read: 300_000
+  };
+  /** Ten times dearer on input, so a case can tell a model switch from a token rise. */
+  const OPUS = { ...SONNET, id: "claude-opus-4-6", input: 30_000_000, output: 75_000_000 };
+
+  const priceTable = (...entries: (typeof SONNET)[]): PriceLookup => {
+    const parsed = PriceTable.parse({ model: entries });
+    return { priceFor: model => priceFor(parsed, model), version: "test" };
+  };
+
+  const prices = priceTable(SONNET, OPUS);
+
+  /** Spend on one model, expressed as input tokens: the tier that is 1:1. */
+  const onModel = (model: string, inputTokens: number): BudgetSpend => ({
+    ...spending(inputTokens, 0),
+    byModel: [{ model, inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }]
+  });
+
+  /** A sheet with a dollar cap and both token limits set far out of the way. */
+  const capped = (daily_usd: number): TeamSheet =>
+    sheetOf({
+      ...BASE,
+      budget: { ...BASE.budget, daily_usd, daily_tokens: 100_000_000, daily_tool_calls: 100_000 }
+    });
+
+  // A million input tokens at $3/Mtok is $3.00 exactly, so a $3 cap is reached
+  // and a $4 cap is not. Sized off the table rather than written as a figure, so
+  // changing a price breaks the arithmetic loudly.
+  it("refuses at the dollar figure and serves below it", () => {
+    const spend = onModel(SONNET.id, 1_000_000);
+
+    expect(decide({ sheet: capped(4), call, spend, prices }).outcome).toBe("allow");
+    expect(decide({ sheet: capped(3), call, spend, prices })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "budget_exhausted", limit: "daily_usd" }
+    });
+  });
+
+  // The case the whole feature exists for: the same token count costs an order
+  // of magnitude more on a different model, so a cap in tokens cannot express
+  // what a cap in dollars does.
+  it("prices the same tokens differently on a different model", () => {
+    const sheet = capped(4);
+    const tokens = 200_000;
+
+    // $0.60 on sonnet, $6.00 on opus.
+    expect(decide({ sheet, call, spend: onModel(SONNET.id, tokens), prices }).outcome).toBe("allow");
+    expect(decide({ sheet, call, spend: onModel(OPUS.id, tokens), prices }).outcome).toBe("refuse");
+  });
+
+  // Mid-day switching, which is the shape a router produces. Neither bucket
+  // reaches the cap alone; together they pass it.
+  it("sums across the models a day was spent on", () => {
+    const sheet = capped(4);
+    const spend: BudgetSpend = {
+      ...spending(300_000, 0),
+      byModel: [
+        { model: SONNET.id, inputTokens: 200_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        { model: OPUS.id, inputTokens: 100_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+      ]
+    };
+
+    // $0.60 + $3.00 = $3.60, under $4.
+    expect(decide({ sheet, call, spend, prices }).outcome).toBe("allow");
+    expect(decide({ sheet: capped(3.5), call, spend, prices }).outcome).toBe("refuse");
+  });
+
+  // Four tiers, four rates. Collapsing them would price these identically, and
+  // they differ by fifty times.
+  it("prices each tier at its own rate", () => {
+    const cached: BudgetSpend = {
+      ...spending(0, 0),
+      cacheReadTokens: 1_000_000,
+      byModel: [
+        { model: SONNET.id, inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000, cacheWriteTokens: 0 }
+      ]
+    };
+
+    // $0.30 of cache reads runs under a $1 cap; a million *output* tokens is $15
+    // and does not.
+    expect(decide({ sheet: capped(1), call, spend: cached, prices }).outcome).toBe("allow");
+    const written: BudgetSpend = {
+      ...spending(0, 0),
+      outputTokens: 1_000_000,
+      byModel: [
+        { model: SONNET.id, inputTokens: 0, outputTokens: 1_000_000, cacheReadTokens: 0, cacheWriteTokens: 0 }
+      ]
+    };
+    expect(decide({ sheet: capped(1), call, spend: written, prices }).outcome).toBe("refuse");
+  });
+
+  // Fail closed, and the refusal names the model so an operator knows the line
+  // to write in the price table.
+  it("refuses spend on a model the table does not price, and names it", () => {
+    const spend = onModel("llama-3.3-70b", 10);
+
+    expect(decide({ sheet: capped(1000), call, spend, prices })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "model_not_priced", model: "llama-3.3-70b" }
+    });
+  });
+
+  // **The non-vacuity control.** Without it every fail-closed case above would
+  // pass on a build that refused everything, and the property that matters most
+  // — a channel with no dollar cap is decided exactly as it was before prices
+  // existed — would go unasserted.
+  it("consults no price at all when the sheet sets no dollar cap", () => {
+    const spend = onModel("llama-3.3-70b", 10);
+    const uncapped = sheetOf(BASE);
+
+    expect(decide({ sheet: uncapped, call, spend, prices }).outcome).toBe("allow");
+    // And with no table whatsoever, which is the deployment that has none.
+    expect(decide({ sheet: uncapped, call, spend, prices: NO_PRICES }).outcome).toBe("allow");
+  });
+
+  // The other pricing fault, kept apart from the first because the remedies are
+  // "add a price" and "find out why the agent reports none".
+  it("refuses spend the agent named no model for, without naming one", () => {
+    const spend = onModel(UNREPORTED_MODEL, 10);
+
+    expect(decide({ sheet: capped(1000), call, spend, prices })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "model_unreported" }
+    });
+  });
+
+  // Pre-#62 counts are free against a dollar cap: no sheet asked for them to be
+  // capped, because the field did not exist when they were spent.
+  it("prices the migration's legacy bucket at zero", () => {
+    // A million tokens: $3.00 at sonnet's input rate, so three hundred times a
+    // one-cent cap if it were priced at all — and comfortably inside the token
+    // limit `capped` sets, so the only thing that can serve this is the zero.
+    const spend = onModel(LEGACY_MODEL, 1_000_000);
+
+    expect(decide({ sheet: capped(0.01), call, spend, prices }).outcome).toBe("allow");
+    // The control: the same count on a priced model is refused, so the case
+    // above is the bucket's zero and not a cap that never binds.
+    expect(decide({ sheet: capped(0.01), call, spend: onModel(SONNET.id, 1_000_000), prices }).outcome).toBe(
+      "refuse"
+    );
+  });
+
+  // Pricing faults are answered before any comparison, because a channel whose
+  // spend cannot be priced has an unknown position against its cap — so a
+  // `daily_tokens` answer would send an operator to raise the wrong number.
+  it("reports a pricing fault ahead of a limit that is also spent", () => {
+    const sheet = sheetOf({
+      ...BASE,
+      budget: { ...BASE.budget, daily_usd: 5, daily_tokens: 10, daily_tool_calls: 1 }
+    });
+    const spend: BudgetSpend = { ...onModel("llama-3.3-70b", 5_000), toolCalls: 50 };
+
+    expect(decide({ sheet, call, spend, prices })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "model_not_priced", model: "llama-3.3-70b" }
+    });
+  });
+
+  // Whichever binds first, in both directions. The ordering only decides which
+  // is *reported* when several are spent at once; that both can stop a channel
+  // is the acceptance criterion.
+  it("stops at whichever of the three limits binds first", () => {
+    const bothSet = (daily_usd: number, daily_tokens: number): TeamSheet =>
+      sheetOf({ ...BASE, budget: { ...BASE.budget, daily_usd, daily_tokens, daily_tool_calls: 100_000 } });
+
+    // $3.00 of spend and 1,000,000 tokens. The dollar cap binds and the token
+    // one does not.
+    const spend = onModel(SONNET.id, 1_000_000);
+    expect(decide({ sheet: bothSet(3, 100_000_000), call, spend, prices })).toMatchObject({
+      refusal: { reason: "budget_exhausted", limit: "daily_usd" }
+    });
+    // And the reverse: the tokens bind while the dollars have room.
+    expect(decide({ sheet: bothSet(1000, 1_000_000), call, spend, prices })).toMatchObject({
+      refusal: { reason: "budget_exhausted", limit: "daily_tokens" }
+    });
+  });
+
+  // A corrected price re-prices spend already recorded today, which is the whole
+  // reason cost is computed here rather than accumulated in the meter.
+  it("re-prices today's spend when the table changes", () => {
+    const sheet = capped(4);
+    const spend = onModel(SONNET.id, 1_000_000);
+
+    expect(decide({ sheet, call, spend, prices }).outcome).toBe("allow");
+    const corrected = priceTable({ ...SONNET, input: 9_000_000 });
+    expect(decide({ sheet, call, spend, prices: corrected }).outcome).toBe("refuse");
+  });
+
+  // `warn_at` covers all three limits, so a dollar cap's first sign is not a
+  // refusal. The warning carries dollars, not micro-units.
+  it("warns in dollars before the dollar cap refuses", () => {
+    // BASE sets warn_at at 0.8, so $3.20 of a $4 cap crosses.
+    const sheet = capped(4);
+    const decision = decide({ sheet, call, spend: onModel(SONNET.id, 1_100_000), prices });
+
+    expect(decision.outcome).toBe("allow");
+    expect(warningOf(decision)).toEqual({ limit: "daily_usd", spent: 3.3, cap: 4 });
   });
 });
 

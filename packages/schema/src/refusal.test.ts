@@ -17,6 +17,8 @@ const samples: Record<RefusalReason, ToolRefusal> = {
   approval_denied: { reason: "approval_denied", server: "github", tool: "merge_pr" },
   approval_mismatch: { reason: "approval_mismatch", server: "github", tool: "merge_pr" },
   budget_exhausted: { reason: "budget_exhausted", limit: "daily_tool_calls" },
+  model_not_priced: { reason: "model_not_priced", model: "claude-opus-4-6" },
+  model_unreported: { reason: "model_unreported" },
   egress_denied: { reason: "egress_denied", destination: "api.example.net" },
   credential_unresolved: { reason: "credential_unresolved", credential: "github_service_account" }
 };

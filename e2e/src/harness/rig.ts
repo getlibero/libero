@@ -19,7 +19,7 @@
 // peer certificate and will read it from nowhere else — so a mismatch shows up
 // as `no_team_sheet` rather than as anything that names the real cause.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FakeCatalogTool, FakeMcpServer } from "@getlibero/proxy";
@@ -41,13 +41,46 @@ import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
 import type { UpstreamOptions } from "./upstream.js";
-import { mutatingResubmission, replayingSpendReports, withoutSpendReports } from "./transport.js";
+import {
+  mutatingResubmission,
+  replayingSpendReports,
+  unmodelledSpendReports,
+  withoutSpendReports
+} from "./transport.js";
 import { writeVault } from "./vault.js";
 
 /** The channel every case uses unless it needs a second. Slack-shaped, as production is. */
 export const CHANNEL = "C024BE91L";
 /** A second channel, for the cases that need one with a different sheet or none. */
 export const OTHER_CHANNEL = "C7ZZZ9999";
+
+/**
+ * A price table, from dollars per million *input* tokens.
+ *
+ * The other three tiers are derived at the example table's ratios rather than
+ * taken as arguments, because no case here is about the ratios — the one that is
+ * about tiers asserts on cache reads specifically and reads the ratio from this
+ * comment. Output at 5x input, cache write at 1.25x, cache read at 0.1x.
+ *
+ * Dollars in, micro-USD out: the file wants integers, and writing `3` reads as
+ * the price it is where `3_000_000` reads as an amount of something.
+ */
+function priceTableToml(prices: Readonly<Record<string, number>>): string {
+  return Object.entries(prices)
+    .map(([id, usdPerMtok]) => {
+      const micro = Math.round(usdPerMtok * 1_000_000);
+      return [
+        `[[model]]`,
+        `id = "${id}"`,
+        `input = ${micro}`,
+        `output = ${micro * 5}`,
+        `cache_write = ${Math.round(micro * 1.25)}`,
+        `cache_read = ${Math.round(micro * 0.1)}`,
+        ``
+      ].join("\n");
+    })
+    .join("\n");
+}
 
 export interface RigOptions {
   /** Channel ids to mint certificates for. Defaults to the two above. */
@@ -124,7 +157,19 @@ export interface RigOptions {
    * the opposite failure — the turn id is the idempotency key, so the second
    * copy must move no counter.
    */
-  readonly spendReports?: "sent" | "dropped" | "replayed";
+  readonly spendReports?: "sent" | "dropped" | "replayed" | "unmodelled";
+  /**
+   * The price table this rig's proxy runs with (#62), as `{ model: dollars per
+   * million input tokens }` — the one tier the dollar cases need, with the
+   * others derived from it at the ratios the example table uses.
+   *
+   * Absent means `PROXY_PRICE_TABLE` is unset, which is the deployment that has
+   * no prices. That is the default on purpose: every case in this suite that is
+   * not about a dollar cap keeps the behaviour it had before prices existed, and
+   * a rig that quietly had a table would hide a sheet accidentally gaining a
+   * `daily_usd`.
+   */
+  readonly prices?: Readonly<Record<string, number>>;
   /**
    * Whether this front-end has anywhere to put an approval card.
    *
@@ -226,6 +271,7 @@ function transportWrapper(options: RigOptions): ((inner: ProxyTransport) => Prox
   const wrappers: Array<(inner: ProxyTransport) => ProxyTransport> = [];
   if (options.spendReports === "dropped") wrappers.push(withoutSpendReports);
   if (options.spendReports === "replayed") wrappers.push(replayingSpendReports);
+  if (options.spendReports === "unmodelled") wrappers.push(unmodelledSpendReports);
   if (options.resubmission !== undefined && options.resubmission !== "identical") {
     wrappers.push(mutatingResubmission(options.resubmission.arguments));
   }
@@ -285,6 +331,14 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     const storeRoot = mkdtempSync(join(tmpdir(), "libero-e2e-store-"));
     cleanup.add("message stores", () => rmSync(storeRoot, { recursive: true, force: true }));
 
+    // Written beside the databases rather than under the channels root: a price
+    // table is a deployment's, not a channel's, and putting it where sheets live
+    // would suggest otherwise to whoever reads this next.
+    const priceTable = options.prices === undefined ? undefined : join(dbDir, "prices.toml");
+    if (priceTable !== undefined && options.prices !== undefined) {
+      writeFileSync(priceTable, priceTableToml(options.prices));
+    }
+
     const proxy = await spawnProxy(cleanup, {
       channelsRoot: channelsRoot.path,
       vaultFile: vault.file,
@@ -296,6 +350,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       // `search_channel_history` case a real two-process claim rather than a
       // module-scope one (#64).
       storeRoot,
+      ...(priceTable === undefined ? {} : { priceTable }),
       tlsCert: certs.serverCert,
       tlsKey: certs.serverKey,
       tlsCa: certs.caPath

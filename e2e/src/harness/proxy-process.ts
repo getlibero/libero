@@ -43,6 +43,12 @@ export interface ProxyEnv {
    * `search_channel_history` cases prove.
    */
   readonly storeRoot: string;
+  /**
+   * The price table (#62). Optional, as the variable is: a rig whose sheets set
+   * no `daily_usd` needs none, and passing one anyway would give every case in
+   * the suite a price table nothing in it asserts on.
+   */
+  readonly priceTable?: string;
   readonly tlsCert: string;
   readonly tlsKey: string;
   readonly tlsCa: string;
@@ -127,6 +133,10 @@ export async function spawnProxy(
       PROXY_BUDGET_DB: env.budgetDb,
       PROXY_AUDIT_DB: env.auditDb,
       PROXY_STORE_ROOT: env.storeRoot,
+      // Absent rather than empty when the rig has no table, so the case that
+      // exercises "this deployment has no prices" reaches the real code path
+      // instead of one that parses an empty string.
+      ...(env.priceTable === undefined ? {} : { PROXY_PRICE_TABLE: env.priceTable }),
       PROXY_TLS_CERT: env.tlsCert,
       PROXY_TLS_KEY: env.tlsKey,
       PROXY_TLS_CA: env.tlsCa

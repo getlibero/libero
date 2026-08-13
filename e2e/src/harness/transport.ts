@@ -34,6 +34,35 @@ export function withoutSpendReports(inner: ProxyTransport): ProxyTransport {
 }
 
 /**
+ * Strips the `model` from every `/v1/spend` body (#62).
+ *
+ * The agent that reports counts but names no model: one older than the field, a
+ * provider that echoes nothing, a gateway that drops it. Distinct from
+ * `withoutSpendReports` in the way that matters — the tokens *do* reach the
+ * meter, so `daily_tokens` still bites and only the pricing is impossible.
+ *
+ * It edits the body rather than refusing the request, because the point is that
+ * the proxy accepts such a report: an absent model is legal on the wire and
+ * costs a channel nothing until its sheet asks to be capped in dollars.
+ */
+export function unmodelledSpendReports(inner: ProxyTransport): ProxyTransport {
+  return {
+    request(options: ProxyRequest): Promise<ProxyResponse> {
+      if (options.path !== "/v1/spend" || typeof options.body !== "object" || options.body === null) {
+        return inner.request(options);
+      }
+      // Deleted from a copy rather than set to `undefined`: the wire schema is
+      // strict and the field is optional, so an explicit null is a 400 — which
+      // would lose the counts and make this the "reports nothing" decorator
+      // instead of the one it is.
+      const body = { ...(options.body as Record<string, unknown>) };
+      delete body["model"];
+      return inner.request({ ...options, body });
+    }
+  };
+}
+
+/**
  * Sends every `/v1/spend` twice, and answers with what the first send said.
  *
  * The other half of the metering threat model: an agent that under-reports is

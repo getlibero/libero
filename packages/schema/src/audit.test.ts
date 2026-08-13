@@ -50,9 +50,21 @@ describe("auditRefusalMessage", () => {
   const SERVER = "github";
   const TOOL = "delete_repo";
 
-  // The three the row cannot complete, named here so adding a fourth is a
+  // The ones the row cannot complete, named here so adding another is a
   // decision someone made rather than something that drifted in.
-  const INCOMPLETE = ["budget_exhausted", "egress_denied", "credential_unresolved"];
+  //
+  // `model_not_priced` joined them with #62 and is expected to stay: the audit
+  // table's coming `budget_limit` column says which *limit* bound, and this one
+  // needs the *model*, which is a different fact and one a row about a tool call
+  // never observed. Its sibling `model_unreported` is deliberately not here —
+  // it carries no facts at all, so the row is already complete for it, and that
+  // asymmetry is the reason the two reasons are two.
+  const INCOMPLETE = [
+    "budget_exhausted",
+    "model_not_priced",
+    "egress_denied",
+    "credential_unresolved"
+  ];
 
   it("answers every reason in the union, with a sentence or with null", () => {
     for (const reason of RefusalReason.options) {
