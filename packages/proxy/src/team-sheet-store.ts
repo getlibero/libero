@@ -62,6 +62,25 @@ export type SheetState =
   /** A sheet file exists, has never parsed, and there is no earlier good one. */
   | { readonly status: "unusable" };
 
+/**
+ * One channel's state, and nothing else.
+ *
+ * What the routes actually need from a store, and therefore what they are
+ * handed — the same narrowing as the write-only `AuditWriter` the server closes
+ * over, and `TokenRecorder` in place of the meter. A route holding the store
+ * itself could `close()` it, and every caller reading a type would have to work
+ * out that it does not.
+ *
+ * It also draws a line the store's own internals sit on the other side of. The
+ * watcher refreshes a channel by calling `this.resolve` (see `#watch`), which is
+ * the store keeping itself current rather than anything asking it a question —
+ * so a count taken at *this* boundary is a count of what a request caused, and
+ * `server.test.ts` depends on exactly that.
+ */
+export interface TeamSheetSource {
+  resolve(channel: string): Promise<SheetState>;
+}
+
 export interface TeamSheetStoreOptions {
   /** The `channels/` directory holding one directory per channel. */
   root: string;
@@ -103,7 +122,7 @@ function sameFile(a: Fingerprint | null, b: Fingerprint | null): boolean {
  * across channels, and the one-file-per-channel layout is the isolation
  * boundary this service is built on. Ask for one channel, get one channel.
  */
-export class TeamSheetStore {
+export class TeamSheetStore implements TeamSheetSource {
   readonly #root: string;
   readonly #logger: Logger;
   readonly #entries = new Map<string, Entry>();

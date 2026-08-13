@@ -89,7 +89,7 @@ import { createJsonLogger, type Logger } from "./log.js";
 import { createSpendRoute } from "./spend-route.js";
 import { NO_PRICES } from "./price-table-store.js";
 import type { PriceTableStore } from "./price-table-store.js";
-import type { TeamSheetStore } from "./team-sheet-store.js";
+import type { TeamSheetSource } from "./team-sheet-store.js";
 
 /**
  * The most a tool call may weigh.
@@ -105,7 +105,7 @@ export interface ProxyServerOptions {
   /** From `loadTlsOptions`. Passed through to the https server verbatim. */
   tls: ServerOptions;
   /** Resolves the team sheet that authorizes each channel. */
-  sheets: TeamSheetStore;
+  sheets: TeamSheetSource;
   /**
    * The operator's price table (#62), read once per decision.
    *
