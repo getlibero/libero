@@ -33,7 +33,7 @@
 // hashbang and re-emits it first — so `bin` still resolves to a file the shell
 // can exec.
 
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 
@@ -56,3 +56,20 @@ await esbuild.build({
   define: { __LIBERO_VERSION__: JSON.stringify(version) },
   logLevel: "info"
 });
+
+// `libero channel add` mints certificates by running scripts/dev-certs.sh, and
+// npm's `files` cannot name a path outside the package — so the script is
+// copied in here rather than referenced where it lives. A copy and not a move:
+// packages/proxy and packages/agent exec it at its repository path for their
+// test fixtures, and the documentation names it in nine places. CI asserts the
+// two files are byte-identical, which is what keeps a copy from becoming a
+// fork; ./src/dev-certs.ts carries the rest of the argument.
+//
+// The mode is npm's business, not this file's: a tarball does not reliably
+// carry an executable bit through an install, so the CLI runs the script as
+// `sh <path>` and never relies on one.
+mkdirSync(new URL("./dist/", import.meta.url), { recursive: true });
+copyFileSync(
+  new URL("../../scripts/dev-certs.sh", import.meta.url),
+  new URL("./dist/dev-certs.sh", import.meta.url)
+);

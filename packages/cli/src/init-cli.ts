@@ -262,7 +262,7 @@ function report(io: CliIo, shown: string, options: InitOptions): void {
   const key = options.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
   io.out("");
   io.out(`Fill SLACK_APP_TOKEN, SLACK_BOT_TOKEN and ${key} in ${shown}, then:`);
-  io.out("  sh scripts/dev-certs.sh");
+  io.out("  libero channel add <CHANNEL_ID>");
   io.out("  docker compose -f deploy/docker-compose.yml up");
 }
 

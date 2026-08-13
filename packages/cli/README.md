@@ -19,7 +19,8 @@ So the vault, the budget and the audit log are deliberately not commands here.
 ## Commands
 
 - `libero init` — write the deployment's environment file and generate the vault master key
-- `libero channel add` — register a channel, its team sheet, and its client certificate *(not built yet)*
+- `libero channel add` — register a channel: its team sheet, and the certificate that speaks for it
+- `libero channel rotate` / `promote` / `pins` — replace a channel's key without downtime
 - `libero doctor` — check a deployment's wiring *(not built yet)*
 
 ### `init`
@@ -53,9 +54,51 @@ takes one. Service credentials go into the vault from inside the proxy container
 so the master key and the secrets it encrypts never sit on the host together. The master key
 itself is written to a `0600` file and never to stdout.
 
+### `channel add`
+
+```bash
+npx @getlibero/cli channel add C024BE91L --name engineering
+```
+
+Mints the client certificate whose subject carries `CN=channel:C024BE91L` — the only place the
+proxy will read a channel identity from — and writes `channels/C024BE91L/channel.toml` pinning its
+fingerprint, so no fingerprint is copied by hand.
+
+**The sheet it writes grants nothing.** No `[[mcp_server]]`, no `[[builtin]]`, and the schema's
+default caps: the channel authenticates and can call nothing until an admin adds a block to that
+file. `channels/example/channel.toml` documents every field. `add` refuses to touch a channel that
+already has a sheet.
+
+**Creating is one act; changing is two.** `scripts/dev-certs.sh` never writes a sheet, on the
+principle that minting key material and authorizing it are separate acts — a change to which key
+may speak for a channel should be a reviewable edit in git. Creation is not that change: there is no
+prior sheet, no diff, and nobody to review it but the person running the command. So `add` writes
+both, and rotation keeps the human step:
+
+```bash
+npx @getlibero/cli channel rotate C024BE91L    # stages a certificate, prints its fingerprint
+                                               # you add it to the sheet, beside the current one
+npx @getlibero/cli channel promote C024BE91L   # refuses until the sheet pins it, then swaps
+npx @getlibero/cli channel pins                # every channel's fingerprint and expiry
+```
+
+`rotate` changes nothing in service. `promote` refuses until the sheet pins the staged fingerprint,
+because promoting first would take the channel offline with nothing on screen to say why. Neither
+service restarts.
+
+Certificates are minted by `scripts/dev-certs.sh`, a copy of which ships in this package — Node
+cannot sign an X.509 certificate, so every path shells out to `openssl` in the end and the choice is
+between one implementation and two. It needs `sh` and `openssl` on the host.
+
 ## Packaging
 
-One published package, one published file. `build.mjs` bundles the entry point with esbuild,
+One published package, two published files: the bundle, and a copy of `scripts/dev-certs.sh` that
+`channel add` runs. The copy is made at build time because npm's `files` cannot name a path outside
+the package directory, and it is a copy rather than a move because `packages/proxy` and
+`packages/agent` exec the script at its repository path for their test fixtures. CI asserts the two
+are byte-identical, which is what keeps a copy from becoming a fork.
+
+`build.mjs` bundles the entry point with esbuild,
 inlining `@getlibero/schema` — the workspace package that defines what a team sheet, a model
 id and a channel id are — along with zod and smol-toml. So the published manifest declares
 **no dependencies**, and installing this reaches no registry twice.

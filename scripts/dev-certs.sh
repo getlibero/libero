@@ -99,6 +99,24 @@ EOF
 say() { echo "dev-certs: $*"; }
 die() { echo "dev-certs: $*" >&2; exit 1; }
 
+# How this script tells you to run it again.
+#
+# Standalone that is `sh scripts/dev-certs.sh --rotate ID`, which is what `$0`
+# gives. `libero channel` ships a copy of this file inside its npm package and
+# drives it, and there `$0` is a path under node_modules that an operator must
+# never be told to type — so it sets DEV_CERTS_SELF_CMD to its own spelling and
+# the two-step rotation reads as two commands they actually have.
+#
+# Unset, nothing changes. Every existing caller — the proxy's and the agent's
+# test fixtures included — sees exactly what it saw before.
+self_cmd() { # self_cmd <rotate|promote> <channel-id>
+  if [ -n "${DEV_CERTS_SELF_CMD:-}" ]; then
+    printf '%s %s %s' "$DEV_CERTS_SELF_CMD" "$1" "$2"
+  else
+    printf 'sh %s --%s %s' "$0" "$1" "$2"
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
@@ -138,7 +156,7 @@ print_pin() { # print_pin <pem>
 warn_if_expiring() { # warn_if_expiring <label> <pem> [rotate-id]
   openssl x509 -in "$2" -noout -checkend "$EXPIRY_WARN_SECONDS" >/dev/null 2>&1 && return 0
   say "WARNING: $1 expires $(expires_on "$2")."
-  [ $# -ge 3 ] && say "WARNING: replace it without an outage: sh $0 --rotate $3"
+  [ $# -ge 3 ] && say "WARNING: replace it without an outage: $(self_cmd rotate "$3")"
   return 0
 }
 
@@ -233,7 +251,7 @@ case "$MODE" in
     say "Nothing in service has changed. Add that fingerprint to"
     say "  ${CHANNELS_ROOT}/${TARGET}/channel.toml"
     say "alongside the one already there — both certificates are then accepted —"
-    say "and then run: sh $0 --promote ${TARGET}"
+    say "and then run: $(self_cmd promote "$TARGET")"
     exit 0
     ;;
 
@@ -242,7 +260,7 @@ case "$MODE" in
     staged_pem="${STAGED}/client-${TARGET}.pem"
     staged_key="${STAGED}/client-${TARGET}.key"
     [ -f "$staged_pem" ] && [ -f "$staged_key" ] ||
-      die "nothing staged for channel ${TARGET}. Run: sh $0 --rotate ${TARGET}"
+      die "nothing staged for channel ${TARGET}. Run: $(self_cmd rotate "$TARGET")"
 
     fp=$(fingerprint "$staged_pem")
     sheet="${CHANNELS_ROOT}/${TARGET}/channel.toml"

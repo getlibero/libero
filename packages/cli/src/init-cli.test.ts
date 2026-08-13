@@ -138,7 +138,7 @@ describe("what it writes", () => {
       "libero: generated PROXY_VAULT_KEY",
       "",
       "Fill SLACK_APP_TOKEN, SLACK_BOT_TOKEN and ANTHROPIC_API_KEY in deploy/.env, then:",
-      "  sh scripts/dev-certs.sh",
+      "  libero channel add <CHANNEL_ID>",
       "  docker compose -f deploy/docker-compose.yml up"
     ]);
   });

@@ -18,6 +18,7 @@
 import { EXIT_OK, EXIT_USAGE } from "./io.js";
 import type { CliIo } from "./io.js";
 import { runInitCommand, USAGE as INIT_USAGE } from "./init-cli.js";
+import { runChannelCommand, USAGE as CHANNEL_USAGE } from "./channel-cli.js";
 
 /**
  * Substituted by ./build.mjs at bundle time.
@@ -32,7 +33,8 @@ export const VERSION = typeof __LIBERO_VERSION__ === "string" ? __LIBERO_VERSION
 const USAGE = [
   "usage: libero <command>",
   "",
-  "  init  write the deployment's environment file and generate the vault master key",
+  "  init         write the deployment's environment file and generate the vault master key",
+  "  channel add  create a channel's team sheet and the certificate that speaks for it",
   "",
   "Libero's two services run in containers and own what is inside their own",
   "volumes. This command owns the other half: what an operator authors on the",
@@ -51,17 +53,23 @@ const USAGE = [
   "  docker compose -f deploy/docker-compose.yml run --rm proxy \\",
   "    node dist/audit.js list --channel C024BE91L",
   "",
-  "channel add and doctor are the next two commands and are not built yet.",
+  "doctor is the next command and is not built yet.",
   "",
   "Reads no environment. Every path is resolved from the working directory."
 ].join("\n");
 
-const COMMANDS = ["init"] as const;
+const COMMANDS = ["init", "channel"] as const;
 type Command = (typeof COMMANDS)[number];
 
 function isCommand(value: string): value is Command {
   return (COMMANDS as readonly string[]).includes(value);
 }
+
+/** Each command's own usage, so `libero <command> --help` reaches it. */
+const HELP: Readonly<Record<Command, string>> = {
+  init: INIT_USAGE,
+  channel: CHANNEL_USAGE
+};
 
 /** The three the proxy's entrypoints own, named so the error can say where. */
 const ELSEWHERE: Readonly<Record<string, string>> = {
@@ -96,12 +104,14 @@ export function runCli(io: CliIo): number {
   }
 
   if (rest[0] === "--help" || rest[0] === "-h") {
-    io.out(INIT_USAGE);
+    io.out(HELP[command]);
     return EXIT_OK;
   }
 
   switch (command) {
     case "init":
       return runInitCommand(io, rest);
+    case "channel":
+      return runChannelCommand(io, rest);
   }
 }
