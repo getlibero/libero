@@ -12,12 +12,19 @@
 // file receives the result — a client, or the reason there is none.
 //
 // **Nothing here refuses a listing.** Every way of not getting an answer is an
-// empty map and one log line, because the listing is not the enforcement: a
+// empty answer and one log line, because the listing is not the enforcement: a
 // tool with no schema is still a tool the sheet permits, and a tool the sheet
 // omits is still refused at call time. The single exception is a
 // `RedactionError`, which is not an upstream failure but this proxy unable to
 // guarantee its own boundary — it propagates, for the reason ./http-dispatcher.ts
 // rethrows one rather than converting it to a result.
+//
+// **One tool is withheld rather than thinned, and the argument is at
+// `Publication` below.** A tool whose `x-mcp-header` annotations do not validate
+// is dropped from the answer entirely instead of degrading to the sheet's own
+// row (#200). That is the doctrine above narrowing in exactly one place — it
+// still deauthorizes nothing, because the sheet names the tool either way and
+// ./enforce.ts decides the call.
 //
 // **It is a cache with a clock, and the clock is not a security deadline.** An
 // approval ticket deliberately shares the server's clock because a deadline is
@@ -25,7 +32,13 @@
 // is an injected `now()` here and nothing more.
 
 import type { McpServer } from "@getlibero/schema";
-import type { ToolCatalog, UpstreamCallDefinition, UpstreamToolDescription } from "./dispatch.js";
+import {
+  type CatalogAnswer,
+  NO_CATALOG_ANSWER,
+  type ToolCatalog,
+  type UpstreamCallDefinition,
+  type UpstreamToolDescription
+} from "./dispatch.js";
 import { createSilentLogger, type Logger } from "./log.js";
 import type { McpClient } from "./mcp-client.js";
 import { boundedToolDescription, boundedToolInputSchema } from "./mcp-bounds.js";
@@ -134,15 +147,50 @@ export interface McpCatalogOptions {
   readonly now?: () => number;
 }
 
-type Described = ReadonlyMap<string, UpstreamToolDescription>;
+/**
+ * What a walk settled about one tool: an entry to publish, or why there is none.
+ *
+ * **Three states rather than two, because there are two ways to end up unlisted
+ * and they are not the same fact.**
+ *
+ * `absent` is the upstream's: the walk ran and this server does not offer the
+ * tool. It has to be storable — distinctly from "not asked about yet" — or a
+ * sheet naming a tool the upstream does not offer would re-walk that upstream on
+ * every single listing and every single call.
+ *
+ * `excluded` is this proxy's, and it is the one place the degrade-to-thin
+ * contract narrows (#200). The specification's answer to a tool whose
+ * `x-mcp-header` annotations fail validation is that the client MUST leave it
+ * out of the listing, and that is also the better behaviour independently:
+ * the proxy cannot derive the headers for such a tool, so a thin entry is a tool
+ * the model can see, will call, and whose every call an upstream that requires
+ * them refuses at the far end — `-32020` on GitHub. The model then retries and
+ * burns the channel's turns against a cap, for a reason nothing it can read
+ * names. Showing the model a tool that cannot work is worse than not showing it.
+ *
+ * **Excluding is safe under the doctrine it narrows**, and that is why this is a
+ * departure in mechanism rather than in the property the doctrine protects.
+ * Dropping the entry removes the tool from the model's context and deauthorizes
+ * nothing: the sheet still names it, and a call the model somehow makes anyway
+ * is still decided by ./enforce.ts from the sheet. Nothing else that goes wrong
+ * with a listing gets this treatment — a dead, slow, ambiguous or credential-less
+ * upstream still costs the model a description and never the channel a
+ * permission.
+ *
+ * The two unlisted states are stored apart and logged apart because an operator
+ * chasing a tool that is not in a listing needs to know which end to look at.
+ */
+type Publication =
+  | { readonly state: "published"; readonly description: UpstreamToolDescription }
+  | { readonly state: "absent" }
+  | { readonly state: "excluded" };
+
+/** The two `Publication`s with no per-tool payload, so neither is rebuilt per name. */
+const ABSENT: Publication = Object.freeze({ state: "absent" });
+const EXCLUDED: Publication = Object.freeze({ state: "excluded" });
 
 /**
  * What is known about one tool on one upstream, and until when.
- *
- * **`published: null` means walked and confirmed absent**, which is a different
- * fact from "not asked about yet" and has to be storable, or a sheet naming a
- * tool the upstream does not offer would re-walk that upstream on every single
- * listing and every single call.
  *
  * Freshness is per name because a walk is per name: a tool found by a complete
  * walk is good for `CATALOG_TTL_MS`, and one touched by a partial walk — a
@@ -150,7 +198,7 @@ type Described = ReadonlyMap<string, UpstreamToolDescription>;
  * costs one attempt per half minute rather than pretending its tools are gone.
  */
 interface Resolution {
-  readonly published: UpstreamToolDescription | null;
+  readonly publication: Publication;
   /**
    * The tool's `x-mcp-header` declarations, scanned from the schema the upstream
    * actually sent.
@@ -184,14 +232,12 @@ interface CacheEntry {
  */
 type Walked = "complete" | "partial";
 
-const EMPTY: Described = new Map();
-
 /** A walk that never happened, for the lease that never opened. */
 const NOTHING_WALKED: ReadonlyMap<string, Walked_Entry> = new Map();
 
 /** What one walk learned about one tool: the two views, kept apart. */
 interface Walked_Entry {
-  readonly published: UpstreamToolDescription;
+  readonly publication: Publication;
   readonly paramDeclarations: readonly XMcpHeaderDeclaration[];
 }
 
@@ -299,6 +345,10 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
     budget: number
   ): Promise<Walked> => {
     let cursor: string | undefined;
+    // What this walk has added to the *answer*, which an excluded tool does not
+    // join. `described.size` counted them together until #200 and is no longer
+    // the same number.
+    let publishable = 0;
 
     if (budget <= 0) {
       unavailable(upstream, "truncated", { described: 0 });
@@ -323,15 +373,36 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
         // caller: capping in the upstream's order would let a server bury a
         // permitted tool behind decoys.
         if (!wanted.has(entry.name) || described.has(entry.name)) continue;
-        if (described.size >= budget) {
-          unavailable(upstream, "truncated", { described: described.size });
+
+        // The raw schema, deliberately — see `Resolution.paramDeclarations`.
+        const annotations = declarationsIn(entry.inputSchema);
+        if (!annotations.ok) {
+          // Not counted against `budget`: nothing about this tool enters the
+          // model's context, so charging it to a cap on what does would let a
+          // hostile upstream shrink a listing with schemas it knew were
+          // invalid. It is still *resolved*, so the walk stops going after it.
+          logger.log("warn", {
+            event: "catalog_tool_excluded",
+            server: upstream.name,
+            tool: entry.name,
+            reason: "invalid_annotations"
+          });
+          described.set(entry.name, { publication: EXCLUDED, paramDeclarations: [] });
+          continue;
+        }
+
+        if (publishable >= budget) {
+          unavailable(upstream, "truncated", { described: publishable });
           return "partial";
         }
         described.set(entry.name, {
-          published: boundedEntry(upstream, entry.name, entry.description, entry.inputSchema),
-          // The raw schema, deliberately — see `Resolution.paramDeclarations`.
-          paramDeclarations: declarationsIn(entry.inputSchema)
+          publication: {
+            state: "published",
+            description: boundedEntry(upstream, entry.name, entry.description, entry.inputSchema)
+          },
+          paramDeclarations: annotations.declarations
         });
+        publishable += 1;
       }
 
       if (described.size === wanted.size) return "complete";
@@ -399,13 +470,19 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
   };
 
   /**
-   * A tool's `x-mcp-header` declarations, or none.
+   * A tool's `x-mcp-header` declarations, or the news that it has no valid set.
    *
-   * An upstream that declares nothing, or whose schema the scan will not vouch
-   * for, gets no headers — which is also the safe answer under SEP-2243, whose
-   * intermediary note says infrastructure on an older negotiated revision SHOULD
-   * reject a request carrying header values it cannot validate. Headers go only
-   * to a server that asked for them in its own schema.
+   * An upstream that declares nothing gets no headers — which is also the safe
+   * answer under SEP-2243, whose intermediary note says infrastructure on an
+   * older negotiated revision SHOULD reject a request carrying header values it
+   * cannot validate. Headers go only to a server that asked for them in its own
+   * schema.
+   *
+   * `ok: false` is the codec's verdict that the *tool definition* is invalid —
+   * an annotation that is empty, not an RFC 9110 token, on a non-primitive type,
+   * not case-insensitively unique, or placed somewhere the chain of `properties`
+   * keys cannot statically reach. The spec's answer to that is exclusion, and
+   * `Publication` above is where the caller acts on it.
    *
    * **The scan is guarded, because it runs on the raw schema.** The vendored
    * `visit` recurses per nesting level with no depth bound, and this is the one
@@ -415,15 +492,27 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * inside the response bound, and the resulting `RangeError` is neither a
    * `RedactionError` nor an `McpListOutcome`: unguarded, it would escape the
    * degrade-to-thin contract and turn one hostile upstream into a 500 for the
-   * channel's whole listing. A schema the scan cannot survive declares nothing,
-   * exactly as one it will not vouch for.
+   * channel's whole listing.
+   *
+   * **A schema the scan cannot survive declares nothing, and is published thin
+   * rather than excluded.** Those two used to be one case and #200 separated
+   * them, so the difference is worth stating: `ok: false` is a determinate fact
+   * about the schema — the codec walked it and found a violated MUST — while a
+   * throw establishes nothing at all, not even that an annotation is present. A
+   * tool excluded on the strength of a scan that did not finish would be a
+   * working tool taken away from the model for a schema shape, and the doctrine
+   * this file narrows in exactly one place says lean lenient without a
+   * determinate reason to narrow. It is the safe answer for the call path
+   * either way, because both send no headers.
    */
-  const declarationsIn = (rawSchema: unknown): readonly XMcpHeaderDeclaration[] => {
+  const declarationsIn = (
+    rawSchema: unknown
+  ): { readonly ok: true; readonly declarations: readonly XMcpHeaderDeclaration[] } | { readonly ok: false } => {
     try {
       const scan = scanXMcpHeaderDeclarations(rawSchema);
-      return scan.valid ? scan.declarations : [];
+      return scan.valid ? { ok: true, declarations: scan.declarations } : { ok: false };
     } catch {
-      return [];
+      return { ok: true, declarations: [] };
     }
   };
 
@@ -440,18 +529,30 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * order, so what survives the cut is the operator's priority, not the
    * upstream's.
    */
-  const assemble = (upstream: McpServer, entry: CacheEntry, wanted: ReadonlySet<string>): Described => {
-    const answer = new Map<string, UpstreamToolDescription>();
+  const assemble = (upstream: McpServer, entry: CacheEntry, wanted: ReadonlySet<string>): CatalogAnswer => {
+    const described = new Map<string, UpstreamToolDescription>();
+    const excluded = new Set<string>();
+    // The cap stops the loop *describing*, not the loop. It bounds what enters
+    // the model's context, and withholding a tool is the opposite of that — so
+    // an answer truncated by the cap still carries every exclusion it settled,
+    // or the caller would list the sheet's thin row for one of them. One line
+    // afterwards rather than a `break`, so the reason is still reported once.
+    let truncated = false;
     for (const name of wanted) {
-      const resolution = entry.resolved.get(name);
-      if (resolution?.published == null) continue;
-      if (answer.size >= MAX_DESCRIBED_TOOLS) {
-        unavailable(upstream, "truncated", { described: answer.size });
-        break;
+      const publication = entry.resolved.get(name)?.publication;
+      if (publication === undefined || publication.state === "absent") continue;
+      if (publication.state === "excluded") {
+        excluded.add(name);
+        continue;
       }
-      answer.set(name, resolution.published);
+      if (described.size >= MAX_DESCRIBED_TOOLS) {
+        truncated = true;
+        continue;
+      }
+      described.set(name, publication.description);
     }
-    return answer;
+    if (truncated) unavailable(upstream, "truncated", { described: described.size });
+    return { described, excluded };
   };
 
   /**
@@ -472,7 +573,7 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
     for (const name of missing) {
       const found = described.get(name);
       entry.resolved.set(name, {
-        published: found?.published ?? null,
+        publication: found?.publication ?? ABSENT,
         paramDeclarations: found?.paramDeclarations ?? [],
         expiresAt
       });
@@ -489,7 +590,7 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * by a wider walk simply walks its own — correct, and rarer than the case that
    * matters, which is the listing route and the call path asking in turn.
    */
-  const describeUpstream = async (upstream: McpServer, wanted: ReadonlySet<string>): Promise<Described> => {
+  const describeUpstream = async (upstream: McpServer, wanted: ReadonlySet<string>): Promise<CatalogAnswer> => {
     const entry = entryFor(upstream);
     const at = now();
 
@@ -501,7 +602,10 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
         missing.add(name);
         continue;
       }
-      if (resolution.published !== null) carried += 1;
+      // What the answer is already carrying against the cap, which an excluded
+      // tool does not join — it is withheld from the model rather than shown to
+      // it, so it spends none of the budget for what the model is shown.
+      if (resolution.publication.state === "published") carried += 1;
     }
 
     // The whole point of the restructure: a tool the listing route already
@@ -547,11 +651,16 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
       // second copy that drifts.
       await describeUpstream(upstream, new Set([tool]));
       const resolution = cached.get(upstreamKey(upstream))?.resolved.get(tool);
+      // An excluded tool answers here exactly as an unwalked one does — no
+      // declarations — and the call still goes out. #200 changed what the model
+      // is shown and deliberately nothing on this path: a thin catalog has never
+      // been allowed to block a permitted call, the sheet still names the tool,
+      // and ./enforce.ts is what decides it.
       return { paramDeclarations: resolution?.paramDeclarations ?? [] };
     },
 
     async describe(upstream, wanted) {
-      if (wanted.length === 0) return EMPTY;
+      if (wanted.length === 0) return NO_CATALOG_ANSWER;
       return describeUpstream(upstream, new Set(wanted));
     },
 

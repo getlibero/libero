@@ -468,6 +468,42 @@ rather than an upstream failing — which answers 500, because degrading would
 serve a cheerful thin listing to a channel whose every call is about to fail the
 same way.
 
+**One tool is dropped from the listing rather than thinned, and it is the only
+one** (#200). SEP-2243 lets a tool's `inputSchema` annotate arguments with
+`x-mcp-header`, and the vendored codec validates every constraint on one before
+deriving a header: non-empty, RFC 9110 `token` syntax, on a primitive type,
+case-insensitively unique, and statically reachable through a chain of
+`properties` keys — never under `items`, `oneOf`/`anyOf`/`allOf`/`not`,
+`if`/`then`/`else`, or a `$ref`. An annotation anywhere else invalidates the
+whole tool definition, and the specification's answer is that the client MUST
+leave the tool out of the listing. The proxy does: the entry is absent, and one
+`catalog_tool_excluded` line names the server, the tool and
+`reason: "invalid_annotations"`. `tools_listed` carries an `excluded` count
+beside `count`, so a listing that shrank says so on the line reporting it and
+not only in the walk that decided it.
+
+That is a departure in *mechanism*, not in the property the doctrine above
+protects. Dropping the row removes the tool from the model's context and
+deauthorizes nothing — the sheet still names it and `enforce.ts` still decides a
+call on it, which is what the wire test asserts. The reason to prefer exclusion
+here specifically is that the alternative failure is silent and total: the proxy
+cannot derive the headers for such a tool, so a thin entry is a tool the model
+can see, will call, and whose every call a server requiring them refuses at the
+far end — `-32020` on GitHub. The model retries, burns the channel's turns
+against a cap, and the audit log records calls that ran and returned an error.
+Showing the model a tool that cannot work is worse than not showing it.
+
+Two things stay as they are. A **schema the scan cannot survive** — the walk is
+unbounded in depth and runs on the raw bytes, deliberately — declares nothing
+and is still published thin, because a throw establishes nothing about the
+schema while a validation failure is a MUST the codec watched being violated.
+And the **call path is unchanged**: a call to an excluded tool goes out without
+headers exactly as before, since a thin catalog has never been allowed to block
+a permitted call. A change that relaxed the codec's walk to be more permissive
+would be a security change rather than an ergonomics one — these are
+model-authored argument values becoming headers on the one request that carries
+a credential, the class `readSessionId` already guards for `mcp-session-id`.
+
 An upstream's answer is bounded before it reaches a model: descriptions truncate
 at 1024 characters, schemas are dropped past 8KB or if they are not a JSON
 object saying `type: "object"`, at most 100 tools per upstream carry one, and

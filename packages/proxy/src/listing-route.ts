@@ -29,10 +29,21 @@
 // yields the entry as the sheet wrote it: a missing schema costs the model
 // accuracy, never the channel a permission, and a tool absent from this answer
 // is refused at call time by the same sheet that omitted it.
+//
+// **One thing is dropped rather than degraded, and it is the only one** (#200).
+// A tool whose `x-mcp-header` annotations do not validate comes back in the
+// catalog's `excluded` set and gets no row here at all — not even the sheet's.
+// The specification requires that of a client, and the reasoning is argued at
+// `Publication` in ./mcp-catalog.ts, which is where the fact is established.
+// What matters at this end is that it costs the channel nothing: the sheet still
+// names the tool and ./enforce.ts still decides a call on it exactly as before,
+// so this narrows what the model is *shown* and not what it is *allowed*. A
+// second reason to drop out of this loop would need the same argument made
+// again, and the default remains the thin row.
 
 import type { McpServer, PermittedTool, ToolListing } from "@getlibero/schema";
 import { BUILTIN_TOOLS } from "./builtins.js";
-import type { ToolCatalog, UpstreamToolDescription } from "./dispatch.js";
+import { type CatalogAnswer, NO_CATALOG_ANSWER, type ToolCatalog } from "./dispatch.js";
 import { permittedToolSourcesFromState, upstreamKey } from "./enforce.js";
 import type { Logger } from "./log.js";
 import type { RequestContext, RouteHandler, RouteResponse } from "./server.js";
@@ -46,7 +57,12 @@ export interface ListingRouteOptions {
   readonly ok: (body: unknown) => RouteResponse;
 }
 
-const NOTHING: ReadonlyMap<string, UpstreamToolDescription> = new Map();
+/**
+ * What a source with no upstream to ask resolves against: describes nothing,
+ * withholds nothing. Both halves matter — a sheet that contradicts itself about
+ * where a tool goes must still get the sheet's own row, not lose one.
+ */
+const NOTHING: CatalogAnswer = NO_CATALOG_ANSWER;
 
 export function createListingRoute(options: ListingRouteOptions): RouteHandler {
   return async (ctx: RequestContext): Promise<RouteResponse> => {
@@ -94,7 +110,7 @@ export function createListingRoute(options: ListingRouteOptions): RouteHandler {
     // to a channel whose every tool call is about to 500 the same way. It
     // reaches the server's handler, which answers a constant 500 without
     // inspecting the thrown value, so no upstream bytes cross.
-    const answers = new Map<string, ReadonlyMap<string, UpstreamToolDescription>>();
+    const answers = new Map<string, CatalogAnswer>();
     await Promise.all(
       [...wantedBy].map(async ([key, group]) => {
         answers.set(key, await options.catalog.describe(group.upstream, group.tools));
@@ -102,30 +118,44 @@ export function createListingRoute(options: ListingRouteOptions): RouteHandler {
     );
 
     let described = 0;
-    const tools: PermittedTool[] = sources.map(source => {
+    let excluded = 0;
+    // `flatMap` rather than `map` because one source can now yield no row. The
+    // sheet is still what the loop iterates, so the intersection argued in this
+    // file's header is unchanged: the catalog can subtract a row and still
+    // cannot add one.
+    const tools: PermittedTool[] = sources.flatMap((source): PermittedTool[] => {
       // A built-in's definition is this build's own, so it is always present and
       // always counts as described. It comes from a table of constants rather
       // than from an answer, which is why nothing here can degrade it to a thin
-      // row the way an unreachable upstream degrades one.
+      // row the way an unreachable upstream degrades one — and nothing can
+      // exclude it either, since there is no upstream schema to be invalid.
       if (source.target?.kind === "builtin") {
         const definition = BUILTIN_TOOLS[source.target.tool];
         described += 1;
-        return {
-          ...source.tool,
-          description: definition.description,
-          inputSchema: definition.inputSchema
-        };
+        return [
+          {
+            ...source.tool,
+            description: definition.description,
+            inputSchema: definition.inputSchema
+          }
+        ];
       }
 
       const upstream =
         source.target === null ? NOTHING : (answers.get(upstreamKey(source.target.upstream)) ?? NOTHING);
-      const found = upstream.get(source.tool.tool);
+      if (upstream.excluded.has(source.tool.tool)) {
+        excluded += 1;
+        return [];
+      }
+      const found = upstream.described.get(source.tool.tool);
       if (found?.inputSchema !== undefined) described += 1;
-      return {
-        ...source.tool,
-        ...(found?.description !== undefined ? { description: found.description } : {}),
-        ...(found?.inputSchema !== undefined ? { inputSchema: found.inputSchema } : {})
-      };
+      return [
+        {
+          ...source.tool,
+          ...(found?.description !== undefined ? { description: found.description } : {}),
+          ...(found?.inputSchema !== undefined ? { inputSchema: found.inputSchema } : {})
+        }
+      ];
     });
 
     options.logger.log("info", {
@@ -138,7 +168,11 @@ export function createListingRoute(options: ListingRouteOptions): RouteHandler {
       // whose count and described diverge is an upstream that could not be
       // asked, which the `catalog_unavailable` lines above and beside this one
       // explain.
-      described
+      described,
+      // What the sheet permitted and this answer withheld. `count + excluded` is
+      // the sheet's own size, so a listing that shrank says so on the line that
+      // reports it rather than only in the walk that decided it.
+      excluded
     });
 
     return options.ok({ tools } satisfies ToolListing);

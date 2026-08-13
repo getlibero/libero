@@ -11,6 +11,8 @@ import {
   MAX_DESCRIBED_TOOLS
 } from "./mcp-catalog.js";
 import {
+  ANNOTATION_BEHIND_REF,
+  ANNOTATION_UNDER_ITEMS,
   type FakeMcpServer,
   type FakeReply,
   completeListResult,
@@ -66,9 +68,16 @@ function clockFrom(start: number): { now: () => number; advance: (ms: number) =>
 }
 
 interface Harness {
+  /**
+   * The described half of a catalog answer, which is what almost every case
+   * here is about. The exclusion half has its own accessor below rather than
+   * being threaded through twenty assertions that have nothing to say about it.
+   */
   readonly describe: (upstream: McpServer, wanted: readonly string[]) => Promise<
     ReadonlyMap<string, { description?: string; inputSchema?: Record<string, unknown> }>
   >;
+  /** The names the proxy walked, found, and will not publish at all. */
+  readonly excludedBy: (upstream: McpServer, wanted: readonly string[]) => Promise<ReadonlySet<string>>;
   readonly lines: Record<string, unknown>[];
   readonly advance: (ms: number) => void;
 }
@@ -84,7 +93,12 @@ function harnessFor(vault: Vault = vaultOf({ [CRED]: SECRET }), maxResponseBytes
     logger: createJsonLogger(line => lines.push(JSON.parse(line) as Record<string, unknown>))
   });
   dispatcher = built;
-  return { describe: (upstream, wanted) => built.describe(upstream, wanted), lines, advance: clock.advance };
+  return {
+    describe: async (upstream, wanted) => (await built.describe(upstream, wanted)).described,
+    excludedBy: async (upstream, wanted) => (await built.describe(upstream, wanted)).excluded,
+    lines,
+    advance: clock.advance
+  };
 }
 
 describe("describing a sheet's tools from an upstream", () => {
@@ -222,6 +236,130 @@ describe("what an upstream is allowed to say", () => {
     expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({});
     // A tool that published no schema is not a rejected schema.
     expect(lines.some(line => line["event"] === "catalog_schema_rejected")).toBe(false);
+  });
+});
+
+// #200. The one place the degrade-to-thin contract narrows, and the reasoning
+// is at `Publication` in mcp-catalog.ts: the proxy cannot derive headers for a
+// tool whose annotations do not validate, so a thin entry is a tool the model
+// can see, will call, and whose every call an upstream requiring them refuses
+// `-32020` at the far end. Showing the model a tool that cannot work is worse
+// than not showing it, and dropping the row deauthorizes nothing.
+describe("a tool whose x-mcp-header annotations do not validate", () => {
+  // The positive control this whole block rests on. Every assertion below also
+  // passes against a scan that rejected *everything*, so one case has to prove
+  // a well-placed annotation is still published — and still produces the
+  // declarations the call path mirrors into headers.
+  it("is not the fate of a well-placed one", async () => {
+    fake = await startFakeMcpServer({
+      catalog: [
+        {
+          name: "list_prs",
+          description: "Lists PRs.",
+          inputSchema: { type: "object", properties: { owner: { type: "string", "x-mcp-header": "Owner" } } }
+        }
+      ]
+    });
+    const { describe: ask, excludedBy, lines } = harnessFor();
+
+    expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({
+      description: "Lists PRs.",
+      inputSchema: { type: "object", properties: { owner: { type: "string", "x-mcp-header": "Owner" } } }
+    });
+    expect(await excludedBy(serverAt(fake.url), ["list_prs"])).toEqual(new Set());
+    expect(lines.some(line => line["event"] === "catalog_tool_excluded")).toBe(false);
+  });
+
+  // Two routes to the same fault, kept as a pair: the codec sweeps every
+  // keyword the `properties` chain must not pass through, so a case built only
+  // on `items` would still pass against a scan that had quietly stopped
+  // descending into `$defs`.
+  it.each([
+    ["under items", ANNOTATION_UNDER_ITEMS],
+    ["behind a $ref", ANNOTATION_BEHIND_REF]
+  ])("is excluded when the annotation sits %s, not published thin", async (_label, inputSchema) => {
+    fake = await startFakeMcpServer({
+      catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema }]
+    });
+    const { describe: ask, excludedBy, lines } = harnessFor();
+
+    // Absent from the answer entirely. Thin — `{}`, or the description alone —
+    // is the behaviour this replaced and the one the model cannot act on.
+    expect((await ask(serverAt(fake.url), ["list_prs"])).has("list_prs")).toBe(false);
+    expect(await excludedBy(serverAt(fake.url), ["list_prs"])).toEqual(new Set(["list_prs"]));
+    expect(
+      lines.some(
+        line =>
+          line["event"] === "catalog_tool_excluded" &&
+          line["tool"] === "list_prs" &&
+          line["reason"] === "invalid_annotations"
+      )
+    ).toBe(true);
+  });
+
+  // The acceptance criterion that keeps the two unlisted states readable apart:
+  // both end up out of the answer, and only one is the upstream's fault.
+  it("is distinguishable in the log from a tool the upstream does not offer", async () => {
+    fake = await startFakeMcpServer({
+      catalog: [{ name: "list_prs", inputSchema: ANNOTATION_UNDER_ITEMS }]
+    });
+    const { describe: ask, excludedBy, lines } = harnessFor();
+
+    expect((await ask(serverAt(fake.url), ["list_prs", "merge_pr"])).size).toBe(0);
+    // `merge_pr` was walked and confirmed absent, so it is not withheld — the
+    // listing route lists the sheet's own row for it and drops the other.
+    expect(await excludedBy(serverAt(fake.url), ["list_prs", "merge_pr"])).toEqual(new Set(["list_prs"]));
+    expect(lines.filter(line => line["event"] === "catalog_tool_excluded").map(line => line["tool"])).toEqual([
+      "list_prs"
+    ]);
+  });
+
+  it("takes no other tool down with it", async () => {
+    fake = await startFakeMcpServer({
+      catalog: [
+        { name: "list_prs", inputSchema: ANNOTATION_BEHIND_REF },
+        { name: "merge_pr", description: "Merges a PR.", inputSchema: { type: "object" } }
+      ]
+    });
+    const { describe: ask } = harnessFor();
+
+    // One invalid definition invalidates one tool. The scan runs per tool, and
+    // a hostile upstream must not be able to empty a channel's listing by
+    // annotating one schema wrongly.
+    expect([...(await ask(serverAt(fake.url), ["list_prs", "merge_pr"])).keys()]).toEqual(["merge_pr"]);
+  });
+
+  // The cap bounds what enters the model's context. A withheld tool never
+  // enters it, so charging it to that cap would hand a hostile upstream a way
+  // to shrink a listing with schemas it knew were invalid.
+  it("does not spend the cap on what the model is shown", async () => {
+    const many = Array.from({ length: MAX_DESCRIBED_TOOLS }, (_, i) => ({
+      name: `tool_${String(i)}`,
+      inputSchema: { type: "object" as const }
+    }));
+    fake = await startFakeMcpServer({
+      catalog: [{ name: "poisoned", inputSchema: ANNOTATION_UNDER_ITEMS }, ...many]
+    });
+    const { describe: ask } = harnessFor();
+
+    const described = await ask(serverAt(fake.url), ["poisoned", ...many.map(tool => tool.name)]);
+
+    // Listed first, so a cap that counted it would cost the last tool its row.
+    expect(described.size).toBe(MAX_DESCRIBED_TOOLS);
+    expect(described.has(`tool_${String(MAX_DESCRIBED_TOOLS - 1)}`)).toBe(true);
+  });
+
+  // Every other listing failure still degrades. The doctrine narrows here and
+  // nowhere else, so a tool the proxy merely could not describe keeps its row.
+  it("is not what happens to a tool with a schema no provider would take", async () => {
+    fake = await startFakeMcpServer({
+      protocol: "legacy",
+      catalog: [{ name: "list_prs", description: "Lists PRs.", inputSchema: { type: "string" } }]
+    });
+    const { describe: ask, excludedBy } = harnessFor();
+
+    expect((await ask(serverAt(fake.url), ["list_prs"])).get("list_prs")).toEqual({ description: "Lists PRs." });
+    expect(await excludedBy(serverAt(fake.url), ["list_prs"])).toEqual(new Set());
   });
 
   // The bound exists because definitions are re-sent on every model turn. It is
@@ -401,7 +539,7 @@ describe("when the upstream cannot be asked", () => {
       dispatcher = built;
 
       const started = Date.now();
-      expect(await built.describe(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
+      expect((await built.describe(serverAt(fake.url), ["list_prs"])).described).toEqual(new Map());
       const spent = Date.now() - started;
 
       expect(spent).toBeLessThan(CATALOG_BUDGET_MS * 2);
@@ -418,7 +556,7 @@ describe("when the upstream cannot be asked", () => {
     const built = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), timeoutMs: 2000 });
     await built.close();
 
-    expect(await built.describe(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
+    expect((await built.describe(serverAt(fake.url), ["list_prs"])).described).toEqual(new Map());
   });
 
   // Not an upstream failure: this proxy unable to guarantee its own boundary,
