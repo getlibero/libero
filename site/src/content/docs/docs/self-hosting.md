@@ -35,12 +35,14 @@ Socket Mode, which is the main reason Socket Mode was chosen.
 
 ```bash
 npx @getlibero/cli init                          # writes deploy/.env, generates the vault master key
-sh scripts/dev-certs.sh                          # mints the mutual-TLS material (see below)
+npx @getlibero/cli channel add C024BE91L         # a team sheet and the certificate that speaks for it
 docker compose -f deploy/docker-compose.yml up   # starts gateway+agent and proxy
 ```
 
-All three run from the root of a checkout. An optional LiteLLM sidecar is included for models
-without first-class support.
+All three run from the root of a checkout. `channel add` mints the local CA and the proxy's server
+certificate on its first run as well as the channel's own, so `sh scripts/dev-certs.sh` is the same
+step done by hand — see [pinning a channel's certificate](#pinning-a-channels-certificate). An
+optional LiteLLM sidecar is included for models without first-class support.
 
 **There are two environment files, and they are different documents.** `init` writes
 `deploy/.env`: the operator's half of a compose deployment — the two Slack tokens, the provider
@@ -272,10 +274,25 @@ There is still no revocation list and no CRL. Removing a channel's sheet removes
 immediately and leaves a stale certificate holding nothing — that is how a channel is *retired*.
 Dropping one fingerprint from a sheet revokes one *key* while the channel keeps working.
 
-Setting a channel up, in order: create `channels/<CHANNEL_ID>/channel.toml`, run the script, and
-paste the fingerprint it prints into the sheet. Between the first and last step the sheet does not
-parse and every call is refused, which is the correct state for a channel that has no key material
-yet. Confirm with:
+Setting a channel up is one command:
+
+```bash
+npx @getlibero/cli channel add C024BE91L --name engineering
+```
+
+It mints the certificate and writes `channels/C024BE91L/channel.toml` pinning it, so no fingerprint
+is ever copied by hand. The sheet it writes grants **nothing** — no `[[mcp_server]]`, no
+`[[builtin]]`, and the schema's default caps — so the channel authenticates and can call nothing
+until you add a block to it. It refuses to touch a channel that already has a sheet.
+
+That is one act because at creation there is no prior sheet to review the change against, and the
+operator running the command is the authorization. Changing which key may speak for an existing
+channel stays two acts, below. By hand the sequence is the same three steps: create
+`channels/<CHANNEL_ID>/channel.toml`, run the script, paste the fingerprint it prints into the
+sheet — between the first and last the sheet does not parse and every call is refused, which is the
+correct state for a channel that has no key material yet.
+
+Confirm either way with:
 
 ```bash
 # From the compose network — the proxy publishes no port to the host.
@@ -290,9 +307,11 @@ authenticated and its fingerprint is pinned, and 401 means one of the two is not
 log says which — `identity_rejected` with `reason: "certificate_not_pinned"` carries the
 fingerprint that arrived and how many the sheet listed.
 
-The script prints the fingerprint and never writes it into a sheet. Minting key material and
+The script itself prints the fingerprint and never writes it into a sheet. Minting key material and
 authorizing it are two acts, by two authorities, and a script that did both would give back exactly
-the property pinning creates.
+the property pinning creates. `channel add` is not an exception to that: it authors both files at
+once for a channel that has neither, where there is no prior authorization to overwrite and no diff
+to review. Every later change to a pin goes through the two-step below.
 
 ### Rotating and revoking a certificate
 
@@ -300,12 +319,16 @@ Rotation is four steps and has no gap: at every point at least one valid certifi
 neither service is restarted.
 
 ```bash
-sh scripts/dev-certs.sh --rotate C024BE91L    # 1. mint a replacement, print its fingerprint
-                                              # 2. add that fingerprint to the channel's sheet,
-                                              #    beside the one already there
-sh scripts/dev-certs.sh --promote C024BE91L   # 3. swap the material into place
-                                              # 4. remove the old fingerprint from the sheet
+npx @getlibero/cli channel rotate C024BE91L    # 1. mint a replacement, print its fingerprint
+                                               # 2. add that fingerprint to the channel's sheet,
+                                               #    beside the one already there
+npx @getlibero/cli channel promote C024BE91L   # 3. swap the material into place
+                                               # 4. remove the old fingerprint from the sheet
 ```
+
+`sh scripts/dev-certs.sh --rotate` and `--promote` are the same two steps from a checkout; the CLI
+ships a copy of that script and runs it. `channel pins` prints every channel's fingerprint and
+expiry, which is `--print-pins`.
 
 Step 1 changes nothing in service — the replacement is staged beside what is running. Step 3
 refuses to run until step 2 has landed, because promoting first would take the channel offline with

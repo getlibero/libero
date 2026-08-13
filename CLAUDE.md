@@ -50,7 +50,7 @@ Phase 1, closing. What exists:
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the daily budget meter, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel message store — one SQLite file per channel, an FTS5 index, the delete and edit paths, and a read-only opener the proxy uses |
-| `packages/cli` | The operator's host-side commands — `init` today, `channel add` and `doctor` next (#217). The only npm-published package, shipped as one bundled file |
+| `packages/cli` | The operator's host-side commands — `init` and `channel`, with `doctor` next (#217). The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `budget` and `audit` entrypoints for the operator |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model |
@@ -77,6 +77,7 @@ code is a paragraph the next reader will not find.
 | Slack normalization, the three subscriptions, card rendering, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
+| What the published CLI owns, why the schema is bundled rather than published, and why `channel add` writes a pin | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
@@ -235,6 +236,19 @@ These are load-bearing, not stylistic:
   selects which sheet is consulted. Rotation is `--rotate`/`--promote` in
   `scripts/dev-certs.sh` with two pins live across the overlap; the agent
   re-reads a changed certificate per request, so neither service restarts.
+
+  **`scripts/dev-certs.sh` never writes a sheet, and `libero channel add` is
+  not an exception to that.** The script's rule is that minting material and
+  authorizing it are two acts, so that a change to which key may speak for a
+  channel is a reviewable edit in git. Creation is not that change: at `add`
+  there is no prior sheet, no diff, and nobody to review it but the person
+  running the command — so `add` writes both files at once and refuses outright
+  on a channel that already has a sheet, which keeps "this only ever writes a
+  sheet nobody had reviewed yet" true by construction. Every later change to a
+  pin still goes through `channel rotate` → human edit → `channel promote`, and
+  `promote` still refuses until the sheet pins the staged fingerprint. If you
+  are tempted to let `add` merge into an existing sheet, that is the rule you
+  would be giving up.
 - **One SQLite file per channel is the isolation boundary** for anything holding
   channel *content* — messages, memory. No schema or query there should be able
   to join across channels. `packages/memory` is where that reading is built, and

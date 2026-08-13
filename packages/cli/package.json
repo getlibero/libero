@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": { "libero": "dist/index.js" },
-  "files": ["dist/index.js", "README.md"],
+  "files": ["dist/index.js", "dist/dev-certs.sh", "README.md"],
   "repository": { "type": "git", "url": "https://github.com/getlibero/libero.git", "directory": "packages/cli" },
   "homepage": "https://getlibero.com",
   "engines": { "node": ">=24.0.0" },

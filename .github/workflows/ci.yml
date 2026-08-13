@@ -75,6 +75,13 @@ jobs:
           tar -xzOf "$tarball" package/dist/index.js > "$work/bundle.js"
           head -1 "$work/bundle.js" | grep -qx '#!/usr/bin/env node'
           ! grep -q '"@getlibero/' "$work/bundle.js"
+          # `libero channel add` mints certificates by running dev-certs.sh, and
+          # npm's `files` cannot name a path outside the package — so build.mjs
+          # copies it in. This is what keeps that copy from becoming a fork: the
+          # script two other test suites exec at its repository path, and the one
+          # an operator gets from npm, have to be the same file.
+          tar -xzOf "$tarball" package/dist/dev-certs.sh > "$work/dev-certs.sh"
+          diff -u ../../scripts/dev-certs.sh "$work/dev-certs.sh"
       - name: Tests
         run: pnpm test
 
