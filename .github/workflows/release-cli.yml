@@ -33,7 +33,21 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @getlibero/cli build
+        # The trailing `...` is load-bearing: it selects the CLI *and its
+        # workspace dependencies*, so `@getlibero/schema` is built first.
+        #
+        # Without it this step passes locally and fails only here. The CLI
+        # imports the schema, whose `types` point at `dist/index.d.ts`, and a
+        # bare `--filter @getlibero/cli` never builds it — so `tsc` cannot
+        # resolve the module. CI's build job never sees this, because
+        # `pnpm -r build` builds the whole workspace in dependency order, which
+        # means the only run that can catch it is a release. cli-v0.1.0 is how
+        # we found out.
+        #
+        # It also stays correct on its own: a dependency added to the CLI later
+        # is selected by `...` without anyone remembering to come back here.
+        # Same form as apps/proxy-server/Dockerfile's build.
+      - run: pnpm --filter "@getlibero/cli..." build
       - run: pnpm --filter @getlibero/cli test
       # Trusted publishing (OIDC): no token. npm authenticates via the runner's
       # id-token and generates the provenance attestation itself. pnpm 9's
