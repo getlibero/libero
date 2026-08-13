@@ -37,8 +37,8 @@ sheet with an owner-scoped token is one bug away from a force-push.
 From inside the proxy container, so the master key never has to exist on the host:
 
 ```bash
-docker compose run --rm proxy node dist/vault.js set github_service_account < token.txt
-docker compose run --rm proxy node dist/vault.js list    # names only
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js set github_service_account < token.txt
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js list    # names only
 ```
 
 The value is read from stdin rather than an argument, because `ps` shows arguments to every user on
@@ -218,7 +218,7 @@ Mention the app in the channel and ask it something the allowlist covers — "wh
 getlibero/libero". Then read the log:
 
 ```bash
-docker compose run --rm proxy node dist/audit.js list --channel C024BE91L
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js list --channel C024BE91L
 ```
 
 A served call is one row, `outcome = ran`, naming the server, the tool, the requester, a hash of the
