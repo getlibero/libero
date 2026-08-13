@@ -40,8 +40,8 @@ export type { SpendMeterOptions } from "./budget-meter.js";
 
 // The price table (#62). Read at every decision so a corrected price re-prices
 // today's spend on the next call; absent is legal and prices nothing, which is
-// the fail-closed answer for a channel capped in dollars. Nothing consults it
-// yet — `budget.daily_usd` parses and is not enforced in this build.
+// the fail-closed answer for a channel capped in dollars — and is inert for one
+// that is not, since a sheet without `budget.daily_usd` never consults it.
 export { NO_PRICES, openPriceTableStore } from "./price-table-store.js";
 export type { PriceLookup, PriceTableStore, PriceTableStoreOptions } from "./price-table-store.js";
 

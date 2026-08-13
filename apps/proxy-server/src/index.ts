@@ -70,10 +70,9 @@ const budget = openBudgetDb({ file: budgetDbFromEnv(process.env), logger });
 // and unlike them, absent fails closed rather than open: every model is unpriced
 // and a channel with `budget.daily_usd` set is refused. See `priceTableFromEnv`.
 //
-// Nothing consults it yet. `budget.daily_usd` parses and is not enforced in this
-// build, so this store is opened, logged, and closed at shutdown, and no
-// decision reads it. That is the shape #62 lands in three parts; enforcement is
-// the second.
+// Read once per decision rather than at startup, so a corrected price re-prices
+// today's spend on a channel's next call — the same freshness a team sheet edit
+// already has, and the reason the meter stores raw counts rather than a total.
 const prices = openPriceTableStore({ file: priceTableFromEnv(process.env), logger });
 
 // And the audit log, before anything binds, for a reason the route depends on:
@@ -132,6 +131,9 @@ const server = createProxyServer({
   // the tree today, which is exactly why the check is worth keeping — the seams
   // that land next arrive before their implementations do.
   spend: createSqliteSpendMeter({ db: budget, logger }),
+  // Consulted only by a channel whose sheet sets `[budget] daily_usd`; every
+  // other channel is decided exactly as it was before prices existed.
+  prices,
   dispatcher: createToolDispatcher({ mcp, builtin }),
   // The MCP arm, not the composite: `ToolCatalog.describe` asks an *upstream*
   // what it offers, and a built-in has nobody to ask — the listing route reads

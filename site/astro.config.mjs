@@ -94,6 +94,7 @@ export default defineConfig({
           items: [
             { label: 'Architecture', slug: 'docs/architecture' },
             { label: 'Team sheets', slug: 'docs/team-sheet' },
+            { label: 'The price table', slug: 'docs/price-table' },
             { label: 'Security model', slug: 'docs/security' },
           ],
         },

@@ -255,9 +255,11 @@ that holds under full compromise of the agent process, and nothing #62 added
 touches its table.
 
 **Cost is never accumulated.** The meter stores raw counts and the price table
-joins them at decision time, exactly as the cache weights are applied rather than
-stored — so correcting a mistyped price re-prices spend already recorded today,
-on the channel's next call. A price table is operator-authored config and will
+joins them in `enforce.ts` at decision time, exactly as the cache weights are
+applied rather than stored — so correcting a mistyped price re-prices spend
+already recorded today, on the channel's next call. The arithmetic is BigInt: a
+count times a price at the table's ceiling passes 2^53, and a cap whose exactness
+depends on how large the day got is not a cap. A price table is operator-authored config and will
 eventually contain a typo; under a stored total the only remedy would be
 `budget reset`, which also discards the spend that was right. `BudgetSpend`
 carries both the day's totals and the split, and the totals are summed from the
@@ -297,9 +299,20 @@ It pairs a stat with a watcher for `team-sheet-store.ts`'s reason — correcting
 digit in a price changes neither the file's size nor its inode, which is exactly
 the edit a stat cannot see.
 
-> `budget.daily_usd` is **parsed and not yet enforced**. `enforce.ts` reads the
-> totals and not the split, and no decision consults a price. Enforcement is the
-> second of #62's three parts.
+**`daily_usd` is enforced here, and the order is load-bearing.** `exhaustedLimit`
+answers pricing faults first, then dollars, then tokens, then tool calls. Pricing
+first because a channel whose spend cannot be priced has an unknown position
+against its dollar cap, so no comparison below it is trustworthy — answering
+`daily_tokens` would send an operator to raise a number that is not the problem.
+Dollars before tokens because it is the more specific statement and the one the
+operator asked for.
+
+**A sheet with no `daily_usd` never consults the price table**, which is what
+keeps a channel on a self-hosted model working exactly as it did. The two pricing
+refusals are conditional on the cap rather than on the spend: they do not say
+"this deployment is misconfigured", they say "this channel cannot be capped as its
+sheet asks". `crossedThreshold` takes the same first branch, so `warn_at` covers
+all three limits and a dollar cap's first sign is a notice rather than a refusal.
 
 ### The soft limit
 

@@ -170,10 +170,6 @@ not a line in it — a declared version is a claim about the bytes that nothing
 checks. It is logged at load, so an operator can tie a running proxy's prices to
 a commit in whatever repository they keep the file in.
 
-> `budget.daily_usd` is **parsed and not yet enforced** in this build. The field
-> validates, the table loads, and no decision reads either. Enforcement is the
-> second of #62's three parts.
-
 ## The channel message stores
 
 `PROXY_STORE_ROOT` is the agent's `AGENT_STORE_ROOT` — the same directory, named

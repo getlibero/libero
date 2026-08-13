@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CredentialName, DestinationHost, ResourceName } from "./names.js";
+import { CredentialName, DestinationHost, ModelId, ResourceName } from "./names.js";
 
 /**
  * A refusal: the proxy's answer when a call is not permitted.
@@ -93,6 +93,33 @@ export const RefusalReason = z.enum([
   "approval_mismatch",
   /** The channel's daily meter is spent. Authoritative in the proxy. */
   "budget_exhausted",
+  /**
+   * The channel caps spend in dollars, and some of today's spend is on a model
+   * the proxy's price table does not list (#62).
+   *
+   * **The fail-closed answer**, and the decision that keeps a router from
+   * quietly becoming an uncapped spend path: a model absent from the table is
+   * like a tool absent from the allowlist, so the call is refused rather than
+   * metered at zero. It reads oddly the first time — the channel may be nowhere
+   * near its cap — but a cap whose position cannot be computed is not a cap, and
+   * the alternative prices unknown models free.
+   *
+   * Only ever raised for a channel whose sheet sets `budget.daily_usd`. One that
+   * caps tokens and tool calls needs no prices and never meets this.
+   */
+  "model_not_priced",
+  /**
+   * The same fault with nothing to name: some of today's spend arrived in a
+   * report that named no model at all (#62).
+   *
+   * Kept apart from `model_not_priced` for the reason `no_team_sheet` and
+   * `team_sheet_unreadable` are kept apart — both refuse every call, and the two
+   * send an operator to different places. That one means "add a price for this
+   * model"; this one means "find out why the agent is not reporting one", which
+   * is an agent older than the field, a provider that echoes nothing, or a
+   * gateway that strips it. The proxy's log names the reports.
+   */
+  "model_unreported",
   /** Serving the call means reaching a host the egress allowlist omits. */
   "egress_denied",
   /** The sheet names a credential the vault has no entry for. */
@@ -101,8 +128,14 @@ export const RefusalReason = z.enum([
 
 export type RefusalReason = z.infer<typeof RefusalReason>;
 
-/** Which daily limit ran out. Mirrors the `[budget]` keys in a team sheet. */
-export const BudgetLimit = z.enum(["daily_tokens", "daily_tool_calls"]);
+/**
+ * Which daily limit ran out. Mirrors the `[budget]` keys in a team sheet.
+ *
+ * Three since #62, and `daily_usd` is the one that is optional in the sheet: a
+ * channel that never sets it can never be refused for it, and a channel that
+ * does is capped by whichever of the three binds first.
+ */
+export const BudgetLimit = z.enum(["daily_tokens", "daily_tool_calls", "daily_usd"]);
 
 export type BudgetLimit = z.infer<typeof BudgetLimit>;
 
@@ -154,6 +187,13 @@ export const ToolRefusal = z.discriminatedUnion("reason", [
       limit: BudgetLimit
     })
     .strict(),
+  // The pricing faults (#62). One carries the model it could not price, because
+  // that is the whole remedy — an operator reads it and writes a line in the
+  // price table. The other carries nothing, because there is nothing to name:
+  // that is what "unreported" means, and a placeholder in the sentence would be
+  // the meter's own bucket id leaking into a channel as though it were a model.
+  z.object({ reason: z.literal("model_not_priced"), model: ModelId }).strict(),
+  z.object({ reason: z.literal("model_unreported") }).strict(),
   z
     .object({
       reason: z.literal("egress_denied"),
@@ -178,6 +218,26 @@ export type ToolRefusal = z.infer<typeof ToolRefusal>;
  * a human is told about it. Plain and terse by house style: name the call, say
  * what is not permitted, say whether it ran.
  */
+/**
+ * Which of the three daily limits, in the words a channel reads.
+ *
+ * Its own function rather than an arm of the switch below, so both are total
+ * over their own union and neither needs a fallthrough. **No figure in any of
+ * the three**: the number lives in the sheet, the sentence is read in a
+ * channel, and the audit table has no column for it — so a message that quoted
+ * one would be the only place it could disagree with the meter.
+ */
+function budgetExhaustedMessage(limit: BudgetLimit): string {
+  switch (limit) {
+    case "daily_tokens":
+      return "This channel has spent its daily token budget. No further calls run until the budget resets.";
+    case "daily_tool_calls":
+      return "This channel has spent its daily tool-call budget. No further calls run until the budget resets.";
+    case "daily_usd":
+      return "This channel has spent its daily spend budget. No further calls run until the budget resets.";
+  }
+}
+
 export function refusalMessage(refusal: ToolRefusal): string {
   switch (refusal.reason) {
     case "no_team_sheet":
@@ -205,9 +265,11 @@ export function refusalMessage(refusal: ToolRefusal): string {
     case "approval_mismatch":
       return `This approval was not for \`${refusal.server}.${refusal.tool}\` with these arguments. An approval covers one exact call. The call was not made.`;
     case "budget_exhausted":
-      return refusal.limit === "daily_tokens"
-        ? "This channel has spent its daily token budget. No further calls run until the budget resets."
-        : "This channel has spent its daily tool-call budget. No further calls run until the budget resets.";
+      return budgetExhaustedMessage(refusal.limit);
+    case "model_not_priced":
+      return `This channel caps spend in dollars, and it has spent tokens on \`${refusal.model}\`, which is not in the proxy's price table. Spend that cannot be priced cannot be capped, so no call runs until an admin prices it. The call was not made.`;
+    case "model_unreported":
+      return "This channel caps spend in dollars, and some of today's spend was reported without naming a model, so it cannot be priced. No call runs until the budget resets or an admin looks into it. The proxy log names the reports. The call was not made.";
     case "egress_denied":
       return `\`${refusal.destination}\` is not on this channel's egress allowlist. The call was not made.`;
     case "credential_unresolved":

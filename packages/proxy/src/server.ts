@@ -87,6 +87,8 @@ import { matchesPin, resolveChannel } from "./identity.js";
 import { createListingRoute } from "./listing-route.js";
 import { createJsonLogger, type Logger } from "./log.js";
 import { createSpendRoute } from "./spend-route.js";
+import { NO_PRICES } from "./price-table-store.js";
+import type { PriceTableStore } from "./price-table-store.js";
 import type { TeamSheetStore } from "./team-sheet-store.js";
 
 /**
@@ -104,6 +106,17 @@ export interface ProxyServerOptions {
   tls: ServerOptions;
   /** Resolves the team sheet that authorizes each channel. */
   sheets: TeamSheetStore;
+  /**
+   * The operator's price table (#62), read once per decision.
+   *
+   * Read here rather than resolved inside `decide`, which is pure and must stay
+   * so — and read per call rather than at startup, so a corrected price
+   * re-prices today's spend on the channel's next call exactly as a sheet edit
+   * takes effect on it. `NO_PRICES` is a real value and the right default: a
+   * deployment with no table prices nothing, which refuses a channel that caps
+   * in dollars and changes nothing for one that does not.
+   */
+  prices?: PriceTableStore;
   /**
    * Required, not defaulted, both of them. See the note in ./dispatch.ts: a
    * missing meter that reads as unmetered, or a missing dispatcher that reads
@@ -431,7 +444,10 @@ export function createProxyServer(options: ProxyServerOptions): Server {
      * the ticket answers the narrower question of whether a human approved this
      * exact call. The redemption below happens only after this says yes.
      */
-    const decision = decideFromState(state, call, spend);
+    // Synchronous, and deliberately not in the `Promise.all` above: a sheet
+    // resolve is per channel and may touch disk, while this is one in-memory
+    // object for the whole process.
+    const decision = decideFromState(state, call, spend, options.prices?.current() ?? NO_PRICES);
 
     /**
      * Whether `audit` below was entered, read only by the catch at the bottom of

@@ -236,10 +236,23 @@ export function auditRefusalMessage(
     case "approval_denied":
     case "approval_mismatch":
       return refusalMessage({ reason, server, tool });
-    // The three the table cannot complete. Listed rather than defaulted, so a
+    // Carries no facts beyond the reason, so the row is already complete (#62).
+    // It is the one of the two pricing faults that can be reconstructed, and
+    // that asymmetry is the point: "no model was reported" is the whole fact,
+    // where "this model has no price" is not.
+    case "model_unreported":
+      return refusalMessage({ reason });
+    // The four the table cannot complete. Listed rather than defaulted, so a
     // new reason is a compile error here and a decision rather than a silent
     // `null` — `refusalMessage`'s totality would otherwise stop at this door.
+    //
+    // `model_not_priced` joins them for `budget_exhausted`'s reason and keeps it
+    // after the audit log gains a `budget_limit` column: that column says which
+    // *limit* bound, and this needs the *model*, which is a different fact and
+    // not one a row about a tool call has any business carrying. Inventing one
+    // would name a model the record never observed.
     case "budget_exhausted":
+    case "model_not_priced":
     case "egress_denied":
     case "credential_unresolved":
       return null;
