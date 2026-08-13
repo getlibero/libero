@@ -10,6 +10,7 @@ import {
   type ToolCall,
   type TokenUsage
 } from "./types.js";
+import { servedModel } from "./served-model.js";
 
 const PROVIDER = "openai-compatible";
 
@@ -154,7 +155,11 @@ function fromOpenAICompletion(completion: ChatCompletion): CompletionResponse {
     text: choice.message.content ?? "",
     toolCalls,
     stopReason: toStopReason(choice.finish_reason),
-    usage: toUsage(completion.usage)
+    usage: toUsage(completion.usage),
+    // The adapter this matters most for: a LiteLLM sidecar echoes the model it
+    // *resolved* here, which is the number a dollar cap has to be priced by and
+    // the one the team sheet cannot know.
+    ...servedModel(completion.model)
   };
 }
 

@@ -9,6 +9,7 @@ import {
   type ToolCall,
   type TokenUsage
 } from "./types.js";
+import { servedModel } from "./served-model.js";
 
 const PROVIDER = "anthropic";
 
@@ -137,6 +138,7 @@ function fromAnthropicMessage(message: Anthropic.Message): CompletionResponse {
     toolCalls,
     stopReason: toStopReason(message.stop_reason),
     usage: toUsage(message.usage),
+    ...servedModel(message.model),
     ...(providerState.length > 0 ? { providerState } : {})
   };
 }

@@ -271,7 +271,7 @@ describe("telling the caller what each turn cost", () => {
       task({
         completion: client,
         toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
-        onTurn: (usage, turn) => {
+        onTurn: ({ usage, turn }) => {
           seen.push({ usage, turn });
         }
       })
@@ -444,7 +444,7 @@ describe("telling the caller what each turn cost", () => {
       task({
         completion: client,
         signal: AbortSignal.abort(),
-        onTurn: (_usage, turn) => {
+        onTurn: ({ turn }) => {
           seen.push(turn);
         }
       })
@@ -475,7 +475,7 @@ describe("telling the caller what each turn cost", () => {
       task({
         completion: client,
         toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
-        onTurn: async (_usage, turn) => {
+        onTurn: async ({ turn }) => {
           await Promise.resolve();
           order.push(`reported-${turn}`);
         }
@@ -505,7 +505,7 @@ describe("telling the caller what each turn cost", () => {
         task({
           completion: client,
           toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
-          onTurn: (_usage, turn) => {
+          onTurn: ({ turn }) => {
             seen.push(turn);
           }
         })

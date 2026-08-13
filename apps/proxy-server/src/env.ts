@@ -107,6 +107,34 @@ export function auditDbFromEnv(env: Env): string {
 }
 
 /**
+ * The price table: `PROXY_PRICE_TABLE`. **Optional**, and the only optional path
+ * this file reads (#62).
+ *
+ * Every other path here is required with no default, on the argument that a
+ * path the proxy invented is worse than a startup failure. This one is
+ * different because *not having one is a legitimate deployment*: a workspace
+ * that caps its channels in tokens and tool calls needs no prices, and requiring
+ * a file it would leave empty would be requiring ceremony rather than
+ * configuration.
+ *
+ * The failure mode that argument has to survive is the one the others fail on —
+ * an absent file quietly meaning "no limits". It does not, because it fails
+ * *closed*: with no table every model is unpriced, and a channel whose sheet
+ * sets `budget.daily_usd` is refused rather than metered at zero. The
+ * deployments that need this variable are exactly the ones that stop working
+ * without it, which is what makes optional safe here and nowhere else in this
+ * file.
+ *
+ * Read-only to this process. Unlike the three above, nothing writes beside it,
+ * so the file may be mounted `:ro` and its directory need not be writable — it
+ * belongs with the team sheets, on the operator's side of the line.
+ */
+export function priceTableFromEnv(env: Env): string | undefined {
+  const value = env["PROXY_PRICE_TABLE"];
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
+/**
  * The per-channel message stores: `PROXY_STORE_ROOT`.
  *
  * The directory the gateway writes a channel's conversation into, mounted into

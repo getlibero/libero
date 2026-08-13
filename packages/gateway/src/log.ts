@@ -145,8 +145,25 @@ export interface LogFields {
    * A configuration value, never content. It is here because "which model is
    * this deployment using" stopped having one answer per process the moment
    * team sheets could name their own.
+   *
+   * **What was asked for.** Since #62 the model that actually *served* a turn is
+   * `servedModel` below, and the two are not the same field because they are not
+   * the same fact.
    */
   model?: string;
+  /**
+   * The model that served one turn, as the provider echoed it back (#62).
+   *
+   * Distinct from `model` above rather than folded into it, because a router —
+   * the LiteLLM sidecar is the case — is asked for an alias and answers with
+   * whatever it resolved. Collapsing them would lose exactly the distinction the
+   * dollar cap exists for, and an operator writing a price table needs this
+   * spelling and not the other one.
+   *
+   * Also a configuration value and never content: it comes out of the provider's
+   * HTTP response envelope, not from anything the model wrote.
+   */
+  servedModel?: string;
   /**
    * Why an agent task ended — `completed`, `refusal`, or the cap that stopped
    * it. A code from a closed set, and the field an operator greps when threads

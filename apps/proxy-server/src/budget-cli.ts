@@ -151,6 +151,32 @@ function run(
       io.out(`output      ${spend.outputTokens}`);
       io.out(`cache read  ${spend.cacheReadTokens}`);
       io.out(`cache write ${spend.cacheWriteTokens}`);
+      // The split the totals above are summed from (#62). Printed because it is
+      // where an operator reads the spelling a price table has to be keyed by:
+      // under a router the model that served a turn is not the one the sheet's
+      // `[llm] model` asked for, and only this column knows which it was.
+      //
+      // Two of these ids are the meter's own. `(unreported)` is spend the agent
+      // named no model for — an old agent, a provider that echoes nothing — and
+      // it is the one to act on, because it cannot be priced. `(legacy)` is
+      // spend recorded before the meter had this column at all, is priced at
+      // zero, and ages out with the day.
+      if (spend.byModel.length > 0) {
+        io.out("");
+        io.out("by model");
+        for (const bucket of spend.byModel) {
+          const tokens =
+            bucket.inputTokens +
+            bucket.outputTokens +
+            bucket.cacheReadTokens +
+            bucket.cacheWriteTokens;
+          io.out(
+            `  ${bucket.model}  ${tokens} ` +
+              `(in ${bucket.inputTokens}, out ${bucket.outputTokens}, ` +
+              `cache read ${bucket.cacheReadTokens}, cache write ${bucket.cacheWriteTokens})`
+          );
+        }
+      }
       io.out("");
       io.out("Token counts are unweighted. The sheet's cache weights decide what");
       io.out("they cost against daily_tokens.");

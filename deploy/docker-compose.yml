@@ -138,6 +138,25 @@ services:
       # there; the store lives on the agent's writable side and this is a
       # different path. The channels mount stays :ro on both services.
       PROXY_STORE_ROOT: /data/store
+      # OPTIONAL, and the only optional path this service reads (#62). What a
+      # model's tokens cost, so a channel's [budget] daily_usd can mean
+      # something. Leave it unset if no channel caps in dollars; there is no
+      # default table, because a price list baked into a released image goes
+      # stale on the provider's schedule and is then trusted.
+      #
+      # Absent fails CLOSED, which is what makes optional safe here: with no
+      # table every model is unpriced, and a channel with daily_usd set is
+      # refused rather than metered at zero. The deployments that need this are
+      # exactly the ones that stop working without it.
+      #
+      # Host-authored and read-only, so it is bind-mounted beside ../channels
+      # rather than living in a named volume like the three databases above.
+      # Nothing writes beside it and its directory need not be writable.
+      #
+      # The proxy logs the model each spend report names (`spend_reported`),
+      # which is the spelling to key this file by: under a router that is not
+      # the model a team sheet asked for.
+      PROXY_PRICE_TABLE: ${PROXY_PRICE_TABLE:-}
       # 0.0.0.0 reaches only the private bridge below, which publishes no
       # ports. Outside compose the default is 127.0.0.1.
       PROXY_HOST: 0.0.0.0
@@ -160,6 +179,11 @@ services:
       PROXY_TLS_CA: /etc/libero/certs/ca.pem
     volumes:
       - ../channels:/data/channels:ro           # team sheets are read-only to services
+      # The price table (#62), beside the sheets and read-only for the same
+      # reason: both are host-authored, reviewed, and nothing writes them. Set
+      # PROXY_PRICE_TABLE above to the container path to turn it on; with the
+      # variable unset this mount is inert.
+      - ../prices:/data/prices:ro
       # Its own keypair and the trust anchor; no client keys, no CA key.
       - ./certs/ca.pem:/etc/libero/certs/ca.pem:ro
       - ./certs/proxy:/etc/libero/certs/proxy:ro

@@ -81,6 +81,32 @@ describe("reporting what a turn cost", () => {
     expect(JSON.stringify(sent[0]?.body)).not.toContain("5138");
   });
 
+  // #62: which model spent them, so the proxy can price them. A sibling of
+  // `usage` rather than a field inside it — that block mirrors the agent's own
+  // `TokenUsage` field for field, and a model id is not one of the counts.
+  it("sends the served model beside the counts when there is one", async () => {
+    const { client, sent } = clientWith();
+
+    await client.report(TURN, USAGE, "claude-sonnet-4-6");
+
+    const body = SpendReport.parse(sent[0]?.body);
+    expect(body.model).toBe("claude-sonnet-4-6");
+    expect(Object.keys(body.usage)).not.toContain("model");
+  });
+
+  // The key is omitted, not sent as null. `SpendReport` is strict and the field
+  // is optional, so an explicit null is a 400 — and a 400 here loses the turn's
+  // token counts, which is the meter failing *open* over a field that was only
+  // ever going to be absent.
+  it("omits the key entirely when the provider echoed no model", async () => {
+    const { client, sent } = clientWith();
+
+    await client.report(TURN, USAGE);
+
+    expect(sent[0]?.body).not.toHaveProperty("model");
+    expect(SpendReport.safeParse(sent[0]?.body).success).toBe(true);
+  });
+
   // The loop keeps "the provider never mentioned this" apart from "the provider
   // said zero", because a cap has to know which it is looking at. A meter
   // column cannot hold the difference and does not need to: not reported means
@@ -216,10 +242,15 @@ describe("the deadline this client carries", () => {
   // Structural, and the assertion is the point: a cancelled task still spent
   // tokens, so there is no signal a caller could hand this that would be right
   // to honour. Refusing the parameter is what keeps it from being added back.
+  //
+  // The number is the whole parameter list, so it moves when the list
+  // legitimately does — it went from two to three when #62 added the served
+  // model. What it pins is that every parameter is accounted for here, so a
+  // fourth arriving as a signal fails this case rather than sliding in.
   it("takes no signal from its caller", () => {
     const { client } = clientWith();
 
-    expect(client.report.length).toBe(2);
+    expect(client.report.length).toBe(3);
   });
 });
 

@@ -28,7 +28,7 @@ export { breakRedaction } from "./mutate.js";
 export { rawClient } from "./client.js";
 export type { RawClient, RawRequest, RawResponse } from "./client.js";
 
-export { TURN_TOKENS, calls, relays, says, scriptedModel, withUsage } from "./model.js";
+export { SERVED_MODEL, TURN_TOKENS, calls, relays, says, scriptedModel, servedBy, withUsage } from "./model.js";
 export type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
 
 export { runAuditCli } from "./audit-cli.js";

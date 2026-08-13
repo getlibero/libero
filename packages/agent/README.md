@@ -158,9 +158,32 @@ cache_read_weight` and `cache_write_weight` — cache reads run about a tenth of
 input price, so a meter that collapsed the tiers would be wrong by an order of
 magnitude on a cache-heavy agent, which is every agent here.
 
+**And which model spent them** (#62), when the provider echoed one. The report
+carries it beside `usage`, and the proxy prices a channel's spend by it.
+
+The distinction that field exists for: `CompletionRequest.model` is what the
+channel's `[llm] model` or `AGENT_MODEL` *asked for*, and
+`CompletionResponse.model` is what actually served the turn. A router — the
+LiteLLM sidecar behind an `OPENAI_BASE_URL` is the case — resolves an alias, so
+under one they are different strings, and only the second has a price. Both
+adapters read it off the response envelope beside the counts, and **neither falls
+back to the requested id**: substituting it would price a router's `smart` as
+`smart`, silently wrong in exactly the deployment a dollar cap exists for.
+
+`completion/served-model.ts` is the one rule both adapters read it through, and
+it validates there rather than at the wire. `SpendReport` is strict, so a
+malformed id would fail the whole report — and the report is what carries the
+*token counts*. The degradation has to be "unreported", never "unmetered": the
+proxy meters a turn with no model under a bucket no price table can name, which
+refuses a channel capped in dollars and changes nothing for one that is not.
+
 The counts are the provider's response envelope's, so the report holds against a
 **prompt-injected model** and not against a **compromised agent process**. The
-narrower claim is the true one, as with tool credentials.
+narrower claim is the true one, as with tool credentials. The model id is in that
+same class and no weaker: it is a **dimension of a count, never a permission** —
+it selects a price and nothing else, naming a cheaper model buys exactly what
+under-reporting the counts already buys, and naming an unpriced one refuses the
+channel. The lie that would help most, naming nothing, is the one that stops it.
 
 `loop/caps.ts:totalTokens` stays as defence in depth rather than as a stand-in
 for the meter.

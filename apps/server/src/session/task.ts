@@ -38,10 +38,10 @@ import {
 import type {
   AgentStopReason,
   AgentTaskResult,
+  CompletedTurn,
   CompletionClient,
   ProxySpendClient,
   ProxyTransport,
-  TokenUsage,
   ToolCallStep
 } from "@getlibero/agent";
 import type { ChecklistOutcome } from "../checklist/checklist.js";
@@ -330,7 +330,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           caps: settings.caps,
           // Reported as the turns happen, not when the task ends. See
           // `reportSpend`.
-          onTurn: (usage, turn) => reportSpend(spend, taskId, turn, usage, request, logger),
+          onTurn: completed => reportSpend(spend, taskId, completed, request, logger),
           // Where the checklist's rows come from. Synchronous and not awaited,
           // which is the hook's contract: the reporter coalesces behind it, so
           // a fast loop does not wait on a Slack edit between tool calls.
@@ -434,16 +434,16 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
 async function reportSpend(
   spend: ProxySpendClient,
   taskId: string,
-  turn: number,
-  usage: TokenUsage,
+  completed: CompletedTurn,
   request: TaskRequest,
   logger: Logger
 ): Promise<void> {
+  const { usage, turn, model } = completed;
   const spent = totalTokens(usage);
   if (spent === 0) return;
 
   try {
-    const outcome = await spend.report(`${taskId}.${turn}`, usage);
+    const outcome = await spend.report(`${taskId}.${turn}`, usage, model);
     logger.log("info", {
       event: "spend_reported",
       channel: request.key.channel,
@@ -451,7 +451,11 @@ async function reportSpend(
       task: taskId,
       turns: turn,
       report: outcome,
-      totalTokens: spent
+      totalTokens: spent,
+      // The model that *served* the turn, which is not the `model` on this
+      // task's own log line — that one is what the sheet asked for. Under a
+      // router they differ, and it is this one a price table is keyed by.
+      ...(model === undefined ? {} : { servedModel: model })
     });
   } catch (error) {
     // Everything, including what is not a `ProxyClientError`. A bug in the

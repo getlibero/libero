@@ -15,6 +15,7 @@ import {
   loadTlsOptions,
   openAuditWriter,
   openBudgetDb,
+  openPriceTableStore,
   openVault
 } from "@getlibero/proxy";
 import {
@@ -24,6 +25,7 @@ import {
   hostFromEnv,
   maxResponseBytesFromEnv,
   portFromEnv,
+  priceTableFromEnv,
   requiredEnv,
   storeRootFromEnv,
   vaultFileFromEnv,
@@ -58,6 +60,21 @@ delete process.env.PROXY_VAULT_KEY;
 // alternative fails *open* — a proxy that cannot record spend is a proxy whose
 // hard limits never bite — and it would do so silently.
 const budget = openBudgetDb({ file: budgetDbFromEnv(process.env), logger });
+
+// The price table, if this deployment has one (#62). Opened here so the digest
+// is in the startup log and an operator can tie a running proxy's prices to a
+// commit in whatever repository they keep the file in.
+//
+// **Absent is not a startup failure**, unlike the three files above, because a
+// workspace that caps only tokens and tool calls legitimately has no prices —
+// and unlike them, absent fails closed rather than open: every model is unpriced
+// and a channel with `budget.daily_usd` set is refused. See `priceTableFromEnv`.
+//
+// Nothing consults it yet. `budget.daily_usd` parses and is not enforced in this
+// build, so this store is opened, logged, and closed at shutdown, and no
+// decision reads it. That is the shape #62 lands in three parts; enforcement is
+// the second.
+const prices = openPriceTableStore({ file: priceTableFromEnv(process.env), logger });
 
 // And the audit log, before anything binds, for a reason the route depends on:
 // a failed audit write refuses the call it could not record. Opening the file
@@ -177,6 +194,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
       void mcp.close().finally(() => {
         budget.close();
         auditDb.close();
+        prices.close();
         process.exit(0);
       });
     });
