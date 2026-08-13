@@ -43,7 +43,7 @@ import {
   type ToolDispatcher
 } from "./dispatch.js";
 import { type HttpDispatcher, createHttpDispatcher } from "./http-dispatcher.js";
-import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
+import { ANNOTATION_UNDER_ITEMS, type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import { createJsonLogger } from "./log.js";
 import { RedactionError } from "./redact.js";
 import { MAX_BODY_BYTES, createProxyServer } from "./server.js";
@@ -2196,6 +2196,51 @@ ${tools}`;
 
     // And the gate decides exactly as it would have. The listing is not the
     // enforcement, so a thin one changes no answer.
+    const ran = await call(
+      "/v1/tools/call",
+      clientCert(certs, DESCRIBED_CHANNEL),
+      "POST",
+      describedPort,
+      JSON.stringify(asked({ id: "toolu_01", server: "github", tool: "list_prs" }))
+    );
+    expect(ToolCallResponse.parse(ran.body)).toMatchObject({ outcome: "ran" });
+  });
+
+  // #200, at the wire. The one place the degrade-to-thin contract narrows: a
+  // tool whose `x-mcp-header` annotations do not validate gets no row at all,
+  // because the proxy cannot derive its headers and a server requiring them
+  // refuses every call to it `-32020` — a tool the model can see, will call,
+  // and can never use.
+  it("leaves out a tool whose annotations are invalid, rather than thinning it", async () => {
+    upstream = await startFakeMcpServer({
+      catalog: [
+        { name: "list_prs", description: "Lists PRs.", inputSchema: ANNOTATION_UNDER_ITEMS },
+        { name: "merge_pr", description: "Merges a PR.", inputSchema: { type: "object" } }
+      ]
+    });
+    await serving(
+      sheetFor(upstream.url, '  [[mcp_server.tool]]\n  name = "list_prs"\n\n  [[mcp_server.tool]]\n  name = "merge_pr"\n')
+    );
+
+    // Not `{ server: "github", tool: "list_prs", approval: "none" }` — absent.
+    // Thin is what every other listing failure yields and what this one no
+    // longer does.
+    expect((await listing()).tools).toEqual([
+      { server: "github", tool: "merge_pr", approval: "none", description: "Merges a PR.", inputSchema: { type: "object" } }
+    ]);
+
+    const listed = describedLog.filter(line => line.includes('"tools_listed"'));
+    expect(listed).toHaveLength(1);
+    // `count + excluded` is the sheet's own size, so an operator reading the
+    // line that reports the listing can see it shrank without going hunting.
+    expect(listed[0]).toContain('"count":1');
+    expect(listed[0]).toContain('"excluded":1');
+
+    // **And the channel lost no permission.** This is the load-bearing half:
+    // the sheet still names `list_prs`, so the gate decides it exactly as it
+    // would have. Excluding narrows what the model is shown, never what it is
+    // allowed — if this came back `tool_not_allowed`, the listing would have
+    // become the enforcement.
     const ran = await call(
       "/v1/tools/call",
       clientCert(certs, DESCRIBED_CHANNEL),

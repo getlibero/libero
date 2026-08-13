@@ -111,6 +111,42 @@ export interface FakeCatalogTool {
   readonly inputSchema?: Record<string, unknown>;
 }
 
+/**
+ * A schema whose one `x-mcp-header` sits where the chain of `properties` keys
+ * cannot statically reach it — the shape SEP-2243 says invalidates the whole
+ * tool definition, and #200 says the client must therefore not list the tool.
+ *
+ * **Here rather than in a test file, because there is more than one way to be
+ * unreachable and a single example would pin the wrong thing.** `items` and
+ * `$defs`/`$ref` fail for the same reason by two different routes: the codec
+ * sweeps every keyword the chain must not pass through, so a test asserting
+ * exclusion on `items` alone would still pass against a scan that had quietly
+ * stopped descending into `$defs`. Both are exported so the cases stay a pair.
+ *
+ * Each is otherwise a well-formed, ordinary schema: the annotation's placement
+ * is the only fault, which is what makes the resulting exclusion attributable.
+ */
+export const ANNOTATION_UNDER_ITEMS: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    repos: {
+      type: "array",
+      // Inside an array's element schema. There is no single argument value
+      // this could name, which is the whole reason the spec forbids it.
+      items: { type: "object", properties: { owner: { type: "string", "x-mcp-header": "Owner" } } }
+    }
+  }
+};
+
+/** The same fault reached through `$defs`, which a `$ref` points at. */
+export const ANNOTATION_BEHIND_REF: Record<string, unknown> = {
+  type: "object",
+  properties: { target: { $ref: "#/$defs/Repo" } },
+  $defs: {
+    Repo: { type: "object", properties: { owner: { type: "string", "x-mcp-header": "Owner" } } }
+  }
+};
+
 export interface FakeMcpServerOptions {
   /** How a reply is framed. Both are spec-legal and the client must read both. */
   framing: "json" | "sse";

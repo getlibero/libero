@@ -154,7 +154,13 @@ describe("createToolDispatcher", () => {
 describe("the provisional catalog", () => {
   it("describes nothing, so every tool stays as the sheet wrote it", async () => {
     const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
-    expect(await createUnavailableCatalog().describe(upstream, ["list_prs"])).toEqual(new Map());
+    const answer = await createUnavailableCatalog().describe(upstream, ["list_prs"]);
+
+    expect(answer.described).toEqual(new Map());
+    // And withholds nothing, which is the half that has to be empty for the
+    // sentence above to be true. A catalog with nothing behind it thins a
+    // listing; it must never subtract a row from one.
+    expect(answer.excluded).toEqual(new Set());
   });
 
   // Deliberately not in `assertServableComposition`. A catalog cannot serve a

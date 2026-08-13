@@ -312,27 +312,6 @@ export interface UpstreamToolDescription {
 }
 
 /**
- * Asks an upstream what it offers, so a listing can carry real tool definitions.
- *
- * The seam ./mcp-catalog.ts fills, held by the same object that fills
- * `ToolDispatcher` — the only thing in this package holding a `Vault` and a
- * client pool at once. Two interfaces rather than one method added to the
- * dispatcher, for the reason in this file's header.
- *
- * **Never rejects for an upstream failure.** Down, slow, ambiguous, speaking a
- * transport this proxy cannot reach, answering bytes that are not MCP: every
- * one of those is an empty map and a log line, because the listing is not the
- * enforcement and a tool with no schema is still a tool the sheet permits. The
- * one thing that does propagate is a `RedactionError`, which is not an upstream
- * failure but this proxy unable to guarantee its own boundary.
- *
- * `wanted` is the tool names the sheet named, and it is a **bound rather than
- * the intersection**. The intersection is done by the caller, which iterates
- * the sheet — so a catalog naming a tool the sheet does not cannot add one.
- * What `wanted` buys is that an upstream cannot hide a sheet's tool behind two
- * hundred decoys and run the caller out of its own caps.
- */
-/**
  * What a dispatcher knows about a tool that its arguments do not say.
  *
  * Empty is a legitimate answer and the common one: most tools declare no
@@ -343,12 +322,60 @@ export interface UpstreamCallDefinition {
   readonly paramDeclarations: readonly XMcpHeaderDeclaration[];
 }
 
-export interface ToolCatalog {
-  describe(
-    upstream: McpServer,
-    wanted: readonly string[]
-  ): Promise<ReadonlyMap<string, UpstreamToolDescription>>;
+/**
+ * What one upstream said about the tools a sheet named.
+ *
+ * **Two fields rather than one map, because there are two ways to have no
+ * entry and they are different instructions to the caller.** A name absent from
+ * `described` is the ordinary degradation this file's contract is built on — the
+ * upstream was down, slow, unreachable, or said nothing publishable — and the
+ * caller lists the sheet's own row. A name in `excluded` is a tool the proxy
+ * walked, found, and will not put in front of the model at all.
+ *
+ * Only one thing goes in `excluded`, and ./mcp-catalog.ts owns the argument for
+ * why the degradation narrows there and nowhere else. What matters here is that
+ * a caller cannot conflate the two by accident: absence keeps its old meaning,
+ * so every existing degradation still behaves exactly as it did.
+ *
+ * Excluding deauthorizes nothing. The sheet still names the tool and
+ * ./enforce.ts still decides a call on it — this is what the model is shown,
+ * which was never the enforcement.
+ */
+export interface CatalogAnswer {
+  readonly described: ReadonlyMap<string, UpstreamToolDescription>;
+  readonly excluded: ReadonlySet<string>;
 }
+
+/**
+ * Asks an upstream what it offers, so a listing can carry real tool definitions.
+ *
+ * The seam ./mcp-catalog.ts fills, held by the same object that fills
+ * `ToolDispatcher` — the only thing in this package holding a `Vault` and a
+ * client pool at once. Two interfaces rather than one method added to the
+ * dispatcher, for the reason in this file's header.
+ *
+ * **Never rejects for an upstream failure.** Down, slow, ambiguous, speaking a
+ * transport this proxy cannot reach, answering bytes that are not MCP: every
+ * one of those is an empty answer and a log line, because the listing is not the
+ * enforcement and a tool with no schema is still a tool the sheet permits. The
+ * one thing that does propagate is a `RedactionError`, which is not an upstream
+ * failure but this proxy unable to guarantee its own boundary.
+ *
+ * `wanted` is the tool names the sheet named, and it is a **bound rather than
+ * the intersection**. The intersection is done by the caller, which iterates
+ * the sheet — so a catalog naming a tool the sheet does not cannot add one.
+ * What `wanted` buys is that an upstream cannot hide a sheet's tool behind two
+ * hundred decoys and run the caller out of its own caps.
+ */
+export interface ToolCatalog {
+  describe(upstream: McpServer, wanted: readonly string[]): Promise<CatalogAnswer>;
+}
+
+/** The answer from a catalog that asked nothing: describe nothing, withhold nothing. */
+export const NO_CATALOG_ANSWER: CatalogAnswer = Object.freeze({
+  described: new Map<string, UpstreamToolDescription>(),
+  excluded: new Set<string>()
+});
 
 /**
  * A catalog with nothing behind it: every tool stays as the sheet wrote it.
@@ -361,7 +388,7 @@ export interface ToolCatalog {
  */
 export function createUnavailableCatalog(): Provisional<ToolCatalog> {
   return markProvisional({
-    describe: async () => new Map<string, UpstreamToolDescription>()
+    describe: async () => NO_CATALOG_ANSWER
   });
 }
 

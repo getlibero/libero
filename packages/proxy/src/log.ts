@@ -164,6 +164,25 @@ export interface LogFields {
    */
   described?: number;
   /**
+   * How many tools the sheet permitted and the listing withheld anyway (#200).
+   *
+   * The field this one owes an argument to is `count` above, which was the
+   * number of tools the sheet named until a listing could drop a row. A tool
+   * whose `x-mcp-header` annotations do not validate is left out entirely rather
+   * than degraded to the sheet's thin row, so `count + excluded` is what now
+   * equals the sheet — and without this an operator would see a listing quietly
+   * shrink with nothing on the line to say why.
+   *
+   * A count, not the names: the `catalog_tool_excluded` lines name each one. It
+   * is here because those fire on a walk and this fires on a listing, so a
+   * cached exclusion has no line beside it and would otherwise be invisible —
+   * which is the failure mode #200 exists to end, not to reproduce one level up.
+   *
+   * Withheld from the model, never from the channel. Nothing about this number
+   * is a permission: ./enforce.ts decides a call on the sheet either way.
+   */
+  excluded?: number;
+  /**
    * Whether a token report moved the meter. `duplicate` is a retry of a turn
    * already counted, which is a success — so this is not a `reason`.
    */
