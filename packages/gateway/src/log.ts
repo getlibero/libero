@@ -25,7 +25,8 @@ export type LogLevel = "info" | "warn" | "error";
 export interface LogFields {
   /**
    * Fixed vocabulary. Connection lifecycle: "connecting", "connected",
-   * "identified", "reconnecting", "disconnected", "auth_rejected", "stopping".
+   * "identified", "reconnecting", "disconnected", "auth_rejected", "stopping",
+   * "drained", "drain_timeout".
    * Dispatch: "mention", "replied", "follow_up", "ignored", "handler_failed",
    * "post_failed", "message_failed", "revision_failed". Tools: "task", "tools_unavailable",
    * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed",
@@ -234,6 +235,25 @@ export interface LogFields {
    * meter's own file is what an operator queries for a count.
    */
   limit?: string;
+  /**
+   * How long `stop()` was willing to wait for in-flight dispatches, on
+   * `drain_timeout` and nothing else (#118).
+   *
+   * The bound, not the elapsed time — `durationMs` carries that on the line
+   * where the drain finished. It is here because the remedy for a repeated
+   * `drain_timeout` is a longer bound and a longer `stop_grace_period` above
+   * it, and neither number is guessable from the line without this one.
+   */
+  drainMs?: number;
+  /**
+   * How many dispatches a drain waited for, or abandoned when it timed out.
+   *
+   * A count, not content. One field across both outcomes on purpose: an
+   * operator asking how much work a restart is costing greps `drain_timeout`
+   * and reads this, and the same word on `drained` is what says a normal
+   * shutdown had anything to wait for at all.
+   */
+  dispatches?: number;
 }
 
 export interface Logger {

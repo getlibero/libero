@@ -111,24 +111,41 @@ try {
   process.exit(1);
 }
 
+/**
+ * How long shutdown waits for cancelled tasks to finish unwinding (#118).
+ *
+ * A constant rather than a variable, because the number is a property of this
+ * shutdown path and not of a deployment: it is sized from the two things a
+ * cancelled task still does on its way out, both of which carry their own
+ * deadlines. `DEFAULT_SPEND_TIMEOUT_MS` is five seconds, and the checklist's
+ * terminal edit is one Slack call. Eight seconds covers both without waiting
+ * on a rate-limited retry nobody is reading the answer of.
+ *
+ * **It is not how long a task can take.** A task's own bound is the channel's
+ * `max_task_seconds`, five minutes by default, and no drain worth having is
+ * that long — `deploy/docker-compose.yml` sets `stop_grace_period: 20s` and
+ * SIGKILL follows it. This waits out the accounting, not the work; what a
+ * mid-turn task loses is its answer, which it lost before this too.
+ */
+const SHUTDOWN_DRAIN_MS = 8_000;
+
 let closing = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     if (closing) {
-      // A second signal is an operator done waiting. Exiting with a session's
-      // `store.db` still open is safe rather than merely tolerable: the store
-      // runs in WAL with `synchronous = FULL`, so a committed row survives a
-      // hard kill and an uncommitted one was one synchronous statement that
-      // either ran or did not. Nothing is buffered waiting for a `close()`.
+      // A second signal is an operator done waiting, and it cuts the drain
+      // below short. Exiting with a session's `store.db` still open is safe
+      // rather than merely tolerable: the store runs in WAL with
+      // `synchronous = FULL`, so a committed row survives a hard kill and an
+      // uncommitted one was one synchronous statement that either ran or did
+      // not. Nothing is buffered waiting for a `close()`.
       //
-      // What exiting does cost is at most one in-flight answer that was
-      // already cancelled, and one spend report per task in flight. The
-      // meter under-reports in that case rather than over-reports: the budget
-      // fails open, bounded by the tasks running at that moment, and the loop's
-      // own token cap and the proxy's tool-call meter are what still bite.
-      // Draining in-flight work before exit is a shutdown change, not a
-      // sender one — #118, which also has to decide whether a task finishing
-      // during the drain gets to post.
+      // What it costs is what the drain was about to save: the spend report of
+      // whatever turn each in-flight task was reporting, and a checklist card
+      // left reading `WORKING`. The meter under-reports in that case rather
+      // than over-reports — the budget fails open, bounded by the tasks running
+      // at that moment, and the loop's own token cap and the proxy's tool-call
+      // meter are what still bite.
       process.exit(1);
     }
     closing = true;
@@ -138,11 +155,18 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     // post a reply that arrives after it, so those tokens would be spent on
     // answers nobody ever sees.
     //
-    // Neither call waits for a task already in flight, so the first signal has
-    // the same caveat as the second: a spend report that had not landed when
-    // the process exits is lost, and the meter hears less than was spent.
+    // Then wait for what the cancel started (#118). A cancelled task still
+    // unwinds — the turn it had already completed is reported to the meter, and
+    // its checklist card is repainted terminal — and both of those were being
+    // killed by the `process.exit` below. The drain is bounded because the
+    // alternative is not "wait longer", it is SIGKILL from the orchestrator.
+    //
+    // **Shutdown is still quiet.** Nothing here lets a task post an answer: the
+    // gateway refuses to post once stopped, and a cancelled task has no reply
+    // to post anyway. What drains is the accounting, and a task that was
+    // mid-turn loses its answer exactly as it did before.
     tasks.abort();
-    void gateway.stop().then(() => {
+    void gateway.stop({ drainMs: SHUTDOWN_DRAIN_MS }).then(() => {
       process.exit(0);
     });
   });

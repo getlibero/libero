@@ -41,6 +41,17 @@ the whole command line. An `ENTRYPOINT ["node"]` would silently turn
 and `SIGINT` handlers, so an init shim would add a process without adding a
 signal.
 
+**`server` sets `stop_grace_period: 20s`**, and it is written down rather than
+inherited because the shutdown path now depends on the number (#118). On
+`SIGTERM` the server cancels every task and then waits eight seconds for the
+cancelled tasks to report their last turn's spend and repaint their checklist
+cards. Docker's default grace period is ten seconds, which leaves that drain no
+room, and a SIGKILL through it loses exactly what the drain exists to save. An
+orchestrator that is not compose needs the same margin — Kubernetes' default
+`terminationGracePeriodSeconds` is thirty, which already has it. It is not a
+number a task can finish inside: that bound is the channel's `max_task_seconds`,
+five minutes by default, and shutdown does not wait for it.
+
 **`.dockerignore` is an allowlist**, and that is this repository's shape rather
 than a habit. The build context is the repository root, which is also where
 `deploy/certs/` (the CA key and every channel's client key), `deploy/vault/`, and
