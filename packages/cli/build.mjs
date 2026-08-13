@@ -33,12 +33,19 @@
 // hashbang and re-emits it first — so `bin` still resolves to a file the shell
 // can exec.
 
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+const { version } = manifest;
+
+// The floor this package publishes, substituted so ./src/node-version.ts can
+// enforce what `engines` only advises. npm prints a warning and runs anyway,
+// and a CLI that half-works on an unsupported runtime is the failure mode this
+// milestone exists to remove.
+const nodeFloor = manifest.engines.node;
 
 await esbuild.build({
   absWorkingDir: here,
@@ -53,7 +60,10 @@ await esbuild.build({
   // version it reports has to be substituted here. ./src/cli.ts declares it and
   // falls back, so the source stays runnable under plain tsc output and under
   // vitest, where nothing defines it.
-  define: { __LIBERO_VERSION__: JSON.stringify(version) },
+  define: {
+    __LIBERO_VERSION__: JSON.stringify(version),
+    __LIBERO_NODE_FLOOR__: JSON.stringify(nodeFloor)
+  },
   logLevel: "info"
 });
 
@@ -73,3 +83,48 @@ copyFileSync(
   new URL("../../scripts/dev-certs.sh", import.meta.url),
   new URL("./dist/dev-certs.sh", import.meta.url)
 );
+
+// The licence, and the licences of everything inlined above.
+//
+// This package declared `license: MIT` and shipped no licence text, because npm
+// only auto-includes a LICENSE sitting in the package directory and the one in
+// this repository is at the root. Copied here for the same reason as the script
+// above — one source of truth, and CI packs the tarball and checks.
+copyFileSync(new URL("../../LICENSE", import.meta.url), new URL("./LICENSE", import.meta.url));
+
+// **Bundling made this necessary and nothing warned.** `scripts/license-check.sh`
+// asks which licences are allowed, not whether their notices travel; esbuild's
+// `legalComments: "eof"` carries only notices that exist as comments in the
+// source, which smol-toml has and zod does not. So the bundle was redistributing
+// zod's code without zod's MIT notice, which that licence requires of any
+// substantial portion — and inlining the whole library is not a small one.
+//
+// Generated rather than written by hand, from what `@getlibero/schema` actually
+// depends on, so a dependency added there cannot be one whose notice quietly
+// stops shipping. A dependency with no discoverable licence text fails the
+// build: that is a question for a human, not something to skip.
+const LICENCE_FILENAMES = ["LICENSE", "LICENSE.md", "LICENCE", "LICENCE.md", "license", "license.md"];
+const schema = new URL("../schema/", import.meta.url);
+const bundled = Object.keys(JSON.parse(readFileSync(new URL("./package.json", schema), "utf8")).dependencies);
+
+const notices = [
+  "# Third-party notices",
+  "",
+  "`@getlibero/cli` is published as a single bundled file. The following",
+  "packages are compiled into it, and their licences are reproduced in full",
+  "below. Libero's own licence is in LICENSE beside this file.",
+  ""
+];
+for (const name of bundled.sort()) {
+  const root = new URL(`node_modules/${name}/`, schema);
+  const filename = LICENCE_FILENAMES.find(candidate => existsSync(new URL(candidate, root)));
+  if (filename === undefined) {
+    throw new Error(
+      `${name} is bundled into the CLI and has no licence file in ${fileURLToPath(root)}. ` +
+        "Find its terms and decide what has to ship with them before releasing."
+    );
+  }
+  const { version: at } = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
+  notices.push(`## ${name} ${at}`, "", "```", readFileSync(new URL(filename, root), "utf8").trimEnd(), "```", "");
+}
+writeFileSync(new URL("./THIRD-PARTY-NOTICES.md", import.meta.url), `${notices.join("\n").trimEnd()}\n`);

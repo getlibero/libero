@@ -82,6 +82,20 @@ jobs:
           # an operator gets from npm, have to be the same file.
           tar -xzOf "$tarball" package/dist/dev-certs.sh > "$work/dev-certs.sh"
           diff -u ../../scripts/dev-certs.sh "$work/dev-certs.sh"
+          # The published package declares MIT and inlines two dependencies, so
+          # its own licence and theirs have to travel with it. `license-check.sh`
+          # asks which licences are allowed, not whether their notices ship —
+          # this is the half that was missing. The build fails on a bundled
+          # dependency with no licence file, so a name absent here means one was
+          # added and its terms were not.
+          tar -xzOf "$tarball" package/LICENSE > "$work/LICENSE"
+          diff -u ../../LICENSE "$work/LICENSE"
+          tar -xzOf "$tarball" package/THIRD-PARTY-NOTICES.md > "$work/notices.md"
+          for bundled in zod smol-toml; do
+            grep -q "^## $bundled " "$work/notices.md" || {
+              echo "::error::THIRD-PARTY-NOTICES.md does not carry $bundled"; exit 1;
+            }
+          done
       - name: Tests
         run: pnpm test
 
