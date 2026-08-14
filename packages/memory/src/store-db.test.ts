@@ -173,18 +173,20 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, reading, embedding, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, embedding, summarizing, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
       "append",
       "close",
       "nearest",
       "putEmbedding",
+      "putThreadSummary",
       "recent",
       "recentInThread",
       "remove",
       "removeEmbedding",
       "replaceText",
-      "search"
+      "search",
+      "staleThreads"
     ]);
   });
 
@@ -1168,5 +1170,182 @@ describe("a file that holds vectors, read by a build that cannot", () => {
     }
 
     store = openMessageStore({ channel: CHANNEL, root });
+  });
+});
+
+describe("thread summaries", () => {
+  /** Every summary row, read past the module's API. */
+  function rows(): Array<{ thread_ts: string; shape: string; covers_through_ts: string }> {
+    return raw(file, db =>
+      db
+        .prepare("SELECT thread_ts, shape, covers_through_ts FROM thread_summary ORDER BY thread_ts")
+        .all()
+    ) as Array<{ thread_ts: string; shape: string; covers_through_ts: string }>;
+  }
+
+  const summary = (thread: string, through: string, shape = "decision" as const) => ({
+    thread,
+    shape,
+    text: "Chose slim over alpine.",
+    coversThroughTs: through,
+    messageCount: 2,
+    at: 1_700_000_000_000
+  });
+
+  it("finds a thread with no summary", () => {
+    store.append(message("1.1", "how do we rotate a cert?"));
+    store.append(message("1.2", "--rotate then --promote", { threadTs: "1.1" }));
+
+    expect(store.staleThreads("9.9", 10)).toEqual([
+      { thread: "1.1", newestTs: "1.2", messageCount: 2 }
+    ]);
+  });
+
+  // A root carries `thread_ts = NULL` and its replies carry the root's `ts`, so
+  // the grouping key is the COALESCE and not a column — which is why
+  // `message_root` indexes the expression.
+  it("groups a root with its replies and a top-level message alone", () => {
+    store.append(message("1.1", "root"));
+    store.append(message("1.2", "reply", { threadTs: "1.1" }));
+    store.append(message("2.1", "unrelated"));
+
+    expect(store.staleThreads("9.9", 10).map(thread => thread.thread)).toEqual(["2.1", "1.1"]);
+  });
+
+  // Quietness is a property of the thread's newest message, not of any one row —
+  // which is why the statement uses HAVING. A WHERE would drop the recent
+  // messages and then summarize the thread as though it had ended earlier.
+  it("excludes a thread whose newest message is not yet old enough", () => {
+    store.append(message("1.1", "started long ago"));
+    store.append(message("5.5", "said something just now", { threadTs: "1.1" }));
+
+    expect(store.staleThreads("3.0", 10)).toEqual([]);
+  });
+
+  it("excludes a thread whose summary covers its newest message", () => {
+    store.append(message("1.1", "root"));
+    store.append(message("1.2", "reply", { threadTs: "1.1" }));
+    store.putThreadSummary(summary("1.1", "1.2"));
+
+    expect(store.staleThreads("9.9", 10)).toEqual([]);
+  });
+
+  it("finds a thread again once it has said more than its summary covers", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary(summary("1.1", "1.1"));
+    store.append(message("1.2", "and one more thing", { threadTs: "1.1" }));
+
+    expect(store.staleThreads("9.9", 10)).toEqual([
+      { thread: "1.1", newestTs: "1.2", messageCount: 2 }
+    ]);
+  });
+
+  // Without the row, the sweep offers the same silent thread every time and pays
+  // a model call to conclude "nothing" again, forever.
+  it("keeps a `nothing` row, so the thread is not offered again", () => {
+    store.append(message("1.1", "deploying now"));
+    store.putThreadSummary({
+      thread: "1.1",
+      shape: "nothing",
+      text: "",
+      coversThroughTs: "1.1",
+      messageCount: 1,
+      at: 1
+    });
+
+    expect(store.staleThreads("9.9", 10)).toEqual([]);
+    expect(rows()).toEqual([
+      { thread_ts: "1.1", shape: "nothing", covers_through_ts: "1.1" }
+    ]);
+  });
+
+  it("replaces a thread's summary rather than keeping two", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary(summary("1.1", "1.1"));
+    store.putThreadSummary({ ...summary("1.1", "1.1"), shape: "incident" });
+
+    expect(rows()).toEqual([{ thread_ts: "1.1", shape: "incident", covers_through_ts: "1.1" }]);
+  });
+
+  it("answers newest first, so a backlog is worked from the recent end", () => {
+    store.append(message("1.1", "oldest"));
+    store.append(message("2.1", "middle"));
+    store.append(message("3.1", "newest"));
+
+    expect(store.staleThreads("9.9", 10).map(thread => thread.thread)).toEqual([
+      "3.1",
+      "2.1",
+      "1.1"
+    ]);
+  });
+
+  it("clamps the sweep's limit to READ_MAX_LIMIT", () => {
+    store.append(message("1.1", "one"));
+    expect(store.staleThreads("9.9", READ_MAX_LIMIT + 1_000)).toHaveLength(1);
+  });
+
+  // The triggers. A summary must not outlive the words it was drawn from, and
+  // this is `message_fts`'s argument applied to a second derived thing.
+  it("drops a summary when one of its messages is deleted", () => {
+    store.append(message("1.1", "root"));
+    store.append(message("1.2", "reply", { threadTs: "1.1" }));
+    store.putThreadSummary(summary("1.1", "1.2"));
+
+    expect(rows()).toHaveLength(1);
+    store.remove("1.2");
+    expect(rows()).toEqual([]);
+  });
+
+  it("drops a summary when one of its messages is edited", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary(summary("1.1", "1.1"));
+
+    expect(rows()).toHaveLength(1);
+    store.replaceText("1.1", "actually, something else");
+    expect(rows()).toEqual([]);
+  });
+
+  // The second link of the chain, and the reason `thread_summary_delete` exists:
+  // a vector standing for a retracted summary is the same failure one level down.
+  it("drops the summary's vector with the summary", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary(summary("1.1", "1.1"));
+    store.putEmbedding({
+      source: { kind: "summary", ref: "1.1" },
+      vector: Float32Array.from([1, 0, 0]),
+      model: "m1",
+      at: 1
+    });
+
+    // The positive control: it was reachable before the edit.
+    expect(store.nearest(Float32Array.from([1, 0, 0]), 5)).toHaveLength(1);
+
+    store.replaceText("1.1", "actually, something else");
+
+    expect(store.nearest(Float32Array.from([1, 0, 0]), 5)).toEqual([]);
+  });
+
+  // A fact's vector is not a summary's, and one thread's edit must not reach it.
+  it("leaves other sources' vectors alone", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary(summary("1.1", "1.1"));
+    store.putEmbedding({
+      source: { kind: "summary", ref: "1.1" },
+      vector: Float32Array.from([1, 0, 0]),
+      model: "m1",
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: Float32Array.from([0, 1, 0]),
+      model: "m1",
+      at: 1
+    });
+
+    store.replaceText("1.1", "edited");
+
+    expect(store.nearest(Float32Array.from([0, 1, 0]), 5).map(hit => hit.source)).toEqual([
+      { kind: "fact", ref: "f1" }
+    ]);
   });
 });

@@ -125,8 +125,21 @@ warn_at = 0.8
 # in @getlibero/schema, because it bounds what the MODEL may write rather than
 # what this channel may spend, and the file cap already bounds the total.
 [memory]
-enabled        = true                       # opt out with false; there is no other switch
+enabled        = true                       # curation: MEMORY.md, written after a reply
 max_file_chars = 32768                      # the whole file; one operation may carry 4096
+
+# Thread summaries. A thread that has been quiet for this long is summarized
+# into the channel's searchable memory, whether or not anyone addressed the
+# agent in it — which makes this the one setting here that spends model tokens
+# with nobody waiting on the answer. Two switches rather than one, because a
+# channel may reasonably want the agent to remember what it was asked and not to
+# read conversations it was never part of.
+#
+# Quiet matters for correctness and not politeness: summarizing a thread that is
+# still going records a conclusion the team had not reached yet. Five minutes is
+# the floor, a week the ceiling.
+summarize                    = true
+summarize_after_idle_minutes = 60
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero

@@ -33,6 +33,7 @@ import type { PromptTarget } from "./approvals/prompter.js";
 import type { ChecklistReporter, ChecklistTarget } from "./checklist/checklist.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import type { SessionRegistry } from "./session/registry.js";
+import type { SummarySweep } from "./session/summarize.js";
 import type { ChannelRouter } from "./session/router.js";
 
 export interface MessageIngestOptions {
@@ -72,6 +73,18 @@ export interface MessageIngestOptions {
    * only be answered when a card is actually wanted.
    */
   onHeld?: (target: PromptTarget) => HeldCallPrompter | undefined;
+  /**
+   * The quiescence sweep (#231), run after this message has been filed.
+   *
+   * Here rather than in the router, because a thread goes quiet through nothing
+   * happening — which no event fires for — so the only reliable moment to look
+   * is when something else happens in the channel. Every inbound message is that
+   * moment; the sweep's own interval is what stops it looking on each one.
+   *
+   * Optional, and its absence is a deployment with no thread summaries: memory
+   * Layers 1 and 2 are whole without them.
+   */
+  summarize?: SummarySweep;
   /**
    * Where a follow-up's checklist goes. Optional per call for `onHeld`'s
    * reason and answered by the same knot in compose.ts — the card poster is
@@ -125,6 +138,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
   const names = options.names;
   const route = options.route;
   const onHeld = options.onHeld;
+  const summarize = options.summarize;
 
   return async (message: SlackMessage): Promise<SlackReply | undefined> => {
     const session = options.sessions.open({
@@ -179,6 +193,29 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
           eventId: message.eventId,
           reason: error instanceof Error ? error.name : "unknown"
         });
+      }
+
+      // The quiescence sweep (#231), queued and deliberately not awaited.
+      //
+      // **On the session mutex**, for the reason curation is: it reads the store
+      // and writes summaries to it, and a task's context read has to be
+      // serialized against that rather than racing it.
+      //
+      // **Not awaited**, because nothing is waiting on it and everything is
+      // waiting on this handler — a follow-up's reply, and the Slack event
+      // acknowledgement behind it, must not sit behind a model call about some
+      // other thread.
+      //
+      // **After the append**, so the message that just arrived is part of the
+      // thread it belongs to before anything decides that thread has gone quiet.
+      //
+      // `void` and a `.catch` that swallows, unlike curation's bare `void`: the
+      // sweep is documented never to reject, and this is the one place in the
+      // process where a broken promise would reach an unhandled rejection with
+      // no task to attribute it to.
+      if (summarize !== undefined) {
+        const store = session.store;
+        void session.mutex.run(() => summarize(message.channelId, store)).catch(() => {});
       }
     }
 

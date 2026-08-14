@@ -478,6 +478,47 @@ The sheet picks a model id, not a provider. `AGENT_PROVIDER` is the process's,
 and a sheet naming a model the configured provider does not serve fails at the
 provider like any other outage.
 
+## Thread summaries
+
+`src/session/summarize.ts` is the quiescence sweep (#231): the part neither
+`packages/memory` nor `packages/agent` can hold, which is deciding *which*
+threads are ready and *when* to look.
+
+**A sweep and not a timer.** A thread becomes ready through nothing happening,
+which is exactly what no event fires for. `src/session/threads.ts` already solved
+the same problem the same way for follow-up windows — it keeps deadlines and lets
+the next call sweep the expired ones "rather than holding a timer per thread". So
+the sweep runs on channel activity, from the message ingest path, queued on the
+session mutex and deliberately not awaited. A channel that has gone completely
+silent stops summarizing, which is correct: its threads are already summarized or
+were never going to be.
+
+**This is the first model spend in the deployment that does not follow a
+mention**, so what bounds it is worth having in one place:
+
+- `[memory] summarize` turns it off; `summarize_after_idle_minutes` says how
+  quiet is quiet, and an unreadable sheet falls back to **off** rather than to
+  the schema's default of on — the same asymmetry `[memory] enabled` has, for a
+  stronger reason.
+- `SWEEP_INTERVAL_MS` means a busy channel does not sweep per message.
+- `MAX_THREADS_PER_SWEEP` means one sweep cannot fire twenty model calls, so a
+  channel provisioned against a long backlog works through it over hours rather
+  than in one burst. `staleThreads` answers newest-first, so what is summarized
+  first is what people most recently stopped talking about.
+- The meter. Every turn reports through the same `SpendReport` path as any other,
+  so `daily_tokens` and `daily_usd` bound it the way they bound a task. That is
+  the backstop, not the mechanism — nothing here refuses a call, because this
+  process only reports and the proxy decides.
+
+The turn id is `summary-<thread>-<watermark>` rather than a counter, so a retry
+after a crash is the same id and the meter counts it once, while a genuinely
+second summary — the thread said more — is a different one.
+
+**With no embedding provider configured the summary is still written**, and only
+its vector is skipped. That is the honest degradation: the row is the record that
+a thread was assessed, so a deployment that configures a provider later has a
+corpus to embed rather than a channel's history to re-summarize.
+
 ## What a turn costs
 
 After **each model turn** — not each task — the process reports the provider's

@@ -34,7 +34,7 @@ import type { MemorySettings } from "./compose.js";
 
 const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
-const CURATING: MemorySettings = { enabled: true, maxFileChars: 8_192 };
+const CURATING: MemorySettings = { enabled: true, maxFileChars: 8_192, summarize: false, summarizeAfterIdleMs: 60 * 60_000 };
 
 let channelsRoot: string;
 let storeRoot: string;
@@ -240,7 +240,7 @@ describe("a fact curated in one task", () => {
 describe("a channel whose sheet disables curation", () => {
   // Acceptance criterion 2.
   it("runs no curation turn and writes no file", async () => {
-    const { slack, gateway, asked } = rig({ memory: { enabled: false, maxFileChars: 8_192 } });
+    const { slack, gateway, asked } = rig({ memory: { enabled: false, maxFileChars: 8_192, summarize: false, summarizeAfterIdleMs: 60 * 60_000 } });
     await gateway.start();
 
     await mention(slack, "when do we deploy?");
@@ -253,7 +253,7 @@ describe("a channel whose sheet disables curation", () => {
   // The read half goes with the write half. A task that could see a file nothing
   // may update would be showing the model something nobody can correct.
   it("reads no memory into its context either", async () => {
-    const { slack, gateway, asked } = rig({ memory: { enabled: false, maxFileChars: 8_192 } });
+    const { slack, gateway, asked } = rig({ memory: { enabled: false, maxFileChars: 8_192, summarize: false, summarizeAfterIdleMs: 60 * 60_000 } });
     await gateway.start();
 
     // Written by hand, as a team member's editor would.

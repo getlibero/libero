@@ -38,6 +38,7 @@ import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
 import { createMessageIngest, createRevisionIngest } from "./ingest.js";
+import type { SummarySweep } from "./session/summarize.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import { createSessionRegistry } from "./session/registry.js";
 import { createChannelRouter } from "./session/router.js";
@@ -142,6 +143,15 @@ export interface ServerDeps {
    * task, since its cap comes from the team sheet.
    */
   readonly memory?: MemoryFileOpener;
+  /**
+   * The quiescence sweep (#231).
+   *
+   * Optional, and its absence is a deployment with no thread summaries — memory
+   * Layers 1 and 2 are whole without them. Built by the process rather than here
+   * because it needs a completion client, an embedding client and the spend
+   * reporter, none of which this file holds.
+   */
+  readonly summarize?: SummarySweep;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -283,6 +293,7 @@ export function createServer(deps: ServerDeps): Server {
     route,
     onHeld: target => prompter?.(target),
     checklist: target => checklists?.(target),
+    ...(deps.summarize !== undefined ? { summarize: deps.summarize } : {}),
     logger,
     ...clock
   });

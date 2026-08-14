@@ -29,12 +29,14 @@ export {
 export type {
   EmbeddingHit,
   EmbeddingSource,
+  StaleThread,
   MessageReader,
   MessageReaderOptions,
   MessageStore,
   MessageStoreOptions,
   StoredEmbedding,
-  StoredMessage
+  StoredMessage,
+  StoredThreadSummary
 } from "./store-db.js";
 
 export { openMemoryFile } from "./memory-file.js";

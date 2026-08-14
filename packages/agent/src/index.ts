@@ -71,6 +71,16 @@ export type {
   MemoryOpHandler
 } from "./curation/turn.js";
 
+export {
+  SUMMARIZATION_SYSTEM_PROMPT,
+  runSummarizationTurn
+} from "./summarize/turn.js";
+export type {
+  SummarizationMessage,
+  SummarizationTurnOptions,
+  SummarizationTurnResult
+} from "./summarize/turn.js";
+
 export { createProxyTransport, ProxyClientError } from "./proxy/transport.js";
 export type {
   ProxyFailure,

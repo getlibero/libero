@@ -81,7 +81,17 @@ export const DEFAULT_FOLLOW_UP_WINDOW_MS = 900_000;
  * matters when something is enabled, and inventing a second number for a
  * disabled feature is how the two drift.
  */
-export const DEFAULT_MEMORY_SETTINGS = { enabled: false, maxFileChars: 32_768 } as const;
+export const DEFAULT_MEMORY_SETTINGS = {
+  enabled: false,
+  maxFileChars: 32_768,
+  // Off for `enabled`'s reason, and it is the stronger case of the two. Curation
+  // writes a file the team can read and correct; summarization spends this
+  // channel's tokens on conversations nobody addressed the agent about. A typo
+  // that switches *that* on for a channel whose sheet says otherwise is the
+  // failure this whole fallback exists to refuse.
+  summarize: false,
+  summarizeAfterIdleMs: 60 * 60_000
+} as const;
 
 export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
 
@@ -130,7 +140,13 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     // because at that point the operator's file has said.
     memory: {
       enabled: sheet.memory.enabled,
-      maxFileChars: sheet.memory.max_file_chars
+      maxFileChars: sheet.memory.max_file_chars,
+      summarize: sheet.memory.summarize,
+      // Minutes on the sheet because that is the unit an operator thinks in;
+      // milliseconds from here in, because that is the unit every other duration
+      // in this process is already in and two units for one quantity is how a
+      // number gets read as the wrong one.
+      summarizeAfterIdleMs: sheet.memory.summarize_after_idle_minutes * 60_000
     }
   };
 }

@@ -152,6 +152,8 @@ describe("createSessionRegistry", () => {
           putEmbedding: () => {},
           nearest: () => [],
           removeEmbedding: () => false,
+          putThreadSummary: () => {},
+          staleThreads: () => [],
           close: () => {
             closed += 1;
           }
