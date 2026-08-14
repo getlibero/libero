@@ -93,6 +93,41 @@ cache_write_weight = 1.25
 # it exists to precede; set it to 0 to turn the warning off.
 warn_at = 0.8
 
+# What the agent remembers between tasks. MEMORY.md is one freeform markdown
+# file per channel, written by a short curation turn after each reply and read
+# back into the context the next task starts from. No format is imposed on it:
+# your team can read it, edit it, and delete it. It lives in the agent's own
+# state root, never in this directory.
+#
+# ON BY DEFAULT. Omit this block and the channel curates with the figures below.
+# Set enabled = false and no curation turn runs at all — nothing is written and
+# nothing is read back. That is the whole switch, and it is a channel's call.
+#
+# Unlike everything above, THIS BLOCK IS HONOURED BY THE AGENT AND NOT BY THE
+# PROXY. The proxy never opens MEMORY.md, so it holds no second copy of these
+# numbers to check the first against. This therefore has the standing
+# daily_tokens has and not the standing daily_tool_calls has: it holds against a
+# model that has been talked into filling the file, and not against a
+# compromised agent process. A sheet the agent cannot read falls back to NO
+# curation — the opposite of the default here, and deliberately so, because a
+# typo should be able to cost a channel its memory and never to switch a feature
+# on.
+#
+# max_file_chars is the whole file, and it is spent on every task in this
+# channel: MEMORY.md goes into the context a task starts from, so its size is
+# charged against max_tokens_per_task before the model has done anything. That
+# is why it is the order of max_result_chars rather than the size of a document.
+# At the cap an operation is REFUSED and the file is left unchanged — nothing is
+# truncated and nothing is dropped from the front. Compaction is the model's own
+# work, done by replacing text with a shorter version of itself.
+#
+# How much one operation may carry is not a field here: 4096 characters, fixed
+# in @getlibero/schema, because it bounds what the MODEL may write rather than
+# what this channel may spend, and the file cap already bounds the total.
+[memory]
+enabled        = true                       # opt out with false; there is no other switch
+max_file_chars = 32768                      # the whole file; one operation may carry 4096
+
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
 # can reach: /x/<toolset> picks the toolset and a trailing /readonly drops every

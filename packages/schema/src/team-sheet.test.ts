@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parse } from "smol-toml";
 import { describe, expect, it } from "vitest";
+import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { TeamSheet } from "./team-sheet.js";
 
 // channels/example/channel.toml is the documented starter sheet and must stay
@@ -55,6 +56,10 @@ describe("the example team sheet", () => {
       max_result_chars: 32_768,
       follow_up_window_seconds: 900,
     });
+  });
+
+  it("curates memory by default, with the file cap the block documents", () => {
+    expect(sheet.memory).toEqual({ enabled: true, max_file_chars: 32_768 });
   });
 
   it("carries the documented tool allowlist, approval mode, and result bound", () => {
@@ -270,6 +275,63 @@ describe("the reserved built-in server name", () => {
   });
 });
 
+describe("the memory block", () => {
+  const memorySheet = (memory: unknown) => ({ channel: minimalChannel(), memory });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  // The one block on this sheet that is on when it is absent, unlike [ambient]
+  // and unlike [[builtin]]. Curation is the agent remembering something it was
+  // already asked about, into a capped file the team can edit; ambient is the
+  // agent starting work nobody asked for.
+  it("curates by default when the block is absent", () => {
+    expect(TeamSheet.parse({ channel: minimalChannel() }).memory.enabled).toBe(true);
+  });
+
+  it("accepts a channel that opts out, and keeps its figures", () => {
+    const sheet = TeamSheet.parse(memorySheet({ enabled: false, max_file_chars: 8_192 }));
+    expect(sheet.memory).toEqual({ enabled: false, max_file_chars: 8_192 });
+  });
+
+  // A file cap below one operation's ceiling is a channel where a legal
+  // operation is unwritable by construction — the "parses, then cannot serve a
+  // call" class the McpServer union refuses at parse for the same reason. The
+  // issue lands on the field an operator has to edit, which is why this is a
+  // bound on the field rather than a check on the block.
+  it("refuses a file cap smaller than one operation, naming the field", () => {
+    expect(paths(memorySheet({ max_file_chars: MEMORY_OP_MAX_TEXT_CHARS - 1 }))).toEqual([
+      "memory.max_file_chars: too_small",
+    ]);
+  });
+
+  it("accepts a file cap of exactly one operation", () => {
+    expect(paths(memorySheet({ max_file_chars: MEMORY_OP_MAX_TEXT_CHARS }))).toBeNull();
+  });
+
+  it("refuses a cap past the sanity bound", () => {
+    expect(paths(memorySheet({ max_file_chars: 262_145 }))).toEqual([
+      "memory.max_file_chars: too_big",
+    ]);
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 8_192.5],
+    ["a string", "32768"],
+  ])("refuses %s as a file cap", (_label, max_file_chars) => {
+    expect(TeamSheet.safeParse(memorySheet({ max_file_chars })).success).toBe(false);
+  });
+
+  it("refuses a non-boolean switch", () => {
+    expect(paths(memorySheet({ enabled: "yes" }))).toEqual(["memory.enabled: invalid_type"]);
+  });
+});
+
 describe("defaults", () => {
   // A sheet with no [llm] section must still yield every cap: the composition
   // root maps sheet to caps field by field and has no defaults of its own.
@@ -319,6 +381,7 @@ describe("defaults", () => {
     expect(sheet.mcp_server).toEqual([]);
     expect(sheet.egress.allow).toEqual([]);
     expect(sheet.ambient.enabled).toBe(false);
+    expect(sheet.memory).toEqual({ enabled: true, max_file_chars: 32_768 });
   });
 
   // The one field here with no default, and deliberately (#62). Every other

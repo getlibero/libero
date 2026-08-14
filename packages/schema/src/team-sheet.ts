@@ -1,5 +1,6 @@
 import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
+import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { CertificateSha256, CredentialName, ResourceName } from "./names.js";
 import { z } from "zod";
 
@@ -385,6 +386,100 @@ export const TeamSheet = z.object({
       // against different attackers, but "four fifths spent" reads the same
       // against either, and the warning names which one crossed.
       warn_at: z.number().min(0).lt(1).default(0.8),
+    })
+    .prefault({}),
+  // What the agent remembers between tasks: `MEMORY.md`, one freeform markdown
+  // file per channel, curated by a short turn after each reply (#222) and read
+  // back into the context the next task starts from. See ./memory-op.ts for the
+  // two operations that write it.
+  //
+  // **On by default, unlike `[ambient]` below, and the asymmetry is the point.**
+  // Ambient is the agent starting work nobody asked for; curation is the agent
+  // remembering something it was already asked about, into a capped file the
+  // team can read, edit and delete, on a turn metered through the same per-turn
+  // spend report as every other turn. Opting out is one line, and a channel that
+  // says nothing gets the figures below.
+  //
+  // **This block is honoured by the agent, and by nothing else. It is the first
+  // on this sheet of which that is true.** Everything above is enforced by the
+  // proxy from its own copy of this file, which is what makes an agent process
+  // under an attacker's control unable to widen it. The proxy never opens
+  // `MEMORY.md` — its only reach into a channel's store is `openMessageReader`,
+  // read-only — so there is no second copy of these numbers to check the first
+  // against. In ./refusal.ts's terms this has the standing `daily_tokens` has
+  // and not the standing `daily_tool_calls` has: it holds against a model that
+  // has been talked into filling the file, and not against a compromised agent
+  // process.
+  //
+  // **The consequence for whoever mirrors these values, stated here because this
+  // is where the mirror's source lives.** `apps/server/src/session/sheet.ts`
+  // resolves sheet values advisorily and falls back to its own defaults on any
+  // failure, "because a fallback cannot loosen an authorization decision" — and
+  // that justification does not reach this block, where the fallback *is* the
+  // decision. The fallback for an unreadable or unparseable sheet is therefore
+  // `enabled: false`, deliberately not the default below. An operator's typo
+  // costing a channel its memory is a degradation the reply survives; a typo
+  // switching curation on for a channel that wrote `enabled = false` is a policy
+  // violation. It is the one hand-mirrored value that must differ from the one
+  // here (#227).
+  //
+  // Characters rather than bytes, continuing `max_result_chars` and
+  // `max_history_chars` above: two units for one kind of quantity in one file is
+  // how a number gets read as the wrong one. A character bound is also checkable
+  // on a JS string before anything is encoded, which is what lets the published
+  // JSON Schema state the same figure to the model.
+  memory: z
+    .object({
+      enabled: z.boolean().default(true),
+      // The whole file, and it is spent on every task in the channel: `MEMORY.md`
+      // enters the context a task starts from, so its size is charged against
+      // `max_tokens_per_task` before the model has done anything. That is why the
+      // default is the order of `max_result_chars` rather than the order of a
+      // document — roughly eight thousand tokens, about 2.7× `max_history_chars`.
+      // Memory is the persistent half of a task's opening context and history is
+      // the recent half, and neither should dominate.
+      //
+      // At the cap an operation is refused and the file is left unchanged.
+      // Nothing is truncated and nothing is dropped from the front: a silently
+      // shortened memory is a fact the team believes it recorded, and there is no
+      // way to tell from reading the file afterwards. Compaction is the model's
+      // own work, done by replacing text with a shorter version of itself.
+      //
+      // The floor is `MEMORY_OP_MAX_TEXT_CHARS`, because a file cap below one
+      // operation's ceiling is a channel where a legal operation is unwritable by
+      // construction — the "parses, then cannot serve a call" class the
+      // `McpServer` union refuses at parse for the same reason. A bound rather
+      // than a `.check()`, since the other side is a constant and not a field:
+      // the issue then lands at `memory.max_file_chars`, which is what an operator
+      // has to edit. The roof is a sanity bound in the spirit of
+      // `certificate_sha256`'s `max(4)` — past a quarter-megabyte the file has
+      // stopped being a distillation and become a document the channel cannot
+      // afford to read on every task, and the failure would arrive as every task
+      // in the channel spending its opening context.
+      max_file_chars: z
+        .number()
+        .int()
+        .min(MEMORY_OP_MAX_TEXT_CHARS)
+        .max(262_144)
+        .default(32_768),
+      // **How much one operation may carry is deliberately not a field here.** It
+      // is 4096 characters, fixed in ./memory-op.ts, because it bounds what the
+      // *model* may write rather than what this channel may spend — the class
+      // this tree already keeps in constants, beside `MAX_TOOL_DESCRIPTION` and
+      // `READ_MAX_LIMIT`. Making it settable would also dissolve the mechanism:
+      // the published JSON Schema's `maxLength` would have to be built per
+      // channel, so `MEMORY_TOOLS` would stop being a module constant and the
+      // module-load guard would have nothing to guard. The aggregate an operator
+      // does hold an opinion about is bounded above. Adding `max_op_chars` later
+      // is a new optional field, so no sheet written today changes shape.
+      //
+      // No `.check()` on this block, and two candidates were considered. Tying
+      // `max_file_chars` to `[llm] max_tokens_per_task` was rejected because
+      // characters and tokens are different units at a model-dependent ratio, so
+      // the rule would refuse sheets an operator meant. Refusing a cap set beside
+      // `enabled = false` was rejected because `[ambient]` already permits
+      // `schedule` beside its own `enabled = false`, and a channel keeping its
+      // figures through a temporary opt-out is the ordinary case.
     })
     .prefault({}),
   mcp_server: McpServerList.default([]),
