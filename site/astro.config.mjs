@@ -86,6 +86,7 @@ export default defineConfig({
           items: [
             { label: 'What Libero is', slug: 'docs' },
             { label: 'Self-hosting', slug: 'docs/self-hosting' },
+            { label: 'Deploying on a VM', slug: 'docs/deploying-on-a-vm' },
             { label: 'Connecting GitHub', slug: 'docs/github' },
           ],
         },

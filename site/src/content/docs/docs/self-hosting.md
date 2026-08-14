@@ -43,6 +43,11 @@ certificate on its first run as well as the channel's own, so `sh scripts/dev-ce
 step done by hand — see [pinning a channel's certificate](#pinning-a-channels-certificate). An
 optional LiteLLM sidecar is included for models without first-class support.
 
+This page is the stack itself. [Deploying on a VM](/docs/deploying-on-a-vm/) puts it on a machine
+that is not a laptop — a Compute Engine or EC2 instance, one disk for every piece of durable state,
+the four secrets in the platform's secret manager rather than in a file a snapshot then copies
+around, and why a VM with a disk is the supported shape rather than a serverless container.
+
 **There are two environment files, and they are different documents.** `init` writes
 `deploy/.env`: the operator's half of a compose deployment — the two Slack tokens, the provider
 and model, the completion key, the optional price table, and `PROXY_VAULT_KEY`, the master key
