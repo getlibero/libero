@@ -9,22 +9,11 @@
 // caller has the value in hand either way. What it does not do is print one,
 // return one, or log one.
 
-import { createCipheriv, randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { CredentialName } from "@getlibero/schema";
-import {
-  MAX_VAULT_BYTES,
-  VAULT_IV_BYTES,
-  VAULT_SALT_BYTES,
-  VaultError,
-  aadOf,
-  buildHeader,
-  decodeVault,
-  deriveKey,
-  isAbsence,
-  serializeEntries
-} from "./vault.js";
+import { replaceFileAtomically } from "./atomic-write.js";
+import { sealEnvelope } from "./envelope.js";
+import { MAX_VAULT_BYTES, VAULT_SPEC, VaultError, decodeVault, isAbsence, serializeEntries } from "./vault.js";
 import type { VaultKey } from "./vault.js";
 
 export type VaultEntries = ReadonlyMap<string, string>;
@@ -107,24 +96,12 @@ export function removeEntry(entries: VaultEntries, name: string): VaultEntries |
 /**
  * Encrypt and replace the vault file, atomically.
  *
- * A fresh 16-byte salt and 12-byte iv on every write. The salt means each write
- * is under a distinct HKDF subkey, so nonce reuse across writes is structurally
- * impossible rather than merely improbable.
- *
- * The sequence is the part worth reviewing:
- *
- * - The temporary file is opened `wx` — exclusive create — in the *same*
- *   directory as the target. Exclusive create fails rather than following a
- *   symlink someone planted at the temp name, and same-directory is what makes
- *   the rename atomic rather than a copy across filesystems.
- * - Mode `0o600` is passed to `open`, not applied by a later `chmod`. A chmod
- *   after the fact is a window in which the file exists world-readable.
- * - `fsync` on the file before the rename and on the directory after it, so a
- *   power loss leaves either the old vault or the new one, never a
- *   half-written file under the real name.
- * - `rename` over a symlinked vault path replaces the *symlink* and leaves
- *   whatever it pointed at untouched. That is the right outcome and it is
- *   tested: a vault path aimed at something else does not overwrite it.
+ * The envelope — fresh salt and iv per write, so nonce reuse across writes is
+ * structurally impossible — is `sealEnvelope` in ./envelope.ts, and the
+ * write sequence worth reviewing (exclusive-create temp, mode at open, fsync
+ * before rename and the directory after) is `replaceFileAtomically` in
+ * ./atomic-write.ts. Both are shared with the token store, which is the point:
+ * a recipe implemented twice is one that eventually holds once.
  *
  * Two operators writing at once is last-writer-wins. There is no lock: the
  * documented path is one admin running one command in one container, and a
@@ -132,60 +109,7 @@ export function removeEntry(entries: VaultEntries, name: string): VaultEntries |
  * would prevent.
  */
 export function writeVaultEntries(file: string, key: VaultKey, entries: VaultEntries): void {
-  const blob = encodeVault(key, entries);
+  const blob = sealEnvelope(VAULT_SPEC, key, serializeEntries(entries));
   if (blob.length > MAX_VAULT_BYTES) throw new VaultError("too_large");
-
-  const directory = dirname(file);
-  const temp = join(
-    directory,
-    `.${basename(file)}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`
-  );
-
-  let handle: number | undefined;
-  try {
-    handle = openSync(temp, "wx", 0o600);
-    writeSync(handle, blob);
-    fsyncSync(handle);
-    closeSync(handle);
-    handle = undefined;
-    renameSync(temp, file);
-  } catch (error) {
-    if (handle !== undefined) closeSync(handle);
-    try {
-      unlinkSync(temp);
-    } catch {
-      // Already gone, or never created. Either way there is nothing to clean.
-    }
-    throw error;
-  }
-
-  // The rename itself has to reach the disk, which means fsyncing the
-  // directory rather than the file.
-  const directoryHandle = openSync(directory, "r");
-  try {
-    fsyncSync(directoryHandle);
-  } finally {
-    closeSync(directoryHandle);
-  }
-}
-
-function encodeVault(key: VaultKey, entries: VaultEntries): Buffer {
-  const plaintext = serializeEntries(entries);
-  const salt = randomBytes(VAULT_SALT_BYTES);
-  const iv = randomBytes(VAULT_IV_BYTES);
-  const subkey = deriveKey(key, salt);
-
-  try {
-    // The tag is not known until the ciphertext is complete, so the AAD is
-    // taken from a header with the tag zeroed — which is exactly what the
-    // reader authenticates, since the AAD stops short of the tag field.
-    const draft = buildHeader(salt, iv, Buffer.alloc(16));
-    const cipher = createCipheriv("aes-256-gcm", subkey, iv);
-    cipher.setAAD(aadOf(draft));
-    const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-    return Buffer.concat([buildHeader(salt, iv, cipher.getAuthTag()), body]);
-  } finally {
-    subkey.fill(0);
-    plaintext.fill(0);
-  }
+  replaceFileAtomically(file, blob);
 }

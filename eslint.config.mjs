@@ -192,6 +192,10 @@ export default tseslint.config(
             {
               group: [
                 "**/vault*",
+                "**/token-store*",
+                "**/token-engine*",
+                "**/envelope*",
+                "**/atomic-write*",
                 "**/mcp-pool*",
                 "**/mcp-client*",
                 "**/mcp-catalog*",
@@ -229,9 +233,9 @@ export default tseslint.config(
           patterns: [
             MCP_SDK_BAN,
             {
-              group: ["**/vault*", "@getlibero/proxy"],
+              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
               message:
-                "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault would be a column that must not exist."
+                "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault — or the token store beside it — would be a column that must not exist."
             }
           ]
         }
@@ -256,9 +260,9 @@ export default tseslint.config(
           patterns: [
             MCP_SDK_BAN,
             {
-              group: ["**/vault*", "@getlibero/proxy"],
+              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
               message:
-                "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean."
+                "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean. The token store is a second credential store, banned for the vault's reason."
             },
             {
               // The serving surface on the meter is read/recordToolCall/
@@ -335,6 +339,10 @@ export default tseslint.config(
                 "**/enforce*",
                 "**/dispatch*",
                 "**/vault*",
+                "**/token-store*",
+                "**/token-engine*",
+                "**/envelope*",
+                "**/atomic-write*",
                 "@getlibero/proxy"
               ],
               message:
