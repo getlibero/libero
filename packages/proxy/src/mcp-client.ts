@@ -11,10 +11,13 @@
 // **Custody survives adoption, and the argument is one line.** The SDK reaches
 // the network only through the `fetch` it is handed, and the one it is handed is
 // `createGuardedFetch` from ./outbound.ts — so the credential is still revealed
-// in exactly one function, still attached last, and every byte the SDK ever sees
+// in exactly one file, still attached last, and every byte the SDK ever sees
 // has already been through the one redaction pass. Nothing here unwraps a
-// secret; it is carried as a handle and handed down. The grep test in
-// ./outbound.test.ts is what keeps that true.
+// secret; the credential travels as a `CredentialSource` (#256), asked per
+// request inside the guarded fetch — a vault value answers with its constant,
+// an OAuth source with the token engine's current mint — and the SDK is never
+// handed a token in either case. The grep test in ./outbound.test.ts is what
+// keeps that true.
 //
 // **What is read off an SDK error, and what is not.** Its class and its numeric
 // code, and nothing else — never a message, except on the one path where the
@@ -61,7 +64,7 @@ import {
   toolResultText
 } from "./mcp-bounds.js";
 import {
-  type AuthScheme,
+  type CredentialSource,
   DEFAULT_UPSTREAM_RESPONSE_BYTES,
   DEFAULT_UPSTREAM_TIMEOUT_MS,
   MAX_CONTROL_BODY_BYTES,
@@ -71,7 +74,6 @@ import {
   createGuardedFetch
 } from "./outbound.js";
 import { RedactionError } from "./redact.js";
-import type { Secret } from "./vault.js";
 
 /** What this proxy calls itself to an upstream: the product, never the caller. */
 const CLIENT_NAME = "libero-proxy";
@@ -171,9 +173,13 @@ export interface McpClient {
 
 export interface McpClientOptions {
   readonly url: string;
-  readonly scheme: AuthScheme;
-  readonly secret: Secret | undefined;
-  readonly credentialName?: string;
+  /**
+   * Asked per request, inside the guarded fetch. A vault credential is a
+   * constant source; an OAuth credential is the token engine's, whose value
+   * has a lifetime shorter than this client's. The client itself never holds
+   * a `Secret` — see ./outbound.ts.
+   */
+  readonly source: CredentialSource;
   readonly timeoutMs?: number;
   /**
    * How many bytes of a response to hold. The deployment's
@@ -410,9 +416,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
   const build = (sink: FailureSink): { client: Client; transport: StreamableHTTPClientTransport } => {
     const guarded = createGuardedFetch({
         url: options.url,
-        scheme: options.scheme,
-        secret: options.secret,
-        ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
+        source: options.source,
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       // A `DELETE` is control-plane by verb — session termination is the only
       // one ever sent, and nobody reads its answer — so the phase flag need

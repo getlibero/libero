@@ -1,11 +1,17 @@
 // The outbound call: where a credential stops being a name and becomes a header.
 //
-// This is the one file in the tree that takes a secret out of the vault. Every
-// other module moves credentials as `Secret` handles or as names, and the whole
-// design of ./vault.ts — no `get`, no iteration, `toString` and `toJSON` fixed
-// at `[redacted]` — exists so that this is true and so that checking it is one
-// grep. `injectCredential` below holds the only `reveal()` call, and a second
-// one appearing anywhere is the thing a reviewer should stop.
+// This is the one file in the tree that takes a secret out of either store.
+// Every other module moves credentials as `Secret` handles or as names, and the
+// whole design of ./vault.ts — no `get`, no iteration, `toString` and `toJSON`
+// fixed at `[redacted]` — exists so that this is true and so that checking it
+// is one grep. Two `reveal()` sites live here, each deliberate, and a third
+// appearing anywhere is the thing a reviewer should stop:
+//
+// - `callUpstream` spends a credential on an upstream call and scrubs the
+//   reply before returning it.
+// - `exchangeRefreshToken` spends a refresh token at the issuer its record
+//   binds, and returns the reply to no caller at all — the reply *is* the
+//   credential, wrapped into a `Secret` before it leaves.
 //
 // Nothing third-party, per the rule at the top of ./server.ts. The transport is
 // Node's built-in `fetch`, injected so tests never open a socket they did not
@@ -16,7 +22,7 @@
 // response before returning it, and the reason that is sufficient rather than
 // merely helpful is structural: a credential value can only appear in a
 // response if it was sent in a request, the only place a credential is revealed
-// and sent is this function, so scrubbing here covers every path by which a
+// and sent is this file, so scrubbing here covers every path by which a
 // stored secret can be echoed back. That is why redaction lives at this level
 // and not in a dispatcher — `ToolDispatcher` is an injected interface, so a
 // pass inside one implementation would leave #39's client pool and every test
@@ -34,6 +40,7 @@
 // destination nothing declared — a redirect target — and it refuses to follow.
 
 import { redactSecrets } from "./redact.js";
+import { makeSecret } from "./vault.js";
 import type { Secret } from "./vault.js";
 
 /**
@@ -51,6 +58,56 @@ import type { Secret } from "./vault.js";
  * stores" in the package README.
  */
 export type AuthScheme = "bearer" | "oauth";
+
+/**
+ * Where a request's credential comes from, asked per request.
+ *
+ * The pool keys one client per upstream and keeps it for the process's life,
+ * and until #256 that client captured a `Secret` at construction — correct for
+ * a vault value, whose name names one immutable entry, and wrong for a minted
+ * token, which expires mid-lifetime of the client holding it. This seam is the
+ * repair: the client captures the *source*, which is stable per key, and asks
+ * it before each request. What the token behind it is doing — living in
+ * memory, refreshing, rotating — is the source's business.
+ *
+ * `acquire` is async because for an OAuth source it may be a mint: a
+ * token-endpoint round trip. It resolves *before* header assembly, which is
+ * what keeps `callUpstream`'s reveal synchronous and single.
+ *
+ * `refresh` is the 401 path: the upstream rejected the credential of
+ * generation `rejected`. A successor means "retry once with this"; `null`
+ * means the 401 stands — which is every bearer source, where the value cannot
+ * be freshened by asking again. The generation is what keeps a straggler from
+ * forcing a second refresh when its rejection was already answered by one:
+ * a source holding generation n+1 hands it back rather than minting n+2.
+ */
+export interface CredentialSource {
+  readonly scheme: AuthScheme;
+  /** The credential's team-sheet name, for the redaction marker. */
+  readonly name?: string;
+  acquire(): Promise<{ secret: Secret; generation: number } | undefined>;
+  refresh(rejected: number): Promise<{ secret: Secret; generation: number } | null>;
+}
+
+/**
+ * The vault's form: one value for the client's life, nothing to refresh.
+ *
+ * `undefined` in, `undefined` out of `acquire` — "this upstream needs no
+ * credential" stays the ordinary case it has always been, one source shape
+ * rather than a second path.
+ */
+export function constantCredential(
+  scheme: AuthScheme,
+  secret: Secret | undefined,
+  name?: string
+): CredentialSource {
+  return {
+    scheme,
+    ...(name !== undefined ? { name } : {}),
+    acquire: () => Promise.resolve(secret === undefined ? undefined : { secret, generation: 0 }),
+    refresh: () => Promise.resolve(null)
+  };
+}
 
 /**
  * The verbs this function will send.
@@ -459,10 +516,11 @@ async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit:
 export async function callUpstream(request: UpstreamRequest): Promise<UpstreamResponse> {
   const send = request.fetch ?? globalThis.fetch;
 
-  // The one `reveal()` in the tree. It is held in this local for the length of
-  // one request and used twice: to build the header going out, and to build the
-  // needle list for the response coming back. Both uses are inside this
-  // function, so there is still exactly one place a value leaves the vault.
+  // The first of this file's two `reveal()` sites — the header lists both. It
+  // is held in this local for the length of one request and used twice: to
+  // build the header going out, and to build the needle list for the response
+  // coming back. Both uses are inside this function, so there is still exactly
+  // one place a value leaves a store to be *spent on an upstream*.
   const value = request.secret?.reveal();
   // Branched on the verb rather than on whether `body` happens to be set:
   // `JSON.stringify(undefined)` is `undefined`, so keying off the value would
@@ -638,9 +696,7 @@ export interface GuardedFetchOptions {
    * to anything else is refused unsent.
    */
   readonly url: string;
-  readonly scheme: AuthScheme;
-  readonly secret: Secret | undefined;
-  readonly credentialName?: string;
+  readonly source: CredentialSource;
   readonly timeoutMs?: number;
   /**
    * How many bytes of a response to hold, or a function asked per request.
@@ -680,10 +736,12 @@ export interface GuardedFetchOptions {
  * **The origin is pinned.** `callUpstream` refuses a redirect, which covers the
  * destination an upstream chooses at call time; this covers the destination a
  * *library* chooses. Today the SDK has one — no `authProvider` is configured, so
- * its OAuth discovery paths are unreachable — and pinning is what keeps that a
- * property of the code rather than of the configuration. A violation is
- * `"redirected"`: the same category, an undeclared destination, and not a new
- * word in a closed set that `failureText` reads.
+ * its OAuth discovery paths are unreachable, and that stays true with the token
+ * engine (#256): OAuth is this proxy's own machinery beneath the SDK, which is
+ * never handed a token to manage. Pinning is what keeps that a property of the
+ * code rather than of the configuration. A violation is `"redirected"`: the
+ * same category, an undeclared destination, and not a new word in a closed set
+ * that `failureText` reads.
  *
  * **Only `POST` and `DELETE` go out.** Anything else is answered `405` without a
  * socket. The SDK opens a standalone `GET` event stream to listen for
@@ -735,20 +793,39 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
 
     const bound = typeof options.maxBodyBytes === "function" ? options.maxBodyBytes(method) : options.maxBodyBytes;
 
-    const response = await callUpstream({
-      url: String(url),
-      method,
-      ...(typeof init?.body === "string" ? { body: init.body } : {}),
-      // `RequestInit.signal` admits `null`; both absences mean the same thing.
-      ...(init?.signal != null ? { signal: init.signal } : {}),
-      headers: headersToRecord(init?.headers),
-      scheme: options.scheme,
-      secret: options.secret,
-      ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
-      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
-      ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
-    });
+    // Resolved before header assembly — for an OAuth source this may be a
+    // token-endpoint round trip — so the reveal inside `callUpstream` stays
+    // synchronous and single.
+    const acquired = await options.source.acquire();
+
+    const call = (secret: Secret | undefined): Promise<UpstreamResponse> =>
+      callUpstream({
+        url: String(url),
+        method,
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+        // `RequestInit.signal` admits `null`; both absences mean the same thing.
+        ...(init?.signal != null ? { signal: init.signal } : {}),
+        headers: headersToRecord(init?.headers),
+        scheme: options.source.scheme,
+        secret,
+        ...(options.source.name !== undefined ? { credentialName: options.source.name } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
+        ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
+      });
+
+    let response = await call(acquired?.secret);
+
+    // The one retry on a 401, and it sits below the SDK on purpose: a
+    // connect-time rejection and a mid-call one take the identical path.
+    // Retrying is safe because a 401 means the upstream refused authentication
+    // and executed nothing. A bearer source answers `null` — the 401 stands,
+    // exactly as it did before this seam existed — and the generation keeps a
+    // straggler from forcing a second refresh past one already made.
+    if (response.status === 401 && acquired !== undefined) {
+      const fresh = await options.source.refresh(acquired.generation);
+      if (fresh !== null) response = await call(fresh.secret);
+    }
 
     const exposed = new Headers();
     const contentType = response.headers["content-type"];
@@ -770,6 +847,263 @@ function originOf(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Why a refresh-token exchange produced no access token.
+ *
+ * A closed set that never carries a byte of the response body, the
+ * `VaultError` no-`cause` argument applied to HTTP: this path holds two
+ * credentials at once, so the failure a caller reports has to be something
+ * safe to log by construction. The transport members are `UpstreamFailure`'s;
+ * `invalid_grant` gets its own member because the engine treats it as a
+ * different fact — a dead grant, and a theft signal when rotation's reuse
+ * detection fired — where everything else is a failure to ask.
+ */
+export type TokenExchangeFailure =
+  | "timed_out"
+  | "unreachable"
+  | "redirected"
+  | "too_large"
+  | "discovery_failed"
+  | "issuer_mismatch"
+  | "invalid_grant"
+  | "exchange_failed"
+  | "malformed_token_response"
+  | "rotation_unpersisted";
+
+export class TokenExchangeError extends Error {
+  readonly failure: TokenExchangeFailure;
+
+  constructor(failure: TokenExchangeFailure) {
+    super(`token exchange: ${failure}`);
+    this.name = "TokenExchangeError";
+    this.failure = failure;
+  }
+}
+
+export interface TokenExchangeRequest {
+  /** The declared issuer, exactly as the sheet wrote it. Every fetch is pinned to its origin. */
+  readonly issuer: string;
+  /** The Client ID Metadata Document URL the grant was made under, sent as `client_id`. */
+  readonly clientId: string;
+  readonly refreshToken: Secret;
+  readonly credentialName: string;
+  /**
+   * Awaited between receiving a rotated refresh token and returning the access
+   * token — persist-before-use made structural: the authorization server
+   * invalidated the predecessor at the exchange, so the gap between exchange
+   * and persist is the one window that can lose a grant, and nothing else is
+   * permitted inside it. A throw here fails the exchange as
+   * `rotation_unpersisted` rather than serving on a token whose grant would be
+   * gone at the next restart.
+   */
+  readonly persistRotation: (rotatedRefreshToken: string) => Promise<void>;
+  /** One budget over the whole exchange, discovery included. */
+  readonly timeoutMs?: number;
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+export interface MintedAccessToken {
+  /** Wrapped before it leaves this function; the raw reply reaches no caller. */
+  readonly accessToken: Secret;
+  /** Absent when the issuer named no lifetime: live until a 401 says otherwise. */
+  readonly expiresInSeconds: number | undefined;
+  /** Whether the issuer rotated the refresh token — already persisted if so. */
+  readonly rotated: boolean;
+}
+
+/**
+ * Spend a refresh token at its issuer; get a live access token back.
+ *
+ * An outbound call with the guard inverted: `callUpstream` spends a credential
+ * and scrubs the reply, this spends a refresh token and returns the reply to
+ * no caller at all, because the reply *is* the credential. Same discipline
+ * otherwise — origin pinned to the declared issuer, redirects refused (a
+ * redirected token request is a refresh token sent to the one host neither
+ * list names), bodies bounded at the control-plane cap, failures mapped to the
+ * closed set above.
+ *
+ * The token endpoint is discovered (RFC 8414) rather than declared: the sheet
+ * holds one name for the authority, and the metadata's own `issuer` must equal
+ * it byte for byte or the grant is treated as absent. A discovered endpoint
+ * off the issuer's origin is refused the same way — this proxy does not send
+ * refresh tokens to a second host, whatever the metadata says.
+ */
+export async function exchangeRefreshToken(request: TokenExchangeRequest): Promise<MintedAccessToken> {
+  const send = request.fetch ?? globalThis.fetch;
+  const issuerOrigin = originOf(request.issuer);
+  if (issuerOrigin === null) throw new TokenExchangeError("discovery_failed");
+
+  // One budget over both round trips, so a slow discovery cannot grant the
+  // exchange more time than the caller offered.
+  const signal = AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
+
+  const tokenEndpoint = await discoverTokenEndpoint(send, request.issuer, issuerOrigin, signal);
+
+  // The second of this file's two `reveal()` sites — see the header. Held in a
+  // local for the length of one request, used once.
+  const refreshValue = request.refreshToken.reveal();
+  const form = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshValue,
+    client_id: request.clientId
+  });
+  // No `scope` parameter, deliberately: the record's scopes are grant-time
+  // facts, and the sheet⊆grant check already ran at the store read. Asking
+  // again here could only narrow by accident or widen by bug.
+
+  let response: Response;
+  try {
+    response = await send(tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: form.toString(),
+      redirect: "manual",
+      signal
+    });
+  } catch (error) {
+    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+  }
+
+  if (REDIRECT_STATUSES.has(response.status)) throw new TokenExchangeError("redirected");
+
+  let body: string | null;
+  try {
+    body = await readBoundedText(response.body, MAX_CONTROL_BODY_BYTES);
+  } catch (error) {
+    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+  }
+  // A token response is control-plane sized by construction; an issuer
+  // answering the *exchange* with megabytes is not one to keep talking to.
+  if (body === null) throw new TokenExchangeError("too_large");
+
+  if (!response.ok) {
+    // The only thing read off a failed exchange is the body's `error` member,
+    // checked against the one word the engine branches on. Everything else —
+    // the description, the status text, the body itself — is discarded unread.
+    throw new TokenExchangeError(oauthErrorOf(body) === "invalid_grant" ? "invalid_grant" : "exchange_failed");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (typeof parsed !== "object" || parsed === null) throw new TokenExchangeError("malformed_token_response");
+  const token = parsed as {
+    access_token?: unknown;
+    token_type?: unknown;
+    expires_in?: unknown;
+    refresh_token?: unknown;
+  };
+  if (typeof token.access_token !== "string" || token.access_token.length === 0) {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer") {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (token.expires_in !== undefined && (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in))) {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (token.refresh_token !== undefined && typeof token.refresh_token !== "string") {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+
+  const rotated = token.refresh_token !== undefined && token.refresh_token !== refreshValue;
+  if (rotated && typeof token.refresh_token === "string") {
+    // Before the access token is constructed, let alone returned. See the
+    // field's doc comment: this ordering is the persistence guarantee.
+    try {
+      await request.persistRotation(token.refresh_token);
+    } catch {
+      throw new TokenExchangeError("rotation_unpersisted");
+    }
+  }
+
+  return {
+    accessToken: makeSecret(token.access_token),
+    expiresInSeconds: typeof token.expires_in === "number" ? token.expires_in : undefined,
+    rotated
+  };
+}
+
+/** The abort classifier `callUpstream` uses, shared by the exchange's two reads. */
+function wasTimeout(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+/** The `error` member of an OAuth error body, or `null`. Nothing else is read. */
+function oauthErrorOf(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const code = (parsed as { error?: unknown }).error;
+    return typeof code === "string" ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * RFC 8414 discovery, pinned to the issuer.
+ *
+ * The well-known path is inserted between the host and the issuer's path, per
+ * the RFC. The response must name the declared issuer byte for byte — that is
+ * both the RFC's own rule and how Client ID Metadata's
+ * re-registration-by-issuer is kept without a registry — and the token
+ * endpoint it offers must sit on the issuer's origin, or the grant is treated
+ * as absent rather than the refresh token following the metadata elsewhere.
+ */
+async function discoverTokenEndpoint(
+  send: typeof globalThis.fetch,
+  issuer: string,
+  issuerOrigin: string,
+  signal: AbortSignal
+): Promise<string> {
+  const parsed = new URL(issuer);
+  const path = parsed.pathname === "/" ? "" : parsed.pathname;
+  const wellKnown = `${issuerOrigin}/.well-known/oauth-authorization-server${path}`;
+
+  let response: Response;
+  try {
+    response = await send(wellKnown, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal
+    });
+  } catch (error) {
+    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+  }
+
+  if (REDIRECT_STATUSES.has(response.status)) throw new TokenExchangeError("redirected");
+
+  let body: string | null;
+  try {
+    body = await readBoundedText(response.body, MAX_CONTROL_BODY_BYTES);
+  } catch (error) {
+    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+  }
+  if (body === null) throw new TokenExchangeError("too_large");
+  if (!response.ok) throw new TokenExchangeError("discovery_failed");
+
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(body);
+  } catch {
+    throw new TokenExchangeError("discovery_failed");
+  }
+  if (typeof metadata !== "object" || metadata === null) throw new TokenExchangeError("discovery_failed");
+  const fields = metadata as { issuer?: unknown; token_endpoint?: unknown };
+
+  // Byte for byte, never normalized — a trailing slash is a different issuer.
+  if (fields.issuer !== issuer) throw new TokenExchangeError("issuer_mismatch");
+  if (typeof fields.token_endpoint !== "string") throw new TokenExchangeError("discovery_failed");
+  if (originOf(fields.token_endpoint) !== issuerOrigin) throw new TokenExchangeError("issuer_mismatch");
+
+  return fields.token_endpoint;
 }
 
 /**

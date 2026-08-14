@@ -160,8 +160,21 @@ function isProvisional(value: object): boolean {
 export type Dispatch =
   | { readonly outcome: "ran"; readonly result: ToolResult }
   | { readonly outcome: "refused"; readonly refusal: ToolRefusal }
-  /** No upstream is built. Becomes a 501, not a refusal: nothing was denied. */
-  | { readonly outcome: "unavailable" };
+  /**
+   * No upstream is served. Becomes a 501, not a refusal: nothing was denied.
+   *
+   * `reason` arrived with the token engine (#256), because "no upstream is
+   * built" stopped being the only way here: an OAuth upstream with no grant,
+   * a dead grant, and a mint that failed are all calls the sheet permitted
+   * that this proxy cannot serve *right now*, and the 501's sentence should
+   * say which. Absent means what it always meant — the upstream kind is not
+   * built — and the audit outcome stays the one word `unavailable` for all of
+   * them; the log line is where the precise failure already lives.
+   */
+  | {
+      readonly outcome: "unavailable";
+      readonly reason?: "no_grant" | "grant_dead" | "mint_failed";
+    };
 
 /**
  * Serves an allowed call.

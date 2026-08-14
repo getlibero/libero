@@ -1,8 +1,16 @@
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { startFakeTokenIssuer } from "./fake-token-issuer.js";
+import type { FakeTokenIssuer } from "./fake-token-issuer.js";
 import { createHttpDispatcher } from "./http-dispatcher.js";
+import { openTokenStore } from "./token-store.js";
+import type { TokenStore } from "./token-store.js";
 import type { CallLimits } from "./enforce.js";
 
 /**
@@ -15,6 +23,7 @@ const LIMITS: CallLimits = { maxResultChars: 100_000 };
 import { createJsonLogger } from "./log.js";
 import { type FakeMcpServer, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 import { RedactionError } from "./redact.js";
+import { parseVaultKey } from "./vault.js";
 import type { CredentialLookup, Secret, Vault } from "./vault.js";
 
 // A real socket rather than a stubbed `fetch`, because the claim under test is
@@ -226,13 +235,11 @@ describe("an upstream that cannot be served", () => {
     expect(looked).toBe(0);
   });
 
-  // The sheet can declare an OAuth upstream (#255) before the engine that
-  // serves one exists (#256). Until it does, the answer is the stdio answer:
-  // not built, never a refusal — nothing was denied.
-  it("answers unavailable for an oauth upstream, and logs why", async () => {
+  // An oauth upstream against a proxy with no token store: fail closed, the
+  // grant has not been run. Nothing was denied and nothing was dialled.
+  it("answers unavailable for an oauth upstream when no token store exists", async () => {
     fake = await startFakeMcpServer();
-    const { lines, logger } = capturingLogger();
-    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
     const declared: McpServer = {
       name: "github",
@@ -243,16 +250,97 @@ describe("an upstream that cannot be served", () => {
       auth: { scheme: "oauth", issuer: "https://as.example", scopes: [] }
     };
 
-    expect(await dispatcher.dispatch(callTo(), declared, LIMITS)).toEqual({ outcome: "unavailable" });
+    expect(await dispatcher.dispatch(callTo(), declared, LIMITS)).toEqual({
+      outcome: "unavailable",
+      reason: "no_grant"
+    });
     expect(fake.received).toEqual([]);
-    expect(lines.some(line => line.includes("dispatch_auth_unbuilt"))).toBe(true);
+  });
+});
+
+// The token engine on the serving path (#256). The store is real, in a temp
+// dir; the issuer is the fake over a real socket; the upstream demands the
+// token the issuer just minted, which is the positive control that makes the
+// negative assertions below evidence rather than vacuity.
+describe("an oauth upstream", () => {
+  const GRANT = "notion_grant";
+  let issuer: FakeTokenIssuer | undefined;
+  let tokenDir: string | undefined;
+  let tokens: TokenStore | undefined;
+
+  afterEach(async () => {
+    await issuer?.close();
+    issuer = undefined;
+    tokens?.close();
+    tokens = undefined;
+    if (tokenDir !== undefined) rmSync(tokenDir, { recursive: true, force: true });
+    tokenDir = undefined;
   });
 
-  // An OAuth credential name resolves in the token store and never falls
-  // through to the vault. Until the store exists, that rule is "the vault is
-  // not consulted at all" — a vault entry under the same name must change
-  // nothing.
-  it("resolves nothing in the vault for an oauth upstream", async () => {
+  async function grantSeededTokens(issuerUrl: string, refreshToken: string): Promise<TokenStore> {
+    tokenDir = mkdtempSync(join(tmpdir(), "libero-dispatcher-oauth-"));
+    const parsed = parseVaultKey(randomBytes(32).toString("base64"));
+    if (!parsed.ok) throw new Error("fixture key failed to parse");
+    tokens = openTokenStore({ vaultFile: join(tokenDir, "vault.enc"), key: parsed.key });
+    await tokens.putGrant(GRANT, {
+      issuer: issuerUrl,
+      clientId: "https://getlibero.com/client.json",
+      refreshToken,
+      scopes: ["mcp.read"],
+      obtainedAt: 1_700_000_000_000
+    });
+    return tokens;
+  }
+
+  function oauthServer(url: string, issuerUrl: string): McpServer {
+    return {
+      name: "github",
+      transport: "http",
+      url,
+      credential: GRANT,
+      tool: [{ name: "list_prs" }],
+      auth: { scheme: "oauth", issuer: issuerUrl, scopes: ["mcp.read"] }
+    };
+  }
+
+  it("mints a token and serves the call end to end", async () => {
+    issuer = await startFakeTokenIssuer();
+    const store = await grantSeededTokens(issuer.url, issuer.currentRefreshToken);
+    fake = await startFakeMcpServer();
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({}), tokens: store });
+
+    const result = await dispatcher.dispatch(callTo(), oauthServer(fake.url, issuer.url), LIMITS);
+
+    expect(result.outcome).toBe("ran");
+    expect(issuer.tokenRequests).toHaveLength(1);
+    // The positive control: the minted token arrived at the upstream, on
+    // every request the connection made.
+    expect(fake.received).not.toHaveLength(0);
+    for (const request of fake.received) {
+      expect(request.authorization).toBe(`Bearer ${issuer.accessTokens[0] ?? ""}`);
+    }
+  });
+
+  it("answers unavailable for a dead grant, and the upstream never learns", async () => {
+    issuer = await startFakeTokenIssuer();
+    const store = await grantSeededTokens(issuer.url, "rt_stale_stolen");
+    fake = await startFakeMcpServer();
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({}), tokens: store, logger });
+
+    const result = await dispatcher.dispatch(callTo(), oauthServer(fake.url, issuer.url), LIMITS);
+
+    expect(result).toEqual({ outcome: "unavailable", reason: "grant_dead" });
+    expect(fake.received).toEqual([]);
+    // The theft signal, by name, plus the call that went unserved.
+    expect(lines.join("")).toContain("invalid_grant");
+    expect(lines.join("")).toContain("dispatch_grant_unavailable");
+  });
+
+  // The scheme selects the store, in both directions and with no fallback.
+  it("never consults the vault for an oauth upstream", async () => {
+    issuer = await startFakeTokenIssuer();
+    const store = await grantSeededTokens(issuer.url, issuer.currentRefreshToken);
     fake = await startFakeMcpServer();
     let looked = 0;
     const counting: Vault = {
@@ -262,18 +350,57 @@ describe("an upstream that cannot be served", () => {
       },
       size: 1
     };
-    const declared: McpServer = {
-      name: "github",
-      transport: "http",
-      url: fake.url,
-      credential: CRED,
-      tool: [{ name: "list_prs" }],
-      auth: { scheme: "oauth", issuer: "https://as.example", scopes: [] }
+
+    const result = await createHttpDispatcher({ vault: counting, tokens: store }).dispatch(
+      callTo(),
+      oauthServer(fake.url, issuer.url),
+      LIMITS
+    );
+
+    expect(result.outcome).toBe("ran");
+    expect(looked).toBe(0);
+  });
+
+  it("never consults the token store for a bearer upstream", async () => {
+    fake = await startFakeMcpServer();
+    let reads = 0;
+    const counting: TokenStore = {
+      read: () => {
+        reads += 1;
+        return { status: "missing", reason: "absent" };
+      },
+      rotate: () => Promise.resolve(),
+      putGrant: () => Promise.resolve(),
+      close: () => undefined,
+      size: 0
     };
 
-    await createHttpDispatcher({ vault: counting }).dispatch(callTo(), declared, LIMITS);
-    expect(looked).toBe(0);
-    expect(fake.received).toEqual([]);
+    const result = await createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), tokens: counting }).dispatch(
+      callTo(),
+      serverAt(fake.url),
+      LIMITS
+    );
+
+    expect(result.outcome).toBe("ran");
+    expect(reads).toBe(0);
+  });
+
+  // The acceptance criterion verbatim: an access token echoed by the upstream
+  // comes back redacted, under the credential's name. The minted value enters
+  // callUpstream's needle list exactly where the revealed vault value does.
+  it("scrubs a minted token an upstream echoes back", async () => {
+    issuer = await startFakeTokenIssuer();
+    const store = await grantSeededTokens(issuer.url, issuer.currentRefreshToken);
+    fake = await startFakeMcpServer({ echoHeaders: "text" });
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({}), tokens: store });
+
+    const result = await dispatcher.dispatch(callTo(), oauthServer(fake.url, issuer.url), LIMITS);
+
+    const written = JSON.stringify(result);
+    const minted = issuer.accessTokens[0] ?? "";
+    expect(minted).not.toBe("");
+    expect(written).not.toContain(minted);
+    expect(written).toContain(`[redacted:${GRANT}]`);
   });
 });
 

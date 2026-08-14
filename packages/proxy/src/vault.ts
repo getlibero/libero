@@ -24,110 +24,66 @@
 // Nothing third-party. `node:crypto` is the whole cryptographic dependency, in
 // keeping with the rule stated at the top of ./server.ts.
 
-import { createDecipheriv, hkdfSync } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { CredentialName } from "@getlibero/schema";
+import {
+  ENVELOPE_HEADER_BYTES,
+  ENVELOPE_IV_BYTES,
+  ENVELOPE_SALT_BYTES,
+  ENVELOPE_VERSION,
+  EnvelopeError,
+  type EnvelopeSpec,
+  buildEnvelopeHeader,
+  deriveEnvelopeKey,
+  envelopeAad,
+  openEnvelope
+} from "./envelope.js";
+import type { VaultKey } from "./envelope.js";
 import type { Logger } from "./log.js";
 
-/**
- * The on-disk format. A 52-byte header, then the ciphertext.
- *
- * ```
- *  0    7   magic    "LBVAULT"
- *  7    1   version  0x01          \
- *  8   16   salt                    } AAD — bytes [0, 36)
- * 24   12   iv                     /
- * 36   16   tag
- * 52   ..   ciphertext
- * ```
- *
- * The salt and the iv are authenticated rather than merely present. Without the
- * AAD binding, an attacker holding two vault files could swap one's salt for
- * the other's, or roll the version byte back, and the tag would still verify
- * over the ciphertext alone. With it, any edit to the header is a tag failure.
- *
- * The tag lives in the header instead of being appended so that a truncated
- * file fails a length check — a distinct, honest `truncated` — rather than
- * arriving at the decipher and coming back indistinguishable from a wrong key.
- */
-const MAGIC = Buffer.from("LBVAULT", "ascii");
-const VERSION = 1;
-
-const MAGIC_LEN = MAGIC.length;
-const SALT_LEN = 16;
-const IV_LEN = 12;
-const TAG_LEN = 16;
-
-const OFFSET_VERSION = MAGIC_LEN;
-const OFFSET_SALT = OFFSET_VERSION + 1;
-const OFFSET_IV = OFFSET_SALT + SALT_LEN;
-const OFFSET_TAG = OFFSET_IV + IV_LEN;
-
-/** Everything the tag authenticates beyond the ciphertext: magic, version, salt, iv. */
-const AAD_LEN = OFFSET_TAG;
-export const VAULT_HEADER_BYTES = OFFSET_TAG + TAG_LEN;
+// The master key is the envelope's, shared with the token store — one key for
+// every store, separated by HKDF info rather than by a second secret for an
+// operator to manage. Re-exported so this file stays where the rest of the
+// tree learns what a key is.
+export { VAULT_KEY_BYTES, parseVaultKey } from "./envelope.js";
+export type { VaultKey, VaultKeyParse } from "./envelope.js";
 
 /**
- * HKDF's `info`. Two jobs: it separates this key from any other artifact the
- * same master key might one day encrypt (the audit database, the memory store),
- * and it carries the format version, so a v2 file cannot be opened under a v1
- * subkey even if every other check were bypassed.
+ * The vault's two envelope constants. The byte layout, the AAD binding, and
+ * both directions through AES-GCM live in ./envelope.ts, shared with the token
+ * store; what makes a file a *vault* is this magic and this HKDF info. The
+ * info separates this subkey from any other artifact the same master key
+ * encrypts — the token store's `libero.tokens.v1` is the separation it was
+ * written to anticipate — and carries the format version, so a v2 file cannot
+ * be opened under a v1 subkey even if every other check were bypassed.
  */
-const HKDF_INFO = "libero.vault.v1";
+export const VAULT_SPEC: EnvelopeSpec = {
+  magic: Buffer.from("LBVAULT", "ascii"),
+  hkdfInfo: "libero.vault.v1"
+};
+
+const VERSION = ENVELOPE_VERSION;
+
+export const VAULT_HEADER_BYTES = ENVELOPE_HEADER_BYTES;
 
 /** A hostile or corrupt file should not be able to make this process allocate. */
 export const MAX_VAULT_BYTES = 262_144;
 
-/** The master key's length, in bytes. AES-256. */
-export const VAULT_KEY_BYTES = 32;
-
-declare const KEY_BRAND: unique symbol;
-
 /**
- * A validated master key: exactly 32 bytes.
+ * A cap on one credential value.
  *
- * Branded, so a `Buffer` that happens to be the right length cannot be passed
- * where a key belongs without going through `parseVaultKey` first. The brand
- * exists only in the type system and costs nothing at runtime.
+ * Generous enough for a PEM private key, and far short of anything that belongs
+ * in a file rather than a vault. A value this size is an operator mistake — a
+ * whole keyring pasted into one entry — and saying so at `set` time is better
+ * than finding out when the proxy will not start.
+ *
+ * Here rather than in ./vault-file.ts because both writers hold it: the vault's
+ * write path validates an operator's value against it, and the token store
+ * validates a refresh token against it — one cap on what a stored credential
+ * may weigh, wherever it is stored.
  */
-export type VaultKey = Buffer & { readonly [KEY_BRAND]: true };
-
-export type VaultKeyParse =
-  | { readonly ok: true; readonly key: VaultKey }
-  | { readonly ok: false; readonly reason: "not_base64" | "wrong_length" };
-
-/**
- * Decode a base64 master key — the output of `openssl rand -base64 32`.
- *
- * There is no key-derivation function here, deliberately. A KDF exists to
- * stretch a low-entropy passphrase; a key from `openssl rand` is already 256
- * uniform bits, so scrypt over it would buy nothing and add a parameter set to
- * get wrong. The failure a KDF would paper over — an operator pasting a
- * passphrase — is better refused outright, which is what `wrong_length` does.
- *
- * The validation is a round trip rather than a length check on the decode,
- * because `Buffer.from(x, "base64")` silently discards characters outside the
- * alphabet: `Buffer.from("hunter2!!!!", "base64")` returns bytes rather than
- * failing, and a naive implementation accepts a key the operator never typed.
- * Re-encoding and comparing is the only way to learn that the input was
- * actually base64.
- *
- * A result rather than a throw, and neither reason carries the input: this is
- * called with the contents of an environment variable, and the one thing that
- * must never appear in the resulting error message is the thing that was wrong.
- */
-export function parseVaultKey(encoded: string): VaultKeyParse {
-  const trimmed = encoded.trim();
-  const decoded = Buffer.from(trimmed, "base64");
-  if (decoded.toString("base64") !== trimmed) {
-    return { ok: false, reason: "not_base64" };
-  }
-  if (decoded.length !== VAULT_KEY_BYTES) {
-    return { ok: false, reason: "wrong_length" };
-  }
-  return { ok: true, key: decoded as VaultKey };
-}
+export const MAX_SECRET_BYTES = 8_192;
 
 /**
  * A credential value, wrapped so it has nowhere to leak to.
@@ -139,8 +95,10 @@ export function parseVaultKey(encoded: string): VaultKeyParse {
  * credential that reaches a log line, an error message, or a response body by
  * accident arrives as `[redacted]` rather than as itself.
  *
- * `reveal()` is the deliberate act. It is the only way out, and #51 will call
- * it in exactly one place.
+ * `reveal()` is the deliberate act. It is the only way out, and it is called
+ * in exactly one file — ./outbound.ts, at its two sites: spending a credential
+ * on an upstream call, and spending a refresh token at its issuer. The grep
+ * contract in outbound.test.ts is what keeps that count from drifting.
  */
 export interface Secret {
   reveal(): string;
@@ -148,7 +106,12 @@ export interface Secret {
 
 const REDACTED = "[redacted]";
 
-function makeSecret(value: string): Secret {
+/**
+ * Exported for the token store, which hands refresh tokens out the same way
+ * this file hands credentials out — wrapping is the safe direction, and
+ * `reveal()` remains the guarded act the grep contract counts.
+ */
+export function makeSecret(value: string): Secret {
   const secret = {
     reveal: () => value,
     toJSON: () => REDACTED,
@@ -364,37 +327,14 @@ function fail(logger: Logger | undefined, file: string, reason: VaultFailure): V
  * logged.
  */
 export function decodeVault(raw: Buffer, key: VaultKey): ReadonlyMap<string, string> {
-  // A plain comparison: the magic is a constant in this file, not a secret, so
-  // there is nothing here for a timing side channel to disclose.
-  if (raw.length < MAGIC_LEN || !raw.subarray(0, MAGIC_LEN).equals(MAGIC)) {
-    // Length before magic: a file too short to hold the magic is not a vault
-    // either, and this way an operator who pointed the proxy at an empty file
-    // is told it was truncated rather than that their key is wrong.
-    throw new VaultError(raw.length < MAGIC_LEN ? "truncated" : "not_a_vault");
-  }
-  if (raw.length < VAULT_HEADER_BYTES) throw new VaultError("truncated");
-  if (raw[OFFSET_VERSION] !== VERSION) throw new VaultError("unsupported_version");
-
-  const salt = raw.subarray(OFFSET_SALT, OFFSET_SALT + SALT_LEN);
-  const iv = raw.subarray(OFFSET_IV, OFFSET_IV + IV_LEN);
-  const tag = raw.subarray(OFFSET_TAG, OFFSET_TAG + TAG_LEN);
-
-  const subkey = deriveKey(key, salt);
   let plaintext: Buffer;
   try {
-    const decipher = createDecipheriv("aes-256-gcm", subkey, iv);
-    decipher.setAAD(raw.subarray(0, AAD_LEN));
-    decipher.setAuthTag(tag);
-    plaintext = Buffer.concat([
-      decipher.update(raw.subarray(VAULT_HEADER_BYTES)),
-      decipher.final()
-    ]);
-  } catch {
-    // The thrown value is not inspected and not attached. It came out of
-    // OpenSSL, and this is the process that holds every credential.
-    throw new VaultError("bad_key_or_tampered");
-  } finally {
-    subkey.fill(0);
+    plaintext = openEnvelope(VAULT_SPEC, raw, key);
+  } catch (error) {
+    if (!(error instanceof EnvelopeError)) throw error;
+    // The envelope speaks structurally — `wrong_magic` — and this store owns
+    // the operator-facing word for it: the file is not a vault.
+    throw new VaultError(error.reason === "wrong_magic" ? "not_a_vault" : error.reason);
   }
 
   try {
@@ -411,10 +351,11 @@ export function decodeVault(raw: Buffer, key: VaultKey): ReadonlyMap<string, str
  * The per-file encryption key.
  *
  * Exported because ./vault-file.ts derives the same key on the way in, and two
- * copies of a key schedule is how a format quietly forks.
+ * copies of a key schedule is how a format quietly forks. The schedule itself
+ * lives in ./envelope.ts now; this is it bound to the vault's spec.
  */
 export function deriveKey(key: VaultKey, salt: Buffer): Buffer {
-  return Buffer.from(hkdfSync("sha256", key, salt, HKDF_INFO, VAULT_KEY_BYTES));
+  return deriveEnvelopeKey(VAULT_SPEC, key, salt);
 }
 
 /**
@@ -469,19 +410,13 @@ export function serializeEntries(entries: ReadonlyMap<string, string>): Buffer {
 
 /** The header a writer emits, given a fresh salt and iv. Filled in by the caller's tag. */
 export function buildHeader(salt: Buffer, iv: Buffer, tag: Buffer): Buffer {
-  const header = Buffer.alloc(VAULT_HEADER_BYTES);
-  MAGIC.copy(header, 0);
-  header[OFFSET_VERSION] = VERSION;
-  salt.copy(header, OFFSET_SALT);
-  iv.copy(header, OFFSET_IV);
-  tag.copy(header, OFFSET_TAG);
-  return header;
+  return buildEnvelopeHeader(VAULT_SPEC, salt, iv, tag);
 }
 
 /** The bytes a writer authenticates: the header up to the tag. */
 export function aadOf(header: Buffer): Buffer {
-  return header.subarray(0, AAD_LEN);
+  return envelopeAad(header);
 }
 
-export const VAULT_SALT_BYTES = SALT_LEN;
-export const VAULT_IV_BYTES = IV_LEN;
+export const VAULT_SALT_BYTES = ENVELOPE_SALT_BYTES;
+export const VAULT_IV_BYTES = ENVELOPE_IV_BYTES;

@@ -105,6 +105,17 @@ export type {
   FakeRequest
 } from "./mcp-fake-server.js";
 
+// The fake authorization server, on the same exception: a server, holding no
+// store, no engine and no client. The e2e suite (#258) harnesses it beside the
+// fake upstream, which is why it ships rather than living in a test file.
+export { startFakeTokenIssuer } from "./fake-token-issuer.js";
+export type {
+  FakeIssuerReply,
+  FakeTokenIssuer,
+  FakeTokenIssuerOptions,
+  FakeTokenRequest
+} from "./fake-token-issuer.js";
+
 // `credentialHeader` and `injectCredential` are deliberately **not** exported.
 // They take a revealed credential value, and exporting them would make it
 // possible to attach one to a request without going through `callUpstream` —
@@ -192,3 +203,23 @@ export {
   writeVaultEntries
 } from "./vault-file.js";
 export type { EntryRejection, VaultEntries } from "./vault-file.js";
+
+// The second store (#254): grant material for OAuth upstreams, written by the
+// serving proxy (rotation) and the grant entrypoint (#257, which composes
+// `putGrant`) — never by the operator CLI. See the header of ./token-store.ts.
+export {
+  GrantEntryError,
+  MAX_TOKEN_STORE_BYTES,
+  TokenStoreError,
+  openTokenStore,
+  tokenStorePathFor
+} from "./token-store.js";
+export type {
+  GrantBinding,
+  GrantRead,
+  GrantRecord,
+  GrantRejection,
+  TokenStore,
+  TokenStoreFailure,
+  TokenStoreOptions
+} from "./token-store.js";

@@ -53,9 +53,8 @@ import {
   type McpOutcome,
   createMcpClient
 } from "./mcp-client.js";
-import { type AuthScheme, DEFAULT_UPSTREAM_CONCURRENCY } from "./outbound.js";
+import { type CredentialSource, DEFAULT_UPSTREAM_CONCURRENCY } from "./outbound.js";
 import { type Semaphore, createSemaphore } from "./semaphore.js";
-import type { Secret } from "./vault.js";
 
 /**
  * How long a call waits for a permit before giving up.
@@ -109,7 +108,7 @@ export interface McpPool {
    * `null` once closed, so a call that arrives during teardown is answered
    * rather than being served over a connection the process is dismantling.
    */
-  acquire(upstream: HttpUpstream, secret: Secret | undefined): McpClient | null;
+  acquire(upstream: HttpUpstream, source: CredentialSource): McpClient | null;
   readonly size: number;
   /**
    * Terminates any legacy session and drops every client. Never rejects.
@@ -125,7 +124,6 @@ export interface McpPool {
 }
 
 export interface McpPoolOptions {
-  readonly scheme: AuthScheme;
   readonly timeoutMs?: number;
   /** The deployment's bound on a response body. Absent means the process default. */
   readonly maxResponseBytes?: number;
@@ -239,22 +237,24 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
   let closed = false;
 
   return {
-    acquire(upstream, secret) {
+    acquire(upstream, source) {
       if (closed) return null;
 
       const key = upstreamKey(upstream);
       const existing = entries.get(key);
       if (existing !== undefined) return existing.gated;
 
-      // The `Secret` is only read when a client is created; a later call with
+      // The source is only read when a client is created; a later call with
       // the same key keeps the client it has. That is correct rather than
-      // convenient — the key carries the credential *name*, and one name is one
-      // vault entry, so two acquires under one key cannot mean two credentials.
+      // convenient — the key carries the credential *name* and the auth block,
+      // so two acquires under one key cannot mean two ways of authenticating.
+      // What the credential behind the source is worth *right now* is the
+      // source's business, asked per request inside the guarded fetch; that is
+      // what lets a client outlive a minted token where it could never outlive
+      // a captured one.
       const client = createMcpClient({
         url: upstream.url,
-        scheme: options.scheme,
-        secret,
-        ...(upstream.credential !== undefined ? { credentialName: upstream.credential } : {}),
+        source,
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         ...(options.maxResponseBytes !== undefined ? { maxResponseBytes: options.maxResponseBytes } : {}),
         ...(options.fetch !== undefined ? { fetch: options.fetch } : {})

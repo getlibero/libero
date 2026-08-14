@@ -16,6 +16,7 @@ import {
   openAuditWriter,
   openBudgetDb,
   openPriceTableStore,
+  openTokenStore,
   openVault
 } from "@getlibero/proxy";
 import {
@@ -42,12 +43,18 @@ const sheets = new TeamSheetStore({ root: channelsRootFromEnv(process.env), logg
 // the vault reaches the dispatcher rather than the server — but opening it here
 // is what proves the operator's key and file are right at `docker compose up`
 // instead of at the far end of a Slack thread once tool calls run.
-const vault = openVault({
-  file: vaultFileFromEnv(process.env),
-  key: vaultKeyFromEnv(process.env),
-  logger
-});
+const vaultFile = vaultFileFromEnv(process.env);
+const vaultKey = vaultKeyFromEnv(process.env);
+const vault = openVault({ file: vaultFile, key: vaultKey, logger });
 logger.log("info", { event: "vault_opened", count: vault.size });
+
+// The token store beside it (#254), under the same master key. Unlike the
+// vault the key outlives this line: a rotation writes under a fresh salt, so
+// the store retains the parsed key — the same buffer, zeroed on shutdown —
+// which is the heap-dump concession vault.ts already makes, held longer.
+// Absent is a deployment with no OAuth upstream; wrong key or corruption
+// fails here, before anything binds.
+const tokens = openTokenStore({ vaultFile, key: vaultKey, logger });
 
 // Defence in depth, and worth being precise about what it does: it keeps the
 // key out of anything that later dumps `process.env`, and out of the
@@ -104,6 +111,7 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // several may name at once (#159).
 const mcp = createHttpDispatcher({
   vault,
+  tokens,
   logger,
   maxResponseBytes: maxResponseBytesFromEnv(process.env),
   maxUpstreamConcurrency: maxUpstreamConcurrencyFromEnv(process.env)
@@ -203,6 +211,9 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
         budget.close();
         auditDb.close();
         prices.close();
+        // Last, after the pool's sessions are gone: nothing can need a token
+        // any more, and this is the line that zeroes the master key.
+        tokens.close();
         process.exit(0);
       });
     });

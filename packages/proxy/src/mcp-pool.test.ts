@@ -4,6 +4,7 @@ import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import type { McpClient, McpOutcome } from "./mcp-client.js";
 import { CATALOG_BUDGET_MS } from "./mcp-catalog.js";
 import { LISTING_QUEUE_WAIT_MS, QUEUE_WAIT_MS, type HttpUpstream, createMcpPool } from "./mcp-pool.js";
+import { constantCredential } from "./outbound.js";
 import type { Secret } from "./vault.js";
 import type { CallLimits } from "./enforce.js";
 import type { UpstreamCallDefinition } from "./dispatch.js";
@@ -30,6 +31,9 @@ const NO_HEADERS: UpstreamCallDefinition = { paramDeclarations: [] };
  * test is a fixture that will one day fail for a reason nobody can find.
  */
 const VALUE = "ghp_live_token_do_not_log";
+
+/** The vault's form of a source: one value, nothing to refresh. */
+const bearer = (secret: Secret | undefined) => constantCredential("bearer", secret);
 
 function secretOf(value: string): Secret {
   return Object.freeze({
@@ -65,15 +69,15 @@ describe("one client per upstream", () => {
   // upstream sees.
   it("shares a client between blocks that differ only in name and tools", async () => {
     fake = await startFakeMcpServer();
-    const pool = createMcpPool({ scheme: "bearer" });
+    const pool = createMcpPool({});
 
     const a = pool.acquire(
       upstreamOf({ name: "github", transport: "http", url: fake.url, credential: "c" }),
-      secretOf(VALUE)
+      bearer(secretOf(VALUE))
     );
     const b = pool.acquire(
       upstreamOf({ name: "gh", transport: "http", url: fake.url, credential: "c", tool: [{ name: "get_issue" }] }),
-      secretOf(VALUE)
+      bearer(secretOf(VALUE))
     );
 
     expect(a).toBe(b);
@@ -101,17 +105,17 @@ describe("one client per upstream", () => {
       { name: "github", transport: "http", url: "http://a:3001" }
     ]
   ])("never shares a client across %s", (_label, left, right) => {
-    const pool = createMcpPool({ scheme: "bearer" });
+    const pool = createMcpPool({});
 
-    const a = pool.acquire(upstreamOf(left), secretOf(VALUE));
-    const b = pool.acquire(upstreamOf(right), secretOf(VALUE));
+    const a = pool.acquire(upstreamOf(left), bearer(secretOf(VALUE)));
+    const b = pool.acquire(upstreamOf(right), bearer(secretOf(VALUE)));
 
     expect(a).not.toBe(b);
     expect(pool.size).toBe(2);
   });
 
   it("creates nothing until a call needs it", () => {
-    const pool = createMcpPool({ scheme: "bearer" });
+    const pool = createMcpPool({});
     expect(pool.size).toBe(0);
   });
 });
@@ -122,19 +126,19 @@ describe("closing", () => {
   // purpose: the refusal has to hold from the instant `close()` is entered
   // rather than from when its session terminations resolve.
   it("hands out nothing afterwards", async () => {
-    const pool = createMcpPool({ scheme: "bearer" });
+    const pool = createMcpPool({});
     const upstream = upstreamOf({ name: "github", transport: "http", url: "http://a:3001" });
 
-    expect(pool.acquire(upstream, undefined)).not.toBeNull();
+    expect(pool.acquire(upstream, bearer(undefined))).not.toBeNull();
     const closing = pool.close();
 
-    expect(pool.acquire(upstream, undefined)).toBeNull();
+    expect(pool.acquire(upstream, bearer(undefined))).toBeNull();
     expect(pool.size).toBe(0);
     await closing;
   });
 
   it("is safe to call twice", async () => {
-    const pool = createMcpPool({ scheme: "bearer" });
+    const pool = createMcpPool({});
     await pool.close();
     await expect(pool.close()).resolves.toBeUndefined();
   });
@@ -143,11 +147,11 @@ describe("closing", () => {
     const first = await startFakeMcpServer({ protocol: "legacy" });
     const second = await startFakeMcpServer({ protocol: "legacy" });
     try {
-      const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
+      const pool = createMcpPool({ timeoutMs: 2000 });
       for (const server of [first, second]) {
         const client = pool.acquire(
           upstreamOf({ name: "s", transport: "http", url: server.url, credential: "c" }),
-          secretOf(VALUE)
+          bearer(secretOf(VALUE))
         );
         expect(await client?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
       }
@@ -173,9 +177,9 @@ describe("closing", () => {
     const stateless = await startFakeMcpServer();
     const sessionless = await startFakeMcpServer({ protocol: "legacy", sessions: false });
     try {
-      const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
+      const pool = createMcpPool({ timeoutMs: 2000 });
       for (const server of [stateless, sessionless]) {
-        const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), undefined);
+        const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), bearer(undefined));
         expect(await client?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
       }
 
@@ -195,8 +199,8 @@ describe("closing", () => {
   // upstream that has gone away must not turn shutdown into a rejection.
   it("resolves when the upstream has gone away", async () => {
     const server = await startFakeMcpServer({ protocol: "legacy" });
-    const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
-    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), undefined);
+    const pool = createMcpPool({ timeoutMs: 2000 });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), bearer(undefined));
     expect(await client?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
 
     await server.close();
@@ -210,8 +214,8 @@ describe("closing", () => {
   it("resolves within its own budget against an upstream that never answers", async () => {
     const server = await startFakeMcpServer({ protocol: "legacy" });
     try {
-      const pool = createMcpPool({ scheme: "bearer", timeoutMs: 2000 });
-      const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), undefined);
+      const pool = createMcpPool({ timeoutMs: 2000 });
+      const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: server.url }), bearer(undefined));
       expect(await client?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
 
       server.respond = request => (request.method === "DELETE" ? { hang: true } : null);
@@ -276,8 +280,8 @@ describe("the concurrency limit", () => {
 
   it("sends no more than the limit to one upstream at once", async () => {
     fake = await startFakeMcpServer({ hangOn: "tools/call" });
-    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 2, queueWaitMs: BRIEF });
-    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    const pool = createMcpPool({ maxUpstreamConcurrency: 2, queueWaitMs: BRIEF });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
     if (client === null) throw new Error("the pool handed out nothing");
 
     const { settled, drain } = fire(client, 4);
@@ -305,8 +309,8 @@ describe("the concurrency limit", () => {
   // that proves the fixture can deliver four.
   it("sends all of them when the limit is not reached", async () => {
     fake = await startFakeMcpServer({ hangOn: "tools/call" });
-    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 4, queueWaitMs: BRIEF });
-    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    const pool = createMcpPool({ maxUpstreamConcurrency: 4, queueWaitMs: BRIEF });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
     if (client === null) throw new Error("the pool handed out nothing");
 
     const { settled, drain } = fire(client, 4);
@@ -327,9 +331,9 @@ describe("the concurrency limit", () => {
     fake = await startFakeMcpServer({ hangOn: "tools/call" });
     const other = await startFakeMcpServer();
     try {
-      const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 1, queueWaitMs: BRIEF });
-      const saturated = pool.acquire(upstreamOf({ name: "a", transport: "http", url: fake.url }), undefined);
-      const free = pool.acquire(upstreamOf({ name: "b", transport: "http", url: other.url }), undefined);
+      const pool = createMcpPool({ maxUpstreamConcurrency: 1, queueWaitMs: BRIEF });
+      const saturated = pool.acquire(upstreamOf({ name: "a", transport: "http", url: fake.url }), bearer(undefined));
+      const free = pool.acquire(upstreamOf({ name: "b", transport: "http", url: other.url }), bearer(undefined));
       if (saturated === null || free === null) throw new Error("the pool handed out nothing");
 
       const held = fire(saturated, 1);
@@ -369,8 +373,8 @@ describe("the concurrency limit", () => {
   // relationship survives a `queueWaitMs` that shortens both.
   it("lets a listing give up while a call is still waiting", async () => {
     fake = await startFakeMcpServer({ hangOn: "tools/call" });
-    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 1, queueWaitMs: 1000 });
-    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    const pool = createMcpPool({ maxUpstreamConcurrency: 1, queueWaitMs: 1000 });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
     if (client === null) throw new Error("the pool handed out nothing");
 
     const held = fire(client, 1);
@@ -399,8 +403,8 @@ describe("the concurrency limit", () => {
   // sentence that belongs to shutting down rather than the one about saturation.
   it("wakes a queued call when the pool closes", async () => {
     fake = await startFakeMcpServer({ hangOn: "tools/call" });
-    const pool = createMcpPool({ scheme: "bearer", maxUpstreamConcurrency: 1, queueWaitMs: PATIENT });
-    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), undefined);
+    const pool = createMcpPool({ maxUpstreamConcurrency: 1, queueWaitMs: PATIENT });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
     if (client === null) throw new Error("the pool handed out nothing");
 
     const held = fire(client, 1);

@@ -183,6 +183,15 @@ export interface LogFields {
    */
   excluded?: number;
   /**
+   * A minted access token's stated lifetime, in seconds (#256).
+   *
+   * A duration out of the issuer's response envelope — not a value, not a
+   * hash of one, and not derivable into either. It is the number an operator
+   * reads a refresh cadence from: `token_minted` lines arriving faster than
+   * this value says they should is the signal something is asking too often.
+   */
+  expiresIn?: number;
+  /**
    * Whether a token report moved the meter. `duplicate` is a retry of a turn
    * already counted, which is a success — so this is not a `reason`.
    */
