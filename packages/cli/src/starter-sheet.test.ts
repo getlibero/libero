@@ -36,6 +36,20 @@ describe("renderStarterSheet", () => {
     expect(parsed.sheet.ambient.enabled).toBe(false);
   });
 
+  // The one default that is on, so the generated file says so rather than
+  // leaving "grants nothing" above to be read as covering it. Curation is not a
+  // tool call and reaches nothing outside the channel, which is why it does not
+  // contradict the sheet's whole point — but an operator finding a MEMORY.md
+  // they were never told about is an operator who stops trusting the header.
+  it("says that memory curation is on, since the schema's default is on", () => {
+    const parsed = parseTeamSheet(sheet());
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.sheet.memory.enabled).toBe(true);
+    expect(sheet()).toContain("[memory] block saying");
+  });
+
   it("escapes a name that would otherwise break the file", () => {
     const parsed = parseTeamSheet(sheet({ name: 'the "one" \\ only' }));
 
