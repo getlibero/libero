@@ -478,6 +478,56 @@ The sheet picks a model id, not a provider. `AGENT_PROVIDER` is the process's,
 and a sheet naming a model the configured provider does not serve fails at the
 provider like any other outage.
 
+## Semantic recall: where it enters a task, and why not as a tool
+
+`src/session/recall.ts` answers #232. At the head of every task the incoming
+request is embedded, matched against this channel's thread summaries, and the
+nearest few are rendered into the opening context as `<channel-recall>` beside
+`<channel-memory>` and `<channel-history>`. That is the whole shape: **agent-local
+context assembly, not a tool.**
+
+The issue named three candidates and the two rejected ones are recorded here
+rather than dropped, because a decision nobody wrote down is one the next person
+makes again.
+
+**A model-invoked recall tool was rejected as an ungoverned twin.** #64
+deliberately made `search_channel_history` a *proxied built-in*: granted by a
+`[[builtin]]` block, refused when the sheet omits it, approval-gatable, metered,
+and audited — its own source insisting "a built-in is not a bypass". A second
+model-invoked read of the same channel's content, executed agent-side and
+answering to none of that, would not extend that decision but route around it.
+That the agent process *could* read the store directly is not a counter-argument:
+it is precisely why the built-in exists, to make the model's reads observable.
+
+**Context assembly is a different act, and is already ungoverned by the sheet.**
+`assembleContext` reads this channel's store for the transcript, bounded by
+`[llm] max_history_messages` and by no `[[builtin]]` grant, and injects the whole
+of `MEMORY.md` beside it. Adding retrieved summaries is the same class of thing
+the process already does — the *agent* decides what its own task starts from.
+Nothing in recall is invoked by the model, parameterised by the model, or
+reachable from a tool call.
+
+**The hybrid built-in remains the right shape if mid-task recall is ever
+wanted**, and it is rejected on cost rather than principle: it puts a vector on
+the wire, grows `MessageReader` a nearest-neighbour query, and leaves an audit
+row recording a vector rather than a question — an operator reading `searched for
+[0.02, -0.5, …]` learns nothing. If it is built, extending the governed built-in
+is the consistent move; adding a twin is not.
+
+What it costs: one embedding call per task, metered through the same
+`SpendReport` path a completion turn uses, and then a block occupying part of
+every turn's input for the rest of the task. `RECALL_LIMIT` and
+`RECALL_MAX_CHARS` bound the second and are deliberately small, because the
+transcript and `MEMORY.md` compete for the same context.
+
+Two limits are stated rather than hidden. There is **no distance cutoff** — the
+argument is in the file, and it comes down to the number not being writable
+honestly across providers that may or may not normalize — so a channel with a
+small corpus contributes all of it to every task, relevant or not. And recall is
+gated on `[memory] summarize`, the same switch that writes the corpus, rather
+than a third one of its own: a channel that turned summarization off should not
+go on being answered out of summaries it asked to stop producing.
+
 ## Thread summaries
 
 `src/session/summarize.ts` is the quiescence sweep (#231): the part neither

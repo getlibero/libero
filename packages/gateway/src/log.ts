@@ -36,7 +36,8 @@ export interface LogFields {
    * "store_unavailable", "store_write_failed". Memory: "memory_file_opened",
    * "memory_unavailable", "curated", "curation_failed". Embeddings:
    * "embeddings_ready", "embeddings_unconfigured". Thread summaries:
-   * "summarized", "summary_failed", "summary_unusable", "summary_embed_failed"
+   * "summarized", "summary_failed", "summary_unusable", "summary_embed_failed".
+   * Recall: "recalled", "recall_failed"
    * — and the middle two are deliberately distinct words, because "the provider
    * is down" and "the model cannot follow the schema" want different answers
    * from whoever is reading. Attribution:

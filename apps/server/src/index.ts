@@ -28,6 +28,7 @@ import {
   createProxyTransport,
   totalTokens
 } from "@getlibero/agent";
+import type { CompletedTurn } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
 import { createServer } from "./compose.js";
 import {
@@ -40,6 +41,7 @@ import {
   storeRootFromEnv
 } from "./env.js";
 import { createMemoryFileOpener } from "./session/memory.js";
+import { createRecall } from "./session/recall.js";
 import { createSheetResolver } from "./session/sheet.js";
 import { createSummarySweep } from "./session/summarize.js";
 import { createMessageStoreOpener } from "./session/store.js";
@@ -83,6 +85,48 @@ const tasks = new AbortController();
 
 const sheets = createSheetResolver({ root: channelsRoot, model, logger });
 
+/**
+ * Reports one turn's tokens to the proxy's meter.
+ *
+ * Shared by the quiescence sweep and by recall, because an embedding call is
+ * spend whether it was spent writing the corpus or reading it — and two copies
+ * of this would be two chances to meter one of them and not the other.
+ *
+ * A spend client per call, exactly as `runTask` builds one per task: it is a
+ * transport and a channel id, and the channel comes from the client certificate
+ * at the other end rather than from anything in the body.
+ *
+ * **Never throws.** Both callers sit on a path where a person is waiting — the
+ * message ingest handler and the head of a task — and an unreported turn must
+ * not cost a channel its reply.
+ */
+const reportTurn = async (
+  channel: string,
+  turn: CompletedTurn & { id: string }
+): Promise<void> => {
+  if (totalTokens(turn.usage) === 0) return;
+  try {
+    const outcome = await createProxySpendClient({ transport, channel }).report(
+      turn.id,
+      turn.usage,
+      turn.model
+    );
+    logger.log("info", {
+      event: "spend_reported",
+      channel,
+      report: outcome,
+      totalTokens: totalTokens(turn.usage),
+      ...(turn.model === undefined ? {} : { servedModel: turn.model })
+    });
+  } catch (error) {
+    logger.log("error", {
+      event: "spend_report_failed",
+      channel,
+      reason: error instanceof Error ? error.name : "unknown"
+    });
+  }
+};
+
 // The quiescence sweep (#231). Built here rather than in compose.ts because it
 // needs the completion client, the embedding client and the spend sender, none
 // of which that file holds.
@@ -103,36 +147,17 @@ const summarize = createSummarySweep({
       maxTokens: settings.caps.maxOutputTokensPerTurn
     };
   },
-  // Per channel, exactly as `runTask` builds one per task: a spend client is a
-  // transport and a channel id, and the channel comes from the certificate at
-  // the other end rather than from anything in the body.
-  reportTurn: async (channel, turn) => {
-    if (totalTokens(turn.usage) === 0) return;
-    try {
-      const outcome = await createProxySpendClient({ transport, channel }).report(
-        turn.id,
-        turn.usage,
-        turn.model
-      );
-      logger.log("info", {
-        event: "spend_reported",
-        channel,
-        report: outcome,
-        totalTokens: totalTokens(turn.usage),
-        ...(turn.model === undefined ? {} : { servedModel: turn.model })
-      });
-    } catch (error) {
-      // Swallowed, for `reportSpend`'s reason and one more: this is on the
-      // message ingest path, and an unreported summary must not cost a channel
-      // its message write.
-      logger.log("error", {
-        event: "spend_report_failed",
-        channel,
-        reason: error instanceof Error ? error.name : "unknown"
-      });
-    }
-  },
+  reportTurn,
   signal: tasks.signal,
+  logger
+});
+
+// Semantic recall (#232), sharing the sweep's meter path: an embedding call is
+// spend whether it was spent writing the corpus or reading it.
+const recall = createRecall({
+  embedding: embeddings,
+  ...(embedding === null ? {} : { embeddingModel: embedding.model }),
+  reportTurn,
   logger
 });
 
@@ -168,6 +193,7 @@ const { gateway } = createServer({
   store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
   summarize,
+  recall,
   signal: tasks.signal,
   logger
 });

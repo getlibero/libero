@@ -331,9 +331,11 @@ before a maintainer did.
 Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
 that emits operations (#226), and the read that puts `MEMORY.md` back into the
 context a task starts from. Layer 3 has its storage half as of #229, an
-embedding surface as of #230, and thread summaries as of #231. What is missing
-is the retrieval: nothing reads `nearest` yet, because #232 is what decides
-where recall enters a task. #233 is what carries a Slack deletion into derived
+embedding surface as of #230, and thread summaries as of #231. Retrieval landed with #232: `apps/server`
+embeds the incoming request at the head of a task and renders the nearest
+summaries into its opening context. That is context assembly rather than a tool,
+and the argument — including why a model-invoked recall tool was rejected as an
+ungoverned twin of `search_channel_history` — is in `apps/server/README.md`. #233 is what carries a Slack deletion into derived
 data — the message triggers here already drop a summary and its vector on an
 edit or a delete, so what that issue is left with is the curated-fact question
 and the e2e case that drives the real event path. Slack
