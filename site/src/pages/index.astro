@@ -37,9 +37,10 @@ const enforced = [
 
 const phases = [
   { n: '0', name: 'Skeleton', state: 'done', body: 'Monorepo, schema package, design system, site, CI with the license gate and boundary checks, CLI placeholder on npm.' },
-  { n: '1', name: 'The governed core', state: 'current', body: 'Slack gateway, vault, team-sheet enforcement, approval cards, budget meter, audit log — and the e2e suite that attacks all of them.' },
-  { n: '2', name: 'Memory', state: 'next', body: 'Curation inner loop, MEMORY.md tooling, semantic recall, Slack-deletion mirroring.' },
-  { n: '3', name: 'Skills', state: 'later', body: 'Author turn, retrieval-based loading, lifecycle job, curator-as-diff.' },
+  { n: '1', name: 'The governed core', state: 'done', body: 'Slack gateway, vault, team-sheet enforcement, approval cards, budget meter, audit log — and the e2e suite that attacks all of them.' },
+  { n: '1.5', name: 'Consolidation', state: 'done', body: 'Pool discipline against a hostile upstream, a bounded shutdown drain, budget caps in dollars, the CLI operators actually run, OAuth for MCP upstreams, deployment guides.' },
+  { n: '2', name: 'Memory', state: 'current', body: 'Curation inner loop, MEMORY.md tooling, semantic recall over curated facts and thread summaries.' },
+  { n: '3', name: 'Skills', state: 'next', body: 'Author turn, retrieval-based loading, lifecycle job, curator-as-diff.' },
   { n: '4', name: 'Ambient', state: 'later', body: 'Heartbeat evaluation and scheduled tasks, disabled by default, behind the budget meter.' },
   { n: '5', name: 'Breadth', state: 'later', body: 'Discord adapter, durable orchestration, proxy hardening, audit hash-chaining.' },
 ];
@@ -67,8 +68,8 @@ const phases = [
     </div>
 
     <p class="hero__note">
-      Not deployable yet. Phase 1 is part-built — the governed core is going in first. See
-      <a href="/docs/roadmap">the roadmap</a> for what lands when.
+      Pre-release. The governed core is shipped and attacked by its own test suite; memory is
+      being built on top. See <a href="/docs/roadmap">the roadmap</a> for what lands when.
     </p>
   </section>
 
@@ -293,17 +294,17 @@ enabled = false  <i># off by default, always</i></code></pre>
     <div class="wrap grid grid--split">
       <div>
         <span class="lb-label lb-label--dim">Status</span>
-        <h2 class="lb-h2 u-mt-20">Phase 1. The governed core comes before the features.</h2>
+        <h2 class="lb-h2 u-mt-20">The governed core came before the features. It is done.</h2>
         <p class="feature__body u-mt-20" style="font-size:15px;">
           The phases are gated on purpose. Nothing that depends on the proxy ships before the proxy
-          can be attacked and hold.
+          can be attacked and hold — so memory is only starting now.
         </p>
         <div class="lb-callout u-mt-32">
-          <span class="lb-label lb-label--tight">Definition of done, phase 1</span>
+          <span class="lb-label lb-label--tight">Definition of done, phase 1 — met</span>
           <p class="lb-small" style="color:var(--lb-text-soft);margin:0;">
             A prompt-injected agent in a test channel cannot exfiltrate a secret, call an unlisted
             tool, exceed budget, or act destructively without a human click — demonstrated by e2e
-            tests that try.
+            tests that try, one file per property, run against every change.
           </p>
         </div>
       </div>

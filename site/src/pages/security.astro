@@ -112,12 +112,14 @@ const attempts = [
           compromised host, and Slack itself are out of scope for v1.
         </p>
         <p>
-          Libero is at phase 1, part-built. Most of the governed core is shipped code: mutual TLS,
-          per-channel identity from the client certificate, team-sheet enforcement on both gates,
-          an encrypted vault, credential injection, a redaction pass on results, the budget meter,
-          the append-only audit log, and the approval broker with its Slack card. The sandbox does
-          not exist, no real MCP server sits behind the dispatcher yet, and the end-to-end suite
-          that attacks all of it is not written. Do not deploy this. The
+          Libero is pre-release, with the governed core shipped: mutual TLS, per-channel identity
+          from the client certificate, team-sheet enforcement on both gates, an encrypted vault,
+          credential injection, a redaction pass on results, OAuth against upstreams that require
+          it, the budget meter in calls and in dollars, the append-only audit log, and the approval
+          broker with its Slack card. The end-to-end suite that attacks all of it runs against
+          every change. The sandbox does not exist, so <code>[egress]</code> is validated and
+          enforced nowhere, and certificate rotation is two commands with a human edit between
+          them. Point it at a scratch workspace before a real one. The
           <a href="/docs/roadmap">roadmap</a> is gated so that nothing depending on the proxy
           ships before the proxy can be attacked and hold.
         </p>

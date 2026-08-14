@@ -41,13 +41,14 @@ them; `node_modules` stays excluded (#107).
 
 ## Current state
 
-Phase 1, closing. What exists:
+Phases 1 and 1.5 are shipped and their milestones closed; phase 2 (memory) is
+the open one. What exists:
 
 | Package | What it is |
 | --- | --- |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, and the audit record |
 | `packages/agent` | The model half — provider-agnostic completion layer, ReAct loop with per-task caps, and the mTLS client that reaches tools through the proxy and nowhere else |
-| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the daily budget meter, the append-only audit log, and the approval ticket store |
+| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel message store — one SQLite file per channel, an FTS5 index, the delete and edit paths, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |

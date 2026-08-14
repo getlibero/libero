@@ -38,10 +38,10 @@ export const SITE = {
    * retyped — a status string that lives in two places is a status string that
    * is wrong in one of them.
    *
-   * Phase 1 is *in progress*, which is not the same as usable: the governed
-   * core is part-built, and the pre-release warning next to this on every page
-   * is doing the load-bearing work. Move this on when a phase opens, not when
-   * it finishes.
+   * Phase 2 is *in progress*, which is not the same as usable: phases 1 and
+   * 1.5 are shipped, and the pre-release warning next to this on every page is
+   * doing the load-bearing work. Move this on when a phase opens, not when it
+   * finishes.
    */
-  status: 'Phase 1 · pre-release',
+  status: 'Phase 2 · pre-release',
 } as const;

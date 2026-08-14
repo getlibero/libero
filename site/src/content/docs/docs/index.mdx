@@ -14,15 +14,23 @@ only as itself, under admin-provisioned service credentials, through an allowlis
 every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
 model self-restraint.
 
-<Aside type="caution" title="Phase 1, part-built">
-Nothing here is deployable yet. The specification is ahead of the implementation on purpose —
-treat these pages as the design of record, not a description of running software. What exists
-today is most of the governed core: the proxy's mutual TLS, per-channel identity, team-sheet
-enforcement, the vault, credential injection, redaction, the budget meter, the append-only audit
-log, and the approval broker with its Slack card — plus the gateway and the agent loop. There is
-no real MCP server behind the dispatcher yet, no memory, and no end-to-end suite attacking any of
-it. The [roadmap](/docs/roadmap) says what lands when, and [self-hosting](/docs/self-hosting)
-says what a deployment does today.
+<Aside type="caution" title="Pre-release — phase 2 in progress">
+The specification is ahead of the implementation on purpose — treat these pages as the design of
+record, not a description of running software.
+
+The governed core is shipped: mutual TLS, per-channel identity taken from the client certificate,
+team-sheet enforcement on both gates, the vault, credential injection, redaction, the MCP client
+and its pool, OAuth for upstreams that want it, daily caps in both calls and dollars, the
+append-only audit log, and the approval broker with its Slack card — plus the gateway, the agent
+loop, and the per-channel message store. An end-to-end suite attacks all of it. `npx
+@getlibero/cli init` through `docker compose up` stands the stack up from a clean checkout.
+
+What is not here: no sandbox, so `[egress]` is validated and enforced nowhere; `[ambient]` is
+parsed and unread until phase 4; memory is the message store and its index, with curation and
+semantic recall the work of phase 2; certificate rotation is two commands and a human edit rather
+than anything automated. Point it at a scratch workspace before a real one. The
+[roadmap](/docs/roadmap) says what lands when, and [self-hosting](/docs/self-hosting) says what a
+deployment does today.
 </Aside>
 
 ## The shape of it
