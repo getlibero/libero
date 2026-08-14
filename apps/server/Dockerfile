@@ -14,9 +14,12 @@
 
 # syntax=docker/dockerfile:1
 
+# The base is `-slim` and not `-alpine`, for packages/memory's sqlite-vec — the
+# full argument is in apps/proxy-server/Dockerfile, and it applies here because
+# this image carries that package too, to write the message store.
 ARG NODE_VERSION=24
 
-FROM node:${NODE_VERSION}-alpine AS build
+FROM node:${NODE_VERSION}-slim AS build
 
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
@@ -54,7 +57,7 @@ RUN find /out -type f \
       -exec rm -f {} +
 
 # ── runtime ───────────────────────────────────────────────────────────────────
-FROM node:${NODE_VERSION}-alpine
+FROM node:${NODE_VERSION}-slim
 
 ENV NODE_ENV=production
 

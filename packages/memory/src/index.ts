@@ -13,8 +13,13 @@
 // absent because a caller holding it would be a caller writing into a channel's
 // directory itself, which is the one thing these openers exist to be the only
 // way to do.
+//
+// `loadVec` is absent for `assertFts5`'s reason exactly: both openers already
+// run it, and a caller holding it would be a caller loading a native extension
+// into a connection of its own.
 
 export {
+  MAX_EMBEDDING_DIMS,
   MESSAGE_STORE_SCHEMA_VERSION,
   READ_MAX_LIMIT,
   SEARCH_MAX_TERMS,
@@ -22,10 +27,13 @@ export {
   openMessageStore
 } from "./store-db.js";
 export type {
+  EmbeddingHit,
+  EmbeddingSource,
   MessageReader,
   MessageReaderOptions,
   MessageStore,
   MessageStoreOptions,
+  StoredEmbedding,
   StoredMessage
 } from "./store-db.js";
 

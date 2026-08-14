@@ -54,6 +54,12 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       search: () => [],
       recent: () => [],
       recentInThread: () => [],
+      // Inert, like `remove` and `search` above: ingestion writes messages and
+      // never touches Layer 3, so these exist to satisfy `MessageStore` rather
+      // than to be called.
+      putEmbedding: () => {},
+      nearest: () => [],
+      removeEmbedding: () => false,
       close: () => {
         closed += 1;
       }
@@ -340,6 +346,9 @@ describe("createMessageIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        putEmbedding: () => {},
+        nearest: () => [],
+        removeEmbedding: () => false,
         close: () => {}
       })
     });
@@ -372,6 +381,9 @@ describe("createMessageIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        putEmbedding: () => {},
+        nearest: () => [],
+        removeEmbedding: () => false,
         close: () => {}
       })
     });
@@ -657,6 +669,9 @@ describe("createRevisionIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        putEmbedding: () => {},
+        nearest: () => [],
+        removeEmbedding: () => false,
         close: () => {}
       }
     };
@@ -732,6 +747,9 @@ describe("createRevisionIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        putEmbedding: () => {},
+        nearest: () => [],
+        removeEmbedding: () => false,
         close: () => {}
       })
     });
@@ -764,6 +782,9 @@ describe("createRevisionIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        putEmbedding: () => {},
+        nearest: () => [],
+        removeEmbedding: () => false,
         close: () => {}
       })
     });

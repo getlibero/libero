@@ -88,10 +88,52 @@
 // ## `node:sqlite`, and why the repo's Node floor moved for this file
 //
 // `node:sqlite` rather than a driver from npm, for the reason
-// `packages/proxy/src/budget-db.ts` gives: it is built in, so there is no
-// dependency and the license gate has nothing new to check. The surface used
-// here is `DatabaseSync`, `prepare`, `run`, `get`, `all`, and `exec`, and it is
-// stability 1.2 — a release candidate from Node 24.15, experimental below that.
+// `packages/proxy/src/budget-db.ts` gives: it is built in, so the driver itself
+// is not a dependency. The surface used here is `DatabaseSync`, `prepare`,
+// `run`, `get`, `all`, and `exec`, and it is stability 1.2 — a release candidate
+// from Node 24.15, experimental below that.
+//
+// That paragraph used to end "so there is no dependency and the license gate has
+// nothing new to check", and #229 made the second half false: `sqlite-vec` is a
+// real npm dependency of this package now, and it is the first one in the
+// repository whose payload is a **binary** — a loadable SQLite extension, shipped
+// as a platform-specific prebuild. Two consequences are worth knowing before the
+// next change here.
+//
+// It lands in **both** service images, because `packages/proxy` depends on this
+// package to answer `search_channel_history`. So a binary blob now sits in the
+// process that holds every tool credential. What bounds that is below in
+// `loadVec`: it is loaded by one explicit call against a path this process
+// computed, and there is no path by which SQL text can load anything.
+//
+// And it is why the images are Debian rather than Alpine. sqlite-vec publishes
+// prebuilds for linux and darwin on x64 and arm64 and for win32 on x64, all
+// glibc — `vec0.so` links `libc.so.6` with versioned GLIBC symbols — and none
+// for musl. The argument for `node:24-slim` over building the amalgamation in
+// the image is in the two Dockerfiles.
+//
+// ## Loading the extension, and what `allowExtension` does not open
+//
+// Both openers now pass `allowExtension: true` and call `loadVec`. That flag
+// reads wider than it is, and the difference is the whole reason the reader may
+// have it. Measured against `node:sqlite`:
+//
+//   - **The SQL function `load_extension()` answers `not authorized` whether or
+//     not the flag is set.** Node installs an authorizer that denies it, and
+//     nothing here can turn that off. So no SQL string — including one built
+//     from a model's words, which is what `toMatchQuery` exists to make
+//     impossible anyway — can reach a loader.
+//   - The flag enables the `loadExtension()` **method**, which is C API surface
+//     this module calls once with a path it computed itself.
+//   - `enableLoadExtension(false)` afterwards closes that method again. Both
+//     openers do it. It is defence in depth rather than the mechanism — the
+//     authorizer above is the mechanism — and what it buys is that the widening
+//     lasts for the open sequence rather than for the connection's life.
+//
+// So the reader gains the ability to *use* vec0 and gains no ability to write.
+// It gains no vector query either: whether the tool proxy ever runs a
+// nearest-neighbour search is #232's decision, and a method with no caller was
+// not written.
 //
 // The floor is Node 24 **because of this file**. `node:sqlite`'s bundled SQLite
 // was compiled without `SQLITE_ENABLE_FTS5` until 22.16 — the define is absent
@@ -114,6 +156,7 @@ import type { StatementSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelId } from "@getlibero/schema";
+import { getLoadablePath } from "sqlite-vec";
 import type { Logger } from "./log.js";
 
 /**
@@ -136,6 +179,27 @@ import type { Logger } from "./log.js";
  * older file is wrong, and bumping would have refused every store already on
  * disk over a query plan. A column, a constraint, or the tokenizer is the other
  * kind of change and does move it.
+ *
+ * **#229 added the embeddings tables and this number did not move, which is the
+ * rule above applied rather than an omission.** The issue asked for a bump; the
+ * rule asks what a reader depends on, so that was measured before it was
+ * decided. On a file carrying a `vec0` virtual table, a connection with the
+ * extension *not* loaded still prepares and runs every statement in this module
+ * — the plain reads and the FTS `MATCH` alike — and fails only on a statement
+ * naming the vec table itself, with SQLite's `no such module: vec0`. So no
+ * reader of an older build is wrong about anything it asks for, exactly as with
+ * `message_thread`, and the two new ordinary tables are additive DDL that
+ * `db.exec(SCHEMA)` creates the next time a writer opens the file.
+ *
+ * What a bump would have cost is concrete and one-directional: `readVersion`
+ * refuses any mismatch, so every store already on disk would have had
+ * `search_channel_history` fail in the tool proxy until the gateway happened to
+ * open that channel and migrate it. Paying an availability regression for a
+ * refusal nothing needs is the trade the rule exists to prevent.
+ *
+ * The next change here probably does move it. Anything that alters what
+ * `nearest` means — a second vec table, a distance metric that is not L2, a
+ * dimension no longer fixed per file — is a reader depending on it.
  */
 export const MESSAGE_STORE_SCHEMA_VERSION = 1;
 
@@ -254,6 +318,88 @@ CREATE TRIGGER IF NOT EXISTS message_fts_update AFTER UPDATE ON message BEGIN
   INSERT INTO message_fts (message_fts, rowid, text) VALUES ('delete', old.id, old.text);
   INSERT INTO message_fts (rowid, text) VALUES (new.id, new.text);
 END;
+
+-- Which model produced every vector in this file, and at what width. **One
+-- row**, enforced by the CHECK rather than by a convention.
+--
+-- #229 asked that a vector's row carry its model id and dimensions. It carries
+-- them once instead, and that is stronger rather than weaker: a \`vec0\` table
+-- holds exactly one dimension, baked into its declaration at creation, so every
+-- vector in this file is necessarily under one model at one width. Storing the
+-- pair per row would be storing the same two values N times, which is N-1
+-- chances for a copy to disagree with the table it describes.
+--
+-- The consequence the issue names is what \`putEmbedding\` enforces: changing the
+-- embedding model is a **stated rebuild**, not something a file absorbs. There
+-- is no rebuild command yet; #231 and #232 are what will need one.
+CREATE TABLE IF NOT EXISTS embedding_model (
+  id     INTEGER PRIMARY KEY CHECK (id = 1),
+  model  TEXT NOT NULL,
+  dims   INTEGER NOT NULL
+);
+
+-- What each vector was derived from. Ordinary SQL rather than \`vec0\` metadata
+-- columns, and the reason is #233: deletion mirroring has to reach derived data,
+-- a trigger is how this file already keeps a satellite index honest (see the
+-- three \`message_fts\` ones above), and **a virtual table cannot carry a
+-- trigger**. Provenance living here is what gives #233 somewhere to attach one.
+--
+-- \`id\` is the vec table's rowid, assigned here and matched there. It never
+-- leaves this module, for \`message.id\`'s reason one screen up.
+--
+-- \`source_kind\` is 'fact' or 'summary' — #223's corpus for Layer 3 — and there
+-- is deliberately no CHECK constraint pinning that set. Neither producer exists
+-- yet (#231 writes summaries; curated facts live in MEMORY.md, which has no rows
+-- at all and whose identity question #233 is the one to settle), and a
+-- constraint written now would be a guess encoded as a schema change later.
+-- \`EmbeddingSource\` is where the set is stated, in a type that costs nothing to
+-- widen.
+--
+-- UNIQUE on the pair is what makes re-embedding a changed summary a replacement
+-- rather than a second answer to the same question.
+CREATE TABLE IF NOT EXISTS embedding_source (
+  id           INTEGER PRIMARY KEY,
+  source_kind  TEXT NOT NULL,
+  source_ref   TEXT NOT NULL,
+  at           INTEGER NOT NULL,
+  UNIQUE (source_kind, source_ref)
+);
+`;
+
+/**
+ * The vec table, and the trigger that keeps provenance and vectors in step.
+ *
+ * **Not in `SCHEMA`, because its dimension is not known at open.** A `vec0`
+ * declaration bakes the width in, and the width comes from whichever embedding
+ * model a deployment configured (#230) — which may be none at all, and a
+ * deployment running Layers 1 and 2 should not carry a vec table for a model it
+ * has no key for. So this runs once, on the first vector, from
+ * `ensureEmbeddingSpace`.
+ *
+ * The trigger is created **here rather than in `SCHEMA`**, and that is not
+ * tidiness. A trigger whose body names a table that does not exist creates
+ * without complaint and then throws `no such table: main.vec_embedding` when it
+ * fires — measured, not assumed — so a `SCHEMA` copy would turn
+ * `removeEmbedding` on a store that has never embedded anything into an error.
+ * Created in the same act as the table it deletes from, the two cannot exist
+ * apart.
+ *
+ * `%DIMS%` is substituted rather than bound, which is the one place in this
+ * module a value reaches a SQL string instead of a parameter. It is unavoidable:
+ * a virtual table's declaration is parsed by the module at creation and is not a
+ * parameterizable expression. `ensureEmbeddingSpace` is what makes it safe — the
+ * value is an integer in `[1, MAX_EMBEDDING_DIMS]` before it gets here, checked
+ * against `Number.isInteger` rather than against a pattern.
+ */
+const VEC_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_embedding USING vec0(
+  id        integer primary key,
+  embedding float[%DIMS%]
+);
+
+CREATE TRIGGER IF NOT EXISTS embedding_source_delete AFTER DELETE ON embedding_source BEGIN
+  DELETE FROM vec_embedding WHERE id = old.id;
+END;
 `;
 
 /**
@@ -282,6 +428,70 @@ export interface StoredMessage {
   readonly displayName: string | null;
   readonly text: string;
   /** When this store learned of the message, in ms. Not when it was sent. */
+  readonly at: number;
+}
+
+/**
+ * What a vector was derived from.
+ *
+ * The pair is this file's identity for an embedding, and `putEmbedding` upserts
+ * on it — so re-embedding a summary whose source messages changed replaces the
+ * old vector rather than leaving two.
+ *
+ * `kind` is a union rather than a `string` because the corpus is #223's and is
+ * closed: curated facts and thread summaries. It is *not* a CHECK constraint in
+ * the DDL, so widening it later is a type change and not a migration. Messages
+ * are deliberately absent — Layer 1 answers those with FTS5, and embedding every
+ * message would be a different feature with a different cost.
+ *
+ * `ref` is opaque here and its meaning belongs to whoever writes the kind. #231
+ * defines what identifies a summary; #233 is where the harder question lives,
+ * because a curated fact lives in `MEMORY.md` as markdown with no id at all.
+ */
+export interface EmbeddingSource {
+  readonly kind: "fact" | "summary";
+  readonly ref: string;
+}
+
+/** One nearest-neighbour hit: where it came from, and how far. */
+export interface EmbeddingHit {
+  readonly source: EmbeddingSource;
+  /**
+   * L2 distance, smaller is nearer, and it is returned rather than withheld.
+   *
+   * That departs from `search`, which returns rank order and deliberately no
+   * bm25 score, so the difference is worth stating: bm25 is an FTS5
+   * implementation detail whose scale means nothing outside it, and exposing it
+   * invites thresholding on a number that is negative and unbounded. A vector
+   * distance is neither — it is a documented property of the metric, in the
+   * units of the vectors themselves, and a caller deciding "near enough to put
+   * in the context" has no other way to ask.
+   */
+  readonly distance: number;
+}
+
+/**
+ * A vector and everything this file needs to record about it.
+ *
+ * One object rather than four positional arguments, following `StoredMessage`:
+ * this store's other write takes a shape, and `at` is caller-supplied here for
+ * exactly `StoredMessage.at`'s reason — it is our clock rather than an upstream
+ * one, and a test that cannot set it cannot be deterministic.
+ */
+export interface StoredEmbedding {
+  readonly source: EmbeddingSource;
+  /**
+   * The vector. `Float32Array` and not `number[]`, because `vec0` reads a blob
+   * of float32 and this is that blob without a conversion or a copy — a
+   * `number[]` would be a second representation to get the width of wrong.
+   */
+  readonly vector: Float32Array;
+  /**
+   * The model that produced it. Recorded once per file, not once per row; a
+   * value differing from what the file already holds is refused.
+   */
+  readonly model: string;
+  /** When this store learned of the vector, in ms. */
   readonly at: number;
 }
 
@@ -378,6 +588,50 @@ export interface MessageStore {
    * for a thread that has not reached this file rather than an error condition.
    */
   recentInThread(thread: string, limit: number): readonly StoredMessage[];
+  /**
+   * Stores one vector against what it was derived from, replacing any vector
+   * already held for that `(kind, ref)`.
+   *
+   * The first call to this on a file **creates the vec table**, at the width of
+   * the vector it was given, and records the model that produced it. Every later
+   * call must agree with both.
+   *
+   * **Throws** on a model or a dimension the file does not already hold, naming
+   * what it found and what it was given. That is an exception rather than a
+   * result, per `memory-file.ts`'s rule that a result is for the model and an
+   * exception is for the operator: nothing a model wrote can reach this, and the
+   * only way to arrive here is a deployment whose embedding configuration
+   * changed under a file that was already populated. The remedy is a rebuild,
+   * which is a decision rather than a retry.
+   *
+   * There is no writer for it in the tree yet — #231 produces summaries and #232
+   * decides where recall enters a task. This is the storage half.
+   */
+  putEmbedding(embedding: StoredEmbedding): void;
+  /**
+   * The `limit` nearest vectors to the one given, nearest first.
+   *
+   * Returns provenance and distance and **never text**: this file holds vectors
+   * and what they came from, and resolving a ref to the thing it names belongs
+   * to whoever defined the kind.
+   *
+   * Answers nothing — rather than throwing — for a file with no vec table yet,
+   * which is the ordinary state of a channel under a deployment that has
+   * configured no embedding provider. A query whose width disagrees with the
+   * file's throws, for `putEmbedding`'s reason.
+   *
+   * `limit` is clamped to `READ_MAX_LIMIT`, like every other read here.
+   */
+  nearest(vector: Float32Array, limit: number): readonly EmbeddingHit[];
+  /**
+   * Forgets one source's vector. False if there was none.
+   *
+   * The delete goes to `embedding_source` and the trigger carries it into the
+   * vec table, so there is no order for a caller to get wrong. #233 is what
+   * wires this to a Slack deletion; it exists now so that issue adds a trigger
+   * rather than an operation.
+   */
+  removeEmbedding(source: EmbeddingSource): boolean;
   close(): void;
 }
 
@@ -532,6 +786,38 @@ const SEARCH_SQL = `SELECT m.ts, m.thread_ts, m.user_id, m.display_name, m.text,
        ON m.id = hit.hit_id
     ORDER BY hit.hit_rank`;
 
+/**
+ * The nearest-neighbour read, joined back to provenance.
+ *
+ * `SEARCH_SQL`'s shape and for its reason: the LIMIT — `k`, in vec0's spelling —
+ * sits inside the subquery so the join runs over `k` rows rather than over the
+ * whole table, and the outer ORDER BY is what survives a join that does not
+ * preserve the subquery's order.
+ *
+ * `k = ?` rather than `ORDER BY distance LIMIT ?`: vec0 accepts both, and the
+ * first is the one that tells the module how many neighbours to look for rather
+ * than asking it for all of them and throwing most away.
+ */
+const NEAREST_SQL = `SELECT s.source_kind, s.source_ref, hit.distance
+     FROM (SELECT id AS hit_id, distance
+             FROM vec_embedding
+            WHERE embedding MATCH ?
+              AND k = ?) AS hit
+     JOIN embedding_source s ON s.id = hit.hit_id
+    ORDER BY hit.distance`;
+
+/**
+ * A `Float32Array` as the blob `vec0` reads.
+ *
+ * `byteOffset` and `byteLength` are passed rather than left to default, and that
+ * is not defensive noise: a `Float32Array` produced by `subarray` shares its
+ * neighbour's backing store, so `Buffer.from(vector.buffer)` would hand vec0 the
+ * whole allocation and fail on a dimension the caller never asked for.
+ */
+function toVectorBlob(vector: Float32Array): Buffer {
+  return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+}
+
 /** Clamps to `[1, READ_MAX_LIMIT]`, and treats a non-number as 1. */
 function clampLimit(limit: number): number {
   if (!Number.isFinite(limit)) return 1;
@@ -564,6 +850,66 @@ export function assertFts5(db: Pick<DatabaseSync, "prepare">, file: string): voi
       `node:sqlite gained SQLITE_ENABLE_FTS5 in Node 22.16 and 24.0, and this repo ` +
       `requires Node >= 24 (see engines.node). Running ${process.version}.`
   );
+}
+
+/**
+ * The widest vector this module will build a table for.
+ *
+ * A bound on what a caller can make this file do rather than a limit of `vec0`,
+ * which allows far more. The widest embedding any shipping model produces today
+ * is 3072 (`text-embedding-3-large`), so this leaves room without leaving a
+ * `float[2000000000]` in a DDL string one arithmetic slip away.
+ */
+export const MAX_EMBEDDING_DIMS = 4096;
+
+/**
+ * Load sqlite-vec into this connection, naming the package rather than the
+ * symptom.
+ *
+ * `assertFts5`'s counterpart and deliberately its shape — same message prefix,
+ * the file named, the remedy named, exported for its own test and absent from
+ * the barrel. One thing about it is genuinely different and the difference is
+ * why this is a try/catch rather than a question.
+ *
+ * FTS5 is a compile-time option of the SQLite that Node bundles, so
+ * `sqlite_compileoption_used` can be asked before any DDL runs. There is no
+ * equivalent for a loadable extension: the only way to find out whether it loads
+ * is to load it. So the two real failures both arrive as thrown errors, and both
+ * are worth telling apart in the message this raises:
+ *
+ *   - **No prebuild for this platform.** sqlite-vec resolves its loadable path
+ *     through a per-platform package and throws its own "Unsupported platform"
+ *     before any file is opened. linux and darwin on x64 and arm64, and win32 on
+ *     x64, are what it publishes.
+ *   - **A prebuild that will not load.** `dlopen` fails, and the case that has
+ *     actually bitten this repo is libc: every published `vec0.so` is built
+ *     against glibc, so an Alpine image cannot load one. That is why both
+ *     services are Debian-based, and the Dockerfiles say so.
+ *
+ * Both name `process.platform`, `process.arch` and `process.version`, because
+ * every one of them is part of "why did it not load here".
+ */
+export function loadVec(db: Pick<DatabaseSync, "loadExtension">, file: string): void {
+  let path: string;
+  try {
+    path = getLoadablePath();
+  } catch (error) {
+    throw new Error(
+      `memory store: ${file} needs the sqlite-vec extension, and the sqlite-vec package ` +
+        `publishes no prebuild for ${process.platform}-${process.arch}. ` +
+        `Running ${process.version}. Cause: ${String(error)}`
+    );
+  }
+  try {
+    db.loadExtension(path);
+  } catch (error) {
+    throw new Error(
+      `memory store: ${file} needs the sqlite-vec extension, and ${path} would not load on ` +
+        `${process.platform}-${process.arch}. The usual cause is a C library mismatch — every ` +
+        `published vec0 build links glibc, so a musl image (Alpine) cannot load one; this repo's ` +
+        `images are Debian-based for that reason. Running ${process.version}. Cause: ${String(error)}`
+    );
+  }
 }
 
 /**
@@ -608,6 +954,23 @@ type MessageRow = {
   readonly at: number;
 };
 
+/** A `NEAREST_SQL` row, as SQLite hands it back. `MessageRow`'s reasons apply. */
+type HitRow = {
+  readonly source_kind: string;
+  readonly source_ref: string;
+  readonly distance: number;
+};
+
+function toEmbeddingHit(row: HitRow): EmbeddingHit {
+  return {
+    // The cast is the one place this module trusts its own writes. The column
+    // has no CHECK — see the DDL on why — so what makes this sound is that
+    // `putEmbedding` is the only INSERT and takes an `EmbeddingSource`.
+    source: { kind: row.source_kind as EmbeddingSource["kind"], ref: row.source_ref },
+    distance: row.distance
+  };
+}
+
 function toStoredMessage(row: MessageRow): StoredMessage {
   return {
     ts: row.ts,
@@ -635,7 +998,12 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
 
   // No mkdir. See the header: the channel's directory existing is the
   // operator's statement that the channel exists.
-  const db = new DatabaseSync(file);
+  //
+  // `allowExtension` is the first option this call has ever taken. See the
+  // header on what it does and does not open — in short, it enables the
+  // `loadExtension` method and does not enable the SQL `load_extension()`
+  // function, which Node's authorizer denies regardless.
+  const db = new DatabaseSync(file, { allowExtension: true });
 
   try {
     // WAL because #64 may make a second process a reader of this file, and a
@@ -653,6 +1021,11 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     // SQLITE_BUSY back to an event handler is not.
     db.exec("PRAGMA busy_timeout = 5000");
     assertFts5(db, file);
+    loadVec(db, file);
+    // Shut the door behind us. Defence in depth and not the mechanism — the
+    // header says which is which — and what it buys is that the one widening
+    // this connection took lasts for the open sequence rather than for its life.
+    db.enableLoadExtension(false);
     db.exec(SCHEMA);
     checkVersion(db, file);
   } catch (error) {
@@ -703,8 +1076,112 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         WHERE ts = ? OR thread_ts = ?
         ORDER BY ts DESC
         LIMIT ?`
-    )
+    ),
+    // Provenance only. The three statements against the vec table cannot be
+    // prepared here, because that table does not exist until the first vector
+    // arrives — `vecStatements` below is where they live.
+    //
+    // RETURNING gives us the rowid the vector has to be filed under, in the
+    // same statement that assigns it. DO UPDATE rather than DO NOTHING, which
+    // is the opposite of `append`'s choice and for the opposite reason: a
+    // redelivered Slack message is the same message and the first write wins,
+    // whereas a re-embedded summary is a *new* vector for a source whose text
+    // changed, and the last write is the one that is true.
+    putSource: db.prepare(
+      `INSERT INTO embedding_source (source_kind, source_ref, at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (source_kind, source_ref) DO UPDATE SET at = excluded.at
+         RETURNING id`
+    ),
+    removeSource: db.prepare(
+      `DELETE FROM embedding_source WHERE source_kind = ? AND source_ref = ?`
+    ),
+    readModel: db.prepare(`SELECT model, dims FROM embedding_model WHERE id = 1`),
+    stampModel: db.prepare(`INSERT INTO embedding_model (id, model, dims) VALUES (1, ?, ?)`)
   } satisfies Record<string, StatementSync>;
+
+  /**
+   * The statements that name `vec_embedding`, prepared on first use.
+   *
+   * Lazy because the table is: a store under a deployment with no embedding
+   * provider never has one, and `db.prepare` against a missing table throws at
+   * prepare time rather than at run time. Held in a closure variable rather than
+   * beside the others so that the "every SQL string lives in this module" rule
+   * is unaffected — these are still here, they are just not all built at open.
+   */
+  let vecStatements: {
+    readonly put: StatementSync;
+    readonly remove: StatementSync;
+    readonly nearest: StatementSync;
+  } | null = null;
+
+  function prepareVecStatements(): NonNullable<typeof vecStatements> {
+    vecStatements ??= {
+      put: db.prepare(`INSERT INTO vec_embedding (id, embedding) VALUES (?, ?)`),
+      remove: db.prepare(`DELETE FROM vec_embedding WHERE id = ?`),
+      nearest: db.prepare(NEAREST_SQL)
+    };
+    return vecStatements;
+  }
+
+  /**
+   * The file's model and width, or null if nothing has been embedded yet.
+   *
+   * Read per call rather than cached, for the reason the proxy re-reads a team
+   * sheet per call: a second connection to this file may have stamped it since,
+   * and a cached "no model yet" would try to create the table a second time.
+   */
+  function readEmbeddingModel(): { model: string; dims: number } | null {
+    const row = statements.readModel.get() as { model: string; dims: number } | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Make sure this file can hold a vector of `dims` from `model`, or refuse.
+   *
+   * The first call creates the vec table and its trigger at that width and
+   * stamps the model. Every later call checks agreement and does nothing else.
+   *
+   * The DDL and the stamp go in one transaction, and that is not ceremony. The
+   * vec DDL is `IF NOT EXISTS`, so a crash between the two would leave a table
+   * at the old width and no row saying so — and the next call, seeing no row,
+   * would stamp *its* width against a table that does not have it. One
+   * transaction makes "the table exists" and "the row says how wide" the same
+   * fact.
+   */
+  function ensureEmbeddingSpace(model: string, dims: number): void {
+    const held = readEmbeddingModel();
+    if (held !== null) {
+      if (held.model !== model || held.dims !== dims) {
+        throw new Error(
+          `memory store: ${file} holds vectors from ${JSON.stringify(held.model)} at ` +
+            `${held.dims} dimensions, and was given ${JSON.stringify(model)} at ${dims}. ` +
+            `A vec0 table's width is fixed at creation, so changing the embedding model is a ` +
+            `rebuild of this file's vectors rather than something it can absorb.`
+        );
+      }
+      return;
+    }
+
+    // Checked before it reaches the DDL string, because this is the one value in
+    // this module that is substituted rather than bound. See `VEC_SCHEMA`.
+    if (!Number.isInteger(dims) || dims < 1 || dims > MAX_EMBEDDING_DIMS) {
+      throw new Error(
+        `memory store: ${file} was given a ${dims}-dimension vector, and this module builds ` +
+          `tables for whole widths in [1, ${MAX_EMBEDDING_DIMS}]`
+      );
+    }
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(VEC_SCHEMA.replaceAll("%DIMS%", String(dims)));
+      statements.stampModel.run(model, dims);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
 
   logger?.log("info", { event: "store_opened", channel, file });
 
@@ -759,6 +1236,51 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       return rows.map(toStoredMessage).reverse();
     },
 
+    putEmbedding(embedding) {
+      const { source, vector, model, at } = embedding;
+      ensureEmbeddingSpace(model, vector.length);
+      const vec = prepareVecStatements();
+
+      const row = statements.putSource.get(source.kind, source.ref, at) as { id: number };
+      // **BigInt, and this is the sharp edge of the whole file.** `node:sqlite`
+      // binds a JS number as SQLite `real` — `SELECT typeof(?)` with 1 answers
+      // "real" — and an ordinary table hides that behind column affinity, which
+      // converts on the way in. A vec0 table has no affinity to apply, so it
+      // sees a float where it requires an integer and refuses the row with
+      // "Only integers are allows for primary key values". A BigInt binds as
+      // INTEGER and is the only thing that does.
+      const id = BigInt(row.id);
+
+      // Delete-then-insert rather than an upsert: vec0 supports neither
+      // ON CONFLICT nor UPDATE on the vector column, so replacing a vector is
+      // two statements. The DELETE is a no-op the first time.
+      vec.remove.run(id);
+      vec.put.run(id, toVectorBlob(vector));
+    },
+
+    nearest(vector, limit) {
+      // No vec table means nothing has been embedded here, which is the
+      // ordinary state under a deployment that configured no embedding provider
+      // — so this answers nothing rather than throwing, exactly as
+      // `openMessageReader` answers null for a channel with no store. A width
+      // disagreement is the other thing entirely and still throws, from vec0
+      // itself, because there is a table to disagree with.
+      if (readEmbeddingModel() === null) return [];
+      const rows = prepareVecStatements().nearest.all(
+        toVectorBlob(vector),
+        clampLimit(limit)
+      ) as HitRow[];
+      return rows.map(toEmbeddingHit);
+    },
+
+    removeEmbedding(source) {
+      // Only the provenance row is deleted here. The trigger created alongside
+      // the vec table carries it into the vectors, which is why this needs no
+      // branch on whether that table exists: no table means no trigger and no
+      // row to delete either.
+      return Number(statements.removeSource.run(source.kind, source.ref).changes) === 1;
+    },
+
     close() {
       db.close();
     }
@@ -808,6 +1330,30 @@ function readVersion(db: DatabaseSync, file: string): void {
  * stamps no version. `busy_timeout` is set because it is a property of this
  * connection's patience and of nothing on disk.
  *
+ * **#229 added a fifth option to the constructor and took none of that back.**
+ * `allowExtension: true` sits beside `readOnly: true` here, and the two are
+ * orthogonal in every observable way:
+ *
+ *   - It grants the `loadExtension` **method**, which this function calls once,
+ *     with a path computed by `getLoadablePath()` from an installed package.
+ *     Nothing about the call is influenced by the file, the channel, or anything
+ *     a model wrote.
+ *   - It does **not** grant the SQL function `load_extension()`. Node's
+ *     authorizer denies that whether the flag is set or not — measured, in both
+ *     states — so there is no SQL string, however constructed, that reaches a
+ *     loader from here.
+ *   - `enableLoadExtension(false)` closes the method again before this function
+ *     returns, so the connection handed to the caller has neither.
+ *   - `readOnly` is untouched by any of it. SQLite still refuses a write on this
+ *     connection before the question of what is loaded arises.
+ *
+ * What the extension buys the reader is the ability to *open* a file whose
+ * schema contains a `vec0` table without that table being a landmine. It buys no
+ * vector query: this interface is still `search` and `close`. Whether the tool
+ * proxy ever runs a nearest-neighbour search is #232's, and a method with no
+ * caller was not written — the same reason there is no read-only `MEMORY.md`
+ * opener.
+ *
  * **`null` when the channel has no store yet**, rather than a throw. A channel
  * that has been provisioned but has not yet had a message stored is the ordinary
  * state of a new channel, not a misconfiguration — and it is the one case the
@@ -835,11 +1381,13 @@ export function openMessageReader(options: MessageReaderOptions): MessageReader 
   const file = join(root, channel, STORE_FILENAME);
   if (!existsSync(file)) return null;
 
-  const db = new DatabaseSync(file, { readOnly: true });
+  const db = new DatabaseSync(file, { readOnly: true, allowExtension: true });
 
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     assertFts5(db, file);
+    loadVec(db, file);
+    db.enableLoadExtension(false);
     readVersion(db, file);
   } catch (error) {
     db.close();
