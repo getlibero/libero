@@ -85,6 +85,11 @@ export const CATALOG_FAILURE_TTL_MS = 30_000;
  * leak: it is single-flighted inside the client, so it warms that client for
  * the next listing or the first tool call. Nothing reads its result, so no
  * upstream bytes escape the race.
+ *
+ * That argument covers the request in flight and stops there. The *pages* after
+ * it are abandoned outright, because since #159 each one costs a permit on the
+ * upstream's semaphore and would spend it on an answer nobody will read — see
+ * `walkWithin`.
  */
 export const CATALOG_BUDGET_MS = 5_000;
 
@@ -329,8 +334,9 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * stops it.
    *
    * Stops on the first of: nothing left to want, a page that names no next
-   * cursor, `MAX_CATALOG_PAGES`, the remaining budget, or a failure. Whatever
-   * was collected before the stop is kept — the thin entry is the floor, so a
+   * cursor, `MAX_CATALOG_PAGES`, the remaining budget, a failure, or
+   * `abandoned` — the race in `walkWithin` having been lost. Whatever was
+   * collected before the stop is kept — the thin entry is the floor, so a
    * partial walk never misdescribes anything, it only describes less.
    *
    * **`budget` rather than `MAX_DESCRIBED_TOOLS` directly, and that is what
@@ -346,7 +352,8 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
     client: McpClient,
     wanted: ReadonlySet<string>,
     described: Map<string, Walked_Entry>,
-    budget: number
+    budget: number,
+    abandoned: () => boolean
   ): Promise<Walked> => {
     let cursor: string | undefined;
     // What this walk has added to the *answer*, which an excluded tool does not
@@ -360,8 +367,20 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
     }
 
     for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-      // Also the per-request timeout, so an abandoned page stops rather than
-      // lingering on a socket after the race below has moved on.
+      // The race below has been lost, so this walk is warming a client rather
+      // than answering anyone, and since #159 every further page would queue for
+      // a permit against the calls that are (#252). The page already in flight
+      // is the one worth finishing — see `walkWithin`. Page zero cannot see this
+      // set: the timer is armed and the walk entered in the same tick.
+      //
+      // What this returns is discarded, because the race settled when the flag
+      // was set. It is `partial` regardless, and `walkWithin` has already logged
+      // `budget_exhausted` as the cause.
+      if (abandoned()) return "partial";
+
+      // Also the per-request timeout — the second of the two things bounding an
+      // abandoned page, so the one still in flight when the race ends stops
+      // rather than lingering on a socket.
       const outcome = await client.listTools(cursor, CATALOG_BUDGET_MS);
       if (outcome.outcome !== "listed") {
         unavailable(upstream, outcome.failure, {
@@ -429,10 +448,20 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * A race around the whole walk bounds the handshake and the pages together.
    *
    * The map is the caller's, so whatever the abandoned walk had already
-   * collected survives the race — the walk keeps running, which is the point
-   * rather than a leak: it is single-flighted inside the client, so it warms
-   * that client for the next listing or the first tool call, and nothing reads
-   * its result.
+   * collected survives the race.
+   *
+   * **The abandoned walk finishes the page it is on and asks for no more**
+   * (#252). Letting it run to `MAX_CATALOG_PAGES` used to be free, and the
+   * argument for it was that a walk which finishes late still warms the client
+   * for the next listing or the first tool call. #159 made a page cost a permit
+   * on the upstream's semaphore, so those four further pages became four more
+   * queue entries — each waiting up to `LISTING_QUEUE_WAIT_MS` and then holding
+   * a permit — competing with live calls for a result nobody would read. The
+   * warming survives the narrowing because it is not spread across the walk:
+   * `ensureOpen`'s ladder runs inside the first page and is cached for the
+   * client's life, so the request already in flight is where essentially all of
+   * it is. What that leaves is one permit held at most `CATALOG_BUDGET_MS` past
+   * the deadline, by the one request that is doing the useful thing.
    */
   const walkWithin = async (
     upstream: McpServer,
@@ -452,7 +481,10 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
       timer.unref?.();
     });
     try {
-      const outcome = await Promise.race([walk(upstream, client, wanted, described, allowance), budget]);
+      const outcome = await Promise.race([
+        walk(upstream, client, wanted, described, allowance, () => expired),
+        budget
+      ]);
       // Only when the timer actually fired. A walk that returned `partial` on
       // its own has already logged the reason it did, and a second line saying
       // "budget" would name the wrong cause.

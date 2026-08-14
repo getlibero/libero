@@ -8,12 +8,17 @@
 // **The wait is bounded and a departed waiter leaves the queue.** That is the
 // one behaviour worth reading the code for, because it is the opposite of the
 // other timed race in this package. `walkWithin` in ./mcp-catalog.ts abandons a
-// catalog walk but deliberately lets it keep running, since a walk that
-// finishes late still warms the client for the next call. A waiter here has
+// catalog walk but lets the request already in flight finish, since a page that
+// lands late still warms the client for the next call. A waiter here has
 // nothing to warm: if it stayed queued after its caller gave up, it would
 // later be handed a permit for a call nobody is waiting for and hold it against
 // the calls that are. So `acquire` splices itself out on the way to answering
 // `null`.
+//
+// The two sides of that contrast met in #252, and the answer was the same one:
+// an abandoned walk asks for no *further* pages, because a page it has not sent
+// yet has nothing warm about it and would queue here exactly as a departed
+// waiter would.
 //
 // Fairness is FIFO. A released permit goes to the head of the queue rather than
 // to whichever caller happens to ask next, so a steady stream of new calls

@@ -762,6 +762,14 @@ Listings are gated too — a `tools/list` walk is a credentialed request to the
 same upstream — and a walk that loses degrades to the thin catalog, which has
 never been allowed to block a permitted call.
 
+A walk that runs out of its five-second budget stops asking for pages (#252).
+Before the permits it cost nothing to let it run to the five-page cap, and there
+was a reason to: a walk that finishes late still warms the client for the next
+listing or the first tool call. Once a page took a permit, the pages after the
+one in flight were queuing against live calls for a result nobody would read.
+The request already sent still lands, because the handshake runs inside the first
+page and is where the warming actually is.
+
 Answers are cached for five minutes, thirty seconds on a failure or a partial
 walk, and single-flighted — so a client polling the route does not become
 credentialed load on someone else's server.
