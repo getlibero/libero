@@ -483,6 +483,13 @@ outlive the run.
   malformed operations refused with the file provably unchanged, the curation
   turn's own tokens on the proxy's meter, and the one case here that documents
   an exposure rather than a defence.
+- `src/deletion-derived.test.ts` — #233, Slack retention reaching derived data:
+  a real `message_deleted`, `message_changed` and tombstone event through the
+  gateway, each taking the thread's summary and that summary's embedding with
+  it, and each with the positive control first. It also found the gap that made
+  it necessary — the rig was never passing `onRevision` to `createGateway`, so
+  every deletion and edit this suite ever delivered went nowhere and nothing
+  failed. #177 shipped that path in phase 1 and no case here had exercised it.
 
 ## What is enforced rather than asserted
 

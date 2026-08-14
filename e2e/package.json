@@ -16,9 +16,11 @@
     "@getlibero/proxy": "workspace:*",
     "@getlibero/proxy-server": "workspace:*",
     "@getlibero/schema": "workspace:*",
-    "@getlibero/server": "workspace:*"
+    "@getlibero/server": "workspace:*",
+    "@getlibero/memory": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@types/node": "^24.13.3",
+    "sqlite-vec": "^0.1.9"
   }
 }

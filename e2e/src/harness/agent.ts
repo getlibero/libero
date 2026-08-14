@@ -176,13 +176,20 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
   const tasks = new AbortController();
 
   const { gateway } = createServer({
-    slack: ({ handler, onDecision, onMessage }) => ({
+    slack: ({ handler, onDecision, onMessage, onRevision }) => ({
       gateway: createGateway({
         source: slack.source,
         poster: slack.poster,
         handler,
         onDecision,
         onMessage,
+        // #233. Omitting this was not a decision — it was the rig quietly
+        // dropping every `message_deleted` and `message_changed` on the floor,
+        // so a suite whose whole purpose is checking what reaches the store
+        // could not see a deletion at all. Nothing failed; the events simply
+        // went nowhere, which is the shape of gap this suite exists to catch in
+        // the product and had in itself.
+        onRevision,
         logger
       }),
       // Omitted rather than stubbed when a case asks for no card path: the
