@@ -11,15 +11,19 @@
 // token crosses a real socket, which is the only way the leak tests mean
 // anything.
 //
-// What it fakes is the two endpoints the exchange touches — RFC 8414
-// discovery at the well-known path, and the token endpoint — plus the two
-// behaviours the engine's contract hangs on: rotation (each exchange
-// invalidates the presented refresh token and issues a successor) and reuse
-// detection (a stale or unknown refresh token is answered `invalid_grant`).
+// What it fakes is the three endpoints the exchanges and the grant flow
+// touch — RFC 8414 discovery at the well-known path, the token endpoint, and
+// the authorization endpoint (a 302 straight back to the redirect URI, so a
+// test can be the browser by following one hop) — plus the behaviours the
+// contracts hang on: rotation (each exchange invalidates the presented
+// refresh token and issues a successor), reuse detection (a stale or unknown
+// refresh token is answered `invalid_grant`), and PKCE (a code exchanges only
+// with the verifier whose S256 hash the authorization request carried, once).
 // Everything else is a knob, because the negative tests that matter — an
 // issuer echoing the wrong identity, a token endpoint on another origin, a
 // hanging exchange, an oversized body — are this fake with one field changed.
 
+import { createHash } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -34,6 +38,8 @@ export interface FakeIssuerReply {
   readonly status?: number;
   /** The raw body. A string is sent as-is; an object is JSON. */
   readonly body?: string | Record<string, unknown>;
+  /** Extra response headers — how an authorize override shapes its redirect. */
+  readonly headers?: Readonly<Record<string, string>>;
   /** Record the request and never answer. The client's timeout is the test's bound. */
   readonly hang?: boolean;
 }
@@ -49,6 +55,10 @@ export interface FakeTokenIssuerOptions {
   readonly issuerEcho?: string;
   /** What discovery offers as the token endpoint. Defaults to `<url>/token`. */
   readonly tokenEndpoint?: string;
+  /** Whether a code exchange gets a refresh token. `false` is the issuer a headless proxy cannot use. */
+  readonly issueRefreshToken?: boolean;
+  /** A `scope` member on code-exchange responses — the narrowed-grant knob. Absent by default. */
+  readonly grantedScopeEcho?: string;
 }
 
 export interface FakeTokenIssuer {
@@ -56,6 +66,8 @@ export interface FakeTokenIssuer {
   readonly url: string;
   readonly discoveryRequests: number;
   readonly tokenRequests: readonly FakeTokenRequest[];
+  /** The query of every authorization request, in order. */
+  readonly authorizeRequests: readonly Readonly<Record<string, string>>[];
   /** Every access token minted, in order. The upstream fake checks the last. */
   readonly accessTokens: readonly string[];
   /** The refresh token the *next* exchange must present. */
@@ -64,6 +76,8 @@ export interface FakeTokenIssuer {
   respondToken: ((request: FakeTokenRequest) => FakeIssuerReply | null) | undefined;
   /** Override discovery per request; `null` falls through to the fake. */
   respondDiscovery: (() => FakeIssuerReply | null) | undefined;
+  /** Override the authorization endpoint per request; `null` falls through to the fake's 302. */
+  respondAuthorize: ((query: Readonly<Record<string, string>>) => FakeIssuerReply | null) | undefined;
   close(): Promise<void>;
 }
 
@@ -79,12 +93,19 @@ export async function startFakeTokenIssuer(
 
   let discoveryRequests = 0;
   const tokenRequests: FakeTokenRequest[] = [];
+  const authorizeRequests: Readonly<Record<string, string>>[] = [];
   const accessTokens: string[] = [];
   let currentRefreshToken = options.refreshToken;
   let minted = 0;
+  let codesIssued = 0;
+  // Codes are single-use: an exchange deletes its entry, and a second
+  // presentation of the same code is `invalid_grant` — reuse detection for
+  // the front channel, as `currentRefreshToken` is for the back.
+  const pendingCodes = new Map<string, { codeChallenge: string; redirectUri: string; state: string | undefined }>();
 
   let respondToken: ((request: FakeTokenRequest) => FakeIssuerReply | null) | undefined;
   let respondDiscovery: (() => FakeIssuerReply | null) | undefined;
+  let respondAuthorize: ((query: Readonly<Record<string, string>>) => FakeIssuerReply | null) | undefined;
 
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -94,7 +115,7 @@ export async function startFakeTokenIssuer(
         if (reply.hang === true) return; // recorded, never answered
         const body =
           reply.body === undefined ? "" : typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body);
-        res.writeHead(reply.status ?? 200, { "content-type": "application/json" });
+        res.writeHead(reply.status ?? 200, { "content-type": "application/json", ...(reply.headers ?? {}) });
         res.end(body);
       };
 
@@ -120,6 +141,39 @@ export async function startFakeTokenIssuer(
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/authorize") {
+        const query: Record<string, string> = {};
+        for (const [name, value] of url.searchParams) query[name] = value;
+        authorizeRequests.push(query);
+
+        const overridden = respondAuthorize?.(query);
+        if (overridden !== null && overridden !== undefined) {
+          send(overridden);
+          return;
+        }
+
+        // No consent screen: the fake approves instantly with a 302 to the
+        // redirect URI, which is where a test playing the browser reads the
+        // `location` header instead of following it.
+        if (query.redirect_uri === undefined) {
+          send({ status: 400, body: { error: "invalid_request" } });
+          return;
+        }
+        codesIssued += 1;
+        const code = `code_${codesIssued}`;
+        pendingCodes.set(code, {
+          codeChallenge: query.code_challenge ?? "",
+          redirectUri: query.redirect_uri,
+          state: query.state
+        });
+        const location = new URL(query.redirect_uri);
+        location.searchParams.set("code", code);
+        if (query.state !== undefined) location.searchParams.set("state", query.state);
+        res.writeHead(302, { location: location.toString() });
+        res.end();
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/token") {
         const form: Record<string, string> = {};
         for (const [name, value] of new URLSearchParams(Buffer.concat(chunks).toString("utf8"))) {
@@ -135,6 +189,41 @@ export async function startFakeTokenIssuer(
         const overridden = respondToken?.(request);
         if (overridden !== null && overridden !== undefined) {
           send(overridden);
+          return;
+        }
+
+        if (form.grant_type === "authorization_code") {
+          const pending = form.code === undefined ? undefined : pendingCodes.get(form.code);
+          if (
+            form.code === undefined ||
+            pending === undefined ||
+            form.redirect_uri !== pending.redirectUri ||
+            form.code_verifier === undefined ||
+            createHash("sha256").update(form.code_verifier).digest("base64url") !== pending.codeChallenge
+          ) {
+            send({ status: 400, body: { error: "invalid_grant" } });
+            return;
+          }
+          pendingCodes.delete(form.code);
+
+          minted += 1;
+          const accessToken = `at_minted_${minted}`;
+          accessTokens.push(accessToken);
+          const granted = (options.issueRefreshToken ?? true) ? `rt_granted_${minted}` : undefined;
+          // The grant's refresh token becomes the current one, so a follow-on
+          // *refresh* exchange by the engine succeeds — the loop from grant to
+          // served call closes inside one fake.
+          if (granted !== undefined) currentRefreshToken = granted;
+
+          send({
+            body: {
+              access_token: accessToken,
+              token_type: "Bearer",
+              ...(options.expiresInSeconds !== null ? { expires_in: options.expiresInSeconds } : {}),
+              ...(granted !== undefined ? { refresh_token: granted } : {}),
+              ...(options.grantedScopeEcho !== undefined ? { scope: options.grantedScopeEcho } : {})
+            }
+          });
           return;
         }
 
@@ -176,6 +265,7 @@ export async function startFakeTokenIssuer(
       return discoveryRequests;
     },
     tokenRequests,
+    authorizeRequests,
     accessTokens,
     get currentRefreshToken() {
       return currentRefreshToken;
@@ -191,6 +281,12 @@ export async function startFakeTokenIssuer(
     },
     set respondDiscovery(value) {
       respondDiscovery = value;
+    },
+    get respondAuthorize() {
+      return respondAuthorize;
+    },
+    set respondAuthorize(value) {
+      respondAuthorize = value;
     },
     close: () =>
       new Promise<void>(resolve => {

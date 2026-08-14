@@ -13,6 +13,8 @@ import {
   callUpstream,
   constantCredential,
   createGuardedFetch,
+  discoverAuthorizationServer,
+  exchangeAuthorizationCode,
   exchangeRefreshToken,
   readSessionId,
   credentialHeader,
@@ -1203,5 +1205,193 @@ describe("the refresh-token exchange", () => {
       new Response("x".repeat(MAX_CONTROL_BODY_BYTES + 1), { status: 200 })
     );
     await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({ failure: "too_large" });
+  });
+});
+
+// The third exchange (#257): the grant flow's half, spending a single-use
+// authorization code rather than a refresh token. Deliberately not a third
+// reveal site — see the header — so nothing here wraps or opens a Secret.
+describe("the authorization-code exchange", () => {
+  const ISSUER = "http://as.example";
+  const CODE = "code_pasted_do_not_log";
+  const VERIFIER = "verifier_local_do_not_log";
+
+  const metadataResponse = (over: Record<string, unknown> = {}) =>
+    new Response(JSON.stringify({ issuer: ISSUER, token_endpoint: `${ISSUER}/token`, ...over }), { status: 200 });
+  const tokenResponse = (over: Record<string, unknown> = {}, status = 200) =>
+    new Response(
+      JSON.stringify({
+        access_token: "at_minted",
+        token_type: "Bearer",
+        expires_in: 3600,
+        refresh_token: "rt_granted",
+        ...over
+      }),
+      { status }
+    );
+
+  const fetchSequence = (...responses: (() => Response)[]) => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const answer = responses[Math.min(calls.length - 1, responses.length - 1)];
+      if (answer === undefined) throw new Error("fetch sequence exhausted");
+      return answer();
+    });
+    return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
+  };
+
+  const requestOf = (
+    fetch: typeof globalThis.fetch,
+    over: Partial<Parameters<typeof exchangeAuthorizationCode>[0]> = {}
+  ) => ({
+    issuer: ISSUER,
+    clientId: "https://getlibero.com/client.json",
+    redirectUri: "http://127.0.0.1/callback",
+    code: CODE,
+    codeVerifier: VERIFIER,
+    fetch,
+    ...over
+  });
+
+  it("sends exactly the five code-exchange fields, no scope among them", async () => {
+    const { calls, fetch } = fetchSequence(metadataResponse, () => tokenResponse());
+    const granted = await exchangeAuthorizationCode(requestOf(fetch));
+
+    expect(calls[0]?.url).toBe(`${ISSUER}/.well-known/oauth-authorization-server`);
+    expect(calls[1]?.url).toBe(`${ISSUER}/token`);
+    const form = new URLSearchParams(String(calls[1]?.init.body));
+    expect([...form.keys()].sort()).toEqual(["client_id", "code", "code_verifier", "grant_type", "redirect_uri"]);
+    expect(form.get("grant_type")).toBe("authorization_code");
+    expect(form.get("code")).toBe(CODE);
+    expect(form.get("redirect_uri")).toBe("http://127.0.0.1/callback");
+    expect(form.get("client_id")).toBe("https://getlibero.com/client.json");
+    expect(form.get("code_verifier")).toBe(VERIFIER);
+    expect(granted.refreshToken).toBe("rt_granted");
+    expect(granted.grantedScope).toBeUndefined();
+  });
+
+  it("passes an absent refresh token and a granted scope through verbatim", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      tokenResponse({ refresh_token: undefined, scope: "read" })
+    );
+    const granted = await exchangeAuthorizationCode(requestOf(fetch));
+    expect(granted.refreshToken).toBeUndefined();
+    expect(granted.grantedScope).toBe("read");
+  });
+
+  it("treats the grant as absent when discovery names a different issuer, sending nothing", async () => {
+    const { calls, fetch } = fetchSequence(() => metadataResponse({ issuer: "http://other.example" }));
+    await expect(exchangeAuthorizationCode(requestOf(fetch))).rejects.toMatchObject({ failure: "issuer_mismatch" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses a token endpoint on another origin, sending nothing", async () => {
+    const { calls, fetch } = fetchSequence(() =>
+      metadataResponse({ token_endpoint: "http://elsewhere.example/token" })
+    );
+    await expect(exchangeAuthorizationCode(requestOf(fetch))).rejects.toMatchObject({ failure: "issuer_mismatch" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses a redirected token request unread", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response(null, { status: 302, headers: { location: "http://elsewhere.example/token" } })
+    );
+    await expect(exchangeAuthorizationCode(requestOf(fetch))).rejects.toMatchObject({ failure: "redirected" });
+  });
+
+  it("maps invalid_grant to its own failure and everything else to exchange_failed", async () => {
+    for (const [body, failure] of [
+      [{ error: "invalid_grant" }, "invalid_grant"],
+      [{ error: "invalid_client" }, "exchange_failed"]
+    ] as const) {
+      const { fetch } = fetchSequence(metadataResponse, () => new Response(JSON.stringify(body), { status: 400 }));
+      await expect(exchangeAuthorizationCode(requestOf(fetch))).rejects.toMatchObject({ failure });
+    }
+  });
+
+  it("carries no byte of a failed exchange's body in what it throws", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response(`boom ${CODE} ${VERIFIER}`, { status: 500 })
+    );
+    let thrown: unknown;
+    try {
+      await exchangeAuthorizationCode(requestOf(fetch));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ failure: "exchange_failed" });
+    const seen = `${String(thrown)} ${JSON.stringify(thrown, Object.getOwnPropertyNames(thrown))} ${(thrown as Error).stack ?? ""}`;
+    expect(seen).not.toContain("boom");
+    expect(seen).not.toContain(CODE);
+    expect(seen).not.toContain(VERIFIER);
+  });
+
+  it("refuses a malformed token response, a mis-typed refresh token or scope included", async () => {
+    for (const body of [
+      {},
+      { access_token: "" },
+      { access_token: "at", token_type: "mac" },
+      { access_token: "at", token_type: "Bearer", expires_in: "soon" },
+      { access_token: "at", token_type: "Bearer", refresh_token: 7 },
+      { access_token: "at", token_type: "Bearer", scope: ["read"] }
+    ]) {
+      const { fetch } = fetchSequence(metadataResponse, () => new Response(JSON.stringify(body), { status: 200 }));
+      await expect(exchangeAuthorizationCode(requestOf(fetch))).rejects.toMatchObject({
+        failure: "malformed_token_response"
+      });
+    }
+  });
+
+  it("bounds a token response at the control-plane cap", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response("x".repeat(MAX_CONTROL_BODY_BYTES + 1), { status: 200 })
+    );
+    await expect(exchangeAuthorizationCode(requestOf(fetch))).rejects.toMatchObject({ failure: "too_large" });
+  });
+});
+
+// The widened discovery (#257): same binding rules as ever, plus the two
+// members the grant flow reads — surfaced when well-typed, absent otherwise,
+// never guessed at.
+describe("the widened discovery", () => {
+  const ISSUER = "http://as.example";
+
+  const discoveryFetch = (body: Record<string, unknown>) =>
+    (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof globalThis.fetch;
+
+  it("surfaces the authorization endpoint and the challenge methods", async () => {
+    const metadata = await discoverAuthorizationServer(
+      discoveryFetch({
+        issuer: ISSUER,
+        token_endpoint: `${ISSUER}/token`,
+        authorization_endpoint: `${ISSUER}/authorize`,
+        code_challenge_methods_supported: ["S256", "plain"]
+      }),
+      ISSUER,
+      ISSUER,
+      AbortSignal.timeout(1000)
+    );
+    expect(metadata.tokenEndpoint).toBe(`${ISSUER}/token`);
+    expect(metadata.authorizationEndpoint).toBe(`${ISSUER}/authorize`);
+    expect(metadata.codeChallengeMethodsSupported).toEqual(["S256", "plain"]);
+  });
+
+  it("reads an absent or mis-typed optional member as absent", async () => {
+    for (const over of [
+      {},
+      { authorization_endpoint: 7, code_challenge_methods_supported: "S256" },
+      { code_challenge_methods_supported: ["S256", 7] }
+    ]) {
+      const metadata = await discoverAuthorizationServer(
+        discoveryFetch({ issuer: ISSUER, token_endpoint: `${ISSUER}/token`, ...over }),
+        ISSUER,
+        ISSUER,
+        AbortSignal.timeout(1000)
+      );
+      expect(metadata.authorizationEndpoint).toBeUndefined();
+      expect(metadata.codeChallengeMethodsSupported).toBeUndefined();
+    }
   });
 });

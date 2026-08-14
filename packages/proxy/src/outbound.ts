@@ -13,6 +13,12 @@
 //   binds, and returns the reply to no caller at all — the reply *is* the
 //   credential, wrapped into a `Secret` before it leaves.
 //
+// `exchangeAuthorizationCode` is a third exchange but deliberately not a third
+// site: its inputs (the code, the PKCE verifier) are plaintext locals that
+// never lived in a store, and its output is plaintext headed for the token
+// store's write path, which takes plaintext by design. Nothing there has a
+// `Secret` to open, so "two `reveal()` sites" stays true verbatim.
+//
 // Nothing third-party, per the rule at the top of ./server.ts. The transport is
 // Node's built-in `fetch`, injected so tests never open a socket they did not
 // stand up themselves — the same shape `packages/agent/src/completion/*.ts`
@@ -939,7 +945,7 @@ export async function exchangeRefreshToken(request: TokenExchangeRequest): Promi
   // exchange more time than the caller offered.
   const signal = AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
 
-  const tokenEndpoint = await discoverTokenEndpoint(send, request.issuer, issuerOrigin, signal);
+  const { tokenEndpoint } = await discoverAuthorizationServer(send, request.issuer, issuerOrigin, signal);
 
   // The second of this file's two `reveal()` sites — see the header. Held in a
   // local for the length of one request, used once.
@@ -1029,6 +1035,131 @@ export async function exchangeRefreshToken(request: TokenExchangeRequest): Promi
   };
 }
 
+export interface CodeExchangeRequest {
+  /** The declared issuer, exactly as the sheet wrote it. Every fetch is pinned to its origin. */
+  readonly issuer: string;
+  /** The Client ID Metadata Document URL the grant is being made under, sent as `client_id`. */
+  readonly clientId: string;
+  /** Must be byte-for-byte the URI the authorization request named. */
+  readonly redirectUri: string;
+  /** The authorization code off the pasted redirect. A plaintext local; single-use at the issuer. */
+  readonly code: string;
+  /** The PKCE verifier generated in-process. Never left it; never will. */
+  readonly codeVerifier: string;
+  /** One budget over the whole exchange, discovery included. */
+  readonly timeoutMs?: number;
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+export interface GrantedTokens {
+  /**
+   * Plaintext, headed for the token store's write path and nowhere else.
+   * Absent when the issuer declined to issue one — the caller's fact to rule
+   * on, because a headless proxy cannot hold a grant without it.
+   */
+  readonly refreshToken: string | undefined;
+  /** The response's `scope`, verbatim: what was granted, which may be narrower than what was asked. */
+  readonly grantedScope: string | undefined;
+}
+
+/**
+ * Spend a single-use authorization code at its issuer; get grant material back.
+ *
+ * The grant flow's half of what `exchangeRefreshToken` is to the serving path,
+ * under the same discipline: origin pinned to the declared issuer, redirects
+ * refused, bodies bounded at the control-plane cap, failures the closed set
+ * above with no response byte kept. The access token in the reply is validated
+ * for shape and then discarded — the flow has no call to make with it, and a
+ * value not returned is a value no caller can leak.
+ *
+ * Exported for the grant flow (./grant-flow.ts); not on the package index.
+ */
+export async function exchangeAuthorizationCode(request: CodeExchangeRequest): Promise<GrantedTokens> {
+  const send = request.fetch ?? globalThis.fetch;
+  const issuerOrigin = originOf(request.issuer);
+  if (issuerOrigin === null) throw new TokenExchangeError("discovery_failed");
+
+  // Its own budget over both round trips: a human paste separates this from
+  // the authorization request, so no signal could span the whole grant anyway.
+  const signal = AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
+
+  const { tokenEndpoint } = await discoverAuthorizationServer(send, request.issuer, issuerOrigin, signal);
+
+  const form = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: request.code,
+    redirect_uri: request.redirectUri,
+    client_id: request.clientId,
+    code_verifier: request.codeVerifier
+  });
+  // No `scope` parameter: RFC 6749 §4.1.3 defines none for the code exchange —
+  // scope was asked at authorization, and the response says what was granted.
+
+  let response: Response;
+  try {
+    response = await send(tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: form.toString(),
+      redirect: "manual",
+      signal
+    });
+  } catch (error) {
+    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+  }
+
+  if (REDIRECT_STATUSES.has(response.status)) throw new TokenExchangeError("redirected");
+
+  let body: string | null;
+  try {
+    body = await readBoundedText(response.body, MAX_CONTROL_BODY_BYTES);
+  } catch (error) {
+    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+  }
+  if (body === null) throw new TokenExchangeError("too_large");
+
+  if (!response.ok) {
+    // As the sibling: the one word the caller branches on, everything else
+    // discarded unread. `invalid_grant` here is a dead, used, or forged code.
+    throw new TokenExchangeError(oauthErrorOf(body) === "invalid_grant" ? "invalid_grant" : "exchange_failed");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (typeof parsed !== "object" || parsed === null) throw new TokenExchangeError("malformed_token_response");
+  const token = parsed as {
+    access_token?: unknown;
+    token_type?: unknown;
+    expires_in?: unknown;
+    refresh_token?: unknown;
+    scope?: unknown;
+  };
+  if (typeof token.access_token !== "string" || token.access_token.length === 0) {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer") {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (token.expires_in !== undefined && (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in))) {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (token.refresh_token !== undefined && typeof token.refresh_token !== "string") {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+  if (token.scope !== undefined && typeof token.scope !== "string") {
+    throw new TokenExchangeError("malformed_token_response");
+  }
+
+  return {
+    refreshToken: token.refresh_token,
+    grantedScope: token.scope
+  };
+}
+
 /** The abort classifier `callUpstream` uses, shared by the exchange's two reads. */
 function wasTimeout(error: unknown): boolean {
   return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
@@ -1047,6 +1178,18 @@ function oauthErrorOf(body: string): string | null {
 }
 
 /**
+ * What discovery answers with. The token endpoint is required — nothing here
+ * works without one — but the authorization endpoint is the grant flow's
+ * concern alone, so its absence is the caller's fact to rule on, not a
+ * discovery failure.
+ */
+export interface AuthorizationServerMetadata {
+  readonly tokenEndpoint: string;
+  readonly authorizationEndpoint: string | undefined;
+  readonly codeChallengeMethodsSupported: readonly string[] | undefined;
+}
+
+/**
  * RFC 8414 discovery, pinned to the issuer.
  *
  * The well-known path is inserted between the host and the issuer's path, per
@@ -1055,13 +1198,16 @@ function oauthErrorOf(body: string): string | null {
  * re-registration-by-issuer is kept without a registry — and the token
  * endpoint it offers must sit on the issuer's origin, or the grant is treated
  * as absent rather than the refresh token following the metadata elsewhere.
+ *
+ * Exported for the grant flow (./grant-flow.ts), which needs the
+ * authorization endpoint; not on the package index.
  */
-async function discoverTokenEndpoint(
+export async function discoverAuthorizationServer(
   send: typeof globalThis.fetch,
   issuer: string,
   issuerOrigin: string,
   signal: AbortSignal
-): Promise<string> {
+): Promise<AuthorizationServerMetadata> {
   const parsed = new URL(issuer);
   const path = parsed.pathname === "/" ? "" : parsed.pathname;
   const wellKnown = `${issuerOrigin}/.well-known/oauth-authorization-server${path}`;
@@ -1096,14 +1242,34 @@ async function discoverTokenEndpoint(
     throw new TokenExchangeError("discovery_failed");
   }
   if (typeof metadata !== "object" || metadata === null) throw new TokenExchangeError("discovery_failed");
-  const fields = metadata as { issuer?: unknown; token_endpoint?: unknown };
+  const fields = metadata as {
+    issuer?: unknown;
+    token_endpoint?: unknown;
+    authorization_endpoint?: unknown;
+    code_challenge_methods_supported?: unknown;
+  };
 
   // Byte for byte, never normalized — a trailing slash is a different issuer.
   if (fields.issuer !== issuer) throw new TokenExchangeError("issuer_mismatch");
   if (typeof fields.token_endpoint !== "string") throw new TokenExchangeError("discovery_failed");
   if (originOf(fields.token_endpoint) !== issuerOrigin) throw new TokenExchangeError("issuer_mismatch");
 
-  return fields.token_endpoint;
+  // The optional members are surfaced or absent, never guessed at: a
+  // non-string endpoint or a non-string-array methods list reads as absent,
+  // and the caller rules on absence.
+  const authorizationEndpoint =
+    typeof fields.authorization_endpoint === "string" ? fields.authorization_endpoint : undefined;
+  const methods = fields.code_challenge_methods_supported;
+  const codeChallengeMethodsSupported =
+    Array.isArray(methods) && methods.every((member): member is string => typeof member === "string")
+      ? methods
+      : undefined;
+
+  return {
+    tokenEndpoint: fields.token_endpoint,
+    authorizationEndpoint,
+    codeChallengeMethodsSupported
+  };
 }
 
 /**
