@@ -1,4 +1,4 @@
-// Structured logging for the message store.
+// Structured logging for this package's per-channel files.
 //
 // A third copy of an interface the proxy and the gateway each already have, and
 // the duplication is the point rather than a cost not yet paid.
@@ -32,16 +32,24 @@ export type LogLevel = "info" | "warn" | "error";
 export interface LogFields {
   /**
    * Fixed vocabulary: "store_opened" when the gateway opens a store to write,
-   * "store_reader_opened" when the proxy opens one to search. Two words rather
-   * than one because which process opened a channel's file, and whether it can
-   * write to it, is the first thing an operator reading these lines wants.
+   * "store_reader_opened" when the proxy opens one to search, and
+   * "memory_file_opened" when the agent opens a channel's `MEMORY.md`. Three
+   * words rather than one because which process opened which of a channel's
+   * files, and whether it can write to it, is the first thing an operator
+   * reading these lines wants.
+   *
+   * **There is deliberately no per-operation event.** What a memory operation
+   * did is a `MemoryOpResult` its caller already holds, and the only fields this
+   * shape could carry it in would be fields that hold a channel's own text. A
+   * curation turn's outcome belongs in the log of whoever ran the turn.
    */
   event: string;
-  /** The channel this store belongs to. An id — the same one the team sheet is keyed on. */
+  /** The channel this file belongs to. An id — the same one the team sheet is keyed on. */
   channel?: string;
   /**
-   * The store file. A path, and its only variable segment is the channel id,
-   * which is why it carries no content: `<root>/<channel>/store.db`.
+   * A file under the state root. A path, and its only variable segment is the
+   * channel id, which is why it carries no content:
+   * `<root>/<channel>/store.db`, or `<root>/<channel>/MEMORY.md`.
    */
   file?: string;
 }
