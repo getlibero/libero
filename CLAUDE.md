@@ -76,7 +76,7 @@ code is a paragraph the next reader will not find.
 | Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, approvals, the audit log's write discipline | `packages/proxy/README.md` |
 | Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, the three rules that package keeps | `packages/gateway/README.md` |
-| The three reads, the isolation boundary, the tokenizer, why `search` takes text | `packages/memory/README.md` |
+| The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters | `e2e/README.md` |
