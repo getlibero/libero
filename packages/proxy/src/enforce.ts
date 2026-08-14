@@ -297,9 +297,22 @@ function serversCarrying(servers: readonly McpServer[], tool: string): McpServer
  *
  * The `credential` is a name, never a value (`CredentialName` in the schema),
  * so a key is safe to hold in a map and safe to log.
+ *
+ * The `auth` block (#255) joins the key because it is authentication and the
+ * key's contract is "same destination, same authentication": a bearer block
+ * and an OAuth block sharing a url and a credential name must not merge into
+ * one pooled client, and two OAuth blocks naming different issuers are two
+ * upstreams. Scopes are compared as written rather than sorted — two blocks
+ * naming one tool with reordered scopes become a disagreement `selectUpstream`
+ * refuses, which surfaces the operator slip instead of quietly picking one.
  */
 export function upstreamKey(server: McpServer): string {
-  return JSON.stringify([server.transport, server.url ?? null, server.credential ?? null]);
+  return JSON.stringify([
+    server.transport,
+    server.url ?? null,
+    server.credential ?? null,
+    server.auth === undefined ? null : [server.auth.scheme, server.auth.issuer, server.auth.scopes]
+  ]);
 }
 
 /** Same destination, same authentication. Everything dispatch reads. */

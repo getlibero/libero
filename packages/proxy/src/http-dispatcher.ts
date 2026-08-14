@@ -46,14 +46,14 @@ import { RedactionError } from "./redact.js";
 import type { Vault } from "./vault.js";
 
 /**
- * Bearer, for every upstream, until an upstream needs otherwise.
+ * Bearer, for every upstream this dispatcher can serve today.
  *
- * Not a team-sheet field. The architecture says a credential is "injected into
- * outbound MCP/HTTP calls by the proxy" without naming a mechanism, and Bearer
- * is what the MCP HTTP transport and a service token both expect. Making it
- * configurable would put an attacker-interesting knob (which header does the
- * secret go in) into a file an admin edits, for no upstream that needs it yet.
- * When one does, it becomes an `AuthScheme` member and a sheet field together.
+ * The sheet field the old promise here named now exists — `[mcp_server.auth]`
+ * (#255) declares an OAuth upstream, and `AuthScheme` has its member — but the
+ * engine that mints a token from a stored grant is #256, so an upstream
+ * carrying an auth block is answered `unavailable` below rather than served
+ * with a credential from the wrong store. Which header a scheme uses is still
+ * not a sheet field: that knob stays out of the file an admin edits.
  */
 const SCHEME: AuthScheme = "bearer";
 
@@ -281,6 +281,11 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
   const lease = (upstream: McpServer): ClientLease => {
     if (upstream.transport !== "http") return { ok: false, reason: "unsupported_transport" };
 
+    // Before the vault lookup, deliberately: an OAuth credential name resolves
+    // in the token store and never falls through to the vault, so until the
+    // token engine (#256) lands there is nothing here that may resolve it.
+    if (upstream.auth !== undefined) return { ok: false, reason: "auth_unbuilt" };
+
     let secret;
     if (upstream.credential !== undefined) {
       const lookup = options.vault.lookup(upstream.credential);
@@ -338,6 +343,20 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       // above narrows to the member that requires one (#89). A sheet declaring
       // `transport = "http"` with no url is rejected at load, which is where an
       // operator can still see it.
+
+      // Not built rather than not allowed, the stdio arm's shape: the sheet may
+      // declare an OAuth upstream (#255), and the engine that mints its token
+      // is #256. Before the vault lookup, deliberately — an OAuth name resolves
+      // in the token store and never falls through to the vault.
+      if (upstream.auth !== undefined) {
+        logger.log("warn", {
+          event: "dispatch_auth_unbuilt",
+          channel: call.channel,
+          server: call.server,
+          tool: call.tool
+        });
+        return { outcome: "unavailable" };
+      }
 
       // Resolved before anything is opened, so a sheet naming a credential the
       // vault does not hold refuses without the upstream ever learning the call

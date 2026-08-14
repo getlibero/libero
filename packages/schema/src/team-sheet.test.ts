@@ -88,14 +88,30 @@ describe("the example team sheet", () => {
     expect(repos?.tool[1]?.approval).toBeUndefined();
   });
 
-  it("points both blocks at GitHub's hosted server over https", () => {
+  it("points the GitHub blocks at the hosted server over https", () => {
     const urls = sheet.mcp_server.map((server) =>
       server.transport === "http" ? server.url : null,
     );
     expect(urls).toEqual([
       "https://api.githubcopilot.com/mcp/x/pull_requests",
       "https://api.githubcopilot.com/mcp/x/repos",
+      "https://mcp.notion.example/mcp",
     ]);
+  });
+
+  // The OAuth block (#255). What the starter is teaching: the auth block is
+  // declarations only — issuer and scopes, no token, no lifetime, no endpoint —
+  // and the credential is still a name, keying a grant in the token store
+  // rather than a vault entry.
+  it("carries an OAuth upstream whose auth block holds no secret", () => {
+    const notion = sheet.mcp_server[2];
+    expect(notion?.name).toBe("notion");
+    expect(notion?.credential).toBe("notion_grant");
+    expect(notion?.auth).toEqual({
+      scheme: "oauth",
+      issuer: "https://auth.notion.example",
+      scopes: ["mcp.read"],
+    });
   });
 });
 
@@ -402,6 +418,132 @@ describe("an mcp_server's transport decides its url", () => {
     expect(paths(serverSheet({ name: "github", transport: "stdio", url: "http://mcp:3001" }))).toEqual([
       "mcp_server.0.url: invalid_type",
     ]);
+  });
+});
+
+// The auth block (#255). The property every case guards from a different side:
+// the sheet can declare that an upstream speaks OAuth, and cannot express a
+// secret, a token, a lifetime, or an endpoint while doing it.
+describe("an mcp_server's auth block", () => {
+  const serverSheet = (server: Record<string, unknown>) => ({
+    channel: minimalChannel(),
+    mcp_server: [server],
+  });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  const oauthServer = (auth: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    serverSheet({
+      name: "notion",
+      transport: "http",
+      url: "http://mcp:3001",
+      credential: "notion_grant",
+      auth,
+      ...extra,
+    });
+
+  it("accepts an http upstream declaring an issuer and scopes", () => {
+    expect(paths(oauthServer({ scheme: "oauth", issuer: "https://as.example", scopes: ["mcp.read"] }))).toBeNull();
+  });
+
+  it("defaults scopes to none", () => {
+    const sheet = TeamSheet.parse(oauthServer({ scheme: "oauth", issuer: "https://as.example" }));
+    expect(sheet.mcp_server[0]?.auth?.scopes).toEqual([]);
+  });
+
+  // A loopback issuer parses, deliberately: the fake authorization server the
+  // tests stand up has no certificate, and `url` above takes http for the same
+  // reason.
+  it("accepts a loopback http issuer", () => {
+    expect(paths(oauthServer({ scheme: "oauth", issuer: "http://127.0.0.1:39001" }))).toBeNull();
+  });
+
+  // Same treatment as a stdio url, for the same reason: zod strips unknown
+  // keys, so an undeclared auth on a stdio block would be dropped in silence
+  // and the operator would read the sheet as secured.
+  it("rejects a stdio block carrying auth, naming the field", () => {
+    expect(
+      paths(
+        serverSheet({
+          name: "runner",
+          transport: "stdio",
+          credential: "runner_grant",
+          auth: { scheme: "oauth", issuer: "https://as.example" },
+        }),
+      ),
+    ).toEqual(["mcp_server.0.auth: invalid_type"]);
+  });
+
+  // The name is what the grant flow stored the refresh token under; a block
+  // with no name has no grant to key. The issue lands on `credential` because
+  // that is the field the operator must add.
+  it("rejects an oauth block with no credential, naming that field", () => {
+    expect(
+      paths(
+        serverSheet({
+          name: "notion",
+          transport: "http",
+          url: "http://mcp:3001",
+          auth: { scheme: "oauth", issuer: "https://as.example" },
+        }),
+      ),
+    ).toEqual(["mcp_server.0.credential: custom"]);
+  });
+
+  // An issuer identifier is compared byte-for-byte, and RFC 8414 gives it no
+  // query and no fragment — a place a token could otherwise be written into
+  // the one file that holds none.
+  it("rejects an issuer carrying a query or a fragment", () => {
+    expect(paths(oauthServer({ scheme: "oauth", issuer: "https://as.example/?tenant=1" }))).toEqual([
+      "mcp_server.0.auth.issuer: custom",
+    ]);
+    expect(paths(oauthServer({ scheme: "oauth", issuer: "https://as.example/#frag" }))).toEqual([
+      "mcp_server.0.auth.issuer: custom",
+    ]);
+  });
+
+  it("rejects a scheme it does not know", () => {
+    expect(paths(oauthServer({ scheme: "basic", issuer: "https://as.example" }))).toEqual([
+      "mcp_server.0.auth.scheme: invalid_value",
+    ]);
+  });
+
+  it("rejects a scope with a space, a quote, or a backslash", () => {
+    for (const scope of ["a b", 'a"b', "a\\b", ""]) {
+      expect(paths(oauthServer({ scheme: "oauth", issuer: "https://as.example", scopes: [scope] }))).not.toBeNull();
+    }
+  });
+
+  it("bounds the scope list and the scope word", () => {
+    expect(
+      paths(oauthServer({ scheme: "oauth", issuer: "https://as.example", scopes: Array.from({ length: 17 }, (_, i) => `s${i}`) })),
+    ).toEqual(["mcp_server.0.auth.scopes: too_big"]);
+    expect(
+      paths(oauthServer({ scheme: "oauth", issuer: "https://as.example", scopes: ["x".repeat(129)] })),
+    ).toEqual(["mcp_server.0.auth.scopes.0: too_big"]);
+  });
+
+  // The structural half of "no secret is expressible": the parsed type has
+  // exactly three keys, so a token or expiry written into the block is
+  // stripped rather than carried, and the assertions above make the stripping
+  // loud where it would mislead (stdio). This is the sheet's defining property
+  // — it holds no value — surviving the new block.
+  it("carries exactly scheme, issuer, and scopes", () => {
+    const sheet = TeamSheet.parse(
+      oauthServer({
+        scheme: "oauth",
+        issuer: "https://as.example",
+        scopes: [],
+        access_token: "leaked",
+        expires_in: 3600,
+        token_endpoint: "https://elsewhere.example/token",
+      }),
+    );
+    expect(Object.keys(sheet.mcp_server[0]?.auth ?? {}).sort()).toEqual(["issuer", "scheme", "scopes"]);
   });
 });
 

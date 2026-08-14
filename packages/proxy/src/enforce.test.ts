@@ -1429,6 +1429,53 @@ describe("the upstream key", () => {
 
     expect(upstreamKey(block)).toContain("github_token");
   });
+
+  // The auth block is authentication, and the key's contract is "same
+  // destination, same authentication" (#255): a bearer block and an oauth
+  // block sharing a url and a credential name must not merge into one pooled
+  // client, and two oauth blocks under different issuers are two upstreams.
+  it("splits a bearer block from an oauth block sharing url and credential", () => {
+    const oauthBlock = (issuer: string) => ({
+      name: "notion",
+      transport: "http",
+      url: UPSTREAM,
+      credential: "c",
+      auth: { scheme: "oauth", issuer },
+      tool: [{ name: "search_pages" }]
+    });
+    const bearer = sheetOf({
+      ...BASE,
+      mcp_server: [{ name: "notion", transport: "http", url: UPSTREAM, credential: "c", tool: [{ name: "search_pages" }] }]
+    }).mcp_server[0];
+    const oauthA = sheetOf({ ...BASE, mcp_server: [oauthBlock("https://as.example")] }).mcp_server[0];
+    const oauthB = sheetOf({ ...BASE, mcp_server: [oauthBlock("https://other.example")] }).mcp_server[0];
+    if (bearer === undefined || oauthA === undefined || oauthB === undefined) throw new Error("fixture lost a block");
+
+    expect(upstreamKey(bearer)).not.toBe(upstreamKey(oauthA));
+    expect(upstreamKey(oauthA)).not.toBe(upstreamKey(oauthB));
+  });
+
+  // Two blocks naming one tool but disagreeing about auth are the sheet
+  // authorizing one thing and describing two — the server_ambiguous shape,
+  // reached through the same key.
+  it("refuses a tool whose carriers disagree about auth", () => {
+    const sheet = sheetOf({
+      ...BASE,
+      mcp_server: [
+        { name: "notion", transport: "http", url: UPSTREAM, credential: "c", tool: [{ name: "search_pages" }] },
+        {
+          name: "notion",
+          transport: "http",
+          url: UPSTREAM,
+          credential: "c",
+          auth: { scheme: "oauth", issuer: "https://as.example" },
+          tool: [{ name: "search_pages" }]
+        }
+      ]
+    });
+    const decision = decide({ sheet, call: callTo("notion", "search_pages"), spend: NO_SPEND });
+    expect(decision.outcome === "refuse" && decision.refusal.reason).toBe("server_ambiguous");
+  });
 });
 
 // A built-in is not a bypass (#64). Every case below is the MCP case with the

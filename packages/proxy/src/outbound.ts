@@ -39,14 +39,18 @@ import type { Secret } from "./vault.js";
 /**
  * How the credential is attached.
  *
- * One member today. It is an enum rather than a bare boolean because the shape
- * of the question is "which scheme", and the destination decides — a GitHub
- * token and the MCP HTTP transport both want `Authorization: Bearer`, and the
- * next upstream may not. #39 adds members here; call sites name the scheme
- * explicitly so adding one is a compile error at each site rather than a
+ * An enum rather than a bare boolean because the shape of the question is
+ * "which scheme", and the destination decides. Call sites name the scheme
+ * explicitly, so adding a member is a compile error at each site rather than a
  * silently changed default.
+ *
+ * `bearer` is a service token an operator wrote into the vault. `oauth` (#255)
+ * is an access token the proxy mints from stored grant material — same header
+ * on the wire, different provenance, and which store the credential name
+ * resolves in is the scheme's decision, never a fallback. See "Two credential
+ * stores" in the package README.
  */
-export type AuthScheme = "bearer";
+export type AuthScheme = "bearer" | "oauth";
 
 /**
  * The verbs this function will send.
@@ -170,6 +174,11 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 export function credentialHeader(scheme: AuthScheme, value: string): readonly [string, string] {
   switch (scheme) {
     case "bearer":
+      return ["authorization", `Bearer ${value}`];
+    // A minted access token is a bearer token on the wire (OAuth 2.1's own
+    // framing). What differs is the value's provenance — the token store, not
+    // the vault — and provenance is not this function's business.
+    case "oauth":
       return ["authorization", `Bearer ${value}`];
   }
 }
