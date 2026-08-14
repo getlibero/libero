@@ -41,6 +41,19 @@ export type {
 
 export { createStubToolSource, createUnavailableToolExecutor } from "./loop/stub-tools.js";
 
+export {
+  CURATION_SYSTEM_PROMPT,
+  curationTranscript,
+  memoryToolDefinitions,
+  runCurationTurn
+} from "./curation/turn.js";
+export type {
+  CurationOpOutcome,
+  CurationTurnOptions,
+  CurationTurnResult,
+  MemoryOpHandler
+} from "./curation/turn.js";
+
 export { createProxyTransport, ProxyClientError } from "./proxy/transport.js";
 export type {
   ProxyFailure,

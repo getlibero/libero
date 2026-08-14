@@ -193,6 +193,50 @@ process exits is lost, since neither the gateway's stop nor the task abort drain
 one (#118). At most one turn per task, and it under-reports, so the budget fails
 open.
 
+## The curation turn
+
+`src/curation/turn.ts` is one extra model call after a task's reply has already
+posted, offered the two memory tools and nothing else. Layer 2's inner loop — the
+pattern the architecture credits to Letta.
+
+**It is one call, not a second loop, and the shape is what bounds it.** The only
+definitions offered are `MEMORY_TOOLS` from `@getlibero/schema`; a name that is
+not one of the two is answered `unknown_tool` by `parseMemoryOp` and dispatched
+nowhere, because there is no executor here that could reach a proxied tool. The
+instructions in `CURATION_SYSTEM_PROMPT` ask for durable team facts, and a model
+that ignores them is still bounded by the tool set, by
+`MEMORY_OP_MAX_TEXT_CHARS`, by the store's own file cap, and by the meter.
+
+**Nothing here writes a file.** Operations go to `applyOp`, the same callback
+shape `onTurn`, `ToolSource` and `HeldCallPrompter` already use, and it is why
+this package still depends on `@getlibero/schema` and nothing else. The
+composition root wires it to `openMemoryFile`; the loop has never known what is
+on the other end of a side effect, and a memory write is not the thing to change
+that for.
+
+**The model is not told what its operations did.** There is no second call to
+read a result in, and that is deliberate: the model is holding the file's
+contents when it writes a `find`, and the prompt carries the file's size and its
+cap, so a failure is a model that ignored what was in front of it rather than one
+that lacked information. Whatever is left over corrects itself one task later,
+because the next curation turn reads the real file. `memoryOpMessage`'s sentences
+go to the caller's log, which is where an operator reads them.
+
+Spend is reported through `onTurn` exactly as the loop's own turns are, with the
+turn number the caller supplies — the loop's count plus one, so the id stays
+`<task>.<n>`. **`max_tokens_per_task` deliberately does not apply**: the turn runs
+after the reply posted, so the task is over, and a task that ended by spending its
+cap is exactly the one most worth remembering. One call bounded by
+`max_tokens_per_turn`, with the proxy's daily meter as the backstop.
+
+`curationTranscript` strips the task's tool traffic before the model sees it —
+`tool` messages, the `toolCalls` that produced them, any assistant turn that was
+only calls, and `providerState`. The first forces the rest: a tool-use block with
+no matching result is not a conversation a provider will accept. The cost is that
+a fact which appeared only inside a tool result and never reached the model's own
+prose is invisible to curation, which is the price of not re-sending a whole tool
+conversation to record one sentence.
+
 ## Layout
 
 | Path | What it is |
@@ -201,6 +245,7 @@ open.
 | `loop/loop.ts` | The ReAct loop |
 | `loop/caps.ts` | The cap tracker and the composed abort signal |
 | `loop/types.ts` | `AgentLoopCaps`, `AgentStopReason`, the hook contracts |
+| `curation/turn.ts` | The post-reply memory turn, its prompt, and `MemoryOpHandler` |
 | `proxy/transport.ts` | mTLS over `node:https` |
 | `proxy/tools.ts` | `ToolSource` + `ToolExecutor`, and the held-call path |
 | `proxy/tool-names.ts` | Flat name to `(server, tool)`, and why it is a lookup |
