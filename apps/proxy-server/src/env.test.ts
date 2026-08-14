@@ -13,6 +13,7 @@ import {
   maxUpstreamConcurrencyFromEnv,
   portFromEnv,
   requiredEnv,
+  upstreamTimeoutMsFromEnv,
   vaultFileFromEnv,
   vaultKeyFromEnv
 } from "./env.js";
@@ -116,6 +117,29 @@ describe("maxUpstreamConcurrencyFromEnv", () => {
   it.each(["0", "-4", "8.5", "eight", "unlimited"])("refuses %j", raw => {
     expect(() => maxUpstreamConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: raw })).toThrow(
       /PROXY_MAX_UPSTREAM_CONCURRENCY/
+    );
+  });
+});
+
+describe("upstreamTimeoutMsFromEnv", () => {
+  // Absent means "the package's default applies" rather than a number this
+  // file restates: the option is spread in conditionally, so undefined here is
+  // an option not passed rather than a timeout of undefined.
+  it("is undefined when unset or empty", () => {
+    expect(upstreamTimeoutMsFromEnv({})).toBeUndefined();
+    expect(upstreamTimeoutMsFromEnv({ PROXY_UPSTREAM_TIMEOUT_MS: "" })).toBeUndefined();
+  });
+
+  it("takes the operator's number", () => {
+    expect(upstreamTimeoutMsFromEnv({ PROXY_UPSTREAM_TIMEOUT_MS: "2000" })).toBe(2000);
+  });
+
+  // Zero is every call timed out rather than "no timeout", the same reading
+  // its neighbours give a blanked-out zero. No ceiling — a patient operator is
+  // spending their own sockets.
+  it.each(["0", "-1", "1.5", "abc"])("refuses %j", raw => {
+    expect(() => upstreamTimeoutMsFromEnv({ PROXY_UPSTREAM_TIMEOUT_MS: raw })).toThrow(
+      /PROXY_UPSTREAM_TIMEOUT_MS/
     );
   });
 });
