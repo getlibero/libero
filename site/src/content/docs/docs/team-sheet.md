@@ -8,7 +8,8 @@ own git repo.
 
 The name is the football one. It is the sheet the manager submits before a match declaring who is
 allowed on the pitch, what position they play, and what needs the gaffer's sign-off. Everything
-the proxy enforces at runtime is a lookup into this file.
+enforced at runtime is a lookup into this file — all of it by the proxy except one block, and
+[`[memory]`](#memory) says why it is the exception.
 
 Nothing in a team sheet is a secret. Credentials appear as **names**, resolved only inside the
 proxy's vault — never in the sheet, the logs, an error message, or anything returned to the agent.
@@ -78,6 +79,28 @@ follow_up_window_seconds = 900                   # replies in a worked thread ne
 daily_tokens     = 2_000_000
 daily_tool_calls = 400
 
+# The invoice, in US dollars (#62).
+#
+# Beside daily_tokens rather than instead of it. Tokens are the right unit for a
+# runaway brake and need no pricing knowledge at all, which is what a channel on
+# self-hosted models wants; they are the wrong unit for a budget, because with
+# the model switching per task the same 60k tokens is an order-of-magnitude cost
+# swing. Set both and whichever binds first refuses.
+#
+# Priced against the model the PROVIDER SAYS IT SERVED, not the one [llm] model
+# above asks for — under a router those differ, which is the whole reason this
+# field exists. Spend on a model absent from the proxy's price table cannot be
+# priced, and a channel with this set is refused rather than metered at zero.
+# Spend reported by an agent that named no model cannot be priced either, and
+# refuses the same way — that one is an agent to look at rather than a price to
+# add, and the two refusals say which.
+#
+# There is no default: a default token count is a brake, a default dollar cap is
+# a bill. Commented out here because a starter sheet must not invent one. Set it
+# and the proxy needs a price table; see PROXY_PRICE_TABLE and prices/example/.
+#
+# daily_usd = 25.00
+
 # What a cached token costs against daily_tokens. Cache reads and cache writes
 # bill differently from ordinary input tokens; how differently is your
 # provider's decision. These are Anthropic's ratios. Set cache_read_weight = 0
@@ -85,10 +108,47 @@ daily_tool_calls = 400
 cache_read_weight  = 0.1
 cache_write_weight = 1.25
 
-# How far into either budget this channel gets before it is told once, in the
-# thread, that it is close. The call carrying the notice still runs. Set to 0
-# for no warning.
+# The soft limit: how far into either budget this channel gets before it is told
+# once, in its thread, that it is close. The call that carries the notice still
+# runs — only the hard limits above stop anything. A fraction rather than a pair
+# of numbers, so there is no way to write a warning that fires after the refusal
+# it exists to precede; set it to 0 to turn the warning off.
 warn_at = 0.8
+
+# What the agent remembers between tasks. MEMORY.md is one freeform markdown
+# file per channel, written by a short curation turn after each reply and read
+# back into the context the next task starts from. No format is imposed on it:
+# your team can read it, edit it, and delete it. It lives in the agent's own
+# state root, never in this directory.
+#
+# ON BY DEFAULT. Omit this block and the channel curates with the figures below.
+# Set enabled = false and no curation turn runs at all — nothing is written and
+# nothing is read back. That is the whole switch, and it is a channel's call.
+#
+# Unlike everything above, THIS BLOCK IS HONOURED BY THE AGENT AND NOT BY THE
+# PROXY. The proxy never opens MEMORY.md, so it holds no second copy of these
+# numbers to check the first against. This therefore has the standing
+# daily_tokens has and not the standing daily_tool_calls has: it holds against a
+# model that has been talked into filling the file, and not against a
+# compromised agent process. A sheet the agent cannot read falls back to NO
+# curation — the opposite of the default here, and deliberately so, because a
+# typo should be able to cost a channel its memory and never to switch a feature
+# on.
+#
+# max_file_chars is the whole file, and it is spent on every task in this
+# channel: MEMORY.md goes into the context a task starts from, so its size is
+# charged against max_tokens_per_task before the model has done anything. That
+# is why it is the order of max_result_chars rather than the size of a document.
+# At the cap an operation is REFUSED and the file is left unchanged — nothing is
+# truncated and nothing is dropped from the front. Compaction is the model's own
+# work, done by replacing text with a shorter version of itself.
+#
+# How much one operation may carry is not a field here: 4096 characters, fixed
+# in @getlibero/schema, because it bounds what the MODEL may write rather than
+# what this channel may spend, and the file cap already bounds the total.
+[memory]
+enabled        = true                       # opt out with false; there is no other switch
+max_file_chars = 32768                      # the whole file; one operation may carry 4096
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
@@ -190,13 +250,20 @@ max_result_chars = 8000                       # whole messages come back; a chan
                                               # conversation to put in front of the
                                               # model at once.
 
-# Where traffic may go when this sheet does not already say. PARSED BUT NOT YET
-# ENFORCED — see the note below. The MCP servers above are NOT listed here:
-# declaring a url in [[mcp_server]] is what authorizes it. This list is for the
-# destinations nothing pinned. Keeping them apart is why allowing the GitHub
-# MCP server (api.githubcopilot.com) does not also let sandboxed code call
-# api.github.com directly, and why allowing the API does not let it dial the
-# MCP server.
+# Where traffic may go when this sheet does not already say.
+#
+# PARSED BUT NOT YET ENFORCED. Nothing in the deployment reaches a destination
+# this sheet has not already pinned, so nothing consults this list — entries are
+# validated when the sheet loads and permit nothing and forbid nothing. The
+# surface that needs it is a code-execution sandbox, which is later work (#219).
+# Write the list as though it were enforced; it is the contract it will be
+# enforced against.
+#
+# The MCP servers above are NOT listed here: declaring a url in [[mcp_server]]
+# is what authorizes it. This list is for the destinations nothing pinned.
+# Keeping them apart is why allowing the GitHub MCP server
+# (api.githubcopilot.com) does not also let sandboxed code call api.github.com
+# directly, and why allowing the API does not let it dial the MCP server.
 #
 # Default deny. "*." stands for one or more subdomain labels, so
 # *.internal.example.com covers build.internal.example.com but not
@@ -204,7 +271,11 @@ max_result_chars = 8000                       # whole messages come back; a chan
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 
-# Proactive posting. PARSED BUT NOT YET READ — phase 4; see the note below.
+# Proactive posting: the agent starting a task nobody asked for, on a schedule.
+#
+# PARSED BUT NOT YET READ. No code in either service consults these two fields,
+# so `enabled = true` turns nothing on. Ambient work is phase 4; the block is
+# here so a sheet written today keeps its shape when it lands.
 [ambient]
 enabled  = false                            # off by default, always
 schedule = "0 9 * * 1-5"
@@ -395,6 +466,61 @@ twice by asking twice.
 The notice is addressed to the people in the channel and is never shown to the model: the remedy is
 a larger number in this file, which is not something a model can reach for, and a sentence in a tool
 result would be re-sent as context on every later turn of the task.
+
+### `[memory]`
+
+What the agent remembers between tasks. `MEMORY.md` is one freeform markdown file per channel,
+written by a short curation turn after each reply and read back into the context the next task
+starts from. No format is imposed on it, so your team can read it, edit it, and delete it. It lives
+in the agent's own state root, never in the directory holding this sheet.
+
+:::note[Validated today, honoured when its first caller lands]
+Both fields are parsed and checked when the sheet loads, so a bad number is rejected where you can
+see it. Nothing reads them yet: the shapes are
+[#224](https://github.com/getlibero/libero/issues/224), the store that enforces the cap is
+[#225](https://github.com/getlibero/libero/issues/225), the curation turn is
+[#226](https://github.com/getlibero/libero/issues/226), and wiring both into the server — including
+honouring `enabled = false` — is [#227](https://github.com/getlibero/libero/issues/227). Phase 2 on
+the [roadmap](/docs/roadmap/). Write the block as though it were enforced; it is the contract it
+will be enforced against.
+:::
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `enabled` | no | Whether the curation turn runs at all. **Defaults to `true`** — the one block on this page that is on when it is absent. `false` writes nothing and reads nothing back. |
+| `max_file_chars` | no | The whole file's ceiling, in characters. Defaults to `32768`. May not be set below `4096`, the most one operation may carry, or above `262144`. |
+
+On by default, unlike `[ambient]` below, and the asymmetry is deliberate. Ambient is the agent
+starting work nobody asked for. Curation is the agent remembering something it was already asked
+about, into a capped file your team can read and edit, on a turn metered through the same per-turn
+spend report as every other turn. Opting out is one line.
+
+**This block is honoured by the agent, not the proxy** — and it is the first one on this page of
+which that is true. Everything else here is enforced by the tool proxy from its own copy of this
+file, and that second copy is what makes an agent process under an attacker's control unable to
+widen its own permissions. The proxy never opens `MEMORY.md`; its only reach into a channel's store
+is a read-only opener, so there is no second copy of these two numbers. In the terms
+[`[budget]`](#budget) already uses, `[memory]` has the standing `daily_tokens` has and not the
+standing `daily_tool_calls` has: it holds against a model that has been talked into filling the
+file, and not against a compromised agent process.
+
+It is consequently the one block where a sheet the agent cannot read falls back to *off* rather
+than to the default above. A typo costing a channel its memory is a degradation the reply survives;
+a typo switching curation on for a channel that wrote `enabled = false` would be a policy
+violation.
+
+`max_file_chars` is spent on every task in the channel, which is why the default is the order of
+`max_result_chars` rather than the size of a document: `MEMORY.md` goes into the context a task
+starts from, so its size is charged against `max_tokens_per_task` before the model has done
+anything. At the cap an operation is **refused and the file is left unchanged**. Nothing is
+truncated, nothing is dropped from the front, and the model is told which cap it hit. Compaction is
+the model's own work: the two operations it gets are appending text and replacing an exact string,
+and deleting is replacing with nothing. There is no operation that rewrites the whole file.
+
+How much one operation may carry is fixed at **4096 characters** in `@getlibero/schema` and is not
+a field here. It bounds what the model may write rather than what this channel may spend — the same
+reason a tool description's length and a search's result limit are not fields either — and
+`max_file_chars` already bounds the total.
 
 ### `[[mcp_server]]`
 
