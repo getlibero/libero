@@ -105,6 +105,17 @@ export type {
   FakeRequest
 } from "./mcp-fake-server.js";
 
+// The fake authorization server, on the same exception: a server, holding no
+// store, no engine and no client. The e2e suite (#258) harnesses it beside the
+// fake upstream, which is why it ships rather than living in a test file.
+export { startFakeTokenIssuer } from "./fake-token-issuer.js";
+export type {
+  FakeIssuerReply,
+  FakeTokenIssuer,
+  FakeTokenIssuerOptions,
+  FakeTokenRequest
+} from "./fake-token-issuer.js";
+
 // `credentialHeader` and `injectCredential` are deliberately **not** exported.
 // They take a revealed credential value, and exporting them would make it
 // possible to attach one to a request without going through `callUpstream` —

@@ -111,6 +111,7 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // several may name at once (#159).
 const mcp = createHttpDispatcher({
   vault,
+  tokens,
   logger,
   maxResponseBytes: maxResponseBytesFromEnv(process.env),
   maxUpstreamConcurrency: maxUpstreamConcurrencyFromEnv(process.env)

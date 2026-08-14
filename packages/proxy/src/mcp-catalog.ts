@@ -104,16 +104,19 @@ export const MAX_CATALOG_PAGES = 5;
 /**
  * A client for this upstream, or why there is none.
  *
- * The reasons are the things ./http-dispatcher.ts already discovers before it
- * opens anything: a transport with no HTTP client, a credential the vault does
- * not hold, an auth block whose engine has not landed (#256), and a pool that
- * has begun closing.
+ * The three reasons are the three things ./http-dispatcher.ts already
+ * discovers before it opens anything: a transport with no HTTP client, a
+ * credential the vault does not hold, and a pool that has begun closing. An
+ * OAuth upstream is deliberately not a fourth: its source is built without
+ * I/O and the token engine decides at the listing's first request, so a
+ * grant problem surfaces as that listing's failure rather than as a lease
+ * refusal this synchronous path would have to block on.
  */
 export type ClientLease =
   | { readonly ok: true; readonly client: McpClient }
   | {
       readonly ok: false;
-      readonly reason: "unsupported_transport" | "credential_unresolved" | "auth_unbuilt" | "shutting_down";
+      readonly reason: "unsupported_transport" | "credential_unresolved" | "shutting_down";
       /** By name, never by value, and only where there is one to name. */
       readonly credential?: string;
     };

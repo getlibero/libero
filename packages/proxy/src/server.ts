@@ -277,6 +277,29 @@ function proxyError(
 }
 
 /**
+ * The 501's sentence, per what made the call unservable.
+ *
+ * Total over the dispatch reasons, the `approvalRefusal` discipline: a new
+ * reason cannot be added without deciding what a channel is told about it.
+ * The absent-reason sentence is the one this route has always sent, byte for
+ * byte — an upstream kind that is not built. The grant sentences name the
+ * remedy, because the reader's next act is running the grant flow, not
+ * editing a sheet.
+ */
+function unavailableText(reason: "no_grant" | "grant_dead" | "mint_failed" | undefined): string {
+  switch (reason) {
+    case undefined:
+      return "the call is permitted, and this proxy has no upstream to serve it";
+    case "no_grant":
+      return "the call is permitted, and this proxy holds no grant for its upstream; run the grant flow";
+    case "grant_dead":
+      return "the call is permitted, and the grant for its upstream is dead; re-run the grant flow";
+    case "mint_failed":
+      return "the call is permitted, and no live access token could be minted for its upstream";
+  }
+}
+
+/**
  * The refusal for a re-submission that was not served.
  *
  * Total over the redeem outcomes that are not `redeemed`, so a new state in
@@ -790,7 +813,7 @@ export function createProxyServer(options: ProxyServerOptions): Server {
             status: PROXY_ERROR_STATUS.not_implemented,
             body: proxyError(
               "not_implemented",
-              "the call is permitted, and this proxy has no upstream to serve it",
+              unavailableText(dispatched.reason),
               ctx.requestId,
               ctx.channel
             )

@@ -11,10 +11,13 @@
 // **Custody survives adoption, and the argument is one line.** The SDK reaches
 // the network only through the `fetch` it is handed, and the one it is handed is
 // `createGuardedFetch` from ./outbound.ts — so the credential is still revealed
-// in exactly one function, still attached last, and every byte the SDK ever sees
+// in exactly one file, still attached last, and every byte the SDK ever sees
 // has already been through the one redaction pass. Nothing here unwraps a
-// secret; it is carried as a handle and handed down. The grep test in
-// ./outbound.test.ts is what keeps that true.
+// secret; the credential travels as a `CredentialSource` (#256), asked per
+// request inside the guarded fetch — a vault value answers with its constant,
+// an OAuth source with the token engine's current mint — and the SDK is never
+// handed a token in either case. The grep test in ./outbound.test.ts is what
+// keeps that true.
 //
 // **What is read off an SDK error, and what is not.** Its class and its numeric
 // code, and nothing else — never a message, except on the one path where the

@@ -95,8 +95,10 @@ export const MAX_SECRET_BYTES = 8_192;
  * credential that reaches a log line, an error message, or a response body by
  * accident arrives as `[redacted]` rather than as itself.
  *
- * `reveal()` is the deliberate act. It is the only way out, and #51 will call
- * it in exactly one place.
+ * `reveal()` is the deliberate act. It is the only way out, and it is called
+ * in exactly one file — ./outbound.ts, at its two sites: spending a credential
+ * on an upstream call, and spending a refresh token at its issuer. The grep
+ * contract in outbound.test.ts is what keeps that count from drifting.
  */
 export interface Secret {
   reveal(): string;

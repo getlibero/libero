@@ -8,10 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_UPSTREAM_RESPONSE_BYTES,
   DEFAULT_UPSTREAM_TIMEOUT_MS,
+  MAX_CONTROL_BODY_BYTES,
   UpstreamError,
   callUpstream,
   constantCredential,
   createGuardedFetch,
+  exchangeRefreshToken,
   readSessionId,
   credentialHeader,
   destinationHost,
@@ -723,11 +725,15 @@ describe("the destination host", () => {
   });
 });
 
-// The property ./vault.ts is written to make checkable: "`reveal()` is the
-// deliberate act. It is the only way out, and #51 will call it in exactly one
-// place." A grep, not a mock, because the claim is about the whole tree.
-describe("the single reveal", () => {
-  it("has exactly one reveal() call site outside tests and the vault itself", () => {
+// The property ./vault.ts is written to make checkable: `reveal()` is the
+// deliberate act and the only way a value leaves either store. Two sites since
+// the token engine (#256), both in this file and each deliberate — the header
+// names them: `callUpstream` spends a credential on an upstream and scrubs the
+// reply; `exchangeRefreshToken` spends a refresh token at its issuer and
+// returns the reply to no caller. A grep, not a mock, because the claim is
+// about the whole tree.
+describe("the two reveals", () => {
+  it("has exactly two reveal() call sites outside tests and the vault itself, both in outbound.ts", () => {
     const found = execFileSync(
       "sh",
       [
@@ -741,8 +747,10 @@ describe("the single reveal", () => {
       // vault.ts defines `reveal`; it does not call it.
       .filter(line => !line.startsWith("packages/proxy/src/vault.ts"));
 
-    expect(found).toHaveLength(1);
-    expect(found[0]).toContain("packages/proxy/src/outbound.ts");
+    expect(found).toHaveLength(2);
+    for (const line of found) {
+      expect(line).toContain("packages/proxy/src/outbound.ts");
+    }
   });
 
   // The MCP SDK's confinement, checked the same way and for the same reason.
@@ -951,5 +959,249 @@ describe("the session id", () => {
     // assigns no session is an ordinary one rather than a broken one.
     expect(readSessionId("a b")).toBeNull();
     expect(readSessionId(null)).toBeNull();
+  });
+});
+
+// The 401 path the CredentialSource seam adds (#256). It sits below the SDK so
+// a connect-time rejection and a mid-call one take the identical path, and it
+// is safe because a 401 means the upstream refused authentication and executed
+// nothing.
+describe("the one retry on a 401", () => {
+  const sourceOf = (
+    refresh: (rejected: number) => Promise<{ secret: Secret; generation: number } | null>
+  ) => ({
+    scheme: "oauth" as const,
+    name: "notion_grant",
+    acquire: () => Promise.resolve({ secret: secretOf("at_stale"), generation: 1 }),
+    refresh
+  });
+
+  const fetch401Then200 = () => {
+    const calls: { init: RequestInit }[] = [];
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ init: init ?? {} });
+      return calls.length === 1 ? new Response("{}", { status: 401 }) : new Response("{}", { status: 200 });
+    });
+    return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
+  };
+
+  it("retries once with the successor and succeeds", async () => {
+    const { calls, fetch } = fetch401Then200();
+    const refreshed: number[] = [];
+    const guarded = createGuardedFetch({
+      url: "http://mcp-github:3001/mcp",
+      source: sourceOf(rejected => {
+        refreshed.push(rejected);
+        return Promise.resolve({ secret: secretOf("at_fresh"), generation: 2 });
+      }),
+      fetch
+    });
+
+    const response = await guarded("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    // The rejected generation is what refresh is told, which is how a source
+    // distinguishes a straggler from a fresh failure.
+    expect(refreshed).toEqual([1]);
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toBe("Bearer at_stale");
+    expect((calls[1]?.init.headers as Record<string, string>).authorization).toBe("Bearer at_fresh");
+  });
+
+  it("lets the 401 stand when the source has no successor", async () => {
+    const { calls, fetch } = fetch401Then200();
+    const guarded = createGuardedFetch({
+      url: "http://mcp-github:3001/mcp",
+      source: sourceOf(() => Promise.resolve(null)),
+      fetch
+    });
+
+    const response = await guarded("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    expect(response.status).toBe(401);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never retries for a bearer source, whose refresh is null by construction", async () => {
+    const { calls, fetch } = fetch401Then200();
+    const guarded = createGuardedFetch({
+      url: "http://mcp-github:3001/mcp",
+      source: constantCredential("bearer", secretOf(VALUE), "github_pat"),
+      fetch
+    });
+
+    const response = await guarded("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    expect(response.status).toBe(401);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+// The exchange (#256): the second reveal site, and the outbound call with the
+// guard inverted — the reply is the credential, so it is returned to no
+// caller. The issuer here is a loopback-shaped constant and the transport is a
+// stub; the socket-level cases live in token-engine.test.ts against the fake
+// issuer.
+describe("the refresh-token exchange", () => {
+  const ISSUER = "http://as.example";
+  const REFRESH = "rt_live_do_not_log";
+
+  const metadataResponse = (over: Record<string, unknown> = {}) =>
+    new Response(
+      JSON.stringify({ issuer: ISSUER, token_endpoint: `${ISSUER}/token`, ...over }),
+      { status: 200 }
+    );
+  const tokenResponse = (over: Record<string, unknown> = {}, status = 200) =>
+    new Response(
+      JSON.stringify({ access_token: "at_minted", token_type: "Bearer", expires_in: 3600, ...over }),
+      { status }
+    );
+
+  /** A fetch answering discovery first, then the token endpoint. */
+  const fetchSequence = (...responses: (() => Response)[]) => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const answer = responses[Math.min(calls.length - 1, responses.length - 1)];
+      if (answer === undefined) throw new Error("fetch sequence exhausted");
+      return answer();
+    });
+    return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
+  };
+
+  const requestOf = (
+    fetch: typeof globalThis.fetch,
+    over: Partial<Parameters<typeof exchangeRefreshToken>[0]> = {}
+  ) => ({
+    issuer: ISSUER,
+    clientId: "https://getlibero.com/client.json",
+    refreshToken: secretOf(REFRESH),
+    credentialName: "notion_grant",
+    persistRotation: async () => undefined,
+    fetch,
+    ...over
+  });
+
+  it("discovers at the well-known path and spends the refresh token at the token endpoint", async () => {
+    const { calls, fetch } = fetchSequence(metadataResponse, () => tokenResponse());
+    const minted = await exchangeRefreshToken(requestOf(fetch));
+
+    expect(calls[0]?.url).toBe(`${ISSUER}/.well-known/oauth-authorization-server`);
+    expect(calls[1]?.url).toBe(`${ISSUER}/token`);
+    const form = new URLSearchParams(String(calls[1]?.init.body));
+    expect(form.get("grant_type")).toBe("refresh_token");
+    expect(form.get("refresh_token")).toBe(REFRESH);
+    expect(form.get("client_id")).toBe("https://getlibero.com/client.json");
+    // Grant-time facts: the record's scopes are not re-asked at the exchange.
+    expect(form.has("scope")).toBe(false);
+    expect(minted.accessToken.reveal()).toBe("at_minted");
+    expect(minted.expiresInSeconds).toBe(3600);
+    expect(minted.rotated).toBe(false);
+  });
+
+  it("inserts the well-known path between host and path, per RFC 8414", async () => {
+    const issuer = "http://as.example/tenant";
+    const { calls, fetch } = fetchSequence(
+      () => new Response(JSON.stringify({ issuer, token_endpoint: `${issuer}/token` }), { status: 200 }),
+      () => tokenResponse()
+    );
+    await exchangeRefreshToken(requestOf(fetch, { issuer }));
+
+    expect(calls[0]?.url).toBe("http://as.example/.well-known/oauth-authorization-server/tenant");
+  });
+
+  it("persists a rotation before the access token exists to be used", async () => {
+    const order: string[] = [];
+    const { fetch } = fetchSequence(metadataResponse, () => tokenResponse({ refresh_token: "rt_successor" }));
+    const minted = await exchangeRefreshToken(
+      requestOf(fetch, {
+        persistRotation: async rotated => {
+          order.push(`persisted:${rotated}`);
+        }
+      })
+    );
+    order.push("returned");
+
+    expect(order).toEqual(["persisted:rt_successor", "returned"]);
+    expect(minted.rotated).toBe(true);
+  });
+
+  it("fails the exchange when the rotation cannot be persisted", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () => tokenResponse({ refresh_token: "rt_successor" }));
+    await expect(
+      exchangeRefreshToken(
+        requestOf(fetch, {
+          persistRotation: () => Promise.reject(new Error("disk full"))
+        })
+      )
+    ).rejects.toMatchObject({ failure: "rotation_unpersisted" });
+  });
+
+  // The issuer binding, both halves: metadata claiming another identity, and
+  // metadata pointing the token endpoint off the issuer's origin. Either way
+  // the refresh token goes nowhere — one fetch, not two.
+  it("treats the grant as absent when discovery names a different issuer", async () => {
+    const { calls, fetch } = fetchSequence(() => metadataResponse({ issuer: "http://other.example" }));
+    await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({ failure: "issuer_mismatch" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses a token endpoint on another origin", async () => {
+    const { calls, fetch } = fetchSequence(() =>
+      metadataResponse({ token_endpoint: "http://elsewhere.example/token" })
+    );
+    await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({ failure: "issuer_mismatch" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses a redirected token request unread", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response(null, { status: 302, headers: { location: "http://elsewhere.example/token" } })
+    );
+    await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({ failure: "redirected" });
+  });
+
+  it("maps invalid_grant to its own failure, reading nothing else off the body", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response(JSON.stringify({ error: "invalid_grant", error_description: `leak ${REFRESH}` }), { status: 400 })
+    );
+    await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({ failure: "invalid_grant" });
+  });
+
+  it("carries no byte of a failed exchange's body in what it throws", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response(`boom ${REFRESH} at_secret_thing`, { status: 500 })
+    );
+    let thrown: unknown;
+    try {
+      await exchangeRefreshToken(requestOf(fetch));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ failure: "exchange_failed" });
+    const seen = `${String(thrown)} ${JSON.stringify(thrown, Object.getOwnPropertyNames(thrown))} ${(thrown as Error).stack ?? ""}`;
+    expect(seen).not.toContain("boom");
+    expect(seen).not.toContain(REFRESH);
+  });
+
+  it("refuses a token response missing its access token or mis-typing its lifetime", async () => {
+    for (const body of [
+      {},
+      { access_token: "" },
+      { access_token: "at", token_type: "mac" },
+      { access_token: "at", token_type: "Bearer", expires_in: "soon" }
+    ]) {
+      const { fetch } = fetchSequence(metadataResponse, () => new Response(JSON.stringify(body), { status: 200 }));
+      await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({
+        failure: "malformed_token_response"
+      });
+    }
+  });
+
+  it("bounds a token response at the control-plane cap", async () => {
+    const { fetch } = fetchSequence(metadataResponse, () =>
+      new Response("x".repeat(MAX_CONTROL_BODY_BYTES + 1), { status: 200 })
+    );
+    await expect(exchangeRefreshToken(requestOf(fetch))).rejects.toMatchObject({ failure: "too_large" });
   });
 });

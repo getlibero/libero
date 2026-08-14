@@ -2461,6 +2461,54 @@ describe("a permitted call with no upstream", () => {
 
     expect(response.status).toBe(501);
     expect(ProxyError.parse(response.body).error.code).toBe("not_implemented");
+    // Byte for byte: the reasoned variants below must not drift this, the
+    // sentence every pre-#256 deployment has always sent.
+    expect(ProxyError.parse(response.body).error.message).toBe(
+      "the call is permitted, and this proxy has no upstream to serve it"
+    );
+  });
+
+  // The reasons the token engine added (#256). Same status, same audit word —
+  // nothing was denied in any of them — but the sentence names what the
+  // operator does next, because "no upstream" is the wrong diagnosis for a
+  // grant problem.
+  it.each([
+    ["no_grant", "the call is permitted, and this proxy holds no grant for its upstream; run the grant flow"],
+    ["grant_dead", "the call is permitted, and the grant for its upstream is dead; re-run the grant flow"],
+    ["mint_failed", "the call is permitted, and no live access token could be minted for its upstream"]
+  ] as const)("names %s in the 501's sentence", async (reason, sentence) => {
+    const reasoned = createProxyServer({
+      tls: loadTlsOptions({
+        cert: join(certs, "proxy", "server.pem"),
+        key: join(certs, "proxy", "server.key"),
+        ca: join(certs, "ca.pem")
+      }),
+      sheets,
+      spend: meter,
+      dispatcher: { dispatch: () => Promise.resolve({ outcome: "unavailable", reason }) },
+      catalog: createUnavailableCatalog(),
+      audit: createSqliteAuditWriter({ db: bareAuditDb }),
+      logger: createJsonLogger(() => {})
+    });
+    const reasonedPort = await new Promise<number>(resolve => {
+      reasoned.listen(0, "127.0.0.1", () => resolve((reasoned.address() as AddressInfo).port));
+    });
+
+    try {
+      const response = await call(
+        "/v1/tools/call",
+        clientCert(certs, CHANNEL),
+        "POST",
+        reasonedPort,
+        JSON.stringify(asked({ id: "toolu_02", server: "github", tool: "list_prs" }))
+      );
+
+      expect(response.status).toBe(501);
+      expect(ProxyError.parse(response.body).error.message).toBe(sentence);
+    } finally {
+      reasoned.closeAllConnections();
+      await new Promise<void>(resolve => reasoned.close(() => resolve()));
+    }
   });
 
   // Two claims in one case, because they are in tension and the fix for #124 is

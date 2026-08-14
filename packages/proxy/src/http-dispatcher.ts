@@ -41,8 +41,10 @@ import { createSilentLogger, type Logger } from "./log.js";
 import { type ClientLease, createMcpCatalog } from "./mcp-catalog.js";
 import type { McpFailure, McpOutcome } from "./mcp-client.js";
 import { type McpPool, createMcpPool } from "./mcp-pool.js";
-import { UpstreamError, constantCredential, destinationHost } from "./outbound.js";
+import { type CredentialSource, UpstreamError, constantCredential, destinationHost } from "./outbound.js";
 import { RedactionError } from "./redact.js";
+import { type TokenEngine, createTokenEngine } from "./token-engine.js";
+import type { TokenStore } from "./token-store.js";
 import type { Vault } from "./vault.js";
 
 // The scheme travels on the CredentialSource now — the vault's is a constant
@@ -51,9 +53,38 @@ import type { Vault } from "./vault.js";
 // which header a scheme uses is not a sheet field, and the auth block (#255)
 // declares *that* an upstream speaks OAuth, never how a header is spelled.
 
+/**
+ * The store a deployment without one behaves as: every grant is absent.
+ *
+ * Fail closed, not an error — an auth-carrying sheet block against a proxy
+ * with no token store is a grant that has not been run, and the answer to
+ * that is `unavailable`, the same one it gets when the store exists and is
+ * empty. The write paths are unreachable: nothing on the serving path calls
+ * them, and the engine only rotates inside an exchange no absent grant can
+ * start.
+ */
+function absentTokenStore(): TokenStore {
+  return {
+    read: () => ({ status: "missing", reason: "absent" }),
+    rotate: () => Promise.reject(new Error("this deployment has no token store")),
+    putGrant: () => Promise.reject(new Error("this deployment has no token store")),
+    close: () => undefined,
+    size: 0
+  };
+}
+
 export interface HttpDispatcherOptions {
   /** Opened once at startup. The dispatcher holds it; no route does. */
   readonly vault: Vault;
+  /**
+   * The token store beside it (#256), for upstreams whose sheet block carries
+   * `auth`. Which store a credential name resolves in is the scheme's
+   * decision, never a fallback: a bearer name resolves in the vault, an OAuth
+   * name here, and neither ever falls through to the other. Absent means a
+   * deployment with no OAuth upstream — an auth-carrying block then finds no
+   * grant and is answered `unavailable`, fail closed.
+   */
+  readonly tokens?: TokenStore;
   /** Injected transport, for tests. Defaults to Node's built-in `fetch`. */
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
@@ -252,6 +283,17 @@ function failureLevel(failure: McpFailure): "warn" | "error" {
 
 export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispatcher {
   const logger = options.logger ?? createSilentLogger();
+  // Built here rather than injected, so this file stays the only module
+  // holding credential stores and a transport at once. A deployment with no
+  // token store gets an engine over an empty one: every OAuth binding then
+  // reads `absent`, which is the fail-closed answer, not an error.
+  const engine: TokenEngine = createTokenEngine({
+    store: options.tokens ?? absentTokenStore(),
+    logger,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
+  });
   const pool: McpPool = createMcpPool({
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.maxResponseBytes !== undefined ? { maxResponseBytes: options.maxResponseBytes } : {}),
@@ -274,10 +316,29 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
   const lease = (upstream: McpServer): ClientLease => {
     if (upstream.transport !== "http") return { ok: false, reason: "unsupported_transport" };
 
-    // Before the vault lookup, deliberately: an OAuth credential name resolves
-    // in the token store and never falls through to the vault, so until the
-    // token engine (#256) lands there is nothing here that may resolve it.
-    if (upstream.auth !== undefined) return { ok: false, reason: "auth_unbuilt" };
+    // The OAuth arm, before the vault lookup, deliberately: an OAuth name
+    // resolves in the token store and never falls through to the vault. This
+    // path is synchronous, so the source is built without I/O and the engine
+    // mints lazily at the listing's first request — a grantless upstream still
+    // never sees a probe, because no-grant is decided at the store read,
+    // before any network.
+    if (upstream.auth !== undefined) {
+      // The schema refuses an auth block with no credential at parse; this
+      // guard narrows the type, and answers a hand-built server the way the
+      // sheet's loader would have.
+      if (upstream.credential === undefined) {
+        return { ok: false, reason: "credential_unresolved" };
+      }
+      const client = pool.acquire(
+        upstream,
+        engine.source({
+          credential: upstream.credential,
+          issuer: upstream.auth.issuer,
+          scopes: upstream.auth.scopes
+        })
+      );
+      return client === null ? { ok: false, reason: "shutting_down" } : { ok: true, client };
+    }
 
     let secret;
     if (upstream.credential !== undefined) {
@@ -337,50 +398,74 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       // `transport = "http"` with no url is rejected at load, which is where an
       // operator can still see it.
 
-      // Not built rather than not allowed, the stdio arm's shape: the sheet may
-      // declare an OAuth upstream (#255), and the engine that mints its token
-      // is #256. Before the vault lookup, deliberately — an OAuth name resolves
-      // in the token store and never falls through to the vault.
-      if (upstream.auth !== undefined) {
-        logger.log("warn", {
-          event: "dispatch_auth_unbuilt",
-          channel: call.channel,
-          server: call.server,
-          tool: call.tool
-        });
-        return { outcome: "unavailable" };
-      }
-
-      // Resolved before anything is opened, so a sheet naming a credential the
-      // vault does not hold refuses without the upstream ever learning the call
-      // existed — not even a discovery probe. The test asserts the fake sees
-      // zero requests.
-      let secret;
-      if (upstream.credential !== undefined) {
-        const lookup = options.vault.lookup(upstream.credential);
-        if (lookup.status === "missing") {
-          logger.log("error", {
-            event: "credential_unresolved",
-            channel: call.channel,
-            server: call.server,
-            tool: call.tool,
-            // By name. The value is what is missing; the name is what an
-            // operator needs to fix it.
-            credential: upstream.credential
-          });
-          return {
-            outcome: "refused",
-            refusal: { reason: "credential_unresolved", credential: upstream.credential }
-          };
-        }
-        secret = lookup.secret;
-      }
-
       // For the log lines below, and for nothing else. There is no egress check
       // to make here: this destination is the one the sheet declared.
       const destination = destinationHost(upstream.url);
 
-      const client = pool.acquire(upstream, constantCredential("bearer", secret, upstream.credential));
+      let source: CredentialSource;
+      if (upstream.auth !== undefined) {
+        // The OAuth arm. The scheme selects the store: this arm never consults
+        // the vault, and the bearer arm below never consults the token store.
+        // The pre-flight lease is the fail-before-connecting shape
+        // `credential_unresolved` has — a dead grant never sends the upstream
+        // so much as a discovery probe, and the test asserts the fake sees
+        // zero requests.
+        if (upstream.credential === undefined) {
+          // Unreachable from a parsed sheet — the schema requires a credential
+          // beside an auth block — so this narrows the type and fails closed.
+          return { outcome: "unavailable", reason: "no_grant" };
+        }
+        const leased = await engine.lease({
+          credential: upstream.credential,
+          issuer: upstream.auth.issuer,
+          scopes: upstream.auth.scopes
+        });
+        if (leased.status !== "ok") {
+          // The engine already logged the precise failure by name; this line
+          // adds what the engine cannot know — which call went unserved.
+          logger.log("warn", {
+            event: "dispatch_grant_unavailable",
+            channel: call.channel,
+            server: call.server,
+            tool: call.tool,
+            credential: upstream.credential,
+            reason: leased.status === "mint_failed" ? leased.failure : leased.status
+          });
+          return {
+            outcome: "unavailable",
+            reason: leased.status === "mint_failed" ? "mint_failed" : leased.status
+          };
+        }
+        source = leased.source;
+      } else {
+        // Resolved before anything is opened, so a sheet naming a credential
+        // the vault does not hold refuses without the upstream ever learning
+        // the call existed — not even a discovery probe. The test asserts the
+        // fake sees zero requests.
+        let secret;
+        if (upstream.credential !== undefined) {
+          const lookup = options.vault.lookup(upstream.credential);
+          if (lookup.status === "missing") {
+            logger.log("error", {
+              event: "credential_unresolved",
+              channel: call.channel,
+              server: call.server,
+              tool: call.tool,
+              // By name. The value is what is missing; the name is what an
+              // operator needs to fix it.
+              credential: upstream.credential
+            });
+            return {
+              outcome: "refused",
+              refusal: { reason: "credential_unresolved", credential: upstream.credential }
+            };
+          }
+          secret = lookup.secret;
+        }
+        source = constantCredential("bearer", secret, upstream.credential);
+      }
+
+      const client = pool.acquire(upstream, source);
       if (client === null) {
         // Shutting down. Answered rather than served over a pool the process is
         // dismantling, and never a refusal: nothing was denied.
