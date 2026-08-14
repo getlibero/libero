@@ -26,6 +26,7 @@ import { assembleContext } from "./context.js";
 import type { DisplayNameLookup } from "./names.js";
 import type { SessionRegistry } from "./registry.js";
 import { createSessionRegistry } from "./registry.js";
+import type { MemoryFileOpener } from "./memory.js";
 import type { SheetResolver } from "./sheet.js";
 import type { TaskReply, TaskRequest, TaskRunner } from "./types.js";
 
@@ -47,6 +48,15 @@ export interface ChannelRouterOptions {
    * neutral — the implementation is wired in compose.ts.
    */
   names?: DisplayNameLookup;
+  /**
+   * How a channel's `MEMORY.md` is opened, when it has one.
+   *
+   * Optional, and its absence is a process that answers exactly as it did before
+   * phase 2: no curated memory in a task's context, and no curation turn. Opened
+   * here rather than in the registry because the cap comes from the team sheet
+   * and the sheet is read per task, inside this lock — see `session/memory.ts`.
+   */
+  memory?: MemoryFileOpener;
   logger?: Logger;
   now?: () => number;
 }
@@ -88,7 +98,12 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
     const waited = session.mutex.pending > 0;
     const arrivedAt = now();
 
-    return session.mutex.run(async () => {
+    // Filled by the critical section below, and read after it. The task builds
+    // it because everything it closes over is the task's; this file decides when
+    // it runs, because the queue is this file's.
+    let curate: (() => Promise<void>) | undefined;
+
+    const reply = await session.mutex.run(async () => {
       if (waited) {
         logger.log("info", {
           event: "queued",
@@ -131,15 +146,40 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         // still going. The assembler is here rather than in the sheet resolver
         // because it needs the session — its store and its name cache — and
         // `SheetResolver` is given a channel id and nothing else.
+        // Opened inside the lock for the reason everything else here is: it is
+        // read now and written by the curation turn queued below, and both have
+        // to be ordered against the next task's read. A channel whose sheet
+        // disables curation opens nothing — there is no read half without a
+        // write half, and a task that could see a file it may never update would
+        // be showing the model something nobody can correct.
+        const memoryFile =
+          settings.memory.enabled === true
+            ? (options.memory?.(request.key.channel, settings.memory.maxFileChars) ?? undefined)
+            : undefined;
+
+        // And so is the transcript, for a second reason on top of that one: the
+        // read has to see the messages the previous task's conversation left
+        // behind, and a read outside the lock could run while that task was
+        // still going. The assembler is here rather than in the sheet resolver
+        // because it needs the session — its store and its name cache — and
+        // `SheetResolver` is given a channel id and nothing else.
         const messages = await assembleContext({
           store: session.store,
           names: session.names,
           lookup: names,
           request,
-          bounds: settings.history
+          bounds: settings.history,
+          memory: memoryFile?.read() ?? ""
         });
 
-        return await options.task(request, { ...settings, messages });
+        const outcome = await options.task(request, {
+          ...settings,
+          messages,
+          ...(memoryFile !== undefined ? { memoryFile } : {})
+        });
+
+        curate = outcome.curate;
+        return outcome.reply;
       } finally {
         const finishedAt = now();
         session.lastUsedAt = finishedAt;
@@ -148,5 +188,29 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         }
       }
     });
+
+    // Queued on the same mutex, and deliberately not awaited (#227).
+    //
+    // **Not awaited**, so the reply is not held behind a second model call. The
+    // person who asked gets their answer at the same moment they always did.
+    //
+    // **On the mutex**, for three things at once: the next task's context read
+    // is serialized against this write rather than racing it, `pending` stays
+    // above zero so the registry cannot evict the session mid-curation, and the
+    // ordering is a queue position rather than a timing accident.
+    //
+    // **Enqueued synchronously here**, before this function yields again, so in
+    // the ordinary case curation is next in line and the following task sees
+    // what it wrote. A follow-up that queued *while the task ran* is already
+    // ahead of it and will read the file as it was — deterministic, and the
+    // README says so rather than leaving it to be discovered. Its own curation
+    // turn then runs against the file both wrote.
+    //
+    // `void` and no `catch`: the thunk is documented never to reject, and it
+    // swallows into a log line where it has a logger. A `.catch` here would be
+    // asserting otherwise.
+    if (curate !== undefined) void session.mutex.run(curate);
+
+    return reply;
   };
 }

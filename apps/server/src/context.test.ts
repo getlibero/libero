@@ -24,6 +24,7 @@ import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/g
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
+  DEFAULT_MEMORY_SETTINGS,
   DEFAULT_HISTORY_BOUNDS,
   createMessageStoreOpener,
   createServer
@@ -87,7 +88,8 @@ function rig(options: { users?: Record<string, string>; history?: Partial<Histor
         model: "test-model",
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS, ...options.history },
-        followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+        followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+        memory: { ...DEFAULT_MEMORY_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     logger

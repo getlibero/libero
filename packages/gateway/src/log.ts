@@ -33,7 +33,8 @@ export interface LogFields {
    * "budget_warning".
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
    * "team_sheet_unreadable". Message store: "store_opened",
-   * "store_unavailable", "store_write_failed". Attribution:
+   * "store_unavailable", "store_write_failed". Memory: "memory_file_opened",
+   * "memory_unavailable", "curated", "curation_failed". Attribution:
    * "user_lookup_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".
@@ -200,6 +201,15 @@ export interface LogFields {
    * back in order and a missing one is visible as a gap.
    */
   turns?: number;
+  /**
+   * How many memory operations a curation turn asked for (#227).
+   *
+   * A count and never the operations themselves. What a `memory_append` carries
+   * is a channel's own text, and the rule this file keeps about display names
+   * covers it for the same reason: an operator needs to know curation is doing
+   * something, not what a team decided to remember.
+   */
+  ops?: number;
   /**
    * The task id every tool call in a task was attributed to. An id the agent
    * minted, not content, and the one field that will tie this line to the audit

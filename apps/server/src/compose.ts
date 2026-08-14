@@ -43,6 +43,7 @@ import { createSessionRegistry } from "./session/registry.js";
 import { createChannelRouter } from "./session/router.js";
 import { createTaskRunner } from "./session/task.js";
 import type { SheetResolver } from "./session/sheet.js";
+import type { MemoryFileOpener } from "./session/memory.js";
 import type { MessageStoreOpener } from "./session/store.js";
 
 /**
@@ -131,6 +132,16 @@ export interface ServerDeps {
    * one — `AGENT_STORE_ROOT` is required.
    */
   readonly store?: MessageStoreOpener;
+  /**
+   * How a channel gets its `MEMORY.md`.
+   *
+   * Optional, and its absence is the process as it behaved before phase 2: no
+   * curated memory in a task's opening context, and no curation turn after a
+   * reply. Separate from `store` rather than folded into it because the two are
+   * opened at different moments — a store once per session, a memory file per
+   * task, since its cap comes from the team sheet.
+   */
+  readonly memory?: MemoryFileOpener;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -162,12 +173,16 @@ export interface ServerDeps {
 export {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
+  DEFAULT_MEMORY_SETTINGS,
   createSheetResolver
 } from "./session/sheet.js";
 export type { SheetResolver } from "./session/sheet.js";
 export type { DisplayNameLookup, NameCache } from "./session/names.js";
 export { createMessageStoreOpener } from "./session/store.js";
+export { createMemoryFileOpener } from "./session/memory.js";
+export type { MemoryFileOpener, MemoryFileOpenerOptions } from "./session/memory.js";
 export type { MessageStoreOpener, MessageStoreOpenerOptions } from "./session/store.js";
+export type { MemorySettings } from "./session/types.js";
 export type {
   ChannelSettings,
   HistoryBounds,
@@ -247,6 +262,7 @@ export function createServer(deps: ServerDeps): Server {
     sheets: deps.sheets,
     sessions,
     names,
+    ...(deps.memory !== undefined ? { memory: deps.memory } : {}),
     task: createTaskRunner({
       completion: deps.completion,
       transport: deps.transport,

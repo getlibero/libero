@@ -13,14 +13,24 @@ import { createSessionRegistry } from "./registry.js";
 import type { SessionRegistry } from "./registry.js";
 import { createChannelRouter } from "./router.js";
 import type { SheetResolver } from "./sheet.js";
-import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
-import type { ChannelSettings, TaskReply, TaskRequest, TaskSettings } from "./types.js";
+import {
+  DEFAULT_FOLLOW_UP_WINDOW_MS,
+  DEFAULT_HISTORY_BOUNDS,
+  DEFAULT_MEMORY_SETTINGS
+} from "./sheet.js";
+import type {
+  ChannelSettings,
+  TaskOutcome,
+  TaskRequest,
+  TaskSettings
+} from "./types.js";
 
 const SETTINGS: ChannelSettings = {
   model: "test-model",
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },
-  followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+  followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+  memory: { ...DEFAULT_MEMORY_SETTINGS }
 };
 
 /** Every channel resolves to the same settings unless a test says otherwise. */
@@ -60,11 +70,11 @@ describe("two mentions in one channel", () => {
     const shared = { value: 0 };
     const route = createChannelRouter({
       sheets: anySheet,
-      task: async (): Promise<TaskReply> => {
+      task: async (): Promise<TaskOutcome> => {
         const seen = shared.value;
         await flush();
         shared.value = seen + 1;
-        return { text: "ok" };
+        return { reply: { text: "ok" } };
       }
     });
 
@@ -78,12 +88,12 @@ describe("two mentions in one channel", () => {
     let maxRunning = 0;
     const route = createChannelRouter({
       sheets: anySheet,
-      task: async (): Promise<TaskReply> => {
+      task: async (): Promise<TaskOutcome> => {
         running += 1;
         maxRunning = Math.max(maxRunning, running);
         await flush();
         running -= 1;
-        return { text: "ok" };
+        return { reply: { text: "ok" } };
       }
     });
 
@@ -96,10 +106,10 @@ describe("two mentions in one channel", () => {
     const seen: string[] = [];
     const route = createChannelRouter({
       sheets: anySheet,
-      task: async (task): Promise<TaskReply> => {
+      task: async (task): Promise<TaskOutcome> => {
         await flush();
         seen.push(task.traceId);
-        return { text: "ok" };
+        return { reply: { text: "ok" } };
       }
     });
 
@@ -116,11 +126,11 @@ describe("two mentions in one channel", () => {
     let calls = 0;
     const route = createChannelRouter({
       sheets: anySheet,
-      task: (): Promise<TaskReply> => {
+      task: (): Promise<TaskOutcome> => {
         calls += 1;
         return calls === 1
           ? Promise.reject(new Error("connect ECONNREFUSED"))
-          : Promise.resolve({ text: "ok" });
+          : Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -138,12 +148,12 @@ describe("two mentions in one channel", () => {
     const route = createChannelRouter({
       sheets: anySheet,
       logger: captured.logger,
-      task: async (): Promise<TaskReply> => {
+      task: async (): Promise<TaskOutcome> => {
         if (first) {
           first = false;
           await gate.promise;
         }
-        return { text: "ok" };
+        return { reply: { text: "ok" } };
       }
     });
 
@@ -165,9 +175,9 @@ describe("two channels", () => {
     const gate = deferred();
     const route = createChannelRouter({
       sheets: anySheet,
-      task: async (task): Promise<TaskReply> => {
+      task: async (task): Promise<TaskOutcome> => {
         if (task.key.channel === "C024BE91L") await gate.promise;
-        return { text: task.key.channel };
+        return { reply: { text: task.key.channel } };
       }
     });
 
@@ -185,9 +195,9 @@ describe("two channels", () => {
     const gate = deferred();
     const route = createChannelRouter({
       sheets: anySheet,
-      task: async (task): Promise<TaskReply> => {
+      task: async (task): Promise<TaskOutcome> => {
         if (task.key.workspace === "T024BE7LD") await gate.promise;
-        return { text: task.key.workspace };
+        return { reply: { text: task.key.workspace } };
       }
     });
 
@@ -209,9 +219,9 @@ describe("two channels", () => {
 
     const route = createChannelRouter({
       sheets: channel => Promise.resolve(settingsFor[channel] ?? SETTINGS),
-      task: (task, settings): Promise<TaskReply> => {
+      task: (task, settings): Promise<TaskOutcome> => {
         seen.push([task.key.channel, settings]);
-        return Promise.resolve({ text: "ok" });
+        return Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -240,9 +250,9 @@ describe("two channels", () => {
     const seen: TaskSettings[] = [];
     const route = createChannelRouter({
       sheets: anySheet,
-      task: (_task, settings): Promise<TaskReply> => {
+      task: (_task, settings): Promise<TaskOutcome> => {
         seen.push(settings);
-        return Promise.resolve({ text: "ok" });
+        return Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -264,9 +274,9 @@ describe("two channels", () => {
         asked.push(userId);
         return Promise.resolve(userId === "U024BE7LH" ? "alice" : undefined);
       },
-      task: (_task, settings): Promise<TaskReply> => {
+      task: (_task, settings): Promise<TaskOutcome> => {
         seen.push(settings);
-        return Promise.resolve({ text: "ok" });
+        return Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -289,11 +299,11 @@ describe("the sheet a task runs on", () => {
         resolvedDuring.push(running);
         return Promise.resolve(SETTINGS);
       },
-      task: async (): Promise<TaskReply> => {
+      task: async (): Promise<TaskOutcome> => {
         running += 1;
         await flush();
         running -= 1;
-        return { text: "ok" };
+        return { reply: { text: "ok" } };
       }
     });
 
@@ -310,7 +320,7 @@ describe("the sheet a task runs on", () => {
         calls += 1;
         return Promise.resolve(SETTINGS);
       },
-      task: () => Promise.resolve({ text: "ok" })
+      task: () => Promise.resolve({ reply: { text: "ok" } })
     });
 
     await route(request());
@@ -324,7 +334,7 @@ describe("what the router passes through", () => {
   it("posts nothing when the task returns nothing", async () => {
     const route = createChannelRouter({
       sheets: anySheet,
-      task: () => Promise.resolve(undefined)
+      task: () => Promise.resolve({ reply: undefined })
     });
 
     await expect(route(request())).resolves.toBeUndefined();
@@ -334,9 +344,9 @@ describe("what the router passes through", () => {
     let seen: TaskRequest | undefined;
     const route = createChannelRouter({
       sheets: anySheet,
-      task: (task): Promise<TaskReply> => {
+      task: (task): Promise<TaskOutcome> => {
         seen = task;
-        return Promise.resolve({ text: "ok" });
+        return Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -360,7 +370,7 @@ describe("the thread a task worked in", () => {
       sheets: () => Promise.resolve({ ...SETTINGS, followUpWindowMs: 60_000 }),
       sessions,
       now: () => clock,
-      task: () => Promise.resolve({ text: "ok" })
+      task: () => Promise.resolve({ reply: { text: "ok" } })
     });
 
     await route(request({ thread: "T1" }));
@@ -381,10 +391,10 @@ describe("the thread a task worked in", () => {
       sheets: anySheet,
       sessions,
       now: () => clock,
-      task: (task): Promise<TaskReply> => {
+      task: (task): Promise<TaskOutcome> => {
         const session = sessions.open(task.key);
         activeDuringTask = session.threads.isActive(task.thread, clock);
-        return Promise.resolve({ text: "ok" });
+        return Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -400,9 +410,9 @@ describe("the thread a task worked in", () => {
       sheets: () => Promise.resolve({ ...SETTINGS, followUpWindowMs: 60_000 }),
       sessions,
       now: () => clock,
-      task: (): Promise<TaskReply> => {
+      task: (): Promise<TaskOutcome> => {
         clock += 30_000;
-        return Promise.resolve({ text: "ok" });
+        return Promise.resolve({ reply: { text: "ok" } });
       }
     });
 
@@ -440,7 +450,7 @@ describe("the thread a task worked in", () => {
       sheets: () => Promise.resolve({ ...SETTINGS, followUpWindowMs: 0 }),
       sessions,
       now: () => clock,
-      task: () => Promise.resolve({ text: "ok" })
+      task: () => Promise.resolve({ reply: { text: "ok" } })
     });
 
     await route(request({ thread: "T1" }));
@@ -463,7 +473,7 @@ describe("the thread a task worked in", () => {
           : Promise.resolve({ ...SETTINGS, followUpWindowMs: 60_000 }),
       sessions,
       now: () => clock,
-      task: () => Promise.resolve({ text: "ok" })
+      task: () => Promise.resolve({ reply: { text: "ok" } })
     });
 
     await route(request({ thread: "T1" }));

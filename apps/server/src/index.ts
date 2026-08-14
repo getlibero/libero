@@ -32,6 +32,7 @@ import {
   slackTokensFromEnv,
   storeRootFromEnv
 } from "./env.js";
+import { createMemoryFileOpener } from "./session/memory.js";
 import { createSheetResolver } from "./session/sheet.js";
 import { createMessageStoreOpener } from "./session/store.js";
 
@@ -88,6 +89,7 @@ const { gateway } = createServer({
   transport,
   sheets: createSheetResolver({ root: channelsRoot, model, logger }),
   store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
+  memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
   signal: tasks.signal,
   logger
 });

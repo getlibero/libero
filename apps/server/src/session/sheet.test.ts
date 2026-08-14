@@ -11,6 +11,7 @@ import { parseTeamSheet } from "@getlibero/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
+  DEFAULT_MEMORY_SETTINGS,
   DEFAULT_HISTORY_BOUNDS,
   SHEET_FILENAME,
   createSheetResolver,
@@ -98,7 +99,8 @@ describe("settingsFrom", () => {
       },
       history: { maxMessages: 12, maxChars: 3000 },
       // The other one.
-      followUpWindowMs: 120_000
+      followUpWindowMs: 120_000,
+      memory: { enabled: true, maxFileChars: 32_768 }
     });
   });
 
@@ -112,7 +114,11 @@ describe("settingsFrom", () => {
       model: MODEL,
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
-      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+      // The schema's default, **not** `DEFAULT_MEMORY_SETTINGS` — a sheet with no
+      // `[memory]` block still parsed, so its operator has said. The two only
+      // differ when nothing was read at all, which is the resolver's case below.
+      memory: { enabled: true, maxFileChars: 32_768 }
     });
   });
 
@@ -163,7 +169,8 @@ describe("createSheetResolver", () => {
         maxOutputTokensPerTurn: 1024
       },
       history: { maxMessages: 12, maxChars: 3000 },
-      followUpWindowMs: 120_000
+      followUpWindowMs: 120_000,
+      memory: { enabled: true, maxFileChars: 32_768 }
     });
   });
 
@@ -191,7 +198,8 @@ describe("createSheetResolver", () => {
       model: MODEL,
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
-      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+      memory: { ...DEFAULT_MEMORY_SETTINGS }
     });
     expect(captured.lines).toEqual([]);
   });
@@ -203,7 +211,8 @@ describe("createSheetResolver", () => {
       model: MODEL,
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
-      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+      memory: { ...DEFAULT_MEMORY_SETTINGS }
     });
   });
 
@@ -219,7 +228,8 @@ describe("createSheetResolver", () => {
       model: MODEL,
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
-      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+      memory: { ...DEFAULT_MEMORY_SETTINGS }
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({
@@ -254,7 +264,8 @@ describe("createSheetResolver", () => {
       model: MODEL,
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
-      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+      memory: { ...DEFAULT_MEMORY_SETTINGS }
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({ event: "team_sheet_unreadable", channel: CHANNEL })
@@ -278,7 +289,8 @@ describe("createSheetResolver", () => {
         model: MODEL,
         caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
-      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+      followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+      memory: { ...DEFAULT_MEMORY_SETTINGS }
       });
       expect(captured.lines).toContainEqual(
         expect.objectContaining({ event: "team_sheet_invalid", reason: "channel_id" })

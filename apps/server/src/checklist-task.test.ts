@@ -16,7 +16,12 @@ import type { CompletionResponse, ProxyRequest, ProxyResponse, ProxyTransport } 
 import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS, createServer } from "./compose.js";
+import {
+  DEFAULT_FOLLOW_UP_WINDOW_MS,
+  DEFAULT_HISTORY_BOUNDS,
+  DEFAULT_MEMORY_SETTINGS,
+  createServer
+} from "./compose.js";
 
 const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
@@ -94,7 +99,8 @@ function rig(perTurn: string[], maxToolCalls = 25) {
         model: "test-model",
         caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls },
         history: { ...DEFAULT_HISTORY_BOUNDS },
-        followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+        followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+        memory: { ...DEFAULT_MEMORY_SETTINGS }
       }),
     logger
   });

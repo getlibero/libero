@@ -33,6 +33,7 @@ import {
   createProxySpendClient,
   createProxyToolClient,
   runAgentTask,
+  runCurationTurn,
   totalTokens
 } from "@getlibero/agent";
 import type {
@@ -48,7 +49,17 @@ import type { ChecklistOutcome } from "../checklist/checklist.js";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import { budgetWarningMessage, type BudgetWarning } from "@getlibero/schema";
-import type { TaskReply, TaskRequest, TaskRunner, TaskSettings } from "./types.js";
+import type { TaskOutcome, TaskReply, TaskRequest, TaskRunner, TaskSettings } from "./types.js";
+
+/**
+ * The outcome that posts nothing and curates nothing.
+ *
+ * A shared frozen literal rather than `{ reply: undefined }` at each exit: the
+ * two paths that use it — a task queued into a shutdown, and a listing cancelled
+ * by one — are the paths where the operator asked for quiet, and one object says
+ * that once.
+ */
+const NOTHING: TaskOutcome = Object.freeze({ reply: undefined });
 
 /**
  * What the model is told it is.
@@ -196,11 +207,11 @@ export interface TaskRunnerOptions {
 export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
   const logger = options.logger ?? createSilentLogger();
 
-  return async (request: TaskRequest, settings: TaskSettings): Promise<TaskReply | undefined> => {
+  return async (request: TaskRequest, settings: TaskSettings): Promise<TaskOutcome> => {
     // Work that was queued when the process was asked to stop. Without this,
     // every request behind a slow one opens a TLS connection for a tool listing
     // that is cancelled the moment it arrives.
-    if (options.signal?.aborted === true) return undefined;
+    if (options.signal?.aborted === true) return NOTHING;
 
     const channel = request.key.channel;
 
@@ -356,7 +367,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         // a restart is worse than a quiet thread.
         if (error.reason === "cancelled") {
           ending = "cancelled";
-          return undefined;
+          return NOTHING;
         }
 
         logger.log("error", {
@@ -368,7 +379,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         // `failed` already, from the initializer — the listing never came back,
         // so no tool call was ever attempted and there is usually no card at
         // all. Setting it here would be restating the default.
-        return { text: PROXY_UNAVAILABLE[unavailableKey(error.reason)] };
+        return { reply: { text: PROXY_UNAVAILABLE[unavailableKey(error.reason)] } };
       }
 
       // The one thing the gateway's own `mention`/`replied` pair cannot show: why
@@ -388,11 +399,108 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         turns: result.turns
       });
 
-      return replyFor(result, warning);
+      const reply = replyFor(result, warning);
+      const curate = curationFor({ options, logger, request, settings, result, spend });
+      return curate === undefined ? { reply } : { reply, curate };
     } finally {
       // Awaited, so the card is terminal before the reply lands under it. It
       // never rejects: `close` is total, for the reason `reportSpend` is.
       await request.checklist?.close(ending, endingNote);
+    }
+  };
+}
+
+interface CurationInputs {
+  readonly options: TaskRunnerOptions;
+  readonly logger: Logger;
+  readonly request: TaskRequest;
+  readonly settings: TaskSettings;
+  readonly result: AgentTaskResult;
+  readonly spend: ProxySpendClient;
+}
+
+/**
+ * The curation turn, closed over everything it needs, or `undefined` when this
+ * channel does not curate.
+ *
+ * **Built here and run elsewhere, which is the ordering decision (#227).** All
+ * of its inputs are local to a finished task — the task id the spend report keys
+ * on, the transcript the loop produced, the turn count that makes the next turn
+ * `<task>.<n+1>` — and none of them escape this file. But *when* it runs is a
+ * question about the session queue, and the queue belongs to `router.ts`. So
+ * this closes over the answer to "what", and hands the router the "when".
+ *
+ * The router enqueues it on the same per-channel mutex the task held, without
+ * awaiting it: the reply is not delayed by a second model call, and the next
+ * task's context read is still serialized against this write. What that costs is
+ * stated in `apps/server/README.md` — a follow-up that queued *during* the task
+ * goes ahead of this one and reads the file as it was.
+ *
+ * **It never rejects.** It is invoked detached, so a rejection would be an
+ * unhandled one at the process level rather than something a caller could relay,
+ * and the reply it follows has already been produced. Every failure is a line.
+ */
+function curationFor(inputs: CurationInputs): (() => Promise<void>) | undefined {
+  const { options, logger, request, settings, result, spend } = inputs;
+  const file = settings.memoryFile;
+
+  // Three ways not to curate, and only the first is a policy. The sheet said no;
+  // the file could not be opened, which `session/memory.ts` has already logged;
+  // or the task ran no turns at all, so there is no conversation to draw a
+  // durable fact out of.
+  if (!settings.memory.enabled || file === undefined || result.turns === 0) return undefined;
+
+  const channel = request.key.channel;
+
+  return async (): Promise<void> => {
+    // Queued when the process was asked to stop. The reply this follows may not
+    // have posted at all — the gateway drops one when it is no longer running —
+    // so spending a model call to remember it is work nobody asked for.
+    if (options.signal?.aborted === true) return;
+
+    try {
+      const curated = await runCurationTurn({
+        completion: options.completion,
+        model: settings.model,
+        messages: result.messages,
+        // Read here rather than when the task ended: a hand edit, or the previous
+        // task's own curation, may have landed in between.
+        memory: file.read(),
+        maxFileChars: settings.memory.maxFileChars,
+        applyOp: op => file.apply(op),
+        // The per-turn ceiling, never `max_tokens_per_task`: this runs after the
+        // task is over, and a task that ended by spending its cap is the one most
+        // worth remembering.
+        maxTokens: settings.caps.maxOutputTokensPerTurn,
+        // Continues the task's own numbering, so the spend report's idempotency
+        // key stays `<task>.<n>` with no gap and no collision.
+        turn: result.turns + 1,
+        onTurn: completed => reportSpend(spend, result.taskId, completed, request, logger),
+        ...(options.signal !== undefined ? { signal: options.signal } : {})
+      });
+
+      logger.log("info", {
+        event: "curated",
+        channel,
+        eventId: request.traceId,
+        task: result.taskId,
+        // How many operations the model asked for, not how many landed. What each
+        // one *did* is deliberately not logged: the arguments are the channel's
+        // own text, and `LogFields` has no member that could carry them and
+        // should not grow one.
+        ops: curated.ops.length
+      });
+    } catch (error) {
+      // Swallowed, and this is the only place it can be. The reply has been
+      // produced, nothing above is awaiting this, and a provider outage during
+      // curation must not become an unhandled rejection that ends the process.
+      logger.log("error", {
+        event: "curation_failed",
+        channel,
+        eventId: request.traceId,
+        task: result.taskId,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
     }
   };
 }
