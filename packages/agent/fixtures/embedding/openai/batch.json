@@ -1,0 +1,9 @@
+{
+  "object": "list",
+  "model": "test-embedding-model",
+  "data": [
+    { "object": "embedding", "index": 0, "embedding": [1, 0, 0, 0] },
+    { "object": "embedding", "index": 1, "embedding": [0, 1, 0, 0] }
+  ],
+  "usage": { "prompt_tokens": 14, "total_tokens": 14 }
+}

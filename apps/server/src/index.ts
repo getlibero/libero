@@ -21,12 +21,17 @@
 // mutual-TLS call to the tool proxy service, which owns every credential and
 // decides every call from the channel's team sheet.
 
-import { createCompletionClient, createProxyTransport } from "@getlibero/agent";
+import {
+  createCompletionClient,
+  createEmbeddingClient,
+  createProxyTransport
+} from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
 import { createServer } from "./compose.js";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
+  embeddingConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
   slackTokensFromEnv,
@@ -48,6 +53,23 @@ const channelsRoot = channelsRootFromEnv(process.env);
 // sheets directory is the tool proxy's authorization source. See env.ts.
 const storeRoot = storeRootFromEnv(process.env);
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
+// Optional, and its absence is a supported deployment rather than a failure:
+// memory Layers 1 and 2 are whole without embeddings, so a process with no
+// embedding provider answers every mention exactly as before and simply has no
+// semantic recall. It says so once, here, because the alternative is an
+// operator discovering it from a feature quietly not working.
+const embedding = embeddingConfigFromEnv(process.env);
+if (embedding === null) {
+  logger.log("info", { event: "embeddings_unconfigured", reason: "embedding_provider_unset" });
+} else {
+  // Built here and not yet handed to anything: #232 decides where recall enters
+  // a task, and until it does there is no caller. Constructing it at startup is
+  // still worth doing, because it is where a misconfigured provider name
+  // surfaces — beside every other variable this file reads, rather than at the
+  // far end of a thread.
+  createEmbeddingClient(embedding.config);
+  logger.log("info", { event: "embeddings_ready", embeddingModel: embedding.model });
+}
 // Reads the CA and rejects a non-https PROXY_URL here, before the socket opens.
 // A per-channel client certificate is resolved on first use — one channel with
 // no certificate is that channel's problem, not the process's.

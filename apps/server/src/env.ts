@@ -7,7 +7,7 @@
 // and a startup error is printed, logged by whatever supervises the container,
 // and pasted into an issue.
 
-import type { CompletionConfig, ProxyTransportOptions } from "@getlibero/agent";
+import type { CompletionConfig, EmbeddingConfig, ProxyTransportOptions } from "@getlibero/agent";
 
 /** The slice of process.env this process reads. */
 export type Env = Record<string, string | undefined>;
@@ -193,6 +193,70 @@ export function completionConfigFromEnv(env: Env): CompletionConfig {
       // secret, and a typo is the whole failure mode this arm exists for.
       throw new Error(
         `server: AGENT_PROVIDER must be one of ${PROVIDERS.join(", ")}, and was: ${provider}`
+      );
+  }
+}
+
+/** Every provider `AGENT_EMBEDDING_PROVIDER` accepts. One, so far. */
+const EMBEDDING_PROVIDERS = ["openai-compatible"] as const;
+
+/**
+ * How this deployment embeds, or `null` if it does not.
+ *
+ * **Configured separately from `AGENT_PROVIDER`, and that is the point rather
+ * than an oversight.** Anthropic publishes no embeddings endpoint, so the
+ * ordinary deployment completes against one vendor and embeds against another —
+ * Voyage, OpenAI, a local Ollama, the litellm sidecar. Deriving this from
+ * `AGENT_PROVIDER` would make the commonest configuration the unexpressible
+ * one.
+ *
+ * **`null` rather than a throw when unset**, which is the one place this file
+ * departs from `completionConfigFromEnv`'s shape, and the reason is what each
+ * absence means. A deployment with no completion provider cannot answer a
+ * mention at all; a deployment with no embedding provider answers every mention
+ * exactly as before and simply has no Layer 3. That is a supported
+ * configuration — memory Layers 1 and 2 are whole without it — so it degrades
+ * with a line in the log rather than refusing to boot. `apps/server/src/index.ts`
+ * is where that line is said.
+ *
+ * Partial configuration is still an error. Naming a provider without a key, or
+ * a key without a model, is someone who meant to turn this on, and answering
+ * `null` to that would be a silent downgrade — the failure this whole function
+ * is arranged to avoid.
+ */
+export function embeddingConfigFromEnv(
+  env: Env
+): { config: EmbeddingConfig; model: string } | null {
+  const provider = env["AGENT_EMBEDDING_PROVIDER"];
+  if (provider === undefined || provider === "") return null;
+
+  switch (provider) {
+    case "openai-compatible":
+      return {
+        config: {
+          provider,
+          // `AGENT_EMBEDDING_API_KEY` rather than reusing `OPENAI_API_KEY`,
+          // because the embedding vendor is usually not the completion vendor
+          // and a Voyage key under an OpenAI name is a trap. It falls back to
+          // `OPENAI_API_KEY` for the deployment where they genuinely are the
+          // same account, so that case needs one variable rather than two
+          // copies of one secret.
+          apiKey:
+            env["AGENT_EMBEDDING_API_KEY"] !== undefined &&
+            env["AGENT_EMBEDDING_API_KEY"] !== ""
+              ? env["AGENT_EMBEDDING_API_KEY"]
+              : requiredEnv(env, "OPENAI_API_KEY"),
+          ...optionalBaseUrl(env, "AGENT_EMBEDDING_BASE_URL")
+        },
+        // Required once a provider is named: there is no sensible default, and
+        // the id is stamped against a channel's vectors by `packages/memory`,
+        // so guessing it would be guessing what a stored vector means.
+        model: requiredEnv(env, "AGENT_EMBEDDING_MODEL")
+      };
+    default:
+      throw new Error(
+        `server: AGENT_EMBEDDING_PROVIDER must be one of ${EMBEDDING_PROVIDERS.join(", ")}, ` +
+          `and was: ${provider}`
       );
   }
 }

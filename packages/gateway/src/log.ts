@@ -34,7 +34,8 @@ export interface LogFields {
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
    * "team_sheet_unreadable". Message store: "store_opened",
    * "store_unavailable", "store_write_failed". Memory: "memory_file_opened",
-   * "memory_unavailable", "curated", "curation_failed". Attribution:
+   * "memory_unavailable", "curated", "curation_failed". Embeddings:
+   * "embeddings_ready", "embeddings_unconfigured". Attribution:
    * "user_lookup_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".
@@ -166,6 +167,20 @@ export interface LogFields {
    * HTTP response envelope, not from anything the model wrote.
    */
   servedModel?: string;
+  /**
+   * The model this deployment embeds with, as `AGENT_EMBEDDING_MODEL` names it.
+   *
+   * A third field rather than a third use of `model`, for the reason
+   * `servedModel` is a second one: they are different facts about different
+   * calls. A deployment ordinarily completes against one vendor and embeds
+   * against another — Anthropic publishes no embeddings endpoint — so an
+   * operator asking "what is this process embedding with" is not asking what a
+   * task ran on, and folding the two would make the answer depend on which line
+   * you happened to grep.
+   *
+   * A configuration value, never content, exactly as the other two are.
+   */
+  embeddingModel?: string;
   /**
    * Why an agent task ended — `completed`, `refusal`, or the cap that stopped
    * it. A code from a closed set, and the field an operator greps when threads
