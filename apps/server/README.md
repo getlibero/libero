@@ -122,7 +122,7 @@ the far end of a thread.
 | `AGENT_PROVIDER` | `anthropic` or `openai-compatible`. |
 | `AGENT_MODEL` | Model id, passed to the provider verbatim. The fallback for a channel whose sheet names none. |
 | `AGENT_CHANNELS_ROOT` | The team sheets: one directory per channel, each with a `channel.toml`. Read only. |
-| `AGENT_STORE_ROOT` | The message stores: one directory per channel, each with a `store.db`. Written. Not the same root. |
+| `AGENT_STORE_ROOT` | The agent's own state: one directory per channel, each with a `store.db` and a curated `MEMORY.md`. Written. Not the same root. |
 | `ANTHROPIC_API_KEY` | Required when `AGENT_PROVIDER=anthropic`. |
 | `OPENAI_API_KEY` | Required when `AGENT_PROVIDER=openai-compatible`. |
 | `ANTHROPIC_BASE_URL` | Optional. Anthropic's own endpoint when unset. |
@@ -251,6 +251,42 @@ A message that is *answered* — see below — does take the queue, because it i
 model turn like any other. The write happens first either way, so the transcript
 its own task assembles already holds the thing it was asked about.
 
+### Where the curation turn sits in the queue
+
+After a task's reply has been produced, the router enqueues a **curation turn**
+on that same session queue — one extra model call, offered the memory tools and
+nothing else, which decides whether anything about the task was worth keeping in
+the channel's `MEMORY.md`. It is **not awaited**: the reply goes back to the
+gateway and into the thread at the moment it always did, and the person who asked
+waits for nothing extra.
+
+Enqueueing it rather than detaching it buys three things at once. The next task's
+context read is *serialized against* this write rather than racing it, which is
+the invariant the transcript read already depends on. `pending` stays above zero,
+so the session cannot be evicted while curation is in flight — and eviction is
+what closes the store handle underneath it. And the ordering becomes a queue
+position rather than a timing accident.
+
+**The ordering it produces, stated rather than left to be discovered.** In the
+ordinary case — a channel that goes quiet after an answer — curation is next in
+line, so the following mention sees what it wrote. A follow-up that queued *while
+the task was still running* is already ahead of it: that task reads `MEMORY.md`
+as it was, answers, and enqueues its own curation behind the first one. Nothing
+is lost and nothing races; a fact can simply be one task late in a channel that
+is talking faster than it is remembering.
+
+Note that "after the reply" here means after the reply was *produced*, not after
+Slack accepted it. This process is not told when a post lands — it holds
+`CardPoster` and never `MessagePoster`, on purpose — and the queue releases
+before the post either way, so a task queued behind one has always started before
+the previous answer was in the channel. Shutdown is handled by the same signal
+the task runner takes: a curation turn that wakes up during a drain does nothing,
+because the reply it would have been remembering was never posted.
+
+A curation failure is a `curation_failed` line and nothing else. The reply has
+already been produced, nothing is awaiting the turn, and the session goes on
+answering.
+
 **Messages are deduplicated by the store's `ts`, and never by the gateway's
 `seen` set.** The store's insert is `ON CONFLICT DO NOTHING` on a UNIQUE column,
 so a redelivered event is a no-op. That key is also the better one: it is the
@@ -337,7 +373,8 @@ times, which is the right trade at this size.
 
 Before the model is asked anything it is given the recent conversation, oldest
 first, each message attributed to its author and with every `<@U…>` resolved to a
-name. Four things about that are decisions rather than mechanics.
+name — and, above it, whatever the channel has curated into `MEMORY.md`. Five
+things about that are decisions rather than mechanics.
 
 **It is the thread's messages when there is a thread, and the channel's when
 there is not.** A question asked inside a conversation is answered from that
@@ -366,13 +403,26 @@ at a cap. `[llm] max_history_messages` and `max_history_chars` are the channel's
 per-message ceiling is this process's, so one wall of text cannot consume the
 whole budget.
 
+**Curated memory leads it, and an empty file contributes nothing.** A
+`<channel-memory>` block sits above the history and below nothing: what this team
+has settled, then what was said lately, then what is being asked, which also puts
+the most recent and most specific material nearest the question. It is wrapped
+and prefaced exactly as the history is, and for the same reason — it is no more
+trusted, since the model wrote it and the team may edit it by hand. A channel
+with no `MEMORY.md`, an empty one, or one that could not be opened contributes
+*no block at all* rather than an empty one, because an empty `<channel-memory>`
+asserts this team has established nothing and that is a claim the absence of a
+file cannot support. Its size is bounded by `[memory] max_file_chars` rather than
+by the history bounds, and it is charged against `max_tokens_per_task` the same
+way.
+
 ### The team sheet, as this process reads it
 
 Each task resolves its channel's sheet — `$AGENT_CHANNELS_ROOT/<channel
 id>/channel.toml` — to a model, the four per-task caps, the two context bounds,
-and the follow-up window, and runs on those. `[llm] model` wins over
-`AGENT_MODEL`; everything in the schema has a default, so a channel whose sheet
-has no `[llm]` block still gets all eight. `max_task_seconds` and
+the follow-up window, and the `[memory]` block, and runs on those. `[llm] model`
+wins over `AGENT_MODEL`; everything in the schema has a default, so a channel
+whose sheet has no `[llm]` block still gets all eight of those. `max_task_seconds` and
 `follow_up_window_seconds` are seconds in the sheet and milliseconds in the
 process, which are the two fields that are a conversion rather than a rename.
 
@@ -385,6 +435,17 @@ what a channel may do from its own copy of the same file, and its meter is
 authoritative. A fallback here cannot widen anything. The opposite policy would
 put an authorization decision on the wrong side of the boundary and take a whole
 deployment dark the first time a volume was mounted at the wrong path.
+
+**`[memory]` is the one exception, and it falls back to *off*.** Everything above
+is advisory because the proxy holds a second copy; the proxy never opens
+`MEMORY.md` and holds no copy of those two numbers, so for that block the
+fallback is not defence in depth — it *is* the decision. The two failures are not
+symmetric: a typo costing a channel its memory is a degradation the reply
+survives and an operator notices, while a typo switching curation *on* for a
+channel that wrote `enabled = false` would be a policy violation this process
+committed by itself. So a sheet that parsed gets exactly what it says, including
+`enabled = true` by omission, and a sheet that could not be read gets curation
+off.
 
 The sheet picks a model id, not a provider. `AGENT_PROVIDER` is the process's,
 and a sheet naming a model the configured provider does not serve fails at the
@@ -505,6 +566,11 @@ brings it back once the environment is fixed.
 - `src/session/store.ts` — a channel's message store, gated on it having a
   sheet. Symmetric with `sheet.ts`, and total in the same way: it answers `null`
   rather than throwing, because `registry.open` is synchronous and uncaught.
+- `src/session/memory.ts` — a channel's `MEMORY.md`, gated the same way and total
+  for the same reason. Opened per task rather than per session, because its cap
+  comes from the team sheet; and it absorbs the three throws `openMemoryFile`
+  makes, which is the never-throw shape that package's README asks its caller
+  for by name.
 - `src/session/names.ts` — one display-name lookup per user per session. Takes
   the lookup as a parameter rather than holding one, so nothing under
   `session/` has to name a Slack type.
