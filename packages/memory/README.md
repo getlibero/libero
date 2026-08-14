@@ -335,10 +335,12 @@ embedding surface as of #230, and thread summaries as of #231. Retrieval landed 
 embeds the incoming request at the head of a task and renders the nearest
 summaries into its opening context. That is context assembly rather than a tool,
 and the argument — including why a model-invoked recall tool was rejected as an
-ungoverned twin of `search_channel_history` — is in `apps/server/README.md`. #233 is what carries a Slack deletion into derived
-data — the message triggers here already drop a summary and its vector on an
-edit or a delete, so what that issue is left with is the curated-fact question
-and the e2e case that drives the real event path. Slack
+ungoverned twin of `search_channel_history` — is in `apps/server/README.md`. #233 closed the loop on deletion: the triggers
+here drop a summary and its vector on an edit or a delete, `e2e/` now drives
+that through real Slack events in all three wire shapes, and the one thing
+deletion deliberately does **not** reach — a curated fact in `MEMORY.md`, which
+carries no per-message provenance because curation is a model turn rather than a
+join — is argued on the security page rather than left to be assumed. Slack
 deletion and edit mirroring of *messages* is not among the gaps: #177 wired
 `message_deleted` and `message_changed` onto `remove` and `replaceText`, through
 `toRevision` in the gateway and `createRevisionIngest` in `apps/server`.

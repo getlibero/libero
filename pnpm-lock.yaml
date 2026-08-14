@@ -70,6 +70,9 @@ importers:
       '@getlibero/gateway':
         specifier: workspace:*
         version: link:../packages/gateway
+      '@getlibero/memory':
+        specifier: workspace:*
+        version: link:../packages/memory
       '@getlibero/proxy':
         specifier: workspace:*
         version: link:../packages/proxy
@@ -86,6 +89,9 @@ importers:
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
+      sqlite-vec:
+        specifier: ^0.1.9
+        version: 0.1.9
 
   packages/agent:
     dependencies:

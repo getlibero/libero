@@ -228,6 +228,15 @@ edited in Slack has its new text stored and reindexed, and the text it replaced 
 findable: someone who pastes a key and edits it out thirty seconds later has retracted it from the
 transcript the model is given, not just from the channel.
 
+**What was derived from the message goes with it.** If the thread had been summarized into the
+channel's searchable memory, that summary and its embedding are dropped by the same event — an
+edit as readily as a deletion — so the summary of a conversation cannot outlive the words it was
+drawn from. The thread leaves the searchable corpus until it is summarized again. The one thing
+deletion does **not** reach is a curated fact in `MEMORY.md`, because curation is a model turn
+rather than a join and a fact records no per-message provenance; that file is markdown your team
+reads and edits, and correcting it is a human step. The [security page](/docs/security/) argues
+that in full.
+
 An edit to a message the store never held does nothing. Nothing is back-filled through this path —
 what the store holds is what was recorded as it happened, so a channel provisioned today has no
 history from last week and an edit does not invent one.

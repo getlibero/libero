@@ -174,6 +174,40 @@ plain markdown a team can read, edit, and delete** — which is the mitigation, 
 one: `MEMORY.md` is meant to be reviewed the way a wiki page is. A channel that would not accept
 that should set `[memory] enabled = false`, which is the whole switch.
 
+### Slack deletion reaches derived data, and stops at curated memory
+
+A message deleted in Slack is deleted from that channel's store. Since thread summaries exist,
+"the store" means more than the message, so it is worth saying exactly how far the deletion
+travels and where it stops.
+
+**What goes, mechanically, on the deletion or the edit itself:** the message row, its full-text
+index entry, the summary of the thread it belonged to, and that summary's embedding. Each link is
+a SQLite trigger rather than a step some code path has to remember, which is what makes it hold
+for an edit as well as a deletion, and for a deletion arriving in any of the three wire shapes
+Slack uses. A summary is a model's reading of a conversation, so a summary that outlived its
+source would be the store asserting a conclusion drawn from words their author retracted. The
+summary is dropped rather than regenerated — regenerating needs a model call, and a trigger is not
+where that can happen — so the thread simply leaves the searchable corpus until it is summarized
+again, which errs toward saying nothing rather than saying something retracted.
+
+**What does not go is `MEMORY.md`, and that is a decision rather than a gap.** A curated fact
+carries no per-message provenance and cannot be given any: curation is a model turn that reads a
+conversation and writes a sentence, not a join, so nothing records which messages a given fact was
+drawn from. A deletion could only reach a curated fact by guessing, and a guess that deleted the
+wrong fact is as bad as one that kept the right one.
+
+What stands in for it is the mitigation this section already rests on: **the file is plain
+markdown a team can read, edit and delete.** A fact distilled from a message somebody later
+retracted is corrected the way a wrong fact is corrected, by a person editing the file — which is
+the same review the section above argues is what makes curated memory liveable at all. If your
+retention policy requires that nothing survive a deletion anywhere, `[memory] enabled = false` is
+the switch, and it is the honest answer rather than a partial one.
+
+Two things follow that are easy to assume otherwise. Nothing embeds curated facts today, so there
+is no vector of a fact to outlive anything either. And a channel that turns summarization off with
+`[memory] summarize = false` has no summaries to delete, which makes the deletion story simpler
+rather than weaker.
+
 ## What "not a mitigation" means here
 
 Anything phrased as "instruct the model not to…" is not a mitigation and will not be accepted as
