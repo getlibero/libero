@@ -194,6 +194,7 @@ export default tseslint.config(
                 "**/vault*",
                 "**/token-store*",
                 "**/token-engine*",
+                "**/grant-flow*",
                 "**/envelope*",
                 "**/atomic-write*",
                 "**/mcp-pool*",
@@ -233,7 +234,7 @@ export default tseslint.config(
           patterns: [
             MCP_SDK_BAN,
             {
-              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
+              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/grant-flow*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
               message:
                 "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault — or the token store beside it — would be a column that must not exist."
             }
@@ -260,7 +261,7 @@ export default tseslint.config(
           patterns: [
             MCP_SDK_BAN,
             {
-              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
+              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/grant-flow*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
               message:
                 "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean. The token store is a second credential store, banned for the vault's reason."
             },
@@ -300,10 +301,12 @@ export default tseslint.config(
                 "readChannelSpend",
                 "channelDays",
                 "pruneTurnReports",
-                "openAuditReader"
+                "openAuditReader",
+                "performAuthorizationGrant",
+                "GrantFlowError"
               ],
               message:
-                "Operator paths stay off the serving process. Meter resets and aggregate reads belong to the budget CLI, and reading the audit log belongs to the audit CLI — each reached as its own entrypoint."
+                "Operator paths stay off the serving process. Meter resets and aggregate reads belong to the budget CLI, reading the audit log belongs to the audit CLI, and running a grant belongs to the grant CLI — each reached as its own entrypoint."
             }
           ]
         }
@@ -341,6 +344,7 @@ export default tseslint.config(
                 "**/vault*",
                 "**/token-store*",
                 "**/token-engine*",
+                "**/grant-flow*",
                 "**/envelope*",
                 "**/atomic-write*",
                 "@getlibero/proxy"

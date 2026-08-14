@@ -171,6 +171,13 @@ reveals a credential and the one that scrubs the reply.
   as a claim: the process serving tool calls never writes the vault. What that
   process does write is the token store — the custody decision under "Two
   credential stores" below.
+- `grant-flow.ts` — the authorization-code + PKCE grant, orchestrated for the
+  grant entrypoint (`node dist/grant.js` in `apps/proxy-server`) and reached by
+  nothing on the serving path, which the ESLint groups enforce alongside the
+  vault's write side. The redirect is a paste-back — a loopback URI nothing
+  listens on, the code bound by PKCE and `state` — and the refresh token the
+  exchange yields is written to the token store inside the flow, returned to no
+  caller. The custody section below says why that shape.
 - `server.ts` — `node:https` and an exact-match route table, behind mutual TLS.
 - `log.ts` — JSON lines over a closed field set. This process holds every
   credential, so there is no free-form log message for one to be interpolated
@@ -404,7 +411,9 @@ OAuth entry in the token store, and neither ever falls through to the other —
 under a name a bearer block uses changes nothing.
 
 **Two writers, no `tokens set`.** The serving proxy writes a rotation; the
-grant entrypoint (#257) writes a grant, replacing any predecessor under the
+grant entrypoint (`node dist/grant.js add <name>` in `apps/proxy-server`,
+composing `performAuthorizationGrant` from `./grant-flow.ts`) writes a grant,
+replacing any predecessor under the
 same name. The operator CLI never writes it — a value an operator holds is by
 definition a vault value. That asymmetry is the narrowness: the only values
 the serving process can persist are values an authorization server just

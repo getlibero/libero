@@ -52,7 +52,7 @@ Phase 1, closing. What exists:
 | `packages/memory` | The per-channel message store — one SQLite file per channel, an FTS5 index, the delete and edit paths, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, approvals and checklist clients, lifecycle |
-| `apps/proxy-server` | The process composing the proxy, plus `vault`, `budget` and `audit` entrypoints for the operator |
+| `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |
 | `site/` | getlibero.com — Astro + Starlight, outside the workspace |

@@ -77,6 +77,23 @@ key means losing the vault: there is no recovery path and no escrow.
 [Connecting GitHub](/docs/github/) walks that credential the rest of the way: into a team sheet, out
 to GitHub's hosted MCP server, and onto an audit row.
 
+An upstream secured by OAuth rather than a service token ([`[mcp_server.auth]`](/docs/team-sheet/#mcp_serverauth))
+is authorized by a grant instead of a vault entry, completed the same way — from inside the
+container, where the master key already is — with a browser on any machine, including a laptop
+nowhere near the VM the proxy runs on:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/grant.js add notion_grant
+```
+
+The command reads the issuer and scopes from the team sheets naming `notion_grant`, prints an
+authorization URL, and waits. Open the URL in any browser, sign in, approve. The browser is then
+redirected to `http://127.0.0.1/callback` and **fails to load it — that is expected**: nothing
+listens there, on purpose. Copy the full address of the failed page from the address bar, paste it
+back at the prompt, and the command answers `grant: stored notion_grant`. The next tool call
+through that upstream mints from the stored grant — no restart, no port-forwarding, and no token
+or code ever printed. Running the flow again for the same name replaces the grant.
+
 ## What you provide
 
 **A Slack app** with Socket Mode enabled, in a workspace you administer. One app serves every

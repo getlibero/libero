@@ -433,7 +433,9 @@ that has nowhere to go.
 Declares an http upstream as secured by an OAuth 2.1 authorization server rather than a service
 token. Only http blocks may carry it — on a stdio block it is rejected at load, naming the field,
 the same way a stdio `url` is. An auth block requires a `credential` name: that name keys the
-grant material the operator's grant flow stored in the proxy's token store, and it is the scheme
+grant material the operator's grant flow stored in the proxy's token store
+(`docker compose run --rm proxy node dist/grant.js add <name>` — the walkthrough is in
+[Self-hosting](/docs/self-hosting/)), and it is the scheme
 that decides which store a name resolves in — a bearer credential resolves in the vault, an OAuth
 credential in the token store, and neither ever falls through to the other.
 
