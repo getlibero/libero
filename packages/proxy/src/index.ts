@@ -223,3 +223,18 @@ export type {
   TokenStoreFailure,
   TokenStoreOptions
 } from "./token-store.js";
+
+// The grant flow (#257): an operator path reached only by the grant
+// entrypoint, by nothing in the server — the ESLint block that keeps
+// budget-admin off the serving process bans these there too. The refresh
+// token the flow obtains never crosses this boundary: `performAuthorizationGrant`
+// writes the store itself, which is what keeps "no command prints a token
+// back" structural. The exchanges and discovery underneath stay off the
+// index on the same argument as ever — one file spends credentials, and its
+// callers are in this package.
+export { GRANT_REDIRECT_URI, GrantFlowError, performAuthorizationGrant } from "./grant-flow.js";
+export type { GrantFlowFailure, GrantFlowIo, GrantFlowRequest } from "./grant-flow.js";
+// The exchange's error crosses the boundary with the flow: the entrypoint
+// catches it to print the closed word it carries.
+export { TokenExchangeError } from "./outbound.js";
+export type { TokenExchangeFailure } from "./outbound.js";
