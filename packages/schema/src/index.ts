@@ -6,6 +6,7 @@ export * from "./proxy-error.js";
 export * from "./names.js";
 export * from "./tool-call.js";
 export * from "./tool-listing.js";
+export * from "./memory-op.js";
 export * from "./refusal.js";
 export * from "./budget-warning.js";
 export * from "./spend-report.js";
