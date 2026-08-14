@@ -12,13 +12,13 @@ packages/cli/THIRD-PARTY-NOTICES.md
 .env
 .env.*
 !.env.example
-channels/*/MEMORY.md
 audit.db*
 
-# The per-channel message stores, for a process run directly rather than under
-# compose — AGENT_STORE_ROOT. Their own root and not `channels/`, because the
-# channels directory is the proxy's authorization source and stays read-only to
-# both services. The glob covers SQLite's -wal and -shm.
+# The agent's per-channel state, for a process run directly rather than under
+# compose — AGENT_STORE_ROOT. One `store.db` and one curated `MEMORY.md` per
+# channel. Their own root and not `channels/`, because the channels directory is
+# the proxy's authorization source and stays read-only to both services. The
+# glob covers SQLite's -wal and -shm.
 deploy/store/
 coverage/
 
