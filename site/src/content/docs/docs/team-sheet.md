@@ -474,17 +474,6 @@ written by a short curation turn after each reply and read back into the context
 starts from. No format is imposed on it, so your team can read it, edit it, and delete it. It lives
 in the agent's own state root, never in the directory holding this sheet.
 
-:::note[Validated today, honoured when its first caller lands]
-Both fields are parsed and checked when the sheet loads, so a bad number is rejected where you can
-see it. Nothing reads them yet: the shapes are
-[#224](https://github.com/getlibero/libero/issues/224), the store that enforces the cap is
-[#225](https://github.com/getlibero/libero/issues/225), the curation turn is
-[#226](https://github.com/getlibero/libero/issues/226), and wiring both into the server — including
-honouring `enabled = false` — is [#227](https://github.com/getlibero/libero/issues/227). Phase 2 on
-the [roadmap](/docs/roadmap/). Write the block as though it were enforced; it is the contract it
-will be enforced against.
-:::
-
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `enabled` | no | Whether the curation turn runs at all. **Defaults to `true`** — the one block on this page that is on when it is absent. `false` writes nothing and reads nothing back. |

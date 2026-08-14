@@ -147,7 +147,9 @@ throws** — on an invalid channel id, a cap below one operation's ceiling, and 
 missing state directory — whereas `createMessageStoreOpener` in `apps/server`
 never does, because `registry.open` is synchronous and uncaught on the path a
 mention takes. A caller of this opener needs that same shape, or a mistyped
-`[memory] max_file_chars` becomes a mention nobody answers. And **renaming over
+`[memory] max_file_chars` becomes a mention nobody answers.
+`apps/server/src/session/memory.ts` is that caller and has it; a second one needs
+it too. And **renaming over
 a symlink replaces the symlink**, leaving its referent untouched: right for a
 vault, and worth stating for a file the team is invited to edit, since an
 operator who symlinked `MEMORY.md` into a git-tracked directory finds a regular
@@ -174,11 +176,10 @@ a build without it at open, naming the floor rather than letting SQLite report
 
 ## What is not here
 
-Layer 2's write machinery is here as of #225, and the rest of layer 2 is not:
-the curation turn that emits operations is #226, and the context read that puts
-`MEMORY.md` back into a task is #227 — which removes this paragraph's remaining
-half. Layer 3 (sqlite-vec recall) is untouched. Slack deletion and edit
-mirroring is no longer among the gaps: #177 wired
+Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
+that emits operations (#226), and the read that puts `MEMORY.md` back into the
+context a task starts from. Layer 3 (sqlite-vec recall) is untouched. Slack
+deletion and edit mirroring is no longer among the gaps: #177 wired
 `message_deleted` and `message_changed` onto `remove` and `replaceText`, through
 `toRevision` in the gateway and `createRevisionIngest` in `apps/server`.
 

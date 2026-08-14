@@ -62,6 +62,27 @@ export const DEFAULT_HISTORY_BOUNDS = { maxMessages: 40, maxChars: 12_000 } as c
  */
 export const DEFAULT_FOLLOW_UP_WINDOW_MS = 900_000;
 
+/**
+ * What a channel gets when no sheet resolved: **curation off**, and that is the
+ * one fallback on this page that departs from the schema's own default.
+ *
+ * Every other default here falls back to the schema's figure, because a fallback
+ * cannot loosen an authorization decision — the proxy enforces the same file
+ * from its own copy, so nothing resolved here is the decision. `[memory]` is the
+ * exception the schema names: the proxy never opens `MEMORY.md` and holds no
+ * second copy of these numbers, so for this block the fallback *is* the
+ * decision.
+ *
+ * So the two failures are not symmetric and are not treated as though they were.
+ * A typo that costs a channel its memory is a degradation the reply survives and
+ * an operator notices; a typo that switches curation *on* for a channel that
+ * wrote `enabled = false` is a policy violation, and it would be one this
+ * process committed on its own. The cap is still the schema's figure — it only
+ * matters when something is enabled, and inventing a second number for a
+ * disabled feature is how the two drift.
+ */
+export const DEFAULT_MEMORY_SETTINGS = { enabled: false, maxFileChars: 32_768 } as const;
+
 export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
 
 export interface SheetResolverOptions {
@@ -102,7 +123,15 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     // The second conversion, and the same one: seconds in the sheet because
     // that is what an operator writes, milliseconds here because that is what a
     // deadline is compared against.
-    followUpWindowMs: sheet.llm.follow_up_window_seconds * 1000
+    followUpWindowMs: sheet.llm.follow_up_window_seconds * 1000,
+    // Renames again. Note this is the one block whose *fallback* differs from
+    // the schema's default — see `DEFAULT_MEMORY_SETTINGS`. A sheet that parsed
+    // gets exactly what it asked for, including `enabled = true` by omission,
+    // because at that point the operator's file has said.
+    memory: {
+      enabled: sheet.memory.enabled,
+      maxFileChars: sheet.memory.max_file_chars
+    }
   };
 }
 
@@ -132,7 +161,8 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
     // every channel's.
     caps: { ...DEFAULT_AGENT_LOOP_CAPS },
     history: { ...DEFAULT_HISTORY_BOUNDS },
-    followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS
+    followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+    memory: { ...DEFAULT_MEMORY_SETTINGS }
   });
 
   return async (channel: string): Promise<ChannelSettings> => {

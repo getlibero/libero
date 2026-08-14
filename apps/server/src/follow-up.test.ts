@@ -30,6 +30,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_HISTORY_BOUNDS,
+  DEFAULT_MEMORY_SETTINGS,
   createMessageStoreOpener,
   createServer
 } from "./compose.js";
@@ -106,7 +107,8 @@ function rig(followUpWindowMs = WINDOW_MS): {
         model: "test-model",
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS },
-        followUpWindowMs
+        followUpWindowMs,
+        memory: { ...DEFAULT_MEMORY_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     sessionClock: () => clock,
@@ -415,7 +417,8 @@ describe("a follow-up arriving mid-task", () => {
           model: "test-model",
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
           history: { ...DEFAULT_HISTORY_BOUNDS },
-          followUpWindowMs: WINDOW_MS
+          followUpWindowMs: WINDOW_MS,
+          memory: { ...DEFAULT_MEMORY_SETTINGS }
         }),
       store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
       sessionClock: () => clock,

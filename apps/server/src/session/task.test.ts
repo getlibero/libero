@@ -21,7 +21,11 @@ import type {
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { budgetWarningMessage } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_FOLLOW_UP_WINDOW_MS, DEFAULT_HISTORY_BOUNDS } from "./sheet.js";
+import {
+  DEFAULT_FOLLOW_UP_WINDOW_MS,
+  DEFAULT_HISTORY_BOUNDS,
+  DEFAULT_MEMORY_SETTINGS
+} from "./sheet.js";
 import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor } from "./task.js";
 import type { TaskRequest, TaskSettings } from "./types.js";
 
@@ -41,6 +45,7 @@ const SETTINGS: TaskSettings = {
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },
   followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
+  memory: { ...DEFAULT_MEMORY_SETTINGS },
   messages: [{ role: "user", content: "@U024BE7LH asks: <@U0BOT> what is the deploy window?" }]
 };
 
@@ -242,7 +247,7 @@ describe("createMentionHandler", () => {
       transport: fakeTransport().transport
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: "Fridays, 14:00 UTC." } });
   });
 
   it("sends the assembled transcript, the system prompt, and the configured model", async () => {
@@ -362,7 +367,7 @@ describe("createMentionHandler", () => {
       signal: aborted
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toBeUndefined();
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: undefined });
     expect(requests).toHaveLength(0);
   });
 
@@ -407,7 +412,7 @@ describe("createMentionHandler", () => {
       transport: fakeTransport({ tools: () => LISTED }).transport
     });
 
-    const reply = await runner(taskRequest(), {
+    const { reply } = await runner(taskRequest(), {
       ...SETTINGS,
       caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls: 0 }
     });
@@ -499,7 +504,7 @@ describe("createMentionHandler", () => {
       logger: captured.logger
     });
 
-    const reply = await runner(taskRequest(), SETTINGS);
+    const { reply } = await runner(taskRequest(), SETTINGS);
 
     // The answer is untouched and the notice follows it.
     expect(reply?.text).toMatch(/^Two open\.\n\nBudget: /);
@@ -650,7 +655,7 @@ describe("what a task cost", () => {
       logger: captured.logger
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: "Fridays, 14:00 UTC." } });
 
     const task = captured.lines.find(entry => entry.event === "task")?.task;
     const reports = spentTokens(fake.sent);
@@ -735,7 +740,7 @@ describe("what a task cost", () => {
       signal: controller.signal
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toBeUndefined();
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: undefined });
     expect(spentTokens(fake.sent)).toHaveLength(1);
   });
 
@@ -764,7 +769,7 @@ describe("what a task cost", () => {
       transport: failingOn("/v1/tools", "unreachable")
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: PROXY_UNAVAILABLE.other });
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: PROXY_UNAVAILABLE.other } });
     expect(spentTokens(fake.sent)).toEqual([]);
   });
 
@@ -811,7 +816,7 @@ describe("a meter that cannot be reached", () => {
       }).transport
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: "Fridays, 14:00 UTC." } });
   });
 
   it("still answers the thread when the report could not be sent at all", async () => {
@@ -822,7 +827,7 @@ describe("a meter that cannot be reached", () => {
         transport: failingOn("/v1/spend", reason)
       });
 
-      await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+      await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: "Fridays, 14:00 UTC." } });
     }
   });
 
@@ -863,7 +868,7 @@ describe("a meter that cannot be reached", () => {
       }
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: "Fridays, 14:00 UTC." });
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: "Fridays, 14:00 UTC." } });
   });
 });
 
@@ -884,7 +889,7 @@ describe("a tool proxy that cannot be reached", () => {
     });
 
     await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({
-      text: PROXY_UNAVAILABLE.no_client_certificate
+      reply: { text: PROXY_UNAVAILABLE.no_client_certificate }
     });
     // No model turn was taken: the listing runs before the first one, so this
     // costs the operator nothing beyond the failed connection.
@@ -905,7 +910,7 @@ describe("a tool proxy that cannot be reached", () => {
         transport: failing(reason)
       });
 
-      await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ text: PROXY_UNAVAILABLE.other });
+      await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: { text: PROXY_UNAVAILABLE.other } });
     }
   });
 
@@ -938,7 +943,7 @@ describe("a tool proxy that cannot be reached", () => {
       transport: failing("cancelled")
     });
 
-    await expect(runner(taskRequest(), SETTINGS)).resolves.toBeUndefined();
+    await expect(runner(taskRequest(), SETTINGS)).resolves.toEqual({ reply: undefined });
   });
 });
 
@@ -993,7 +998,7 @@ describe("a held call in a task", () => {
       transport: fake.transport
     });
 
-    const reply = await runner(
+    const { reply } = await runner(
       { ...taskRequest(), onHeld: held => (prompted.push(held.ticket.id), Promise.resolve()) },
       SETTINGS
     );

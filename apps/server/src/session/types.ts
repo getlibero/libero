@@ -15,6 +15,7 @@
 // carries.
 
 import type { AgentLoopCaps, CompletionMessage, HeldCallPrompter } from "@getlibero/agent";
+import type { MemoryFile } from "@getlibero/memory";
 import type { ChecklistReporter } from "../checklist/checklist.js";
 
 /**
@@ -138,6 +139,24 @@ export interface HistoryBounds {
   readonly maxChars: number;
 }
 
+/**
+ * What a channel's `[memory]` block resolved to.
+ *
+ * **The one part of a sheet this process honours alone.** Everything else
+ * resolved here is advisory — the tool proxy enforces the same file from its own
+ * copy, which is what makes a fallback safe. The proxy never opens `MEMORY.md`
+ * and holds no second copy of these two numbers, so what this resolves is not a
+ * defence-in-depth restatement of a decision made elsewhere; it *is* the
+ * decision. `createSheetResolver`'s fallback for this block therefore differs
+ * from the schema's default, and that is argued where the fallback lives.
+ */
+export interface MemorySettings {
+  /** `[memory] enabled`. False runs no curation turn and reads nothing back. */
+  readonly enabled: boolean;
+  /** `[memory] max_file_chars`, the whole file's ceiling in characters. */
+  readonly maxFileChars: number;
+}
+
 /** What a channel's team sheet resolved to. Everything here came out of the file. */
 export interface ChannelSettings {
   /** The sheet's `[llm] model`, or `AGENT_MODEL`. Passed to the provider verbatim. */
@@ -157,6 +176,8 @@ export interface ChannelSettings {
    * a *next* task at all. `0` is a channel that answers only when addressed.
    */
   readonly followUpWindowMs: number;
+  /** The `[memory]` block. See `MemorySettings` for why it is not like the rest. */
+  readonly memory: MemorySettings;
 }
 
 /**
@@ -179,6 +200,50 @@ export interface TaskSettings extends ChannelSettings {
    * a well-formed single message through the same path.
    */
   readonly messages: readonly CompletionMessage[];
+  /**
+   * This channel's `MEMORY.md`, opened for the same serialized step.
+   *
+   * Optional, unlike `messages`, and the asymmetry is real rather than
+   * convenience. A transcript always exists — a channel with no history still
+   * produces a well-formed one — so an assembler that could be skipped would be
+   * one a caller forgets. A memory file genuinely may not: the channel may have
+   * disabled curation, or its sheet may name a cap the store refuses, or the
+   * file may not have been openable. Absent means no curation turn runs, which
+   * is a state the deployment can legitimately be in.
+   *
+   * Named apart from `ChannelSettings.memory`, which is what the *sheet* said.
+   * This is the file itself.
+   */
+  readonly memoryFile?: MemoryFile;
+}
+
+/**
+ * What a finished task leaves behind: the reply, and the memory work that should
+ * follow it.
+ *
+ * **`curate` is a thunk rather than something the runner already did, and the
+ * split is the ordering decision (#227).** Everything curation needs — the task
+ * id the spend report keys on, the finished transcript, the turn count that
+ * makes the next turn id `<task>.<n+1>` — is function-local to the runner and
+ * escapes nowhere else. But *when* it runs is a question about the session
+ * queue, which the runner cannot see and the router owns. So the runner closes
+ * over the answer and the router decides when to ask for it.
+ *
+ * Absent when the channel's sheet disables curation, when the task produced
+ * nothing to curate, or when there is no memory file to write.
+ */
+export interface TaskOutcome {
+  /** What to post. `undefined` posts nothing. */
+  readonly reply: TaskReply | undefined;
+  /**
+   * The curation turn, ready to run.
+   *
+   * **It never rejects**, for `reportSpend`'s reason: it is invoked detached
+   * from the reply that has already been produced, so a rejection would be an
+   * unhandled one at the process level rather than something a caller could
+   * relay. It swallows and logs where it has a logger.
+   */
+  readonly curate?: () => Promise<void>;
 }
 
 /**
@@ -191,4 +256,4 @@ export interface TaskSettings extends ChannelSettings {
 export type TaskRunner = (
   request: TaskRequest,
   settings: TaskSettings
-) => Promise<TaskReply | undefined>;
+) => Promise<TaskOutcome>;
