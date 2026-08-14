@@ -10,7 +10,7 @@ around, and disk snapshots as the backup.
 
 :::caution[Read the self-hosting page first]
 Everything the caution at the top of [self-hosting](/docs/self-hosting/) says still applies —
-certificate rotation is manual, and this is phase 1. Standing the stack on a cloud VM does not
+certificate rotation is manual, and this is pre-release. Standing the stack on a cloud VM does not
 change what is finished. Point it at a scratch workspace before a real one.
 :::
 

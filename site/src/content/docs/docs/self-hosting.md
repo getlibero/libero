@@ -3,26 +3,28 @@ title: Self-hosting
 description: The target deployment — two containers, one team sheet per channel — and an honest account of what does not work yet.
 ---
 
-:::caution[Not deployable yet]
-This page describes the target deployment. What exists today is phase 1, part-built: the proxy
-process starts, speaks mutual TLS, binds every request to a channel, enforces team sheets, holds
-credentials in an encrypted vault, injects them into outbound calls, scrubs them back out of
-results, meters the daily budget, and appends an audit row for every decided call. The Slack
-gateway and the agent loop exist and reach tools through the proxy, and approvals are joined end
-to end: a held call raises an amber card in the channel, and an approver's click re-submits the
-identical call with the ticket.
+:::caution[Pre-release]
+The stack described here runs. The proxy speaks mutual TLS, binds every request to a channel,
+enforces team sheets, holds credentials in an encrypted vault, injects them into outbound calls,
+scrubs them back out of results, meters each channel's daily budget in calls and in dollars, and
+appends an audit row for every decided call. The Slack gateway and the agent loop reach tools
+through the proxy and nowhere else, and approvals are joined end to end: a held call raises an
+amber card in the channel, and an approver's click re-submits the identical call with the ticket.
 
-The proxy speaks MCP for real, and [GitHub's hosted server](/docs/github/) is documented and
-exercised end to end. The end-to-end suite that attacks all of this exists: it composes both halves
-over real mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget
-exhaustion, held destructive calls, and channel isolation.
+The proxy speaks MCP for real — including OAuth against upstreams that require it, with the token
+minted and rotated inside the proxy — and [GitHub's hosted server](/docs/github/) is documented and
+exercised end to end. The end-to-end suite that attacks all of this composes both halves over real
+mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget exhaustion,
+held destructive calls, channel isolation, and a hostile authorization server.
 
 Both services build as images from the compose file, so
 `docker compose -f deploy/docker-compose.yml up` starts a deployment from a clean checkout.
 
-What is not finished: certificate rotation and revocation are manual —
-possible without downtime, and driven by a shell script and an edit to a team sheet rather than by
-anything automated. Do not run this against a workspace you care about.
+What is not finished: certificate rotation and revocation are manual — possible without downtime,
+and driven by a shell script and an edit to a team sheet rather than by anything automated. There
+is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowhere. Memory is the
+message store and its full-text index; curation and semantic recall are phase 2. Point this at a
+scratch workspace before a real one.
 :::
 
 ## The shape of a deployment

@@ -97,7 +97,7 @@ rather than only on a push.
 Node 24+, pnpm 9+ — Node 24 because the message store's full-text index needs SQLite's FTS5, and
 the built-in `node:sqlite` was compiled without it until 22.16. (22.13 was the old floor, for a
 different reason: below that `node:sqlite` needed `--experimental-sqlite`.) The e2e harness (mock
-Slack + mock MCP server) lands in `e2e/` with phase 1.
+Slack + mock MCP server) is in `e2e/`; `pnpm --filter @getlibero/e2e test` runs the security suite.
 
 ### Getting pnpm
 

@@ -145,8 +145,10 @@ A prompt-injected agent in a test channel cannot exfiltrate a secret, call an un
 exceed budget, or act destructively without a human click — demonstrated by e2e tests in `e2e/`
 that try.
 
-Until those tests exist and pass, the governed core is not done, and the
-[roadmap](/docs/roadmap) does not move past phase 1.
+Those tests exist and pass, one file per property, so the [roadmap](/docs/roadmap) has moved past
+phase 1. The gate stays: a change that cannot keep them passing is a change that does not land,
+and a new governed surface arrives with the case that attacks it — which is why OAuth for MCP
+upstreams shipped alongside a scripted hostile authorization server.
 
 :::danger[Reporting a vulnerability]
 Please do not open a public issue for security reports. Use GitHub private vulnerability
