@@ -361,7 +361,7 @@ const MEMORY_APPEND_SCHEMA = {
       minLength: 1,
       maxLength: MEMORY_OP_MAX_TEXT_CHARS,
       description:
-        "The fact to record, as a markdown line or a short block. Appended to the end of the file exactly as written."
+        "The fact to record, as a markdown line or a short block. Appended to the end of the file on its own line."
     }
   },
   required: ["text"],
@@ -410,7 +410,8 @@ export const MEMORY_TOOLS: Record<MemoryToolName, MemoryToolDefinition> = {
   memory_append: {
     description:
       "Add a durable fact to this channel's MEMORY.md. " +
-      "The text is appended to the end of the file exactly as written, and nothing is " +
+      "The text is appended to the end of the file on its own line, otherwise exactly as " +
+      "written, and nothing is " +
       "deduplicated, so read the file before adding something it may already say. " +
       "MEMORY.md is freeform markdown that the team can read and edit, and there is one " +
       "per channel — no argument names a file, a path, or a channel. " +

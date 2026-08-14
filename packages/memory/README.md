@@ -1,14 +1,19 @@
 # @getlibero/memory
 
-Unpublished workspace package. Layer 1 of the architecture's *Memory* section:
-one SQLite file per channel holding that channel's messages, with an FTS5 index
-answering "what did we decide about X". See
+Unpublished workspace package. Layers 1 and 2 of the architecture's *Memory*
+section: one SQLite file per channel holding that channel's messages, with an
+FTS5 index answering "what did we decide about X", and beside it the `MEMORY.md`
+the agent curates. See
 [the architecture](https://getlibero.com/docs/architecture) (sourced from
 `site/src/content/docs/docs/architecture.md`) for the specification.
 
-`src/store-db.ts` is the whole store — opening the file, its schema, and every
-statement run against it. `src/log.ts` is a duplicated `Logger` interface, and
-the duplication is argued in the file.
+`src/store-db.ts` is the whole message store — opening the file, its schema, and
+every statement run against it. `src/memory-file.ts` is `MEMORY.md` and every
+rule about what may be written to it. `src/atomic-write.ts` is the
+durable-replace recipe the second of those uses, and it is a copy of
+`packages/proxy/src/atomic-write.ts` because a leaf may not import one; #272
+unifies them. `src/log.ts` is a duplicated `Logger` interface, and that
+duplication is argued in the file too.
 
 ## Three reads, and they are not each other
 
@@ -65,16 +70,18 @@ per-file layout forbids.
 
 **This package takes the strict reading**, because messages are channel content:
 they belong to that channel's members and are read on their behalf, so a
-cross-channel join is one channel's members seeing another's conversation. Two
-things make that structural rather than a convention:
+cross-channel join is one channel's members seeing another's conversation. A
+curated `MEMORY.md` is the same content distilled, so it is held to the same
+rule. Two things make that structural rather than a convention:
 
-- There is **no `channel` column**. The file is the channel, so there is no
-  column a statement could forget to filter on.
-- **No operation takes a channel id.** `openMessageStore` and `openMessageReader`
-  each close over one file, so a query spanning two channels is not something
-  `MessageStore` or `MessageReader` can express.
+- There is **no `channel` column**, and for `MEMORY.md` no schema at all. The
+  file is the channel, so there is no column a statement could forget to filter
+  on.
+- **No operation takes a channel id.** `openMessageStore`, `openMessageReader`
+  and `openMemoryFile` each close over one file, so reaching a second channel is
+  not something `MessageStore`, `MessageReader` or `MemoryFile` can express.
 
-## Two openers, and only one of them writes
+## Three openers, and what each one may touch
 
 `openMessageStore` is the gateway's: it creates the schema, stamps the version,
 and holds the six statements that write and read a channel's messages.
@@ -86,9 +93,65 @@ and holds the six statements that write and read a channel's messages.
 It answers `null` for a channel with no store yet, which is the ordinary state
 of a newly provisioned channel rather than a misconfiguration.
 
-Neither migrates on the reader's side: a version mismatch names both numbers and
-stops, because a reader that repaired a file would be a reader that changed the
-evidence — and here the evidence is a transcript a model reasons over.
+`openMemoryFile` is the agent's, and it is the only opener of `MEMORY.md` in
+either direction — the proxy neither reads nor writes that file, so there is no
+read-only fourth opener and a type with no caller was not written. It exposes
+`read` and `apply`, and no `close`, because it holds no handle to close.
+
+Neither store migrates on the reader's side: a version mismatch names both
+numbers and stops, because a reader that repaired a file would be a reader that
+changed the evidence — and here the evidence is a transcript a model reasons
+over. `MEMORY.md` has no version at all, which is the same argument arriving at
+a different answer: it is markdown a person edits, so there is no schema to
+stamp and nothing this package could repair without overwriting somebody's work.
+
+## `MEMORY.md`: no lock, and what replaces it
+
+The architecture doc used to say these writes were locked. They are not.
+
+A lock file that outlives a killed process is a worse failure than the one it
+would prevent — the vault and the token store both reject one on that ground,
+and nothing about this file argues differently. Two properties cover what a lock
+would have:
+
+- **Every write lands by rename.** `src/atomic-write.ts` writes a whole
+  temporary file and renames it over the target, so a reader holds the old file
+  or the new one and no writer's bytes ever land inside another's.
+- **Nothing here interleaves.** `apply` is synchronous from the read to the
+  rename, and in a single-threaded runtime a function that never awaits has no
+  point at which a second operation could run. That is why this module is
+  synchronous rather than a stylistic match: `packages/proxy/src/token-store.ts`
+  needs a promise-chain mutex for the same read-modify-write because its
+  interface is async and a caller can hold a stale view across an `await`. A
+  synchronous interface never opens that window.
+
+**What is left is a lost update, not a torn file, and only across processes.**
+Two OS processes can each read, compute and rename, and the second rename wins —
+the first write is gone rather than mangled. The deployment has exactly one
+writer: one `apps/server` container, no clustering, and a proxy that opens no
+such file. Within it the per-channel session queue already serializes tasks.
+That is a deployment property stated rather than a code property enforced, and
+no test in this package would catch a second agent process writing one
+`AGENT_STORE_ROOT`.
+
+**The cap refuses and never truncates**, because a silently shortened memory is
+a fact the team believes it recorded. It has one deliberate relaxation: a file
+already over the cap must stay compactable, so what is refused is an operation
+leaving the file both over the cap and bigger than it was. Every intermediate
+state of a shrinking rewrite is over the cap too, and without this the model's
+own refusal message — "replace something already in the file with a shorter
+version of itself to make room" — would be advice this store refused to honour.
+
+Two things worth knowing before you write against it. **`openMemoryFile`
+throws** — on an invalid channel id, a cap below one operation's ceiling, and a
+missing state directory — whereas `createMessageStoreOpener` in `apps/server`
+never does, because `registry.open` is synchronous and uncaught on the path a
+mention takes. A caller of this opener needs that same shape, or a mistyped
+`[memory] max_file_chars` becomes a mention nobody answers. And **renaming over
+a symlink replaces the symlink**, leaving its referent untouched: right for a
+vault, and worth stating for a file the team is invited to edit, since an
+operator who symlinked `MEMORY.md` into a git-tracked directory finds a regular
+file there after the first curation.
 
 ## The store is a leaf
 
@@ -111,8 +174,11 @@ a build without it at open, naming the floor rather than letting SQLite report
 
 ## What is not here
 
-Layers 2 and 3 of the spec (`MEMORY.md` curation, sqlite-vec recall) are
-phase 2. Slack deletion and edit mirroring is no longer among them: #177 wired
+Layer 2's write machinery is here as of #225, and the rest of layer 2 is not:
+the curation turn that emits operations is #226, and the context read that puts
+`MEMORY.md` back into a task is #227 — which removes this paragraph's remaining
+half. Layer 3 (sqlite-vec recall) is untouched. Slack deletion and edit
+mirroring is no longer among the gaps: #177 wired
 `message_deleted` and `message_changed` onto `remove` and `replaceText`, through
 `toRevision` in the gateway and `createRevisionIngest` in `apps/server`.
 

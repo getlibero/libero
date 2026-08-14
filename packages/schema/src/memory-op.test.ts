@@ -52,6 +52,12 @@ describe("the memory tool definitions", () => {
   // these are the clauses a model would otherwise assume the other way.
   it("says the things a model would otherwise get wrong", () => {
     expect(MEMORY_TOOLS.memory_append.description).toContain("nothing is deduplicated");
+    // The store puts an appended fact on its own line, so the description must
+    // not promise the text lands byte-for-byte at the end of the file (#225).
+    expect(MEMORY_TOOLS.memory_append.description).toContain("on its own line");
+    expect(MEMORY_TOOLS.memory_append.description).not.toContain(
+      "end of the file exactly as written"
+    );
     expect(MEMORY_TOOLS.memory_replace.description).toContain("must match exactly once");
     expect(MEMORY_TOOLS.memory_replace.description).toContain("not a regular expression");
     expect(MEMORY_TOOLS.memory_replace.description).toContain("no operation that rewrites the whole file");
