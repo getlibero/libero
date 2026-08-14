@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  MAX_EMBEDDING_DIMS,
   MESSAGE_STORE_SCHEMA_VERSION,
   READ_MAX_LIMIT,
   SEARCH_MAX_TERMS,
   assertFts5,
+  loadVec,
   openMessageReader,
   openMessageStore,
   toMatchQuery
@@ -49,6 +51,25 @@ function found(query: string, limit = 10): string[] {
 function raw<T>(path: string, read: (db: DatabaseSync) => T): T {
   const db = new DatabaseSync(path);
   try {
+    return read(db);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * `raw`, for a statement that names the vec table.
+ *
+ * A separate helper rather than a flag on `raw`, because needing it is itself a
+ * fact about the file: a connection without sqlite-vec loaded cannot query a
+ * vec0 table, which is what "a file that holds vectors, read by a build that
+ * cannot" asserts at the bottom of this file. Every other `raw` call proves it
+ * did not need this.
+ */
+function rawVec<T>(path: string, read: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(path, { allowExtension: true });
+  try {
+    loadVec(db, path);
     return read(db);
   } finally {
     db.close();
@@ -152,13 +173,16 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, reading, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, embedding, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
       "append",
       "close",
+      "nearest",
+      "putEmbedding",
       "recent",
       "recentInThread",
       "remove",
+      "removeEmbedding",
       "replaceText",
       "search"
     ]);
@@ -238,6 +262,11 @@ describe("reading with openMessageReader", () => {
   // answers one question and this is the surface that says so: no append, no
   // remove, no replaceText, and no `recent` — reading a channel's traffic
   // wholesale is not what search_channel_history is.
+  //
+  // #229 gave this opener `allowExtension: true` and it still reads exactly the
+  // same. That is the acceptance criterion in structural form: loading sqlite-vec
+  // did not add a vector query here, because whether the proxy ever runs one is
+  // #232's question.
   it("exposes searching and closing, and nothing else", () => {
     const reader = openMessageReader({ channel: CHANNEL, root });
     expect(Object.keys(reader ?? {}).sort()).toEqual(["close", "search"]);
@@ -764,5 +793,380 @@ describe("FTS5 availability", () => {
 
     expect(() => assertFts5(without as never, "/state/C0ENG/store.db")).toThrow(/FTS5/);
     expect(() => assertFts5(without as never, "/state/C0ENG/store.db")).toThrow(/Node >= 24/);
+  });
+});
+
+describe("sqlite-vec availability", () => {
+  // `assertFts5`'s canary, one layer down. If a base image or a platform ever
+  // stops carrying a loadable vec0, this is the line that says which.
+  it("loads into this build", () => {
+    const db = new DatabaseSync(":memory:", { allowExtension: true });
+    try {
+      expect(() => loadVec(db, "canary")).not.toThrow();
+      expect(db.prepare("SELECT vec_version() AS v").get()).toMatchObject({
+        v: expect.stringMatching(/^v\d+\.\d+\.\d+/) as unknown as string
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  // The branch a musl image reaches and this machine cannot: `dlopen` refuses.
+  // The message has to name the libc cause, because that is the whole reason the
+  // images are Debian and the next person to try Alpine needs to be told.
+  it("names the platform and the libc cause when the extension will not load", () => {
+    const failing = {
+      loadExtension: () => {
+        throw new Error("Error relocating vec0.so: __memcpy_chk: symbol not found");
+      }
+    };
+
+    expect(() => loadVec(failing as never, "/state/C0ENG/store.db")).toThrow(/sqlite-vec/);
+    expect(() => loadVec(failing as never, "/state/C0ENG/store.db")).toThrow(/glibc/);
+    expect(() => loadVec(failing as never, "/state/C0ENG/store.db")).toThrow(
+      new RegExp(`${process.platform}-${process.arch}`)
+    );
+    expect(() => loadVec(failing as never, "/state/C0ENG/store.db")).toThrow(
+      /\/state\/C0ENG\/store\.db/
+    );
+  });
+
+  // The flag both openers now pass widens one thing and not the other, and this
+  // is the assertion that pins which. If a future Node authorized the SQL
+  // function, the header's argument for letting the *reader* hold the flag would
+  // stop being true — so it is asserted rather than described.
+  it("does not authorize the SQL load_extension() function, with or without the flag", () => {
+    for (const allowExtension of [false, true]) {
+      const db = new DatabaseSync(":memory:", { allowExtension });
+      try {
+        expect(() => db.exec("SELECT load_extension('/anything.so')")).toThrow(/not authorized/);
+      } finally {
+        db.close();
+      }
+    }
+  });
+
+  // And the door closes behind the open sequence. Defence in depth rather than
+  // the mechanism, but a test because it is one line to delete by accident.
+  it("can be closed again with enableLoadExtension(false)", () => {
+    const db = new DatabaseSync(":memory:", { allowExtension: true });
+    try {
+      db.enableLoadExtension(false);
+      expect(() => db.loadExtension("/anything.so")).toThrow(/not allowed/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("storing embeddings", () => {
+  const vector = (...values: number[]): Float32Array => Float32Array.from(values);
+
+  /** The names of every vec0 table in the file, read past the module's API. */
+  function vecTables(path: string): string[] {
+    return raw(path, db =>
+      db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vec_%'`)
+        .all()
+        .map(row => (row as { name: string }).name)
+    );
+  }
+
+  /** What `nearest` found, as `kind/ref`, nearest first. */
+  function near(query: Float32Array, limit = 10): string[] {
+    return store.nearest(query, limit).map(hit => `${hit.source.kind}/${hit.source.ref}`);
+  }
+
+  // The lazy half of the design, and the reason it is lazy: a deployment running
+  // Layers 1 and 2 has no embedding provider and should carry no table for one.
+  it("creates no vec table until the first vector arrives", () => {
+    store.append(message("1.1", "a message, but no embedding"));
+    expect(vecTables(file)).toEqual([]);
+
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "text-embedding-3-small",
+      at: 1
+    });
+
+    expect(vecTables(file)).toContain("vec_embedding");
+  });
+
+  // The case FTS cannot answer, in the only form this layer can be tested in:
+  // synthetic vectors. Whether a real model puts "we shipped the vault" near
+  // "what did we decide about deployment" is #230's and #232's to demonstrate;
+  // what this file owes is that the nearest vector comes back first.
+  it("answers nearest-neighbour queries in distance order, with provenance", () => {
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "summary", ref: "s1" },
+      vector: vector(0.9, 0.1, 0),
+      model: "m1",
+      at: 2
+    });
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f2" },
+      vector: vector(0, 1, 0),
+      model: "m1",
+      at: 3
+    });
+
+    expect(near(vector(1, 0, 0))).toEqual(["fact/f1", "summary/s1", "fact/f2"]);
+    expect(near(vector(0, 1, 0))).toEqual(["fact/f2", "summary/s1", "fact/f1"]);
+  });
+
+  it("returns a distance, ascending", () => {
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f2" },
+      vector: vector(0, 1, 0),
+      model: "m1",
+      at: 2
+    });
+
+    const hits = store.nearest(vector(1, 0, 0), 2);
+    expect(hits[0]?.distance).toBe(0);
+    expect(hits[1]?.distance).toBeGreaterThan(0);
+  });
+
+  // The UNIQUE on (kind, ref) doing its job. #231 re-embeds a summary whose
+  // source messages changed, and two answers to one question is the failure.
+  it("replaces the vector for a source it already holds", () => {
+    const source = { kind: "summary", ref: "s1" } as const;
+    store.putEmbedding({ source, vector: vector(1, 0, 0), model: "m1", at: 1 });
+    store.putEmbedding({ source, vector: vector(0, 0, 1), model: "m1", at: 2 });
+
+    expect(near(vector(0, 0, 1))).toEqual(["summary/s1"]);
+    expect(store.nearest(vector(0, 0, 1), 50)).toHaveLength(1);
+    expect(store.nearest(vector(0, 0, 1), 50)[0]?.distance).toBe(0);
+  });
+
+  // The trigger, which is what #233 will attach a Slack deletion to. Asserted
+  // through the file rather than through `nearest`, because the thing at stake
+  // is that no vector row outlives its provenance.
+  it("removes the vector with the source, through the trigger", () => {
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f2" },
+      vector: vector(0, 1, 0),
+      model: "m1",
+      at: 2
+    });
+
+    // The positive control: both are there before anything is deleted.
+    expect(near(vector(1, 0, 0))).toEqual(["fact/f1", "fact/f2"]);
+
+    expect(store.removeEmbedding({ kind: "fact", ref: "f2" })).toBe(true);
+
+    expect(near(vector(1, 0, 0))).toEqual(["fact/f1"]);
+    expect(
+      rawVec(file, db =>
+        Number((db.prepare("SELECT count(*) AS n FROM vec_embedding").get() as { n: number }).n)
+      )
+    ).toBe(1);
+  });
+
+  it("answers false when removing a source it does not hold", () => {
+    expect(store.removeEmbedding({ kind: "fact", ref: "never-stored" })).toBe(false);
+  });
+
+  // A store under a deployment with no embedding provider. Neither read nor
+  // delete may throw on it — the vec table's absence is the ordinary state, not
+  // a broken file, exactly as `openMessageReader` answers null rather than
+  // throwing for a channel with no store.
+  it("reads and deletes without a vec table, rather than throwing", () => {
+    expect(store.nearest(vector(1, 0, 0), 5)).toEqual([]);
+    expect(store.removeEmbedding({ kind: "fact", ref: "f1" })).toBe(false);
+  });
+
+  it("clamps the neighbour count to READ_MAX_LIMIT", () => {
+    for (let i = 0; i < 5; i++) {
+      store.putEmbedding({
+        source: { kind: "fact", ref: `f${i}` },
+        vector: vector(i, 1, 0),
+        model: "m1",
+        at: i
+      });
+    }
+
+    expect(store.nearest(vector(0, 1, 0), READ_MAX_LIMIT + 1_000)).toHaveLength(5);
+    expect(store.nearest(vector(0, 1, 0), 0)).toHaveLength(1);
+  });
+
+  // The width is baked into the vec table at creation, so the file can only hold
+  // one. Both halves of the refusal name what was found and what was given,
+  // because the remedy is a rebuild and an operator cannot decide on that
+  // without both numbers.
+  it("refuses a vector of a different width, naming both", () => {
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+
+    expect(() =>
+      store.putEmbedding({
+        source: { kind: "fact", ref: "f2" },
+        vector: vector(1, 0),
+        model: "m1",
+        at: 2
+      })
+    ).toThrow(/holds vectors from "m1" at 3 dimensions, and was given "m1" at 2/);
+  });
+
+  it("refuses a vector from a different model, naming both", () => {
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+
+    expect(() =>
+      store.putEmbedding({
+        source: { kind: "fact", ref: "f2" },
+        vector: vector(0, 1, 0),
+        model: "m2",
+        at: 2
+      })
+    ).toThrow(/holds vectors from "m1" at 3 dimensions, and was given "m2" at 3/);
+  });
+
+  // `dims` is the one value in the module substituted into SQL rather than
+  // bound, so the check that keeps it a whole number in range is the check that
+  // keeps that safe.
+  it("refuses a width outside the buildable range, before any DDL runs", () => {
+    expect(() =>
+      store.putEmbedding({
+        source: { kind: "fact", ref: "f1" },
+        vector: new Float32Array(MAX_EMBEDDING_DIMS + 1),
+        model: "m1",
+        at: 1
+      })
+    ).toThrow(new RegExp(`whole widths in \\[1, ${MAX_EMBEDDING_DIMS}\\]`));
+
+    expect(() =>
+      store.putEmbedding({
+        source: { kind: "fact", ref: "f1" },
+        vector: new Float32Array(0),
+        model: "m1",
+        at: 1
+      })
+    ).toThrow(/whole widths/);
+
+    expect(vecTables(file)).toEqual([]);
+  });
+
+  // A vector produced by `subarray` shares its neighbour's backing store, which
+  // is why `toVectorBlob` passes byteOffset and byteLength. Without them this
+  // hands vec0 the whole allocation and the insert fails on a width nobody asked
+  // for.
+  it("stores a vector that is a view into a larger buffer", () => {
+    const backing = Float32Array.from([9, 9, 1, 0, 0, 9]);
+    const view = backing.subarray(2, 5);
+
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: view,
+      model: "m1",
+      at: 1
+    });
+
+    expect(store.nearest(vector(1, 0, 0), 1)[0]?.distance).toBe(0);
+  });
+
+  // Two indexes over one file, neither aware of the other. The FTS canary is the
+  // existing test one describe up; running it against a file that also has a vec
+  // table is what says adding the second did not corrupt the first.
+  it("leaves the FTS index intact on a file that also holds vectors", () => {
+    store.append(message("1.1", "the vault ships friday"));
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+
+    expect(() =>
+      raw(file, db => {
+        db.exec("INSERT INTO message_fts(message_fts) VALUES('integrity-check')");
+      })
+    ).not.toThrow();
+    expect(found("vault")).toEqual(["1.1"]);
+  });
+
+  // Survives a close. The vec table and the model stamp are on disk, so a second
+  // open holds a file it must agree with rather than one it may re-stamp.
+  it("holds its model and vectors across a reopen", () => {
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: vector(1, 0, 0),
+      model: "m1",
+      at: 1
+    });
+    store.close();
+
+    store = openMessageStore({ channel: CHANNEL, root });
+
+    expect(near(vector(1, 0, 0))).toEqual(["fact/f1"]);
+    expect(() =>
+      store.putEmbedding({
+        source: { kind: "fact", ref: "f2" },
+        vector: vector(1, 0),
+        model: "m1",
+        at: 2
+      })
+    ).toThrow(/holds vectors from "m1" at 3 dimensions/);
+  });
+});
+
+describe("a file that holds vectors, read by a build that cannot", () => {
+  // The measurement the version constant's doc block rests on, kept as a test so
+  // that the decision not to bump the schema version stays checkable rather than
+  // remembered. A connection with vec0 *not* loaded still answers every question
+  // this module asks of the file, and fails only on the vec table itself.
+  it("still answers every non-vector statement", () => {
+    store.append(message("1.1", "the vault ships friday"));
+    store.putEmbedding({
+      source: { kind: "fact", ref: "f1" },
+      vector: Float32Array.from([1, 0, 0]),
+      model: "m1",
+      at: 1
+    });
+    store.close();
+
+    const blind = new DatabaseSync(file, { readOnly: true });
+    try {
+      expect(blind.prepare("SELECT text FROM message").all()).toEqual([
+        { text: "the vault ships friday" }
+      ]);
+      expect(
+        blind.prepare("SELECT rowid FROM message_fts WHERE message_fts MATCH ?").all("vault")
+      ).toHaveLength(1);
+      expect(() => blind.prepare("SELECT id FROM vec_embedding").all()).toThrow(
+        /no such module: vec0/
+      );
+    } finally {
+      blind.close();
+    }
+
+    store = openMessageStore({ channel: CHANNEL, root });
   });
 });

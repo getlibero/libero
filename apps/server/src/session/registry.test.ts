@@ -149,6 +149,9 @@ describe("createSessionRegistry", () => {
           search: () => [],
           recent: () => [],
           recentInThread: () => [],
+          putEmbedding: () => {},
+          nearest: () => [],
+          removeEmbedding: () => false,
           close: () => {
             closed += 1;
           }

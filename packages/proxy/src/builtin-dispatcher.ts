@@ -24,6 +24,15 @@
 // be carrying around. The handle's lifetime is one call and a `finally` closes
 // it.
 //
+// #229 added one thing to that open: sqlite-vec is loaded into the connection,
+// so a `loadExtension` now happens per call as well. `dlopen` is cached by the
+// process after the first, so what recurs is vec0 registering itself on a new
+// connection rather than a load from disk — small beside the two SQLite writes
+// already bracketing this, and it does not change the argument above. What it
+// does *not* buy this arm is a vector query: `MessageReader` is still `search`
+// and `close`, and whether the proxy ever runs a nearest-neighbour search is
+// #232's question rather than a settled one.
+//
 // ## The channel is not an argument and cannot be made one
 //
 // `call.channel` came off the client certificate (./identity.ts) and is the only

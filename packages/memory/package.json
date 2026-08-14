@@ -2,7 +2,7 @@
   "name": "@getlibero/memory",
   "version": "0.0.1",
   "private": true,
-  "description": "Per-channel memory for Libero. One SQLite file of messages with an FTS5 index, and one size-capped MEMORY.md the agent curates; the file-per-channel layout is the isolation boundary.",
+  "description": "Per-channel memory for Libero. One SQLite file of messages with an FTS5 index and a sqlite-vec embeddings table, and one size-capped MEMORY.md the agent curates; the file-per-channel layout is the isolation boundary.",
   "license": "MIT",
   "files": ["dist"],
   "type": "module",
@@ -14,7 +14,8 @@
     "test": "vitest run --exclude '**/dist/**'"
   },
   "dependencies": {
-    "@getlibero/schema": "workspace:*"
+    "@getlibero/schema": "workspace:*",
+    "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
     "@types/node": "^24.13.3"

@@ -1,9 +1,10 @@
 # @getlibero/memory
 
 Unpublished workspace package. Layers 1 and 2 of the architecture's *Memory*
-section: one SQLite file per channel holding that channel's messages, with an
-FTS5 index answering "what did we decide about X", and beside it the `MEMORY.md`
-the agent curates. See
+section, and Layer 3's storage: one SQLite file per channel holding that
+channel's messages, with an FTS5 index answering "what did we decide about X" and
+a sqlite-vec table for the embeddings semantic recall will query, and beside it
+the `MEMORY.md` the agent curates. See
 [the architecture](https://getlibero.com/docs/architecture) (sourced from
 `site/src/content/docs/docs/architecture.md`) for the specification.
 
@@ -93,6 +94,39 @@ and holds the six statements that write and read a channel's messages.
 It answers `null` for a channel with no store yet, which is the ordinary state
 of a newly provisioned channel rather than a misconfiguration.
 
+### What `allowExtension` changed about that, and what it did not
+
+#229 gave **both** openers `allowExtension: true`, so that sqlite-vec can be
+loaded (see *Node 24 and sqlite-vec* below). That flag reads much wider than it
+is, and since one of the two connections it now sits on is the read-only one
+held by the process with every tool credential, the difference is worth stating
+precisely. Measured against `node:sqlite`, not inferred:
+
+- It enables the `loadExtension()` **method**. This package calls it once per
+  open, with a path it computes itself from an installed package. Nothing about
+  the call is influenced by the file, the channel, or anything a model wrote.
+- It does **not** enable the SQL function `load_extension()`. Node installs an
+  authorizer that denies it, set or unset, and nothing here can turn that off —
+  so there is no query, however built, that reaches a loader. There is a test
+  asserting both states, because the reader holding the flag is only defensible
+  while that stays true.
+- `enableLoadExtension(false)` runs before either opener returns, so the widening
+  lasts for the open sequence rather than for the connection's life. That is
+  defence in depth around the authorizer, not the mechanism.
+- `readOnly` is untouched by any of it. SQLite still refuses a write before the
+  question of what is loaded arises.
+
+What the reader gained is the ability to open a file whose schema contains a
+`vec0` table without that table being a landmine. It gained **no vector query**:
+the interface is still `search` and `close`. Whether the tool proxy ever runs a
+nearest-neighbour search is #232's decision, and a method with no caller was not
+written — the same reason there is no read-only `MEMORY.md` opener.
+
+One cost is real and named here because it is easy to miss: the proxy opens a
+reader *per* `search_channel_history` call, so a `loadExtension` happens per call
+too. `dlopen` is cached by the process after the first, so what recurs is vec0's
+per-connection registration rather than a load from disk.
+
 `openMemoryFile` is the agent's, and it is the only opener of `MEMORY.md` in
 either direction — the proxy neither reads nor writes that file, so there is no
 read-only fourth opener and a type with no caller was not written. It exposes
@@ -155,9 +189,48 @@ vault, and worth stating for a file the team is invited to edit, since an
 operator who symlinked `MEMORY.md` into a git-tracked directory finds a regular
 file there after the first curation.
 
+## Semantic recall: what #229 built and what it left
+
+Layer 3 stores vectors here and computes none. `putEmbedding`, `nearest` and
+`removeEmbedding` are on `MessageStore` and on nothing else; there is no producer
+in the tree yet, because #230 is what gives the completion layer an `embed()` and
+#231 is what writes the summaries to embed. **This package never holds a model
+provider key** — it is a leaf and the key belongs to the agent.
+
+Three decisions are worth knowing before extending it.
+
+**The vec table is created on the first vector, not at open.** A `vec0`
+declaration bakes the dimension in, and the dimension comes from whichever
+embedding model a deployment configured — possibly none. So a store under a
+deployment running Layers 1 and 2 carries no vec table at all, `nearest` answers
+nothing rather than throwing, and the width and the model id are stamped once in
+`embedding_model` when the first vector arrives. A later vector under a different
+model or width is **refused naming both**, because a `vec0` table's width is
+fixed at creation: changing the embedding model is a stated rebuild, not
+something a file absorbs.
+
+**Model and dimensions are recorded once per file rather than once per row.**
+#229 asked for them per vector. One table holds one width under one model, so per
+row would be the same two values repeated with N−1 chances to disagree with the
+table describing them.
+
+**Provenance is an ordinary table, and that is what #233 will need.** A virtual
+table cannot carry a trigger, so `embedding_source` is where the delete lives and
+a trigger created alongside the vec table carries a deletion into the vectors.
+`source_kind` is `fact` or `summary` — #223's corpus — and is deliberately *not*
+a CHECK constraint: neither producer exists yet, so a constraint now would be a
+guess to migrate away from later. `EmbeddingSource` is where the set is stated.
+Messages are absent on purpose; Layer 1 answers those with FTS5.
+
+The schema version did **not** move for any of this, which is the rule in
+*Three openers* applied rather than forgotten. See the constant's doc block in
+`src/store-db.ts`: it was measured first, and a connection with the extension not
+loaded still answers every statement this module makes except one naming the vec
+table itself.
+
 ## The store is a leaf
 
-It depends on `@getlibero/schema` and nothing else in the workspace. Both
+It depends on `@getlibero/schema` and nothing else **in the workspace**. Both
 services open these files — the gateway writes, the proxy reads — so the package
 is imported from either side and may name neither. An ESLint block on
 `packages/memory/**` enforces that; `src/log.ts` duplicating an interface rather
@@ -165,7 +238,14 @@ than importing one is the visible cost. The cost buys something concrete: a
 `Logger` imported from the gateway would put the Slack SDK into the proxy's
 image through an edge no import in the proxy names.
 
-## Node 24
+Outside the workspace it has exactly one dependency, and #229 added it:
+`sqlite-vec`. It is the first dependency in this repository whose payload is a
+**binary** rather than JavaScript, and because `packages/proxy` imports this
+package, that binary is in the image of the process holding every tool
+credential. Both Dockerfiles say so rather than leaving it to be discovered.
+What bounds it is `loadVec` and the `allowExtension` section above.
+
+## Node 24, and sqlite-vec
 
 The full-text index needs SQLite's FTS5, and the built-in `node:sqlite` was
 compiled without it until 22.16 — the define is absent from
@@ -174,12 +254,32 @@ That is why this repo's floor moved from 22.13 to Node 24. `assertFts5` refuses
 a build without it at open, naming the floor rather than letting SQLite report
 `no such module: fts5`.
 
+`loadVec` is that function's counterpart for sqlite-vec, and differs in one way
+that shapes it. FTS5 is a compile-time option, so `sqlite_compileoption_used` can
+be *asked* before any DDL runs; a loadable extension has no equivalent, and the
+only way to learn whether it loads is to load it. So `loadVec` is a try/catch
+that names the package, the file, the platform and the Node version, over two
+distinct failures: no prebuild for this platform, and a prebuild that will not
+`dlopen`.
+
+The second one is why **the service images are Debian and not Alpine**. Every
+published `vec0.so` links glibc — the binary names `libc.so.6` and versioned
+GLIBC symbols — and sqlite-vec ships no musl build, so on Alpine it does not load
+at all. `apps/proxy-server/Dockerfile` carries the argument, including why
+compiling the amalgamation in the build stage was rejected. sqlite-vec's
+prebuilds cover linux and darwin on x64 and arm64, and win32 on x64; CI runs
+`ubuntu-latest` only, so no CI job would notice a missing darwin-arm64 prebuild
+before a maintainer did.
+
 ## What is not here
 
 Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
 that emits operations (#226), and the read that puts `MEMORY.md` back into the
-context a task starts from. Layer 3 (sqlite-vec recall) is untouched. Slack
-deletion and edit mirroring is no longer among the gaps: #177 wired
+context a task starts from. Layer 3 has its storage half as of #229 and nothing
+above it: no embeddings are computed anywhere in the tree (#230), no summaries
+are written (#231), nothing retrieves (#232), and a Slack deletion does not yet
+reach a vector or a summary derived from the deleted message (#233). Slack
+deletion and edit mirroring of *messages* is not among the gaps: #177 wired
 `message_deleted` and `message_changed` onto `remove` and `replaceText`, through
 `toRevision` in the gateway and `createRevisionIngest` in `apps/server`.
 

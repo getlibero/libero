@@ -8,6 +8,16 @@
 # anything here is reachable by whatever compromises the process. So the final
 # stage carries the built JavaScript and its production dependencies and
 # nothing else — no source, no compiler, no test code, no package manager.
+#
+# Since #229 "its production dependencies" includes one that is not JavaScript:
+# sqlite-vec's `vec0.so`, reached through packages/memory, which this image
+# carries because the proxy reads the message store to answer
+# `search_channel_history`. State it plainly rather than let it arrive as a
+# surprise — there is a native binary in the image now. It is loaded by one
+# explicit `loadExtension()` call in packages/memory/src/store-db.ts against a
+# path that module computes, and Node's authorizer denies the SQL
+# `load_extension()` function whether or not the connection allows extensions,
+# so no query reaches a loader. That file's header carries the whole argument.
 
 # syntax=docker/dockerfile:1
 
@@ -18,9 +28,30 @@
 # tag means a rebuild picks up the base image's security patches, which is worth
 # more here than reproducibility is: this image is rebuilt to be redeployed, and
 # a digest pin is a promise to notice CVEs by hand.
+#
+# **The variant is `-slim` and was `-alpine` until #229, and the same package
+# moved it.** packages/memory now loads sqlite-vec, which ships as a prebuilt
+# loadable SQLite extension rather than as JavaScript. Every published `vec0.so`
+# links glibc — verified against the binary, which names `libc.so.6` and
+# versioned GLIBC symbols — and sqlite-vec publishes no musl build, so on Alpine
+# it does not `dlopen` at all. Debian is what the prebuild expects.
+#
+# The alternative was keeping Alpine and compiling sqlite-vec's amalgamation in
+# the build stage, which this file's multi-stage shape would have kept out of the
+# runtime image. It was rejected on what it does to the *evidence*: CI would go
+# on testing the npm prebuild while the image shipped a binary nobody had run,
+# and the repository would carry ten thousand lines of vendored C to keep in step
+# with a version it does not track. One artifact across a maintainer's laptop,
+# CI's test run and this image means the linux-x64 build that CI exercises is the
+# linux-x64 build that ships.
+#
+# What that costs is a larger base userland in the process holding every tool
+# credential, and it is a real cost rather than a nominal one. What bounds it is
+# unchanged and is below: no source, no compiler, no package manager, and a
+# non-root user. `node` is still uid 1000 in `-slim`.
 ARG NODE_VERSION=24
 
-FROM node:${NODE_VERSION}-alpine AS build
+FROM node:${NODE_VERSION}-slim AS build
 
 # Corepack reads `packageManager` from the root package.json, so the pnpm
 # version is pinned in one place for CI, the host, and this image alike rather
@@ -86,7 +117,7 @@ RUN find /out -type f \
       -exec rm -f {} +
 
 # ── runtime ───────────────────────────────────────────────────────────────────
-FROM node:${NODE_VERSION}-alpine
+FROM node:${NODE_VERSION}-slim
 
 ENV NODE_ENV=production
 
