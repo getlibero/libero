@@ -11,7 +11,7 @@ Phases are gated: later phases do not start until the governed core is solid.
 
 *Definition of done: a prompt-injected agent in a test channel cannot exfiltrate a secret, call an unlisted tool, exceed budget, or act destructively without a human click — demonstrated by e2e tests that try.*
 
-**Phase 1.5 — consolidation.** What phase 1 built, made solid and operable before memory lands on top: MCP client hardening against a hostile or broken upstream, a bounded shutdown drain, spend-denominated budget caps that fail closed on an unpriced model, and the CLI's host-authored half — `init`, `channel add`, `doctor`.
+**Phase 1.5 — consolidation.** What phase 1 built, made solid and operable before memory lands on top: pool discipline against a hostile or broken upstream, a bounded shutdown drain, spend-denominated budget caps that fail closed on an unpriced model, the CLI's host-authored half — `init`, `channel add`, `doctor` — OAuth for MCP upstreams, and deployment guides for GCP and AWS.
 
 **Phase 2 — memory.** Curation inner loop with tests, MEMORY.md tooling, sqlite-vec semantic recall.
 
