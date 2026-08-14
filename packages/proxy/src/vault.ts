@@ -71,6 +71,21 @@ export const VAULT_HEADER_BYTES = ENVELOPE_HEADER_BYTES;
 export const MAX_VAULT_BYTES = 262_144;
 
 /**
+ * A cap on one credential value.
+ *
+ * Generous enough for a PEM private key, and far short of anything that belongs
+ * in a file rather than a vault. A value this size is an operator mistake — a
+ * whole keyring pasted into one entry — and saying so at `set` time is better
+ * than finding out when the proxy will not start.
+ *
+ * Here rather than in ./vault-file.ts because both writers hold it: the vault's
+ * write path validates an operator's value against it, and the token store
+ * validates a refresh token against it — one cap on what a stored credential
+ * may weigh, wherever it is stored.
+ */
+export const MAX_SECRET_BYTES = 8_192;
+
+/**
  * A credential value, wrapped so it has nowhere to leak to.
  *
  * The value is held in a closure — there is no data property on the object at
@@ -89,7 +104,12 @@ export interface Secret {
 
 const REDACTED = "[redacted]";
 
-function makeSecret(value: string): Secret {
+/**
+ * Exported for the token store, which hands refresh tokens out the same way
+ * this file hands credentials out — wrapping is the safe direction, and
+ * `reveal()` remains the guarded act the grep contract counts.
+ */
+export function makeSecret(value: string): Secret {
   const secret = {
     reveal: () => value,
     toJSON: () => REDACTED,

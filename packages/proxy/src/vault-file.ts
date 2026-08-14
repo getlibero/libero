@@ -13,20 +13,22 @@ import { readFileSync } from "node:fs";
 import { CredentialName } from "@getlibero/schema";
 import { replaceFileAtomically } from "./atomic-write.js";
 import { sealEnvelope } from "./envelope.js";
-import { MAX_VAULT_BYTES, VAULT_SPEC, VaultError, decodeVault, isAbsence, serializeEntries } from "./vault.js";
+import {
+  MAX_SECRET_BYTES,
+  MAX_VAULT_BYTES,
+  VAULT_SPEC,
+  VaultError,
+  decodeVault,
+  isAbsence,
+  serializeEntries
+} from "./vault.js";
 import type { VaultKey } from "./vault.js";
 
 export type VaultEntries = ReadonlyMap<string, string>;
 
-/**
- * A cap on one credential.
- *
- * Generous enough for a PEM private key, and far short of anything that belongs
- * in a file rather than a vault. A value this size is an operator mistake — a
- * whole keyring pasted into one entry — and saying so at `set` time is better
- * than finding out when the proxy will not start.
- */
-export const MAX_SECRET_BYTES = 8_192;
+// The cap on one value lives in ./vault.ts now — the token store's writer
+// holds it too — and is re-exported here so `set`'s callers keep their import.
+export { MAX_SECRET_BYTES };
 
 /** Why an entry was rejected. Names and sizes, never a value. */
 export type EntryRejection = "invalid_name" | "empty_value" | "value_too_large" | "value_has_nul";

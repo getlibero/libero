@@ -192,3 +192,23 @@ export {
   writeVaultEntries
 } from "./vault-file.js";
 export type { EntryRejection, VaultEntries } from "./vault-file.js";
+
+// The second store (#254): grant material for OAuth upstreams, written by the
+// serving proxy (rotation) and the grant entrypoint (#257, which composes
+// `putGrant`) — never by the operator CLI. See the header of ./token-store.ts.
+export {
+  GrantEntryError,
+  MAX_TOKEN_STORE_BYTES,
+  TokenStoreError,
+  openTokenStore,
+  tokenStorePathFor
+} from "./token-store.js";
+export type {
+  GrantBinding,
+  GrantRead,
+  GrantRecord,
+  GrantRejection,
+  TokenStore,
+  TokenStoreFailure,
+  TokenStoreOptions
+} from "./token-store.js";
