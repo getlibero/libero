@@ -49,6 +49,20 @@ export interface ProxyEnv {
    * the suite a price table nothing in it asserts on.
    */
   readonly priceTable?: string;
+  /**
+   * The port to bind, when a caller cannot take the OS's pick. Absent means 0,
+   * which every fresh spawn wants; `restartProxy` passes the old port because
+   * the agent's transport captured the url at composition and a respawn that
+   * moved would leave it dialling a dead socket.
+   */
+  readonly port?: number;
+  /**
+   * `PROXY_UPSTREAM_TIMEOUT_MS`. Optional, as the variable is: absent keeps
+   * the package's thirty seconds, which every case not about a hanging token
+   * endpoint wants — a rig that quietly shortened it would put a clock inside
+   * every slow-but-honest fixture.
+   */
+  readonly upstreamTimeoutMs?: number;
   readonly tlsCert: string;
   readonly tlsKey: string;
   readonly tlsCa: string;
@@ -75,6 +89,15 @@ export interface ProxyProcess {
    * or three that carry its claim rather than restating a whole log line.
    */
   waitForLog(match: Readonly<Record<string, unknown>>, timeoutMs?: number): Promise<Record<string, unknown>>;
+  /**
+   * Kills this process and waits for it to go — the first half of a restart.
+   *
+   * The cleanup stack keeps its own disposer and stopping twice is fine: the
+   * module's stop checks for an already-exited child. What this half does not
+   * do is respawn — that is `Rig.restartProxy`, which is where the state that
+   * must survive a death (the port, the env) lives.
+   */
+  stop(): Promise<void>;
 }
 
 /** A line, if it is JSON holding every field of `match` at the same value. */
@@ -126,7 +149,7 @@ export async function spawnProxy(
     env: {
       PATH: process.env.PATH ?? "",
       PROXY_HOST: "127.0.0.1",
-      PROXY_PORT: "0",
+      PROXY_PORT: String(env.port ?? 0),
       PROXY_CHANNELS_ROOT: env.channelsRoot,
       PROXY_VAULT_FILE: env.vaultFile,
       PROXY_VAULT_KEY: env.vaultKey,
@@ -137,6 +160,9 @@ export async function spawnProxy(
       // exercises "this deployment has no prices" reaches the real code path
       // instead of one that parses an empty string.
       ...(env.priceTable === undefined ? {} : { PROXY_PRICE_TABLE: env.priceTable }),
+      // Absent rather than empty when unset, per PROXY_PRICE_TABLE: the cases
+      // not about the timeout reach the real default path.
+      ...(env.upstreamTimeoutMs === undefined ? {} : { PROXY_UPSTREAM_TIMEOUT_MS: String(env.upstreamTimeoutMs) }),
       PROXY_TLS_CERT: env.tlsCert,
       PROXY_TLS_KEY: env.tlsKey,
       PROXY_TLS_CA: env.tlsCa
@@ -243,7 +269,7 @@ export async function spawnProxy(
       waiters.add(look);
     });
 
-  return { url: `https://127.0.0.1:${port}`, port, log: () => [...lines], waitForLog };
+  return { url: `https://127.0.0.1:${port}`, port, log: () => [...lines], waitForLog, stop: () => stop(child) };
 }
 
 /**

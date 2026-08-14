@@ -310,3 +310,34 @@ export function maxUpstreamConcurrencyFromEnv(env: Env): number {
   }
   return parsed;
 }
+
+/**
+ * How long the proxy waits on any one outbound request:
+ * `PROXY_UPSTREAM_TIMEOUT_MS`, defaulting to the package's thirty seconds.
+ *
+ * One budget over all outbound I/O — each MCP call, and each token exchange
+ * (discovery plus the token POST share a single window). A deployment setting
+ * on the two arguments the bounds above make: sockets held open are a cost of
+ * the shared process, and how long a given upstream deserves is a deployment
+ * fact rather than something this repo can know.
+ *
+ * Optional with a default, per `maxResponseBytesFromEnv`, and lowering it
+ * fails closed: a token endpoint that cannot answer inside the window is
+ * `timed_out`, which surfaces as `unavailable` — never as a served call. No
+ * ceiling and no floor beyond "positive", for the reasons its neighbours give.
+ *
+ * `undefined` means "the package's default applies", so the dispatcher option
+ * is spread in conditionally rather than passed as `undefined` —
+ * `exactOptionalPropertyTypes` makes those two different statements.
+ */
+export function upstreamTimeoutMsFromEnv(env: Env): number | undefined {
+  const raw = env.PROXY_UPSTREAM_TIMEOUT_MS;
+  // "" alongside undefined, per `maxResponseBytesFromEnv`: a blanked-out line is
+  // a setting removed, not a timeout of zero, which here would fail every call.
+  if (raw === undefined || raw === "") return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`proxy: PROXY_UPSTREAM_TIMEOUT_MS is not a positive millisecond count: ${raw}`);
+  }
+  return parsed;
+}

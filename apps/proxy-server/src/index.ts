@@ -30,6 +30,7 @@ import {
   priceTableFromEnv,
   requiredEnv,
   storeRootFromEnv,
+  upstreamTimeoutMsFromEnv,
   vaultFileFromEnv,
   vaultKeyFromEnv
 } from "./env.js";
@@ -109,12 +110,18 @@ const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(pr
 // `maxUpstreamConcurrency` is read here for that reason and one more: it bounds
 // what this process spends against a single upstream, which no channel owns and
 // several may name at once (#159).
+//
+// `timeoutMs` is spread in only when set: `undefined` and "absent" are two
+// different statements to `exactOptionalPropertyTypes`, and absent is the one
+// that means "the package's default applies". See `upstreamTimeoutMsFromEnv`.
+const upstreamTimeoutMs = upstreamTimeoutMsFromEnv(process.env);
 const mcp = createHttpDispatcher({
   vault,
   tokens,
   logger,
   maxResponseBytes: maxResponseBytesFromEnv(process.env),
-  maxUpstreamConcurrency: maxUpstreamConcurrencyFromEnv(process.env)
+  maxUpstreamConcurrency: maxUpstreamConcurrencyFromEnv(process.env),
+  ...(upstreamTimeoutMs === undefined ? {} : { timeoutMs: upstreamTimeoutMs })
 });
 
 // The other arm, and it holds a directory path where the one above holds a

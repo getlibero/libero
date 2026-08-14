@@ -27,6 +27,15 @@ export interface SheetSpec {
   readonly url: string;
   /** A credential *name*. The value lives in the vault and never here. */
   readonly credential?: string;
+  /**
+   * The `[mcp_server.auth]` block: this upstream takes an OAuth token the proxy
+   * mints, not a vault value. The issuer is the fake token issuer's url, known
+   * only after it binds — and compared byte for byte against the grant record
+   * and discovery's echo, so a case writes the same string in all three places
+   * or fails as `issuer_mismatch`. The schema requires `credential` beside it:
+   * that name is where the grant lives in the token store.
+   */
+  readonly auth?: { readonly issuer: string; readonly scopes?: readonly string[] };
   readonly tools: readonly SheetTool[];
   readonly serverName?: string;
   /**
@@ -199,6 +208,17 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           `transport = "http"`,
           `url = "${spec.url}"`,
           ...(spec.credential !== undefined ? [`credential = "${spec.credential}"`] : []),
+          ...(spec.auth === undefined
+            ? []
+            : [
+                ``,
+                `  [mcp_server.auth]`,
+                `  scheme = "oauth"`,
+                `  issuer = "${spec.auth.issuer}"`,
+                ...(spec.auth.scopes === undefined
+                  ? []
+                  : [`  scopes = [${spec.auth.scopes.map(scope => `"${scope}"`).join(", ")}]`])
+              ]),
           ``,
           tools,
           ...(spec.builtins === undefined

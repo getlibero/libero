@@ -192,6 +192,10 @@ services:
       # limit on the others' behalf. A call past the limit waits briefly and is
       # then told it was not made.
       PROXY_MAX_UPSTREAM_CONCURRENCY: 8
+      # How long any one outbound request may hold a socket: each tool call,
+      # and each OAuth token exchange. Safe to lower — past the window a call
+      # is "timed out", a failed call rather than a served one.
+      PROXY_UPSTREAM_TIMEOUT_MS: 30000
       PROXY_TLS_CERT: /etc/libero/certs/proxy/server.pem
       PROXY_TLS_KEY: /etc/libero/certs/proxy/server.key
       # Client certs are verified against this CA and nothing else. A client

@@ -44,9 +44,11 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_PORT` | `8443` | |
 | `PROXY_MAX_RESPONSE_BYTES` | `4194304` | how much of an upstream's answer to hold before abandoning it |
 | `PROXY_MAX_UPSTREAM_CONCURRENCY` | `8` | how many calls to run against one upstream at once |
+| `PROXY_UPSTREAM_TIMEOUT_MS` | `30000` | how long to wait on any one outbound request |
 
-`PROXY_MAX_RESPONSE_BYTES` and `PROXY_MAX_UPSTREAM_CONCURRENCY` are the two
-knobs here that are capacity decisions rather than addresses. Past the first a
+`PROXY_MAX_RESPONSE_BYTES`, `PROXY_MAX_UPSTREAM_CONCURRENCY` and
+`PROXY_UPSTREAM_TIMEOUT_MS` are the knobs here that are capacity decisions
+rather than addresses. Past the first a
 response is abandoned mid-read — the reader is cancelled, nothing is decoded, and
 the call comes back as `too_large` — which is what stops one upstream from
 spending this process's memory without limit.
@@ -85,6 +87,13 @@ a `(transport, url, credential)` tuple that any number of channels may name, so
 two sheets could disagree about it and whichever loaded first would win. Eight is
 a guess about tool servers rather than about this process — set it to what yours
 tolerates. One is a legitimate answer, and there is no ceiling.
+
+`PROXY_UPSTREAM_TIMEOUT_MS` bounds how long any one outbound request may hold a
+socket: each MCP call, and each token exchange — discovery and the token POST
+share a single window. Not a sheet field for the tuple reason above, and safe to
+lower: an upstream or an authorization server that cannot answer inside the
+window comes back `timed_out`, which surfaces as a failed call — never as a
+served one.
 
 Everything without a default is required, and a missing one stops the process at
 startup rather than degrading. For the TLS paths the reason is that a proxy

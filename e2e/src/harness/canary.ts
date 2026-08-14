@@ -26,31 +26,58 @@ export const CANARY = "libero-e2e-canary-a3f9c17d84be2065fb7e19c4d0a85b32";
 export const CANARY_CREDENTIAL = "e2e_canary";
 
 /**
- * The positive control: the canary really did leave the proxy, on this method.
+ * The refresh token the OAuth cases plant in the token store, under `CANARY`'s
+ * rule: long, unique, fixed in source, and appearing nowhere else in the
+ * repository. It should cross exactly one wire — the POST to the fake issuer's
+ * token endpoint — and reach no surface the agent process can see.
+ */
+export const REFRESH_CANARY = "libero-e2e-refresh-canary-7d41c6b2e98f503aab1246e08c9d375f";
+
+/** The OAuth grant's credential name. Like `CANARY_CREDENTIAL`, the name travels. */
+export const OAUTH_CREDENTIAL = "e2e_oauth";
+
+/**
+ * The positive control: `secret` really did leave the proxy, on this method.
  *
  * Every negative assertion in this suite passes on a run where no credential
  * was ever resolved — a sheet naming no credential, a vault that failed to
  * open, a call that never went out. This is what rules that out, and it is why
  * the file's header tells every case that calls `expectNoCanary` to call this
- * too.
+ * or its canary-shaped wrapper too.
  *
  * `method` is a parameter rather than a constant because the credential goes
  * out on more than one kind of request: a case attacking the *listing* path is
  * controlled by `tools/list`, and one attacking the legacy handshake by
  * `initialize`. Defaulting to `tools/call` keeps the common case a bare call.
  *
+ * The secret is masked out of the failure message under `expectNoSecret`'s
+ * rule — for the canary and the fake issuer's minted tokens that changes
+ * nothing, and it is what keeps a caller holding a real token safe here too.
+ *
  * A type-only import, so this module keeps the shape its header describes: the
  * planted string and the scan over it, with nothing to stand up.
  */
-export function expectCanaryReachedUpstream(upstream: FakeMcpServer, method = "tools/call"): void {
+export function expectSecretReachedUpstream(
+  upstream: FakeMcpServer,
+  secret: string,
+  label = "the credential",
+  method = "tools/call"
+): void {
   const requests = upstream.callsTo(method);
-  if (requests.some(request => request.authorization === `Bearer ${CANARY}`)) return;
+  if (requests.some(request => request.authorization === `Bearer ${secret}`)) return;
   throw new Error(
-    `e2e: the canary never reached the upstream as \`Bearer <canary>\` on ${method} — ` +
+    `e2e: ${label} never reached the upstream as \`Bearer <${label}>\` on ${method} — ` +
       `${String(requests.length)} request(s) to it carried ${JSON.stringify(
-        requests.map(request => request.authorization)
+        requests.map(request =>
+          request.authorization === undefined ? undefined : request.authorization.replaceAll(secret, `<${label}>`)
+        )
       )}. Every "the credential did not leak" assertion below would pass for the wrong reason.`
   );
+}
+
+/** `expectSecretReachedUpstream` for the planted canary, which is what almost every case wants. */
+export function expectCanaryReachedUpstream(upstream: FakeMcpServer, method = "tools/call"): void {
+  expectSecretReachedUpstream(upstream, CANARY, "the credential", method);
 }
 
 /** One place the canary could have surfaced, named for the failure message. */
