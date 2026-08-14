@@ -180,6 +180,7 @@ describe("the interface", () => {
       "nearest",
       "putEmbedding",
       "putThreadSummary",
+      "readThreadSummary",
       "recent",
       "recentInThread",
       "remove",
@@ -1347,5 +1348,51 @@ describe("thread summaries", () => {
     expect(store.nearest(Float32Array.from([0, 1, 0]), 5).map(hit => hit.source)).toEqual([
       { kind: "fact", ref: "f1" }
     ]);
+  });
+});
+
+describe("reading one thread's summary", () => {
+  it("answers what was stored", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary({
+      thread: "1.1",
+      shape: "question_answered",
+      text: "Q: how do you rotate a cert? A: --rotate then --promote.",
+      coversThroughTs: "1.1",
+      messageCount: 1,
+      at: 1_700_000_000_000
+    });
+
+    expect(store.readThreadSummary("1.1")).toEqual({
+      thread: "1.1",
+      shape: "question_answered",
+      text: "Q: how do you rotate a cert? A: --rotate then --promote.",
+      coversThroughTs: "1.1",
+      messageCount: 1,
+      at: 1_700_000_000_000
+    });
+  });
+
+  // A real state and not a broken one: a vector outlives its summary for as long
+  // as it takes a trigger to fire, so a caller resolving a hit whose summary has
+  // gone should skip it rather than fail.
+  it("answers null for a thread it has no summary for", () => {
+    expect(store.readThreadSummary("1.1")).toBeNull();
+  });
+
+  it("answers null once an edit has invalidated the summary", () => {
+    store.append(message("1.1", "root"));
+    store.putThreadSummary({
+      thread: "1.1",
+      shape: "decision",
+      text: "Chose slim.",
+      coversThroughTs: "1.1",
+      messageCount: 1,
+      at: 1
+    });
+
+    expect(store.readThreadSummary("1.1")).not.toBeNull();
+    store.replaceText("1.1", "actually, something else");
+    expect(store.readThreadSummary("1.1")).toBeNull();
   });
 });

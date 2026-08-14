@@ -62,6 +62,7 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       removeEmbedding: () => false,
       putThreadSummary: () => {},
       staleThreads: () => [],
+      readThreadSummary: () => null,
       close: () => {
         closed += 1;
       }
@@ -353,6 +354,7 @@ describe("createMessageIngest", () => {
         removeEmbedding: () => false,
         putThreadSummary: () => {},
         staleThreads: () => [],
+        readThreadSummary: () => null,
         close: () => {}
       })
     });
@@ -390,6 +392,7 @@ describe("createMessageIngest", () => {
         removeEmbedding: () => false,
         putThreadSummary: () => {},
         staleThreads: () => [],
+        readThreadSummary: () => null,
         close: () => {}
       })
     });
@@ -680,6 +683,7 @@ describe("createRevisionIngest", () => {
         removeEmbedding: () => false,
         putThreadSummary: () => {},
         staleThreads: () => [],
+        readThreadSummary: () => null,
         close: () => {}
       }
     };
@@ -760,6 +764,7 @@ describe("createRevisionIngest", () => {
         removeEmbedding: () => false,
         putThreadSummary: () => {},
         staleThreads: () => [],
+        readThreadSummary: () => null,
         close: () => {}
       })
     });
@@ -797,6 +802,7 @@ describe("createRevisionIngest", () => {
         removeEmbedding: () => false,
         putThreadSummary: () => {},
         staleThreads: () => [],
+        readThreadSummary: () => null,
         close: () => {}
       })
     });

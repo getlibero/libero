@@ -806,6 +806,28 @@ export interface MessageStore {
    * up behind it. `limit` is clamped to `READ_MAX_LIMIT`.
    */
   staleThreads(idleBefore: string, limit: number): readonly StaleThread[];
+  /**
+   * One thread's summary, or `null` if it has none.
+   *
+   * What turns a `nearest` hit back into something a reader can use: that read
+   * answers provenance and distance and deliberately never text, so resolving a
+   * ref to the thing it names is a second step. This is that step for the
+   * `summary` kind.
+   *
+   * **A separate read rather than a join inside `nearest`**, which would have
+   * been one query instead of k+1. Two reasons. `nearest` is the generic
+   * primitive over every kind of source, and a join would make it answer one
+   * kind's columns; and `k` is a handful — the recall path asks for five — so
+   * what a join saves is five prepared-statement lookups against an indexed
+   * primary key, in a step that has just spent a network round trip on an
+   * embedding.
+   *
+   * Answers `null` rather than throwing for a thread with no summary, which is
+   * a real state and not a broken one: a vector outlives its summary for as long
+   * as it takes a trigger to fire, and a caller reading a hit whose summary was
+   * invalidated between the two should skip it rather than fail the task.
+   */
+  readThreadSummary(thread: string): StoredThreadSummary | null;
   close(): void;
 }
 
@@ -1157,6 +1179,16 @@ type MessageRow = {
   readonly at: number;
 };
 
+/** A `thread_summary` row. `MessageRow`'s reasons apply. */
+type ThreadSummaryRow = {
+  readonly thread_ts: string;
+  readonly shape: string;
+  readonly text: string;
+  readonly covers_through_ts: string;
+  readonly message_count: number | bigint;
+  readonly at: number | bigint;
+};
+
 /** A `STALE_THREADS_SQL` row. `MessageRow`'s reasons apply. */
 type StaleThreadRow = {
   readonly thread: string;
@@ -1323,7 +1355,12 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
            message_count     = excluded.message_count,
            at                = excluded.at`
     ),
-    staleThreads: db.prepare(STALE_THREADS_SQL)
+    staleThreads: db.prepare(STALE_THREADS_SQL),
+    readThreadSummary: db.prepare(
+      `SELECT thread_ts, shape, text, covers_through_ts, message_count, at
+         FROM thread_summary
+        WHERE thread_ts = ?`
+    )
   } satisfies Record<string, StatementSync>;
 
   /**
@@ -1520,6 +1557,19 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         // would be a `messageCount` no JSON could carry.
         messageCount: Number(row.n)
       }));
+    },
+
+    readThreadSummary(thread) {
+      const row = statements.readThreadSummary.get(thread) as ThreadSummaryRow | undefined;
+      if (row === undefined) return null;
+      return {
+        thread: row.thread_ts,
+        shape: row.shape as SummaryShape,
+        text: row.text,
+        coversThroughTs: row.covers_through_ts,
+        messageCount: Number(row.message_count),
+        at: Number(row.at)
+      };
     },
 
     removeEmbedding(source) {

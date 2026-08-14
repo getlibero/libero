@@ -38,6 +38,7 @@ import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
 import { createMessageIngest, createRevisionIngest } from "./ingest.js";
+import type { Recall } from "./session/recall.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import { createSessionRegistry } from "./session/registry.js";
@@ -152,6 +153,14 @@ export interface ServerDeps {
    * reporter, none of which this file holds.
    */
   readonly summarize?: SummarySweep;
+  /**
+   * Semantic recall at the head of a task (#232).
+   *
+   * Built by the process for `summarize`'s reason — it needs an embedding client
+   * and the spend reporter, neither of which this file holds. Its absence is a
+   * task that starts from the transcript and `MEMORY.md` alone.
+   */
+  readonly recall?: Recall;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -273,6 +282,7 @@ export function createServer(deps: ServerDeps): Server {
     sessions,
     names,
     ...(deps.memory !== undefined ? { memory: deps.memory } : {}),
+    ...(deps.recall !== undefined ? { recall: deps.recall } : {}),
     task: createTaskRunner({
       completion: deps.completion,
       transport: deps.transport,

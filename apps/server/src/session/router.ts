@@ -27,6 +27,7 @@ import type { DisplayNameLookup } from "./names.js";
 import type { SessionRegistry } from "./registry.js";
 import { createSessionRegistry } from "./registry.js";
 import type { MemoryFileOpener } from "./memory.js";
+import type { Recall } from "./recall.js";
 import type { SheetResolver } from "./sheet.js";
 import type { TaskReply, TaskRequest, TaskRunner } from "./types.js";
 
@@ -57,6 +58,14 @@ export interface ChannelRouterOptions {
    * and the sheet is read per task, inside this lock — see `session/memory.ts`.
    */
   memory?: MemoryFileOpener;
+  /**
+   * Semantic recall (#232), run at the head of every task.
+   *
+   * Optional, and its absence is a task that starts from the transcript and
+   * `MEMORY.md` alone — which is how every task started before this issue, and
+   * how one still starts in a deployment with no embedding provider.
+   */
+  recall?: Recall;
   logger?: Logger;
   now?: () => number;
 }
@@ -163,13 +172,41 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         // still going. The assembler is here rather than in the sheet resolver
         // because it needs the session — its store and its name cache — and
         // `SheetResolver` is given a channel id and nothing else.
+        // Semantic recall (#232), inside the lock for the reason everything
+        // here is: it reads the same store the previous task's curation and the
+        // sweep write, and a read racing those would assemble a context out of
+        // a half-written corpus.
+        //
+        // Gated on `[memory] summarize`, which is the switch that writes the
+        // corpus rather than a third one of its own: a channel that turned
+        // summarization off should not go on being answered out of summaries it
+        // asked to stop producing, and half a feature is a worse answer than
+        // none of it.
+        //
+        // Awaited, unlike the curation turn queued below, and that is the cost
+        // this decision carries: it is one embedding round trip in front of
+        // every task, before the model has been asked anything. `createRecall`
+        // never rejects, so the failure of it is a task with no recall rather
+        // than a mention with no reply.
+        const recalled =
+          options.recall === undefined || session.store === null
+            ? []
+            : await options.recall({
+                channel: request.key.channel,
+                store: session.store,
+                query: request.text,
+                enabled: settings.memory.summarize,
+                turnId: `${request.traceId}.recall`
+              });
+
         const messages = await assembleContext({
           store: session.store,
           names: session.names,
           lookup: names,
           request,
           bounds: settings.history,
-          memory: memoryFile?.read() ?? ""
+          memory: memoryFile?.read() ?? "",
+          recalled
         });
 
         const outcome = await options.task(request, {
