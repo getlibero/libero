@@ -104,15 +104,16 @@ export const MAX_CATALOG_PAGES = 5;
 /**
  * A client for this upstream, or why there is none.
  *
- * The three reasons are the three things ./http-dispatcher.ts already
- * discovers before it opens anything: a transport with no HTTP client, a
- * credential the vault does not hold, and a pool that has begun closing.
+ * The reasons are the things ./http-dispatcher.ts already discovers before it
+ * opens anything: a transport with no HTTP client, a credential the vault does
+ * not hold, an auth block whose engine has not landed (#256), and a pool that
+ * has begun closing.
  */
 export type ClientLease =
   | { readonly ok: true; readonly client: McpClient }
   | {
       readonly ok: false;
-      readonly reason: "unsupported_transport" | "credential_unresolved" | "shutting_down";
+      readonly reason: "unsupported_transport" | "credential_unresolved" | "auth_unbuilt" | "shutting_down";
       /** By name, never by value, and only where there is one to name. */
       readonly credential?: string;
     };

@@ -147,6 +147,29 @@ credential = "github_service_account"       # one credential, however many block
                                             # heuristic holds this one for a
                                             # click without being told to.
 
+# An upstream secured by OAuth rather than a service token. Nothing in the
+# auth block is a secret: no token, no lifetime, no endpoint. The credential is
+# still a name — but this one keys a grant in the proxy's token store, written
+# by the grant flow, not a vault entry an operator set. The token endpoint is
+# not a field: it is discovered from the issuer and refused unless it sits on
+# the issuer's own origin. Asking for scopes wider than the stored grant is a
+# re-grant, not an escalation — the proxy fails closed until the grant flow is
+# re-run. See "Two credential stores" in the security docs.
+[[mcp_server]]
+name       = "notion"
+transport  = "http"
+url        = "https://mcp.notion.example/mcp"
+credential = "notion_grant"                 # name only; keys the stored grant
+
+  [mcp_server.auth]
+  scheme = "oauth"
+  issuer = "https://auth.notion.example"    # compared byte-for-byte, never normalized
+  scopes = ["mcp.read"]
+
+  [[mcp_server.tool]]
+  name     = "search_pages"
+  approval = "none"
+
 # Tools the proxy implements itself rather than dialling an upstream for. One
 # provider — the proxy — so the block is flat: no url and no credential, because
 # there is nothing to address and nothing to authenticate to.

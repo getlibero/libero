@@ -225,6 +225,56 @@ describe("an upstream that cannot be served", () => {
     await createHttpDispatcher({ vault: counting }).dispatch(callTo(), stdioServer(), LIMITS);
     expect(looked).toBe(0);
   });
+
+  // The sheet can declare an OAuth upstream (#255) before the engine that
+  // serves one exists (#256). Until it does, the answer is the stdio answer:
+  // not built, never a refusal — nothing was denied.
+  it("answers unavailable for an oauth upstream, and logs why", async () => {
+    fake = await startFakeMcpServer();
+    const { lines, logger } = capturingLogger();
+    const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });
+
+    const declared: McpServer = {
+      name: "github",
+      transport: "http",
+      url: fake.url,
+      credential: "notion_grant",
+      tool: [{ name: "list_prs" }],
+      auth: { scheme: "oauth", issuer: "https://as.example", scopes: [] }
+    };
+
+    expect(await dispatcher.dispatch(callTo(), declared, LIMITS)).toEqual({ outcome: "unavailable" });
+    expect(fake.received).toEqual([]);
+    expect(lines.some(line => line.includes("dispatch_auth_unbuilt"))).toBe(true);
+  });
+
+  // An OAuth credential name resolves in the token store and never falls
+  // through to the vault. Until the store exists, that rule is "the vault is
+  // not consulted at all" — a vault entry under the same name must change
+  // nothing.
+  it("resolves nothing in the vault for an oauth upstream", async () => {
+    fake = await startFakeMcpServer();
+    let looked = 0;
+    const counting: Vault = {
+      lookup: () => {
+        looked += 1;
+        return { status: "found", secret: secretOf(SECRET) };
+      },
+      size: 1
+    };
+    const declared: McpServer = {
+      name: "github",
+      transport: "http",
+      url: fake.url,
+      credential: CRED,
+      tool: [{ name: "list_prs" }],
+      auth: { scheme: "oauth", issuer: "https://as.example", scopes: [] }
+    };
+
+    await createHttpDispatcher({ vault: counting }).dispatch(callTo(), declared, LIMITS);
+    expect(looked).toBe(0);
+    expect(fake.received).toEqual([]);
+  });
 });
 
 describe("an upstream that does not answer", () => {

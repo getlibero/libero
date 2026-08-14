@@ -57,6 +57,56 @@ export const BuiltinEntry = z.object({
   max_result_chars: z.number().int().positive().optional(),
 });
 
+/**
+ * One OAuth scope token, RFC 6749's charset: printable ASCII minus space,
+ * double quote, and backslash. Bounded because a scope is a word, not a
+ * document, and the list below is bounded for the same reason.
+ */
+const ScopeToken = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[\x21\x23-\x5B\x5D-\x7E]+$/);
+
+/**
+ * The `auth` block on an http server (#255): the upstream is secured by an
+ * OAuth 2.1 authorization server rather than a service token. Everything in it
+ * is a declaration, not a secret — no token, no lifetime, no endpoint. The
+ * grant material it points at lives in the proxy's token store, keyed by the
+ * block's `credential` name; see "Two credential stores" in
+ * packages/proxy/README.md.
+ *
+ * `issuer` is an RFC 8414 issuer identifier: a URL with no query and no
+ * fragment. It is compared byte-for-byte — against the discovery metadata's
+ * own `issuer` and against the stored grant's — so it is kept exactly as
+ * written, never normalized. No https requirement, for the reason `url` above
+ * has none: the test issuer is a loopback address. The token endpoint is not a
+ * field; it is discovered from the issuer at mint time and refused unless it
+ * sits on the issuer's own origin.
+ *
+ * `scopes` widening past what the stored grant holds is a re-grant, not an
+ * escalation: the proxy fails closed and the operator re-runs the grant flow.
+ *
+ * `scheme` is the discriminant a second auth shape would join; today the union
+ * has one member.
+ */
+const OAuthConfig = z.object({
+  scheme: z.literal("oauth"),
+  issuer: z
+    .url()
+    .refine(
+      value => {
+        const parsed = new URL(value);
+        return parsed.search === "" && parsed.hash === "";
+      },
+      { message: "an issuer identifier has no query and no fragment" },
+    ),
+  scopes: z.array(ScopeToken).max(16).default([]),
+});
+
+export const AuthConfig = OAuthConfig;
+export type AuthConfig = z.infer<typeof AuthConfig>;
+
 // Everything a server block carries whatever it speaks. Spread into both
 // members below rather than restated, so the two transports cannot drift in
 // what they allow beyond the one field that distinguishes them.
@@ -84,19 +134,40 @@ const mcpServerBase = {
  * prevent. Declared, a present `url` is an issue at `mcp_server.<n>.url` —
  * `.strict()` would report `unrecognized_keys` against the block and name no
  * field, and the field name is what an operator needs.
+ *
+ * `auth` takes the same treatment for the same reason: an OAuth block on a
+ * stdio server would be stripped in silence and the operator would read the
+ * sheet as secured. Declared undefined, it is an issue at
+ * `mcp_server.<n>.auth`.
  */
 export const McpServer = z.discriminatedUnion("transport", [
-  z.object({
-    ...mcpServerBase,
-    transport: z.literal("http"),
-    /** Required: an HTTP upstream with no address is not addressable. */
-    url: z.url(),
-  }),
+  z
+    .object({
+      ...mcpServerBase,
+      transport: z.literal("http"),
+      /** Required: an HTTP upstream with no address is not addressable. */
+      url: z.url(),
+      auth: AuthConfig.optional(),
+    })
+    .check(ctx => {
+      // An OAuth block with no credential name has no grant to key: the name
+      // is what the grant flow stored the refresh token under. The issue lands
+      // on `credential` because that is the field the operator must add.
+      if (ctx.value.auth === undefined || ctx.value.credential !== undefined) return;
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value.credential,
+        path: ["credential"],
+        message: "an OAuth upstream needs a credential name for the grant the flow stored",
+      });
+    }),
   z.object({
     ...mcpServerBase,
     transport: z.literal("stdio"),
     /** Not permitted: a stdio upstream is a process, not an address. */
     url: z.undefined().optional(),
+    /** Not permitted: OAuth secures an http upstream, not a process. */
+    auth: z.undefined().optional(),
   }),
 ]);
 

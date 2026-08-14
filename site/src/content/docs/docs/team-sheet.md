@@ -144,6 +144,29 @@ credential = "github_service_account"       # one credential, however many block
                                             # heuristic holds this one for a
                                             # click without being told to.
 
+# An upstream secured by OAuth rather than a service token. Nothing in the
+# auth block is a secret: no token, no lifetime, no endpoint. The credential is
+# still a name — but this one keys a grant in the proxy's token store, written
+# by the grant flow, not a vault entry an operator set. The token endpoint is
+# not a field: it is discovered from the issuer and refused unless it sits on
+# the issuer's own origin. Asking for scopes wider than the stored grant is a
+# re-grant, not an escalation — the proxy fails closed until the grant flow is
+# re-run. See "Two credential stores" in the security docs.
+[[mcp_server]]
+name       = "notion"
+transport  = "http"
+url        = "https://mcp.notion.example/mcp"
+credential = "notion_grant"                 # name only; keys the stored grant
+
+  [mcp_server.auth]
+  scheme = "oauth"
+  issuer = "https://auth.notion.example"    # compared byte-for-byte, never normalized
+  scopes = ["mcp.read"]
+
+  [[mcp_server.tool]]
+  name     = "search_pages"
+  approval = "none"
+
 # Tools the proxy implements itself rather than dialling an upstream for. One
 # provider — the proxy — so the block is flat: no url and no credential, because
 # there is nothing to address and nothing to authenticate to.
@@ -404,6 +427,31 @@ to that tool is refused as `server_ambiguous`: a sheet whose blocks contradict e
 structural fault for an admin to resolve, not something the proxy guesses its way past. The
 refusal comes before the budget and before approval, so no human is ever asked to approve a call
 that has nowhere to go.
+
+### `[mcp_server.auth]`
+
+Declares an http upstream as secured by an OAuth 2.1 authorization server rather than a service
+token. Only http blocks may carry it — on a stdio block it is rejected at load, naming the field,
+the same way a stdio `url` is. An auth block requires a `credential` name: that name keys the
+grant material the operator's grant flow stored in the proxy's token store, and it is the scheme
+that decides which store a name resolves in — a bearer credential resolves in the vault, an OAuth
+credential in the token store, and neither ever falls through to the other.
+
+| Field | Required | What it is |
+| --- | --- | --- |
+| `scheme` | yes | `"oauth"`, the only member today. |
+| `issuer` | yes | The authorization server's issuer identifier: a URL with no query and no fragment, compared byte-for-byte — against the server's own discovery metadata and against the stored grant — so write it exactly as the server publishes it. |
+| `scopes` | no | The scopes the channel's calls are made under. Words, not secrets; defaults to none. |
+
+Nothing in the block is a secret, and nothing in it can express one: there is no field for a
+token, a lifetime, or an endpoint. The token endpoint is discovered from the issuer at mint time
+and refused unless it sits on the issuer's own origin — an authorization server that hosts its
+token endpoint elsewhere is not one this proxy will send a refresh token to.
+
+Two edits to this block are re-grants rather than reconfigurations, and both fail closed until the
+grant flow is re-run: naming a different `issuer` (the stored grant is bound to the one it was
+made under), and widening `scopes` past what the grant holds. Narrowing scopes is fine. Widening a
+grant is an operator act, like widening a sheet.
 
 ### `[[mcp_server.tool]]`
 
