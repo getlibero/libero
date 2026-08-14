@@ -7,9 +7,12 @@
 export {
   CANARY,
   CANARY_CREDENTIAL,
+  OAUTH_CREDENTIAL,
+  REFRESH_CANARY,
   expectCanaryReachedUpstream,
   expectNoCanary,
   expectNoSecret,
+  expectSecretReachedUpstream,
   surface
 } from "./canary.js";
 export type { Surface } from "./canary.js";
@@ -23,7 +26,13 @@ export type { Certs, MintOptions } from "./certs.js";
 export { tempChannelsRoot } from "./channels.js";
 export type { ChannelsRoot, SheetSpec, SheetTool } from "./channels.js";
 
-export { breakRedaction } from "./mutate.js";
+export { breakCredentialInjection, breakRedaction } from "./mutate.js";
+
+export { startIssuer } from "./issuer.js";
+export type { IssuerOptions } from "./issuer.js";
+
+export { plantGrants } from "./grant.js";
+export type { GrantSpec } from "./grant.js";
 
 export { rawClient } from "./client.js";
 export type { RawClient, RawRequest, RawResponse } from "./client.js";

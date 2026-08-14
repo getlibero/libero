@@ -9,8 +9,10 @@
 //
 // **The order below is load-bearing.** A sheet names the upstream's url, and
 // the url is not known until the upstream has bound a port; the proxy reads
-// both the sheets and the vault. So: certificates, upstream, sheets, vault,
-// proxy, agent. Nothing here can be reordered for tidiness.
+// the sheets, the vault, and the token store beside it. So: certificates,
+// upstream, sheets, vault, grants, proxy, agent. Grants land before the spawn
+// so the proxy's startup line is `token_store_opened` and the first mint finds
+// one. Nothing here can be reordered for tidiness.
 //
 // **One string appears in three places** and they must all agree: the channel
 // id is the client certificate's subject and filename, the directory holding
@@ -35,8 +37,10 @@ import { tempChannelsRoot } from "./channels.js";
 import type { ChannelsRoot, SheetSpec } from "./channels.js";
 import { scriptedModel } from "./model.js";
 import type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
+import { plantGrants } from "./grant.js";
+import type { GrantSpec } from "./grant.js";
 import { spawnProxy } from "./proxy-process.js";
-import type { ProxyProcess } from "./proxy-process.js";
+import type { ProxyEnv, ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
 import { startUpstream } from "./upstream.js";
@@ -103,6 +107,15 @@ export interface RigOptions {
    */
   readonly credentials?: Readonly<Record<string, string>>;
   /**
+   * OAuth grants to plant in the token store beside the vault, by credential
+   * name. The refresh token planted should be `REFRESH_CANARY`, under
+   * `credentials`' rule — it is a secret the suite then proves reaches only
+   * the issuer's token endpoint. The issuer's url is not the rig's to know
+   * (a test starts the fake issuer first, because the sheet's `auth.issuer`
+   * needs the same string), so unlike sheets there is nothing here to fill in.
+   */
+  readonly grants?: Readonly<Record<string, GrantSpec>>;
+  /**
    * Sheets to write before the proxy starts, by channel id.
    *
    * The upstream's url is filled in by the rig, so a spec omits it — see
@@ -127,6 +140,13 @@ export interface RigOptions {
    * are ESM bindings, so nothing in this process can reach them.
    */
   readonly nodeArgs?: readonly string[];
+  /**
+   * `PROXY_UPSTREAM_TIMEOUT_MS` for the spawned proxy. Set only by the case
+   * about a hanging token endpoint, whose claim — `unavailable` within the
+   * call's budget — is about this number; left absent everywhere else so the
+   * suite's other fixtures keep the deployment default.
+   */
+  readonly upstreamTimeoutMs?: number;
   /**
    * The model's turns, in order. Running past the end throws.
    *
@@ -203,7 +223,18 @@ export type SheetInput = Omit<SheetSpec, "url"> & { readonly url?: string };
 export interface Rig {
   readonly channelsRoot: ChannelsRoot;
   readonly upstream: FakeMcpServer;
+  /** The live process — after `restartProxy` this is the successor, so read it fresh rather than destructuring once across a restart. */
   readonly proxy: ProxyProcess;
+  /**
+   * Kills the proxy and spawns a successor on the same port, against the same
+   * sheets, vault, token store and databases.
+   *
+   * The port is pinned rather than re-picked because the agent's transport
+   * captured `proxy.url` at composition; everything durable — the rotated
+   * refresh token in `tokens.enc` above all — is what a case calls this to
+   * prove survived a real process death.
+   */
+  restartProxy(): Promise<void>;
   readonly agent: AgentSide;
   readonly model: ScriptedModel;
   /**
@@ -318,6 +349,12 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     // The canary last, so no caller-supplied name can displace it.
     const vault = writeVault(cleanup, { ...options.credentials, [CANARY_CREDENTIAL]: CANARY });
 
+    // Into `tokens.enc` beside the vault, before the spawn — see the order
+    // comment above. The vault directory's disposer removes it.
+    if (options.grants !== undefined) {
+      await plantGrants(vault, options.grants);
+    }
+
     const dbDir = mkdtempSync(join(tmpdir(), "libero-e2e-db-"));
     cleanup.add("databases", () => rmSync(dbDir, { recursive: true, force: true }));
     const auditDb = join(dbDir, "audit.db");
@@ -339,7 +376,9 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       writeFileSync(priceTable, priceTableToml(options.prices));
     }
 
-    const proxy = await spawnProxy(cleanup, {
+    // Held apart from the call so `restartProxy` spawns against the same
+    // environment rather than a restatement of it.
+    const proxyEnv: ProxyEnv = {
       channelsRoot: channelsRoot.path,
       vaultFile: vault.file,
       vaultKey: vault.keyBase64,
@@ -351,10 +390,12 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       // module-scope one (#64).
       storeRoot,
       ...(priceTable === undefined ? {} : { priceTable }),
+      ...(options.upstreamTimeoutMs === undefined ? {} : { upstreamTimeoutMs: options.upstreamTimeoutMs }),
       tlsCert: certs.serverCert,
       tlsKey: certs.serverKey,
       tlsCa: certs.caPath
-    }, options.nodeArgs ?? []);
+    };
+    let proxy = await spawnProxy(cleanup, proxyEnv, options.nodeArgs ?? []);
 
     const wrapper = transportWrapper(options);
     const model = scriptedModel(options.script ?? [], options.onModelTurn);
@@ -375,7 +416,19 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     return {
       channelsRoot,
       upstream,
-      proxy,
+      // A getter, not the value: after `restartProxy` the successor is what a
+      // case's `rig.proxy.waitForLog` must reach.
+      get proxy() {
+        return proxy;
+      },
+      restartProxy: async (): Promise<void> => {
+        const port = proxy.port;
+        await proxy.stop();
+        // The old process's cleanup entry stays on the stack and is harmless —
+        // stopping an exited child is a no-op — while the successor registers
+        // its own. The pinned port is what keeps the agent's captured url live.
+        proxy = await spawnProxy(cleanup, { ...proxyEnv, port }, options.nodeArgs ?? []);
+      },
       agent,
       model,
       certs,
