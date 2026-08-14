@@ -163,10 +163,14 @@ reveals a credential and the one that scrubs the reply.
   whole entry set, so the names are encrypted along with the values; a per-write
   HKDF subkey; the header authenticated as AAD. Opened once at startup. A value
   leaves only through `Secret.reveal()`, and a `Secret` renders as `[redacted]`
-  through `JSON.stringify`, string coercion, and `util.inspect`.
+  through `JSON.stringify`, string coercion, and `util.inspect`. The vault is
+  one of two credential stores — the OAuth token store beside it is specified
+  under "Two credential stores" below.
 - `vault-file.ts` — the write side, reached only by the operator's CLI in
   `apps/proxy-server`. Apart from `vault.ts` so that file's imports can be read
-  as a claim: the process serving tool calls never writes the vault.
+  as a claim: the process serving tool calls never writes the vault. What that
+  process does write is the token store — the custody decision under "Two
+  credential stores" below.
 - `server.ts` — `node:https` and an exact-match route table, behind mutual TLS.
 - `log.ts` — JSON lines over a closed field set. This process holds every
   credential, so there is no free-form log message for one to be interpolated
@@ -348,6 +352,156 @@ the dispatch switch and not beside `recordToolCall`: a call that came back
 `refused` or `unavailable` has nowhere to put a notice, and claiming earlier
 would burn the channel's one warning of the day on an answer that cannot carry
 it.
+
+## Two credential stores, and which process writes which
+
+Everything in the vault shares one lifecycle: the operator wrote it, the
+serving process reads it, revoking it is an operator act against the issuing
+service. OAuth upstreams (#254) break that symmetry. The proxy mints access
+tokens with lifetimes, and an OAuth 2.1 authorization server rotates the
+refresh token on use — handing the serving process the successor, a durable
+credential no operator ever held. Memory-only custody dies in one sentence: a
+rotated refresh token that exists nowhere durable makes every restart a
+re-grant, and rotation is the authorization server's default posture, not an
+edge case. So this section is the custody decision the OAuth workstream (#157)
+builds against — the sheet field is #255, the engine that makes it true is
+#256, the grant flow #257.
+
+**A second store, not a writable vault.** Grant material lives in `tokens.enc`
+beside `vault.enc` — the path is fixed as the vault's sibling, because a second
+path variable would be a second way to point the two writers at different
+files. Same envelope byte for byte, two constants apart: magic `LBTOKEN`, HKDF
+info `libero.tokens.v1` — the separation `vault.ts`'s info string was written
+to anticipate. A token store opened as a vault fails `not_a_vault` before any
+key is used, and even a forged header cannot decrypt one file under the
+other's subkey. Whole-set encryption and the size caps carry over: a list of
+grant names is an inventory of what the deployment reaches, the vault's own
+argument. The alternative — the serving process writing the vault itself —
+dies on `vault.ts`'s first rule: "it never writes" is proved by an import
+list, and one file with two writers deletes that proof for both.
+
+**What a record is.** Keyed by the sheet's `credential` name, one grant per
+name, so `upstreamKey`'s "one name is one vault entry" generalizes to "one
+name is one grant." A record holds the issuer, the client identity (the Client
+ID Metadata Document URL the grant was made under), the refresh token — the
+only secret in it — and grant metadata: scopes, obtained and rotated
+timestamps. Two bindings are the record's teeth. A refresh token is only ever
+sent to the issuer its record names; a sheet whose auth block now names a
+different issuer finds no grant — fail closed, re-grant — which is also how
+Client ID Metadata's re-registration-by-issuer rule is kept without a
+registry. And scopes are grant-time facts: a sheet later asking wider than the
+record holds is a re-grant, not a silent escalation — widening a grant is an
+operator act, like widening a sheet. Access tokens are not in the record. They
+are minted into process memory and die with it; a restart costs one
+token-endpoint round trip per upstream at first use, where persisting them
+would put a live bearer token on disk that the refresh token alone only
+becomes through an observable, revocable exchange at the issuer.
+
+**Which store a name resolves in is the scheme's decision, never a fallback.**
+One namespace of `credential` names: a bearer entry resolves in the vault, an
+OAuth entry in the token store, and neither ever falls through to the other —
+`vault set` under a name an OAuth block uses changes nothing, and a grant
+under a name a bearer block uses changes nothing.
+
+**Two writers, no `tokens set`.** The serving proxy writes a rotation; the
+grant entrypoint (#257) writes a grant, replacing any predecessor under the
+same name. The operator CLI never writes it — a value an operator holds is by
+definition a vault value. That asymmetry is the narrowness: the only values
+the serving process can persist are values an authorization server just
+issued, for an upstream some team sheet already names. It cannot persist an
+operator-authored secret, read one back out, or move one between the stores.
+And there is no command that prints a token back — the grant entrypoint
+inherits the vault CLI's discipline whole.
+
+**Why no lock.** The vault's "one admin, one command, one container" does not
+cover a grant run racing a rotation, so what replaces it: the proxy serializes
+its own writes behind one mutex — refreshes for one grant are already
+single-flighted (#256) — and both writers re-read the file, apply their one
+entry, and rename, `vault-file.ts`'s recipe. The residual race is a grant and
+a rotation interleaving within milliseconds, between events hours apart, and
+its worst outcome is one lost refresh token: the next refresh presents a stale
+one, the issuer refuses, the call fails `unavailable` by name, and the remedy
+is re-running the grant. No outcome of the race discloses a value or widens a
+permission — it degrades to a loud re-grant. A lock file was rejected for the
+reason the vault already gives: one that outlives a killed process is a worse
+failure than the one it prevents.
+
+**Rotation is persisted before the successor is used.** Exchange, receive the
+rotated refresh token, fsync it into the store — then use the access token
+that came with it. The authorization server invalidated the predecessor at the
+exchange, so the gap between exchange and persist is the one window that can
+lose a grant; it is as small as the filesystem allows and nothing else is
+permitted inside it.
+
+**The exchange is an outbound call with the guard inverted.** It lives in
+`outbound.ts` beside `callUpstream`, not inside it: `callUpstream` spends a
+credential and scrubs the reply; the exchange spends a refresh token at the
+issuer its record binds and returns the reply to no caller at all, because the
+reply *is* the credential. Same guarded fetch otherwise — origin pinned to the
+declared issuer, redirects refused (a redirected token request is a refresh
+token sent to the one host neither list names), failures mapped to a closed
+set that never carries the response body, the `VaultError` no-`cause` argument
+applied to HTTP. Where discovery metadata is read, its `issuer` must equal the
+declared one or the grant is treated as absent. The minted access token enters
+`callUpstream`'s needle list exactly where the revealed vault value does. This
+moves `outbound.test.ts`'s grep contract from one `reveal()` site to two —
+both still in `outbound.ts` — a change #256 makes in the commit that makes it
+true. Every lifecycle event — grant stored, token minted, token rotated, grant
+dead — goes through the closed field set, by credential name; there is still
+no free-form message for a value to reach.
+
+**Freshness.** The vault is still read once at startup. The token store is
+opened at startup if present — wrong key or corruption fails then; absent is a
+deployment with no OAuth upstream, and no store — and read again at mint and
+refresh, never on the call path while a live access token is in memory. A
+grant completed while the proxy runs takes effect at the next mint or refresh,
+no restart. The vault's no-watcher argument transfers intact: the token store
+is not the authorization source either — nothing is permitted because a grant
+exists — so a stale read can fail a refresh and can never widen a call.
+
+**Key posture.** Same master key, second subkey. What changes is duration: the
+parsed key now outlives startup, held in one closure reachable only by the
+store's read and write paths and zeroed on shutdown, because a fresh salt per
+write requires the master key at write time. That is the heap-dump concession
+`vault.ts` already makes, held longer — not a second copy — and the startup
+`delete` of `PROXY_VAULT_KEY` stays.
+
+**What a stolen store is worth.** The client is public — PKCE and a metadata
+URL, no client secret — so `tokens.enc` plus the master key yields refresh
+tokens exchangeable by anyone who can read the public client id. What bounds
+that: the volume copy alone is worthless without the key; the exchange happens
+at the issuer, observable and revocable, where a stolen vault credential
+spends silently against the service itself; rotation's reuse detection turns a
+stolen-and-used refresh token into a dead grant the operator can see —
+`invalid_grant` on refresh is logged as its own event, a theft signal rather
+than a retry; and the issuer binding stops a mix-up from redirecting the
+exchange. What does not exist yet is sender-constraining (DPoP), which would
+make a stolen token unusable rather than merely loud — parked as #260.
+
+**The invariant, re-worded.** Tool credentials at rest live in two stores: the
+vault, which the operator writes and the serving process only reads, and the
+token store, which the serving process writes — because an authorization
+server rotates a refresh token by handing back its successor. Today both are
+encrypted files on the proxy's volume, under one master key and one envelope.
+The process serving tool calls still never writes the vault; what it writes is
+the token store, and the only values that can reach it are values an
+authorization server just issued for an upstream a team sheet already names.
+There is still no `get`, in either store: a value leaves only as a `Secret`,
+and only `outbound.ts` ever unwraps one — to spend a credential on an upstream
+call, whose reply it scrubs, or to exchange a refresh token at the issuer that
+minted it, whose reply is never returned to any caller. And neither store is
+the authorization source, so a stale read can refuse a call and can never
+widen one.
+
+**The store is the contract; the files are the built form.** What #255–#257
+build against is the paragraph above plus the write discipline — disjoint
+writers, provenance, persist-before-use, replace-not-stack — none of which
+names a filesystem. A managed backend (GCP Secret Manager, AWS Secrets
+Manager; parked as #261) would re-implement the mechanism with stronger
+enforcement — writer separation as IAM roles, replace-not-stack as
+add-version/destroy-old, the master key from KMS through `vaultKeyFromEnv`,
+the one acquisition seam both stores already share — and change nothing above
+this sentence.
 
 ## Built-in tools
 

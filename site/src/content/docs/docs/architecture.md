@@ -19,8 +19,8 @@ Slack (Socket Mode)
 │  gateway + agent  (service 1) │      │  tool proxy      (service 2) │
 │                               │      │                              │
 │  Slack adapter                │      │  team-sheet loader/validator │
-│  channel router               │ HTTP │  credential vault (encrypted │
-│  (workspace, channel) → sess. │─────▶│    at rest, never returned)  │
+│  channel router               │ HTTP │  vault + token store         │
+│  (workspace, channel) → sess. │─────▶│  (encrypted, never returned) │
 │  context assembler            │ mTLS │  tool allowlist enforcement  │
 │  agent loop (BYO model,       │ local│  MCP client pool             │
 │    per-channel override)      │ net  │  HITL approval broker ───────┼──▶ approval cards
@@ -86,7 +86,7 @@ A ReAct-style loop over a provider-agnostic completion layer (Anthropic, OpenAI,
 
 The proxy is the core of the project. It does five things.
 
-**Credential vault.** Secrets are stored encrypted at rest (key from env/KMS), referenced by name in team sheets, injected into outbound MCP/HTTP calls by the proxy, and never present in any response body, log line, or error message returned to the agent. A redaction pass scrubs known secret values from tool results before they cross back to the agent, closing the "tool echoes its own auth header" leak class.
+**Credential vault and token store.** Tool credentials at rest live in two stores under one master key: the vault, which the operator writes and the serving process only reads, and — for OAuth upstreams — a token store only the proxy writes, because an OAuth 2.1 authorization server rotates a refresh token by handing back its successor, a durable credential no operator ever held. Today both are encrypted files on the proxy's volume (key from env/KMS). The only values the serving process can persist are values an authorization server just issued for an upstream a team sheet already names; it cannot persist an operator-authored secret or read one back out. Refresh-token rotation survives a restart because the successor is persisted before it is used; access tokens are minted into memory and die with the process. Everything else holds for both stores: referenced by name in team sheets, injected into outbound MCP/HTTP calls by the proxy, and never present in any response body, log line, or error message returned to the agent. A redaction pass scrubs known secret values — the minted access token among them — from tool results before they cross back to the agent, closing the "tool echoes its own auth header" leak class.
 
 **Team-sheet enforcement.** On each call the proxy resolves the channel's team sheet and answers deterministically: is this MCP server allowed for this channel; is this specific tool on the allowlist; does the call require approval; is the budget exhausted. Any "no" is a structured refusal the agent can relay to the user. The model's cooperation is never part of the enforcement path.
 

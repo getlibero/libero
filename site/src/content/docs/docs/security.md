@@ -9,8 +9,9 @@ the model's cooperation.
 
 ## Mitigations, in order of importance
 
-1. **No tool credentials in the agent process.** They live only in the proxy's encrypted vault,
-   are referenced by name everywhere else, and are injected into the outbound call by the proxy; a
+1. **No tool credentials in the agent process.** They live only in the proxy's encrypted stores —
+   the operator-written vault and, for OAuth upstreams, a token store only the proxy writes — are
+   referenced by name everywhere else, and are injected into the outbound call by the proxy; a
    redaction pass scrubs known secret values from tool results before they cross back to the
    agent. The agent process does hold two other kinds of credential — see [which secrets are
    where](#which-secrets-are-where).
@@ -44,11 +45,13 @@ the model's cooperation.
 
 ## Which secrets are where
 
-Three kinds, and only the first is governed by the vault.
+Three kinds, and only the first is governed by the proxy's stores.
 
-**Tool credentials** — the GitHub token, the database password, anything a team sheet names. Vault
-only. The agent never sees one: the proxy injects it into the outbound call and scrubs it out of
-the result. This is mitigation 1 and it is the claim the design hangs on.
+**Tool credentials** — the GitHub token, the database password, anything a team sheet names.
+Proxy-side only, in one of two stores: operator-written values in the vault, and OAuth grant
+material — refresh tokens the authorization server rotates — in a token store only the proxy
+writes. The agent never sees one from either: the proxy injects it into the outbound call and
+scrubs it out of the result. This is mitigation 1 and it is the claim the design hangs on.
 
 **Gateway and model credentials** — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, and the model provider
 key. These are in the agent process, necessarily. The gateway holds the socket, so it must hold the
