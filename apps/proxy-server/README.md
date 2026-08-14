@@ -134,6 +134,46 @@ The vault is opened at startup, before anything binds, so a wrong key or an
 unreadable file is a startup failure rather than a surprise at the far end of a
 Slack thread.
 
+## The OAuth grant flow
+
+An upstream declaring `[mcp_server.auth]` is authorized by a grant in the token
+store — `tokens.enc`, the vault's sibling in the same volume, under the same
+master key — rather than by a vault entry. Completing one is a fourth
+entrypoint, in the container for the vault CLI's reason:
+
+```bash
+docker compose run --rm proxy node dist/grant.js add notion_grant
+```
+
+`notion_grant` is the credential name a sheet's auth block carries. The issuer
+and scopes come **from the team sheets**, not from flags: the store binds a
+grant to its issuer byte for byte with no normalization, so an issuer re-typed
+one character off the sheet's would store a grant the engine can never read —
+discovered a channel's first call later, as `no_grant`. Every sheet naming the
+credential must agree on the issuer; the grant covers the union of their
+scopes.
+
+The command prints an authorization URL to open in any browser, on any machine
+— the proxy needs no browser and the browser needs no path to the proxy. The
+redirect URI is a loopback address nothing listens on: after approving, the
+browser fails to load `http://127.0.0.1/callback`, which is expected, and the
+full address of that failed page is pasted back at the prompt. PKCE and
+`state` are what make the paste safe rather than the channel it travels — the
+code is single-use and worthless without the verifier, which never leaves the
+process. A listener would need a docker port publish stacked under an SSH
+forward, and the compose file's "no published ports" line holds through a
+grant this way.
+
+No token or code is printed, on any path — the entrypoint inherits the vault
+CLI's discipline whole. A second grant for the same name **replaces** the
+first; the proxy needs no restart, because grants are read at mint time. The
+client identity presented to the authorization server is the published Client
+ID Metadata Document, `https://getlibero.com/client.json`; `--client-id <url>`
+points at a self-hosted one instead. Changing a sheet's issuer strands the old
+grant on purpose — the store answers `issuer_mismatch` until the flow is
+re-run against the new issuer, which is Client ID Metadata's
+re-registration-by-issuer kept without a registry.
+
 ## The budget
 
 `PROXY_BUDGET_DB` is the daily meter: tool calls and tokens, per channel per UTC
