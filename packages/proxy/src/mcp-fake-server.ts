@@ -102,6 +102,17 @@ export interface FakeReply {
    * a transport failure needed a second bare server standing up alongside it.
    */
   readonly hang?: boolean;
+  /**
+   * Answer, but only after this long. The half `hang` cannot express.
+   *
+   * A silent upstream and a slow one look the same to a caller with a single
+   * timeout, and different to anything that runs a *sequence* of requests under
+   * one budget — a catalog walk being the case here. Hanging a page stops the
+   * walk at that page, because the page's own timeout is the walk's whole
+   * budget; slowing every page is how a walk gets to be mid-pagination at the
+   * moment its budget goes, which is the state #252 is about.
+   */
+  readonly delayMs?: number;
 }
 
 /** One tool as this fake publishes it from `tools/list`. */
@@ -489,11 +500,24 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
         responseHeaders["x-echo"] = request.authorization;
       }
 
-      outgoing.writeHead(reply.status ?? 200, responseHeaders);
-      // The stream is closed after the response, which is what the spec says a
-      // server SHOULD do. A server that holds it open is the interop risk this
-      // client accepts, and it fails as a timeout rather than as a wrong answer.
-      outgoing.end(framing === "sse" ? `data: ${payload}\n\n` : payload);
+      const send = (): void => {
+        // A delayed reply can outlive its socket: the caller may have timed out,
+        // or teardown's `closeAllConnections` may have taken it. Writing to that
+        // is an unhandled error thrown out of a timer, which fails whichever
+        // test happens to be running rather than this one.
+        if (outgoing.destroyed) return;
+        outgoing.writeHead(reply.status ?? 200, responseHeaders);
+        // The stream is closed after the response, which is what the spec says a
+        // server SHOULD do. A server that holds it open is the interop risk this
+        // client accepts, and it fails as a timeout rather than as a wrong answer.
+        outgoing.end(framing === "sse" ? `data: ${payload}\n\n` : payload);
+      };
+
+      // Not unref'd, unlike the stopwatches elsewhere in this repo: this timer
+      // is the response, and a process that exited before it fired would be a
+      // fake that dropped a reply it promised.
+      if (reply.delayMs === undefined) send();
+      else setTimeout(send, reply.delayMs);
     });
   });
 

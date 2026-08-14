@@ -551,6 +551,53 @@ describe("when the upstream cannot be asked", () => {
     CATALOG_BUDGET_MS * 4
   );
 
+  // The other half of abandoning a walk, and it only became a cost with #159:
+  // every page takes a permit from the upstream's semaphore, so a walk that has
+  // already lost its race and is read by nobody was queuing four more times
+  // against calls that are. The page in flight still lands — that is where the
+  // handshake ladder runs, so it is what warms the client — and the walk stops
+  // there.
+  it("asks for no further pages once its budget has gone", async () => {
+    // Three pages fit inside `CATALOG_BUDGET_MS` and five do not, so the walk is
+    // reliably mid-pagination when the race ends, on a slow machine as well as a
+    // fast one.
+    const PAGE_MS = 1_500;
+    fake = await startFakeMcpServer();
+    // The never-advancing cursor from "gives up on a server whose cursor never
+    // advances", slowed. Every page has a next one, so nothing but a bound of
+    // ours can stop this walk — and that case is this one's positive control:
+    // on the same fixture at full speed the walk really does ask for all
+    // `MAX_CATALOG_PAGES`, so a count below it here is the stop flag rather than
+    // a fixture that could only ever serve one page.
+    fake.respond = request =>
+      request.rpc?.method === "tools/list"
+        ? {
+            delayMs: PAGE_MS,
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: completeListResult({ tools: [], nextCursor: "always" })
+            }
+          }
+        : null;
+    const { describe: ask } = harnessFor();
+
+    expect(await ask(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
+    const asked = fake.callsTo("tools/list").length;
+
+    // Genuinely mid-walk when the race ended, with pages still inside the cap to
+    // go after. Ranges rather than an exact count: the claim is about what the
+    // walk does next, and a slow machine moves the number without moving that.
+    expect(asked).toBeGreaterThan(1);
+    expect(asked).toBeLessThan(MAX_CATALOG_PAGES);
+
+    // Long enough for the page in flight to land and a further one to have been
+    // asked for and answered. A request is a permit, which is why counting them
+    // is the assertion rather than a proxy for it.
+    await new Promise(resolve => setTimeout(resolve, PAGE_MS * 2));
+    expect(fake.callsTo("tools/list")).toHaveLength(asked);
+  }, CATALOG_BUDGET_MS * 4);
+
   it("answers empty once the pool has begun closing", async () => {
     fake = await startFakeMcpServer();
     const built = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), timeoutMs: 2000 });
