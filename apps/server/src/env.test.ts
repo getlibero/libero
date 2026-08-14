@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
+  embeddingConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
   requiredEnv,
@@ -223,5 +224,88 @@ describe("proxyConfigFromEnv", () => {
     expect(() =>
       proxyConfigFromEnv({ ...PROXY, PROXY_TLS_CA: "/nowhere/at/all.pem" })
     ).not.toThrow();
+  });
+});
+
+describe("embeddingConfigFromEnv", () => {
+  const CONFIGURED = {
+    AGENT_EMBEDDING_PROVIDER: "openai-compatible",
+    AGENT_EMBEDDING_MODEL: "text-embedding-3-small",
+    AGENT_EMBEDDING_API_KEY: "sk-embed-test"
+  };
+
+  it("builds the openai-compatible arm", () => {
+    expect(embeddingConfigFromEnv(CONFIGURED)).toEqual({
+      config: { provider: "openai-compatible", apiKey: "sk-embed-test" },
+      model: "text-embedding-3-small"
+    });
+  });
+
+  // The one optional provider in this file. Memory Layers 1 and 2 are whole
+  // without embeddings, so an unset provider is a supported deployment rather
+  // than a misconfigured one — and the caller logs it rather than throwing.
+  it("answers null when no provider is named", () => {
+    expect(embeddingConfigFromEnv({})).toBeNull();
+    expect(embeddingConfigFromEnv({ AGENT_EMBEDDING_PROVIDER: "" })).toBeNull();
+  });
+
+  // Off is a decision an operator makes by leaving the provider unset. Naming
+  // one and omitting what it needs is someone who meant to turn this on, and
+  // answering "off" to that would be the silent downgrade.
+  it("refuses partial configuration rather than silently degrading", () => {
+    expect(() =>
+      embeddingConfigFromEnv({ ...CONFIGURED, AGENT_EMBEDDING_MODEL: undefined })
+    ).toThrow(/AGENT_EMBEDDING_MODEL/);
+
+    expect(() =>
+      embeddingConfigFromEnv({ ...CONFIGURED, AGENT_EMBEDDING_API_KEY: undefined })
+    ).toThrow(/OPENAI_API_KEY/);
+  });
+
+  // One account, one variable. The fallback exists so a deployment whose
+  // embedding vendor really is its completion vendor does not keep two copies
+  // of one secret.
+  it("falls back to OPENAI_API_KEY when no embedding key is set", () => {
+    expect(
+      embeddingConfigFromEnv({
+        ...CONFIGURED,
+        AGENT_EMBEDDING_API_KEY: undefined,
+        OPENAI_API_KEY: "sk-shared"
+      })
+    ).toEqual({
+      config: { provider: "openai-compatible", apiKey: "sk-shared" },
+      model: "text-embedding-3-small"
+    });
+  });
+
+  // Configured separately from AGENT_PROVIDER on purpose: Anthropic publishes
+  // no embeddings endpoint, so completing against one vendor and embedding
+  // against another is the ordinary case.
+  it("does not read AGENT_PROVIDER", () => {
+    expect(embeddingConfigFromEnv({ AGENT_PROVIDER: "anthropic" })).toBeNull();
+    expect(embeddingConfigFromEnv({ ...CONFIGURED, AGENT_PROVIDER: "anthropic" })).not.toBeNull();
+  });
+
+  it("passes a base URL through when set, and omits it entirely when not", () => {
+    expect(
+      embeddingConfigFromEnv({
+        ...CONFIGURED,
+        AGENT_EMBEDDING_BASE_URL: "https://api.voyageai.com/v1"
+      })?.config
+    ).toEqual({
+      provider: "openai-compatible",
+      apiKey: "sk-embed-test",
+      baseUrl: "https://api.voyageai.com/v1"
+    });
+
+    expect(
+      Object.keys(embeddingConfigFromEnv({ ...CONFIGURED, AGENT_EMBEDDING_BASE_URL: "" })!.config)
+    ).not.toContain("baseUrl");
+  });
+
+  it("echoes an unknown provider name, which is not a secret", () => {
+    expect(() =>
+      embeddingConfigFromEnv({ ...CONFIGURED, AGENT_EMBEDDING_PROVIDER: "voyage-native" })
+    ).toThrow(/voyage-native/);
   });
 });

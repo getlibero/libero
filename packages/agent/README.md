@@ -237,11 +237,61 @@ a fact which appeared only inside a tool result and never reached the model's ow
 prose is invisible to curation, which is the price of not re-sending a whole tool
 conversation to record one sentence.
 
+## Embeddings are a second seam, not a method on the first
+
+`src/embedding/` is `EmbeddingClient`, its OpenAI-compatible adapter, and its own
+conformance suite. It exists separately from `CompletionClient` for a reason that
+is not symmetry: **Anthropic publishes no embeddings endpoint**, so an `embed()`
+on the completion client would be a method one of the two shipped adapters must
+throw from — a contract with a hole in it, and a conformance suite that has to
+learn to skip. Two client types, each wholly implemented by whoever implements
+it, is the shape that stays honest.
+
+It follows that the embedding provider is **configured separately** and is
+usually a different vendor: `AGENT_EMBEDDING_PROVIDER` and its three companions,
+none of them derived from `AGENT_PROVIDER`. All four are optional together, and
+that is the only optional provider in the deployment — memory Layers 1 and 2 are
+whole without embeddings, so an unset provider logs `embeddings_unconfigured`
+once and the process carries on. `apps/server/README.md` has the contract.
+
+**The OpenAI-compatible dialect ships first, and there is no incumbent to be
+native to.** On the completion side the Anthropic adapter exists because that is
+what the deployment completes against; here there is no such vendor, so what is
+left is coverage per adapter. `/v1/embeddings` is what OpenAI, Voyage, Together,
+Gemini's compatibility endpoint, Ollama and a LiteLLM sidecar all implement, and
+one adapter reaches every one of them by base URL. A native Voyage or Cohere
+adapter is a separate argument, and the same one Azure, Bedrock and Gemini's
+native API have on the completion side: they differ in auth or wire format, not
+just endpoint.
+
+Three decisions inside the adapter are worth knowing. **The interface takes
+texts, plural, always**, because every endpoint batches and an interface taking
+one string makes the caller's loop the place batching gets forgotten. **Vectors
+are ordered by the response's own `index`**, never by arrival — the API documents
+that field precisely because order is not guaranteed, and a vector paired with
+the wrong text is the failure with no symptom: nothing errors, recall just
+answers with the wrong thing. And **`encoding_format: "float"` is sent
+explicitly**, because several compatible servers default to base64, which would
+arrive as strings where the adapter expects numbers.
+
+Spend needs nothing new on the wire. A `SpendReport` is `{ turn, model, usage }`
+and an embedding call fills `usage` with input tokens and no output ones, so
+`EmbeddingUsage.inputTokens` is named exactly as `TokenUsage.inputTokens` is and
+the mapping stays a copy rather than a translation. `EmbeddingResponse.model` is
+the **served** model for #62's reason plus one of its own: `packages/memory`
+stamps that id against a channel's vectors and refuses a later one from a
+different model, so an id quietly substituted from the request would be a file
+claiming its vectors are comparable when they are not.
+
+Nothing calls `embed()` yet. #232 decides where recall enters a task; this is the
+surface it will call.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `completion/` | The provider-agnostic seam, its adapters, and `conformance.ts` |
+| `embedding/` | The embedding seam, its OpenAI-compatible adapter, and its own `conformance.ts` |
 | `loop/loop.ts` | The ReAct loop |
 | `loop/caps.ts` | The cap tracker and the composed abort signal |
 | `loop/types.ts` | `AgentLoopCaps`, `AgentStopReason`, the hook contracts |

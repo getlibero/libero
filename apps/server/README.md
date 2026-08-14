@@ -127,6 +127,10 @@ the far end of a thread.
 | `OPENAI_API_KEY` | Required when `AGENT_PROVIDER=openai-compatible`. |
 | `ANTHROPIC_BASE_URL` | Optional. Anthropic's own endpoint when unset. |
 | `OPENAI_BASE_URL` | Optional. Reaches Together, Fireworks, Groq, Ollama, Gemini's compatibility endpoint, or a LiteLLM sidecar. |
+| `AGENT_EMBEDDING_PROVIDER` | Optional, `openai-compatible`. Unset turns semantic recall off. |
+| `AGENT_EMBEDDING_MODEL` | Required once a provider is named. Stamped against the channel's vectors. |
+| `AGENT_EMBEDDING_API_KEY` | The embedding vendor's key. Falls back to `OPENAI_API_KEY`. |
+| `AGENT_EMBEDDING_BASE_URL` | Optional. Reaches Voyage, Together, Ollama, or a LiteLLM sidecar. |
 
 `AGENT_PROVIDER` is required and never inferred from whichever key happens to
 be set: `deploy/docker-compose.yml` declares both keys on this service, so
@@ -134,6 +138,29 @@ inference would resolve on the order the arms are written in and bill an
 account nobody chose. `AGENT_MODEL` has no default for the same class of
 reason — a defaulted model id goes stale on the provider's schedule and pins a
 price the operator never picked.
+
+### Embeddings are configured separately, and are optional
+
+The four `AGENT_EMBEDDING_*` variables are a **second provider**, not a mode of
+the first, because Anthropic publishes no embeddings endpoint at all. The
+ordinary deployment completes against one vendor and embeds against another —
+Voyage, OpenAI, a local Ollama — so deriving this from `AGENT_PROVIDER` would
+make the commonest configuration the one that cannot be expressed.
+`AGENT_EMBEDDING_API_KEY` falls back to `OPENAI_API_KEY` only for the deployment
+where they genuinely are one account, so that case needs one variable rather
+than two copies of one secret.
+
+**Unset is a supported deployment, and the only optional provider here.** Memory
+Layers 1 and 2 — full-text search and the curated `MEMORY.md` — are whole
+without embeddings, so a process with `AGENT_EMBEDDING_PROVIDER` unset answers
+every mention exactly as before and simply has no semantic recall. It logs
+`embeddings_unconfigured` once at startup and carries on. That is the opposite
+of the `PROXY_*` rule below, and deliberately: a missing proxy is a misconfigured
+deployment, a missing embedding provider is a smaller one.
+
+Partial configuration is still an error. A provider named without a model, or
+without a key it can reach, is someone who meant to turn this on — and answering
+"off" to that would be the silent downgrade the whole arrangement avoids.
 
 The three `PROXY_*` variables are required together, with no fallback to a
 toolless agent. A process missing one of them is not a deployment that answers

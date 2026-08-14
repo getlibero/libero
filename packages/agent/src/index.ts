@@ -22,6 +22,23 @@ export {
 } from "./completion/openai.js";
 export type { OpenAICompatibleCompletionOptions } from "./completion/openai.js";
 
+export { EmbeddingError } from "./embedding/types.js";
+export type {
+  EmbeddingClient,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  EmbeddingUsage
+} from "./embedding/types.js";
+
+export { createEmbeddingClient } from "./embedding/factory.js";
+export type { EmbeddingConfig, EmbeddingTransport } from "./embedding/factory.js";
+
+export {
+  createOpenAICompatibleEmbeddingClient,
+  OPENAI_COMPATIBLE_EMBEDDING_BASE_URLS
+} from "./embedding/openai.js";
+export type { OpenAICompatibleEmbeddingOptions } from "./embedding/openai.js";
+
 export { runAgentTask } from "./loop/loop.js";
 export { totalTokens } from "./loop/caps.js";
 export { DEFAULT_AGENT_LOOP_CAPS } from "./loop/types.js";
