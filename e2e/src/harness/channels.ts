@@ -105,6 +105,23 @@ export interface SheetSpec {
    */
   readonly builtins?: readonly SheetTool[];
   /**
+   * The `[memory]` block: whether this channel curates a `MEMORY.md` (#227).
+   *
+   * **Off unless a case says otherwise, and that inversion is deliberate.** The
+   * schema prefaults `enabled = true`, so a sheet that said nothing would turn
+   * curation on for every case in this suite — and a curation turn is a model
+   * turn, which consumes the next entry of a script written before curation
+   * existed. Every case here would fail with "the model was asked for turn N;
+   * the script has N", and the ones that did not would be silently asserting
+   * against a transcript with an extra call in it.
+   *
+   * So this file writes `enabled = false` unless asked, for `dailyUsd`'s
+   * reason: the default a fixture takes should be the one that leaves every
+   * other case exactly as it was, and turning the feature on is what a case
+   * about the feature does.
+   */
+  readonly memory?: { readonly enabled?: boolean; readonly maxFileChars?: number };
+  /**
    * The certificates allowed to speak for this channel, as SHA-256 digests
    * (#79).
    *
@@ -202,6 +219,12 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           ...(spec.cacheReadWeight !== undefined ? [`cache_read_weight = ${spec.cacheReadWeight}`] : []),
           ...(spec.cacheWriteWeight !== undefined ? [`cache_write_weight = ${spec.cacheWriteWeight}`] : []),
           ...(spec.warnAt !== undefined ? [`warn_at = ${spec.warnAt}`] : []),
+          ``,
+          `[memory]`,
+          `enabled = ${spec.memory?.enabled ?? false}`,
+          ...(spec.memory?.maxFileChars !== undefined
+            ? [`max_file_chars = ${spec.memory.maxFileChars}`]
+            : []),
           ``,
           `[[mcp_server]]`,
           `name = "${server}"`,

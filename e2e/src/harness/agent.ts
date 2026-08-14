@@ -34,7 +34,12 @@ import type {
   SlackGateway,
   StubSlack
 } from "@getlibero/gateway";
-import { createMessageStoreOpener, createServer, createSheetResolver } from "@getlibero/server";
+import {
+  createMemoryFileOpener,
+  createMessageStoreOpener,
+  createServer,
+  createSheetResolver
+} from "@getlibero/server";
 import type { Cleanup } from "./cleanup.js";
 
 export interface AgentOptions {
@@ -89,6 +94,40 @@ export interface AgentSide {
   readonly gateway: SlackGateway;
   /** Every structured log line this side emitted — one of the canary surfaces. */
   log(): Array<{ level: LogLevel; fields: LogFields }>;
+  /**
+   * Resolves with the first log line whose fields all equal `match`.
+   *
+   * `ProxyProcess.waitForLog`'s shape, and here for a related reason rather
+   * than for symmetry. That one exists because a line and its response cross
+   * two pipes; this one exists because **work on this side outlives the call
+   * that started it**. The curation turn (#227) is enqueued on the session's
+   * mutex and deliberately not awaited, so `deliverMention` resolves while it
+   * is still to run — and a case that read `log()` the moment a mention settled
+   * would be asserting against a file nobody has written yet.
+   *
+   * Polled rather than woken, unlike the proxy's: these lines arrive by a
+   * function call inside this process, so there is no pipe to hang a listener
+   * on and a short poll settles as fast as a listener would.
+   *
+   * It counts, which the proxy's does not, because the work it exists to wait
+   * for happens once per task: a case asserting after its second mention has to
+   * be able to say *which* curation turn it is waiting on, and "the first line
+   * that matches" answered that question one task ago.
+   */
+  waitForLog(
+    match: Readonly<Record<string, unknown>>,
+    count?: number,
+    timeoutMs?: number
+  ): Promise<LogFields[]>;
+}
+
+/** A line, if its fields hold every entry of `match` at the same value. */
+function fieldsMatch(
+  line: { fields: LogFields },
+  match: Readonly<Record<string, unknown>>
+): boolean {
+  const fields = line.fields as unknown as Record<string, unknown>;
+  return Object.entries(match).every(([key, value]) => fields[key] === value);
 }
 
 /**
@@ -170,6 +209,18 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       channelsRoot: options.channelsRoot,
       logger
     }),
+    // And so is the memory opener (#228). Wiring it changes nothing for a case
+    // that did not ask for it: `channels.ts` writes `[memory] enabled = false`
+    // unless a sheet says otherwise, so the curation turn is never reached and
+    // no existing script gains an entry. What it buys is that a case which
+    // *does* ask gets the production path — the same opener index.ts builds,
+    // over the same split roots, so `MEMORY.md` lands beside `store.db` and
+    // provably not in the channels root.
+    memory: createMemoryFileOpener({
+      storeRoot: options.storeRoot,
+      channelsRoot: options.channelsRoot,
+      logger
+    }),
     signal: tasks.signal,
     logger,
     ...(options.now !== undefined ? { now: options.now } : {}),
@@ -185,5 +236,24 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
   });
 
   await gateway.start();
-  return { slack, gateway, log: () => [...lines] };
+  const waitForLog = async (
+    match: Readonly<Record<string, unknown>>,
+    count = 1,
+    timeoutMs = 10_000
+  ): Promise<LogFields[]> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const found = lines.filter(line => fieldsMatch(line, match));
+      if (found.length >= count) return found.map(line => line.fields);
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `e2e: ${found.length} agent log lines matching ${JSON.stringify(match)}, ` +
+            `expected ${count}, within ${timeoutMs}ms`
+        );
+      }
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  };
+
+  return { slack, gateway, log: () => [...lines], waitForLog };
 }
