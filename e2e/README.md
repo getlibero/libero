@@ -387,6 +387,25 @@ now has something in it. `startRig({ users })` seeds the directory those
 messages are attributed by; an author with no entry renders as their id, which
 is a real state rather than a gap.
 
+**Curation is off in every sheet this harness writes, and turning it on is a
+case's own decision.** The schema prefaults `[memory] enabled = true`, so a
+sheet that said nothing would give every case in this suite a curation turn —
+and a curation turn is a model turn, which consumes the next entry of a script
+written before curation existed. Files would fail with "the model was asked for
+turn N; the script has N", and the ones that did not would be asserting against
+a transcript with an extra call in it. So `channels.ts` writes `enabled = false`
+unless a `SheetSpec` says otherwise, for the reason `dailyUsd` is absent by
+default: the value a fixture takes should be the one that leaves every other
+case as it was.
+
+**A curation turn is not finished when the mention that started it is.** It is
+enqueued on the session's queue behind the reply and deliberately not awaited
+(#227), so `deliverMention` resolves while the write is still to happen. Waiting
+on the agent's own line is what makes an assertion about the file a real one:
+`await agent.waitForLog({ event: "curated" }, 2)`. It counts, unlike the proxy's
+`waitForLog`, because curation happens once per task and a case asserting after
+its second mention has to say which turn it means.
+
 **The message store is written by the agent side and read by both, and it has no
 helper.** `rig.storeRoot` is one `<channel>/store.db` per channel that has a
 sheet, written by the composition as an ordinary `message` arrives on
@@ -395,6 +414,10 @@ sheet, written by the composition as an ordinary `message` arrives on
 Reading it through `@getlibero/memory` would prove the writer and the reader
 agree about a schema, which is a weaker claim than the row being in the file,
 and the whole reason a case reaches for it is the one-file-per-channel boundary.
+
+A channel's curated `MEMORY.md` is in that same directory and is read the same
+way — `readFileSync` on `<storeRoot>/<channel>/MEMORY.md`, not through
+`@getlibero/memory`, for the reason above.
 
 Since #64 the rig passes the same directory to the spawned proxy as
 `PROXY_STORE_ROOT`, which is what makes `src/channel-history.test.ts` a real
@@ -456,6 +479,10 @@ outlive the run.
 - `src/context.test.ts` — #67, the same shape: `[llm] max_history_messages`
   followed out of a real `channel.toml`, through the shipped schema and
   resolver, into the prompt.
+- `src/memory-curation.test.ts` — #228, the curation write path: the cap and the
+  malformed operations refused with the file provably unchanged, the curation
+  turn's own tokens on the proxy's meter, and the one case here that documents
+  an exposure rather than a defence.
 
 ## What is enforced rather than asserted
 
