@@ -49,8 +49,8 @@ agent able to write there could rewrite a `channel.toml` — and the proxy
 re-reads the sheet per call, which makes that a compromised agent widening its
 own permissions. The channels root stays read-only to both services and
 everything the agent writes goes to a root only it writes. `store.db` is the
-first thing on that side; `MEMORY.md` and `skills/` join it in phase 2 for the
-same reason.
+first thing on that side, `MEMORY.md` joined it in phase 2 for the same reason,
+and `skills/` joins them in phase 3.
 
 **The proxy reads `store.db`, and only that.** `search_channel_history` is
 served by the proxy, so the proxy mounts the agent's state root and opens each
