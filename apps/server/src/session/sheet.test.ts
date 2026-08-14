@@ -100,7 +100,12 @@ describe("settingsFrom", () => {
       history: { maxMessages: 12, maxChars: 3000 },
       // The other one.
       followUpWindowMs: 120_000,
-      memory: { enabled: true, maxFileChars: 32_768 }
+      memory: {
+        enabled: true,
+        maxFileChars: 32_768,
+        summarize: true,
+        summarizeAfterIdleMs: 60 * 60_000
+      }
     });
   });
 
@@ -118,8 +123,40 @@ describe("settingsFrom", () => {
       // The schema's default, **not** `DEFAULT_MEMORY_SETTINGS` — a sheet with no
       // `[memory]` block still parsed, so its operator has said. The two only
       // differ when nothing was read at all, which is the resolver's case below.
-      memory: { enabled: true, maxFileChars: 32_768 }
+      memory: {
+        enabled: true,
+        maxFileChars: 32_768,
+        summarize: true,
+        summarizeAfterIdleMs: 60 * 60_000
+      }
     });
+  });
+
+  // Minutes on the sheet because that is the unit an operator thinks in;
+  // milliseconds from here in, because that is the unit every other duration in
+  // this process is already in, and two units for one quantity is how a number
+  // gets read as the wrong one.
+  it("converts the idle threshold from minutes to milliseconds", () => {
+    const settings = settingsFrom(
+      sheetOf(
+        `[channel]\nname = "ops"\n${PIN}\n\n[memory]\nsummarize_after_idle_minutes = 90\n`
+      ),
+      MODEL
+    );
+
+    expect(settings.memory.summarizeAfterIdleMs).toBe(90 * 60_000);
+  });
+
+  // Two switches rather than one: a channel may want the agent to remember what
+  // it was asked and not to read conversations it was never in.
+  it("carries a channel's summarization opt-out without touching curation", () => {
+    const settings = settingsFrom(
+      sheetOf(`[channel]\nname = "ops"\n${PIN}\n\n[memory]\nsummarize = false\n`),
+      MODEL
+    );
+
+    expect(settings.memory.summarize).toBe(false);
+    expect(settings.memory.enabled).toBe(true);
   });
 
   it("maps a zero window to a zero window rather than to the default", () => {
@@ -170,7 +207,12 @@ describe("createSheetResolver", () => {
       },
       history: { maxMessages: 12, maxChars: 3000 },
       followUpWindowMs: 120_000,
-      memory: { enabled: true, maxFileChars: 32_768 }
+      memory: {
+        enabled: true,
+        maxFileChars: 32_768,
+        summarize: true,
+        summarizeAfterIdleMs: 60 * 60_000
+      }
     });
   });
 
@@ -318,5 +360,17 @@ describe("createSheetResolver", () => {
 
     expect(first.caps).not.toBe(second.caps);
     expect(first.caps).not.toBe(DEFAULT_AGENT_LOOP_CAPS);
+  });
+});
+
+// The asymmetry `packages/schema` names, and this is its stronger case.
+// Curation writes a file the team can read and correct; summarization spends
+// this channel's tokens on conversations nobody addressed the agent about. So
+// the fallback for a sheet that cannot be read is off, deliberately not the
+// schema's default of on.
+describe("the summarization fallback", () => {
+  it("is off, like curation's and for a stronger reason", () => {
+    expect(DEFAULT_MEMORY_SETTINGS.summarize).toBe(false);
+    expect(DEFAULT_MEMORY_SETTINGS.enabled).toBe(false);
   });
 });

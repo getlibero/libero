@@ -153,6 +153,18 @@ export interface HistoryBounds {
 export interface MemorySettings {
   /** `[memory] enabled`. False runs no curation turn and reads nothing back. */
   readonly enabled: boolean;
+  /**
+   * `[memory] summarize`. False runs no quiescence sweep in this channel.
+   *
+   * Separate from `enabled` above rather than folded into it, because the two
+   * authorize different things. Curation writes a file after a task somebody
+   * asked for; summarization spends this channel's tokens on threads nobody
+   * addressed the agent about. A channel may reasonably want the first and not
+   * the second.
+   */
+  readonly summarize: boolean;
+  /** `[memory] summarize_after_idle_minutes`, in milliseconds. */
+  readonly summarizeAfterIdleMs: number;
   /** `[memory] max_file_chars`, the whole file's ceiling in characters. */
   readonly maxFileChars: number;
 }

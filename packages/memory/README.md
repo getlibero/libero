@@ -189,6 +189,61 @@ vault, and worth stating for a file the team is invited to edit, since an
 operator who symlinked `MEMORY.md` into a git-tracked directory finds a regular
 file there after the first curation.
 
+## Thread summaries, and why a thread has a *shape*
+
+`thread_summary` is Layer 3's second corpus and the one that makes it worth
+having (#231). Curated facts are already injected whole into every task's
+opening context, so retrieval over them replaces "all of it" with "some of it";
+summaries are the corpus too large to inject.
+
+**The summary's frame follows what the thread produced.** A single "summarize
+this" prompt retrieves badly, because work threads do not all produce the same
+kind of durable thing. Some reach a decision; many more are a question that got
+answered, which is FAQ material by construction; some are an incident; some end
+unresolved. One frame forced onto all of them either distorts the Q&A threads
+into decisions nobody made — "the team decided rotation uses `--rotate`", when
+that is simply how the tool works — or flattens everything into topic labels
+that embed on top of each other. `SummaryShape` in `@getlibero/schema` carries
+the vocabulary and the full argument.
+
+**A `nothing` thread gets a row here and no vector**, and the split is the
+point. This table records that a thread was *assessed*; the vector store is the
+corpus. Keeping "deploying now" out of the corpus is what protects retrieval — a
+vector for it sits in the neighbourhood of every deployment question and dilutes
+all of them. Keeping it out of *this* table would instead mean the sweep offers
+the thread again on every pass and pays a model call to conclude "nothing"
+forever.
+
+**Provenance is `(thread_ts, covers_through_ts)`.** #231 asks that a summary
+name its source rows, and that pair does: a thread is a contiguous run of
+messages under one root, so the thread and a watermark name exactly the set.
+A list of every source `ts` would be the same set enumerated, and would go stale
+differently from the messages it names. The key is the root `ts` and never
+`message.id`, because that rowid is internal and reused after a delete.
+
+**A summary does not outlive the text it was drawn from.** Two triggers on
+`message` drop the summary on any edit or deletion — any UPDATE, not one
+touching `text`, exactly as `message_fts_update` does and for the same reason —
+and a third carries that into `embedding_source`, whose own trigger drops the
+vector. That chain is two levels deep and fires under `recursive_triggers = off`,
+which is SQLite's default: that pragma governs a trigger re-entering *itself*,
+not one trigger activating another. It invalidates rather than regenerating,
+because regenerating needs a model call and this is a SQLite trigger; the thread
+becomes unsummarized and the next sweep picks it up. The window that leaves is on
+the side of saying nothing rather than saying something retracted.
+
+`staleThreads` is the read the sweep runs: threads whose newest message is older
+than a given `ts` and which have no summary covering it. It takes a `ts` rather
+than a duration, so the decision about how quiet is quiet stays with the caller
+that reads the channel's sheet and this module holds no clock.
+
+**The ceiling this leaves.** One vector stands for one summary, so a very long
+thread becomes a centroid averaged over several topics and retrieves none of
+them well. `SUMMARY_MAX_TEXT_CHARS` bounds the text and `MAX_THREAD_MESSAGES` in
+`apps/server` bounds what goes in, but neither *segments* — a thread that should
+be several summaries is still one. That is a known limit rather than an oversight,
+and `message_count` is on the row so an operator can see when it is being hit.
+
 ## Semantic recall: what #229 built and what it left
 
 Layer 3 stores vectors here and computes none. `putEmbedding`, `nearest` and
@@ -275,10 +330,13 @@ before a maintainer did.
 
 Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
 that emits operations (#226), and the read that puts `MEMORY.md` back into the
-context a task starts from. Layer 3 has its storage half as of #229 and nothing
-above it: no embeddings are computed anywhere in the tree (#230), no summaries
-are written (#231), nothing retrieves (#232), and a Slack deletion does not yet
-reach a vector or a summary derived from the deleted message (#233). Slack
+context a task starts from. Layer 3 has its storage half as of #229, an
+embedding surface as of #230, and thread summaries as of #231. What is missing
+is the retrieval: nothing reads `nearest` yet, because #232 is what decides
+where recall enters a task. #233 is what carries a Slack deletion into derived
+data — the message triggers here already drop a summary and its vector on an
+edit or a delete, so what that issue is left with is the curated-fact question
+and the e2e case that drives the real event path. Slack
 deletion and edit mirroring of *messages* is not among the gaps: #177 wired
 `message_deleted` and `message_changed` onto `remove` and `replaceText`, through
 `toRevision` in the gateway and `createRevisionIngest` in `apps/server`.

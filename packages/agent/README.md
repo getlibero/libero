@@ -286,6 +286,47 @@ claiming its vectors are comparable when they are not.
 Nothing calls `embed()` yet. #232 decides where recall enters a task; this is the
 surface it will call.
 
+## The summarization turn
+
+`src/summarize/turn.ts` is one model call over one thread that has gone quiet,
+producing Layer 3's second corpus (#231). It is built to `curation/turn.ts`'s
+shape — one call, no loop, no reachable proxied tool, spend through the same
+`onTurn` — and differs in three ways that are the reason it is a separate turn.
+
+**It is not triggered by a person.** Curation follows a reply, so a task happened
+and somebody was waiting. This follows a thread going quiet, in a channel whose
+members may never have addressed the agent. That is the first model spend in the
+deployment that does not follow a mention, which is why `onTurn` is required here
+rather than optional: a deployment that forgot to wire the meter should be a type
+error, not a discovery. `[memory] summarize` is where a channel says no.
+
+**Quiet is a correctness condition.** A summary written mid-conversation records
+that the team was weighing X against Y, gets embedded, and is then retrieved by
+exactly the question it is worst at answering, because they went on to settle it.
+The caller decides a thread is quiet; this turn assumes it.
+
+**The shape follows the thread.** `SummaryShape` in `@getlibero/schema` carries
+the vocabulary and the argument. What matters here is that `nothing` is a
+first-class answer and the prompt says so first and plainly — a model asked to
+classify will otherwise reach for the nearest non-empty option, and every one it
+reaches for is a vector diluting the corpus.
+
+The one tool it offers writes nothing; it is the structured-output idiom, and its
+definition lives in this module rather than in `@getlibero/schema` because
+nothing else ever offers it. What crosses packages is the *result*,
+`ThreadSummary`, which is in schema where the store can see it. A model that
+answers with no tool call, or with arguments that do not fit, produces `nothing`
+and a `malformed` reason — the caller records the row either way, because the
+same thread with the same content will fail the same way and re-sweeping it
+forever is the runaway this design is most exposed to. A provider that *throws*
+is the other case entirely: it propagates, no row is written, and the thread is
+swept again later.
+
+Note it takes `SummarizationMessage` and not `StoredMessage`. This package
+depends on `@getlibero/schema` and nothing else, which is what keeps the package
+whose job is talking to a model free of a state root, a file handle and a SQLite
+dependency.
+
 ## Layout
 
 | Path | What it is |
@@ -296,6 +337,7 @@ surface it will call.
 | `loop/caps.ts` | The cap tracker and the composed abort signal |
 | `loop/types.ts` | `AgentLoopCaps`, `AgentStopReason`, the hook contracts |
 | `curation/turn.ts` | The post-reply memory turn, its prompt, and `MemoryOpHandler` |
+| `summarize/turn.ts` | The quiescence summarization turn and its prompt |
 | `proxy/transport.ts` | mTLS over `node:https` |
 | `proxy/tools.ts` | `ToolSource` + `ToolExecutor`, and the held-call path |
 | `proxy/tool-names.ts` | Flat name to `(server, tool)`, and why it is a lookup |

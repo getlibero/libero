@@ -59,7 +59,12 @@ describe("the example team sheet", () => {
   });
 
   it("curates memory by default, with the file cap the block documents", () => {
-    expect(sheet.memory).toEqual({ enabled: true, max_file_chars: 32_768 });
+    expect(sheet.memory).toEqual({
+      enabled: true,
+      max_file_chars: 32_768,
+      summarize: true,
+      summarize_after_idle_minutes: 60
+    });
   });
 
   it("carries the documented tool allowlist, approval mode, and result bound", () => {
@@ -294,7 +299,12 @@ describe("the memory block", () => {
 
   it("accepts a channel that opts out, and keeps its figures", () => {
     const sheet = TeamSheet.parse(memorySheet({ enabled: false, max_file_chars: 8_192 }));
-    expect(sheet.memory).toEqual({ enabled: false, max_file_chars: 8_192 });
+    expect(sheet.memory).toEqual({
+      enabled: false,
+      max_file_chars: 8_192,
+      summarize: true,
+      summarize_after_idle_minutes: 60
+    });
   });
 
   // A file cap below one operation's ceiling is a channel where a legal
@@ -329,6 +339,55 @@ describe("the memory block", () => {
 
   it("refuses a non-boolean switch", () => {
     expect(paths(memorySheet({ enabled: "yes" }))).toEqual(["memory.enabled: invalid_type"]);
+  });
+
+  // Summarization (#231). On by default for `enabled`'s reason, and it is the
+  // first thing on this sheet that spends model tokens without anyone having
+  // addressed the agent — so the default being `true` is a decision, and
+  // asserting it is how it stays one rather than becoming an accident.
+  it("summarizes threads by default, an hour after they go quiet", () => {
+    const sheet = TeamSheet.parse(memorySheet({}));
+
+    expect(sheet.memory.summarize).toBe(true);
+    expect(sheet.memory.summarize_after_idle_minutes).toBe(60);
+  });
+
+  // Two switches rather than one, because they authorize different things: a
+  // channel may want the agent to remember what it was asked and not to read
+  // conversations it was never in.
+  it("lets a channel turn summarization off while keeping curation on", () => {
+    const sheet = TeamSheet.parse(memorySheet({ summarize: false }));
+
+    expect(sheet.memory.summarize).toBe(false);
+    expect(sheet.memory.enabled).toBe(true);
+  });
+
+  // A threshold this low summarizes a conversation still in progress, which
+  // stores a conclusion the team had not reached.
+  it("refuses an idle threshold below five minutes", () => {
+    expect(paths(memorySheet({ summarize_after_idle_minutes: 4 }))).toEqual([
+      "memory.summarize_after_idle_minutes: too_small"
+    ]);
+    expect(paths(memorySheet({ summarize_after_idle_minutes: 0 }))).toEqual([
+      "memory.summarize_after_idle_minutes: too_small"
+    ]);
+    expect(paths(memorySheet({ summarize_after_idle_minutes: 5 }))).toBeNull();
+  });
+
+  // Past a week the thread has not gone quiet, the channel has.
+  it("refuses an idle threshold beyond a week", () => {
+    expect(paths(memorySheet({ summarize_after_idle_minutes: 10_081 }))).toEqual([
+      "memory.summarize_after_idle_minutes: too_big"
+    ]);
+    expect(paths(memorySheet({ summarize_after_idle_minutes: 10_080 }))).toBeNull();
+  });
+
+  it.each([
+    ["a fraction", 30.5],
+    ["a string", "60"],
+    ["null", null]
+  ])("refuses %s as an idle threshold", (_label, summarize_after_idle_minutes) => {
+    expect(TeamSheet.safeParse(memorySheet({ summarize_after_idle_minutes })).success).toBe(false);
   });
 });
 
@@ -381,7 +440,12 @@ describe("defaults", () => {
     expect(sheet.mcp_server).toEqual([]);
     expect(sheet.egress.allow).toEqual([]);
     expect(sheet.ambient.enabled).toBe(false);
-    expect(sheet.memory).toEqual({ enabled: true, max_file_chars: 32_768 });
+    expect(sheet.memory).toEqual({
+      enabled: true,
+      max_file_chars: 32_768,
+      summarize: true,
+      summarize_after_idle_minutes: 60
+    });
   });
 
   // The one field here with no default, and deliberately (#62). Every other

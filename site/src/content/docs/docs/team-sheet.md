@@ -147,8 +147,13 @@ warn_at = 0.8
 # in @getlibero/schema, because it bounds what the MODEL may write rather than
 # what this channel may spend, and the file cap already bounds the total.
 [memory]
-enabled        = true                       # opt out with false; there is no other switch
+enabled        = true                       # curation: MEMORY.md, written after a reply
 max_file_chars = 32768                      # the whole file; one operation may carry 4096
+
+# Thread summaries. A thread quiet for this long is summarized into the
+# channel's searchable memory, whether or not anyone addressed the agent in it.
+summarize                    = true
+summarize_after_idle_minutes = 60
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
@@ -478,11 +483,33 @@ in the agent's own state root, never in the directory holding this sheet.
 | --- | --- | --- |
 | `enabled` | no | Whether the curation turn runs at all. **Defaults to `true`** — the one block on this page that is on when it is absent. `false` writes nothing and reads nothing back. |
 | `max_file_chars` | no | The whole file's ceiling, in characters. Defaults to `32768`. May not be set below `4096`, the most one operation may carry, or above `262144`. |
+| `summarize` | no | Whether quiet threads are summarized into searchable memory. **Defaults to `true`.** |
+| `summarize_after_idle_minutes` | no | How long a thread must be quiet first. Defaults to `60`. May not be set below `5` or above `10080` (a week). |
 
 On by default, unlike `[ambient]` below, and the asymmetry is deliberate. Ambient is the agent
 starting work nobody asked for. Curation is the agent remembering something it was already asked
 about, into a capped file your team can read and edit, on a turn metered through the same per-turn
 spend report as every other turn. Opting out is one line.
+
+**`summarize` is two switches rather than one, and it is worth understanding before you leave it
+on.** Curation follows a reply, so somebody had already asked the agent for something.
+Summarization follows a thread going quiet — including threads nobody addressed the agent in — so
+it is the one setting on this page that spends your model tokens with nobody waiting on the
+answer. It is on by default because the corpus it builds is what makes "what did we decide about
+X" work at all: a team's decisions are overwhelmingly reached without the bot in the room, and a
+memory that only covers threads the agent joined is a memory of the agent rather than of the team.
+Turn it off with one line if you would rather it did not.
+
+`summarize_after_idle_minutes` is the only number here that is about how your team talks rather
+than about a resource, and getting it wrong is a correctness problem rather than a cost one. Too
+short and a conversation still in progress gets recorded as though it had concluded — a summary
+saying the team was weighing X against Y, kept and searchable, when they went on to settle on Y.
+Too long and a concluded thread stays out of search while the answer in it is still wanted. Sixty
+minutes is long enough that ordinary gaps do not cut a thread in half.
+
+A thread that wakes up is re-summarized whole and its old summary replaced, and an edit or a
+deletion of any message in it drops the summary and its embedding outright — so nothing derived
+from a message outlives the message.
 
 **This block is honoured by the agent, not the proxy** — and it is the first one on this page of
 which that is true. Everything else here is enforced by the tool proxy from its own copy of this

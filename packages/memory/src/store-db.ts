@@ -156,6 +156,7 @@ import type { StatementSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelId } from "@getlibero/schema";
+import type { SummaryShape } from "@getlibero/schema";
 import { getLoadablePath } from "sqlite-vec";
 import type { Logger } from "./log.js";
 
@@ -364,6 +365,96 @@ CREATE TABLE IF NOT EXISTS embedding_source (
   at           INTEGER NOT NULL,
   UNIQUE (source_kind, source_ref)
 );
+
+-- One thread, summarized (#231). Layer 3's second corpus, and the one that
+-- makes it worth having: curated facts are already injected whole into every
+-- task's opening context, so retrieval over them replaces "all of it" with
+-- "some of it". Summaries are the corpus too large to inject.
+--
+-- **Keyed on the thread's root \`ts\`**, which is the identity \`recentInThread\`
+-- already takes and the one a caller holds. Deliberately *not* \`message.id\`:
+-- the DDL above says that rowid is internal and reused after a delete, so a
+-- summary filed under one would later name a different message.
+--
+-- \`shape\` is \`SummaryShape\` from @getlibero/schema — what kind of durable
+-- content the thread produced, so a query can reach a Q&A thread's answer and a
+-- decision thread's decision in the terms each was actually said in.
+--
+-- **A \`nothing\` thread gets a row here and no embedding**, and the split is the
+-- point: this table records that a thread was *assessed*, and the vector store
+-- is the corpus. Keeping chatter out of the corpus is what protects retrieval —
+-- a summary of "deploying now" is a vector sitting in the neighbourhood of every
+-- deployment question, diluting all of them. But keeping it out of *this* table
+-- would mean the sweep below finds the thread unsummarized on every pass and
+-- pays a model call to conclude "nothing" again, forever. One row, no vector.
+--
+-- No CHECK pinning the shape vocabulary, for \`embedding_source.source_kind\`'s
+-- reason: the set lives in the schema package where widening it is a type change
+-- rather than a migration.
+CREATE TABLE IF NOT EXISTS thread_summary (
+  thread_ts     TEXT PRIMARY KEY,
+  shape         TEXT NOT NULL,
+  text          TEXT NOT NULL,
+  -- The newest source message this summary was built from, and the whole
+  -- staleness mechanism. A thread whose newest message is later than this has
+  -- said something the summary does not know about.
+  --
+  -- A watermark rather than a list of every source \`ts\`, and the difference is
+  -- worth stating because #231 asks that a summary "name its source rows". It
+  -- does, and more cheaply than a join table would: a thread is a contiguous
+  -- run of messages under one root, so \`(thread_ts, covers_through_ts)\` names
+  -- exactly the set — every message of this thread up to that point. A list
+  -- would be the same set enumerated, and would go stale differently from the
+  -- messages it names.
+  covers_through_ts TEXT NOT NULL,
+  -- How many messages went in. Not provenance — the pair above is that — but
+  -- what lets an operator see a summary standing for far more conversation than
+  -- one vector can represent. See the README on the ceiling this leaves.
+  message_count INTEGER NOT NULL,
+  at            INTEGER NOT NULL
+);
+
+-- What the sweep groups on. An expression index, because a thread's identity is
+-- \`thread_ts\` for a reply and \`ts\` for the root that started it, so the grouping
+-- key is the COALESCE and not a column. Without this, finding quiet threads is a
+-- full scan and a sort of the channel on every sweep.
+--
+-- Adding it moves no schema version, for \`message_thread\`'s reason: an index
+-- changes which rows SQLite visits and never which rows come back.
+CREATE INDEX IF NOT EXISTS message_root ON message (COALESCE(thread_ts, ts), ts);
+
+-- **A summary does not outlive the text it was built from.** These two are the
+-- whole mechanism, and they are the \`message_fts\` triggers' argument applied to
+-- a second derived thing: an edit or a deletion that left a summary standing
+-- would leave the store asserting a conclusion drawn from words their author
+-- retracted, with nothing to show for it.
+--
+-- They fire on **any** UPDATE rather than one touching \`text\`, exactly as
+-- \`message_fts_update\` does and for the same reason — a summary desynchronized
+-- from its thread is silently wrong, and a trigger that trusted callers to be
+-- careful would be a trigger with a gap in it.
+--
+-- Invalidate rather than regenerate: regenerating needs a model call, and this
+-- is a SQLite trigger. The thread simply becomes unsummarized, and the next
+-- sweep picks it up. What that costs is a window where the thread is out of
+-- recall; what it buys is that the window is on the side of saying nothing
+-- rather than saying something retracted.
+CREATE TRIGGER IF NOT EXISTS thread_summary_stale_delete AFTER DELETE ON message BEGIN
+  DELETE FROM thread_summary WHERE thread_ts = COALESCE(old.thread_ts, old.ts);
+END;
+
+CREATE TRIGGER IF NOT EXISTS thread_summary_stale_update AFTER UPDATE ON message BEGIN
+  DELETE FROM thread_summary WHERE thread_ts = COALESCE(new.thread_ts, new.ts);
+END;
+
+-- And the summary's vector goes with the summary. This is the second link of a
+-- two-level chain — message → summary → embedding_source → vec_embedding — and
+-- it does fire under \`recursive_triggers = off\`, which is SQLite's default and
+-- this connection's: that pragma governs a trigger re-entering *itself*, not one
+-- trigger activating another. Measured, not assumed.
+CREATE TRIGGER IF NOT EXISTS thread_summary_delete AFTER DELETE ON thread_summary BEGIN
+  DELETE FROM embedding_source WHERE source_kind = 'summary' AND source_ref = old.thread_ts;
+END;
 `;
 
 /**
@@ -493,6 +584,50 @@ export interface StoredEmbedding {
   readonly model: string;
   /** When this store learned of the vector, in ms. */
   readonly at: number;
+}
+
+/**
+ * One thread's summary, as this file holds it (#231).
+ *
+ * `shape` and `text` are `ThreadSummary` from `@getlibero/schema` — the turn
+ * that produces them and the store that keeps them are two packages that cannot
+ * import each other, so the vocabulary lives in the one they share.
+ *
+ * The other three fields are this store's rather than the model's, which is why
+ * they are not on the schema shape: `thread` is where it goes, and
+ * `coversThroughTs` with `messageCount` are what the store observed about the
+ * rows it was given. A model that could name its own coverage watermark could
+ * name one that keeps a stale summary alive.
+ */
+export interface StoredThreadSummary {
+  /** The thread's root `ts`, which is its identity. */
+  readonly thread: string;
+  readonly shape: SummaryShape;
+  /** Empty exactly when `shape` is `nothing`, which `ThreadSummary` enforces. */
+  readonly text: string;
+  /** The newest message `ts` this summary accounts for. */
+  readonly coversThroughTs: string;
+  /** How many messages went into it. */
+  readonly messageCount: number;
+  /** When this store recorded it, in ms. `StoredMessage.at`'s clock. */
+  readonly at: number;
+}
+
+/**
+ * A thread the sweep found quiet and unsummarized.
+ *
+ * What `staleThreads` answers, and deliberately not the thread's messages:
+ * reading those is `recentInThread`'s job and the caller does it for the threads
+ * it decides to summarize. Answering with the text would make one sweep pull
+ * every quiet thread's whole conversation into memory to decide it wanted three
+ * of them.
+ */
+export interface StaleThread {
+  /** The thread's root `ts`. */
+  readonly thread: string;
+  /** Its newest message's `ts` — what a summary of it would cover through. */
+  readonly newestTs: string;
+  readonly messageCount: number;
 }
 
 export interface MessageStoreOptions {
@@ -632,6 +767,45 @@ export interface MessageStore {
    * rather than an operation.
    */
   removeEmbedding(source: EmbeddingSource): boolean;
+  /**
+   * Records one thread's summary, replacing any this store already held.
+   *
+   * **A `nothing` summary is stored too, and that is not a contradiction.** The
+   * row records that the thread was assessed; the vector store is the corpus.
+   * Without the row, `staleThreads` would offer the same silent thread on every
+   * sweep and a model call would conclude "nothing" again each time. The caller
+   * embeds only what has a shape worth retrieving — see the DDL.
+   *
+   * Replacing rather than appending: a thread that woke up and went quiet again
+   * is re-summarized whole, and the old summary is not a second answer to the
+   * same question. That is also what makes an over-eager idle threshold degrade
+   * to wasted spend rather than to a corpus full of half-finished arguments.
+   *
+   * Writing a summary does **not** write its vector. The two are separate acts
+   * because only one of them needs a model provider, and `packages/memory` has
+   * none: the caller embeds `text` and calls `putEmbedding` with
+   * `{ kind: "summary", ref: thread }`.
+   */
+  putThreadSummary(summary: StoredThreadSummary): void;
+  /**
+   * Threads that have gone quiet and have nothing current standing for them.
+   *
+   * The sweep's whole read. A thread qualifies when its newest message is older
+   * than `idleBefore` **and** no summary covers that message — either because
+   * there is none, or because one was invalidated by an edit, or because the
+   * thread said more after it was last summarized.
+   *
+   * `idleBefore` is a Slack `ts`, not a wall clock, and the comparison is the
+   * string one this file already relies on: a ts is fixed-width, so
+   * lexicographic and numeric order agree. Passing a ts rather than a duration
+   * keeps the clock decision — how quiet is quiet — with the caller that reads
+   * the channel's sheet, and keeps this module free of one.
+   *
+   * Newest first, so a bounded sweep summarizes what went quiet most recently
+   * rather than working through a backlog oldest-first while new threads pile
+   * up behind it. `limit` is clamped to `READ_MAX_LIMIT`.
+   */
+  staleThreads(idleBefore: string, limit: number): readonly StaleThread[];
   close(): void;
 }
 
@@ -807,6 +981,35 @@ const NEAREST_SQL = `SELECT s.source_kind, s.source_ref, hit.distance
     ORDER BY hit.distance`;
 
 /**
+ * The sweep: quiet threads with nothing current standing for them.
+ *
+ * The subquery folds a channel's messages into threads — `COALESCE(thread_ts,
+ * ts)` puts a root and its replies under one key, which is why `message_root`
+ * indexes that expression rather than a column. The LEFT JOIN is what makes
+ * "never summarized" and "summarized before it said more" one condition instead
+ * of two passes: a thread with no row has `s.thread_ts IS NULL`, and one whose
+ * summary predates its newest message fails the watermark comparison.
+ *
+ * `HAVING` rather than a `WHERE` on `newest`, because the quietness test is
+ * about the aggregate — the thread's newest message — and not about any one row.
+ * A `WHERE ts < ?` would instead drop recent messages and then summarize the
+ * thread as if it had ended earlier, which is the mid-conversation summary this
+ * whole trigger design exists to avoid.
+ */
+const STALE_THREADS_SQL = `SELECT t.thread, t.newest, t.n
+     FROM (SELECT COALESCE(thread_ts, ts) AS thread,
+                  MAX(ts) AS newest,
+                  COUNT(*) AS n
+             FROM message
+            GROUP BY COALESCE(thread_ts, ts)
+           HAVING MAX(ts) < ?) AS t
+     LEFT JOIN thread_summary s ON s.thread_ts = t.thread
+    WHERE s.thread_ts IS NULL
+       OR s.covers_through_ts < t.newest
+    ORDER BY t.newest DESC
+    LIMIT ?`;
+
+/**
  * A `Float32Array` as the blob `vec0` reads.
  *
  * `byteOffset` and `byteLength` are passed rather than left to default, and that
@@ -954,6 +1157,13 @@ type MessageRow = {
   readonly at: number;
 };
 
+/** A `STALE_THREADS_SQL` row. `MessageRow`'s reasons apply. */
+type StaleThreadRow = {
+  readonly thread: string;
+  readonly newest: string;
+  readonly n: number | bigint;
+};
+
 /** A `NEAREST_SQL` row, as SQLite hands it back. `MessageRow`'s reasons apply. */
 type HitRow = {
   readonly source_kind: string;
@@ -1097,7 +1307,23 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       `DELETE FROM embedding_source WHERE source_kind = ? AND source_ref = ?`
     ),
     readModel: db.prepare(`SELECT model, dims FROM embedding_model WHERE id = 1`),
-    stampModel: db.prepare(`INSERT INTO embedding_model (id, model, dims) VALUES (1, ?, ?)`)
+    stampModel: db.prepare(`INSERT INTO embedding_model (id, model, dims) VALUES (1, ?, ?)`),
+    // Upsert on the thread, because a thread that woke up and went quiet again
+    // gets one summary and not two. The DO UPDATE is every column but the key:
+    // a re-summarization is a wholly new reading of the thread, so nothing from
+    // the previous one survives it.
+    putThreadSummary: db.prepare(
+      `INSERT INTO thread_summary
+           (thread_ts, shape, text, covers_through_ts, message_count, at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (thread_ts) DO UPDATE SET
+           shape             = excluded.shape,
+           text              = excluded.text,
+           covers_through_ts = excluded.covers_through_ts,
+           message_count     = excluded.message_count,
+           at                = excluded.at`
+    ),
+    staleThreads: db.prepare(STALE_THREADS_SQL)
   } satisfies Record<string, StatementSync>;
 
   /**
@@ -1271,6 +1497,29 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         clampLimit(limit)
       ) as HitRow[];
       return rows.map(toEmbeddingHit);
+    },
+
+    putThreadSummary(summary) {
+      statements.putThreadSummary.run(
+        summary.thread,
+        summary.shape,
+        summary.text,
+        summary.coversThroughTs,
+        summary.messageCount,
+        summary.at
+      );
+    },
+
+    staleThreads(idleBefore, limit) {
+      const rows = statements.staleThreads.all(idleBefore, clampLimit(limit)) as StaleThreadRow[];
+      return rows.map(row => ({
+        thread: row.thread,
+        newestTs: row.newest,
+        // Number(), because a COUNT(*) arrives as a bigint once a statement has
+        // been switched to big-int mode, and a count that silently became one
+        // would be a `messageCount` no JSON could carry.
+        messageCount: Number(row.n)
+      }));
     },
 
     removeEmbedding(source) {

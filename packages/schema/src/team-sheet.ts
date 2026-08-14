@@ -480,6 +480,52 @@ export const TeamSheet = z.object({
       // `enabled = false` was rejected because `[ambient]` already permits
       // `schedule` beside its own `enabled = false`, and a channel keeping its
       // figures through a temporary opt-out is the ordinary case.
+
+      // Thread summaries (#231): the second corpus semantic recall reads, and
+      // the first thing on this sheet that spends model tokens **without anyone
+      // having addressed the agent**.
+      //
+      // That is a real departure and it is stated rather than buried. Every
+      // other model call in the deployment follows a mention; this one follows a
+      // thread going quiet, in a channel whose members may never have used the
+      // bot. The alternative — summarizing only threads the agent took part in —
+      // was rejected on what it does to recall rather than on cost: it makes the
+      // corpus the agent's own history instead of the channel's conversation,
+      // and "what did we decide about X" is overwhelmingly a question about a
+      // decision the team reached without the bot in the room.
+      //
+      // On by default for `enabled`'s reason, and bounded by the same things:
+      // the per-turn spend report, `daily_tokens`, and `daily_usd`. A channel
+      // that wants none of it writes one line.
+      summarize: z.boolean().default(true),
+      // How quiet a thread must be before it is summarized.
+      //
+      // **The one number here an operator genuinely holds an opinion about**,
+      // because it is a fact about how a team talks rather than a resource
+      // bound, and getting it wrong is a correctness problem rather than a cost
+      // one. Too short and the pass summarizes a conversation still in progress
+      // — an artifact that says the team was weighing X against Y, stored and
+      // embedded, and then retrieved by exactly the query it is worst at
+      // answering, because they went on to settle it. Too long and a concluded
+      // thread stays out of recall while the answer it holds is still wanted.
+      //
+      // Sixty minutes: long enough that a thread with ordinary gaps in it is not
+      // cut in half, short enough that a morning's decision is retrievable that
+      // afternoon. The floor of five minutes is a bound rather than a
+      // recommendation — a channel that sets it is asking for mid-conversation
+      // summaries and should not be stopped, but a zero would summarize on every
+      // message. The roof is a week, past which the thread has not gone quiet,
+      // the channel has.
+      //
+      // A thread that wakes up is re-summarized whole and the old summary
+      // replaced, so a threshold set too low degrades to wasted spend rather
+      // than to a permanently wrong corpus.
+      summarize_after_idle_minutes: z.number().int().min(5).max(10_080).default(60),
+      // **How long a summary may be is deliberately not a field**, exactly as
+      // `max_op_chars` is not: `SUMMARY_MAX_TEXT_CHARS` in ./thread-summary.ts
+      // bounds what the model may write rather than what this channel may spend,
+      // and it is chosen against retrieval — one vector stands for one summary,
+      // so a longer summary is a vector averaged over more topics.
     })
     .prefault({}),
   mcp_server: McpServerList.default([]),

@@ -24,7 +24,9 @@
 import {
   createCompletionClient,
   createEmbeddingClient,
-  createProxyTransport
+  createProxySpendClient,
+  createProxyTransport,
+  totalTokens
 } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
 import { createServer } from "./compose.js";
@@ -39,6 +41,7 @@ import {
 } from "./env.js";
 import { createMemoryFileOpener } from "./session/memory.js";
 import { createSheetResolver } from "./session/sheet.js";
+import { createSummarySweep } from "./session/summarize.js";
 import { createMessageStoreOpener } from "./session/store.js";
 
 const logger = createJsonLogger();
@@ -62,14 +65,11 @@ const embedding = embeddingConfigFromEnv(process.env);
 if (embedding === null) {
   logger.log("info", { event: "embeddings_unconfigured", reason: "embedding_provider_unset" });
 } else {
-  // Built here and not yet handed to anything: #232 decides where recall enters
-  // a task, and until it does there is no caller. Constructing it at startup is
-  // still worth doing, because it is where a misconfigured provider name
-  // surfaces — beside every other variable this file reads, rather than at the
-  // far end of a thread.
-  createEmbeddingClient(embedding.config);
   logger.log("info", { event: "embeddings_ready", embeddingModel: embedding.model });
 }
+// Null when unconfigured, which the sweep takes: a summary is still written and
+// stored, and only its vector is skipped. See `SummarySweepOptions.embedding`.
+const embeddings = embedding === null ? null : createEmbeddingClient(embedding.config);
 // Reads the CA and rejects a non-https PROXY_URL here, before the socket opens.
 // A per-channel client certificate is resolved on first use — one channel with
 // no certificate is that channel's problem, not the process's.
@@ -80,6 +80,61 @@ const transport = createProxyTransport(proxyConfigFromEnv(process.env));
 // — and a task holding an approval settles its wait and repaints its card on
 // the way out, because the prompter listens on this same signal.
 const tasks = new AbortController();
+
+const sheets = createSheetResolver({ root: channelsRoot, model, logger });
+
+// The quiescence sweep (#231). Built here rather than in compose.ts because it
+// needs the completion client, the embedding client and the spend sender, none
+// of which that file holds.
+//
+// It reads the same resolver every task reads, so `[memory] summarize` and the
+// idle threshold are as fresh for a sweep as they are for a reply, and a channel
+// with no sheet summarizes nothing.
+const summarize = createSummarySweep({
+  completion,
+  embedding: embeddings,
+  ...(embedding === null ? {} : { embeddingModel: embedding.model }),
+  settings: async channel => {
+    const settings = await sheets(channel);
+    return {
+      summarize: settings.memory.summarize,
+      idleMs: settings.memory.summarizeAfterIdleMs,
+      model: settings.model,
+      maxTokens: settings.caps.maxOutputTokensPerTurn
+    };
+  },
+  // Per channel, exactly as `runTask` builds one per task: a spend client is a
+  // transport and a channel id, and the channel comes from the certificate at
+  // the other end rather than from anything in the body.
+  reportTurn: async (channel, turn) => {
+    if (totalTokens(turn.usage) === 0) return;
+    try {
+      const outcome = await createProxySpendClient({ transport, channel }).report(
+        turn.id,
+        turn.usage,
+        turn.model
+      );
+      logger.log("info", {
+        event: "spend_reported",
+        channel,
+        report: outcome,
+        totalTokens: totalTokens(turn.usage),
+        ...(turn.model === undefined ? {} : { servedModel: turn.model })
+      });
+    } catch (error) {
+      // Swallowed, for `reportSpend`'s reason and one more: this is on the
+      // message ingest path, and an unreported summary must not cost a channel
+      // its message write.
+      logger.log("error", {
+        event: "spend_report_failed",
+        channel,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+    }
+  },
+  signal: tasks.signal,
+  logger
+});
 
 const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
@@ -109,9 +164,10 @@ const { gateway } = createServer({
     }),
   completion,
   transport,
-  sheets: createSheetResolver({ root: channelsRoot, model, logger }),
+  sheets: sheets,
   store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
+  summarize,
   signal: tasks.signal,
   logger
 });
