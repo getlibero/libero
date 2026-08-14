@@ -41,21 +41,15 @@ import { createSilentLogger, type Logger } from "./log.js";
 import { type ClientLease, createMcpCatalog } from "./mcp-catalog.js";
 import type { McpFailure, McpOutcome } from "./mcp-client.js";
 import { type McpPool, createMcpPool } from "./mcp-pool.js";
-import { type AuthScheme, UpstreamError, destinationHost } from "./outbound.js";
+import { UpstreamError, constantCredential, destinationHost } from "./outbound.js";
 import { RedactionError } from "./redact.js";
 import type { Vault } from "./vault.js";
 
-/**
- * Bearer, for every upstream this dispatcher can serve today.
- *
- * The sheet field the old promise here named now exists — `[mcp_server.auth]`
- * (#255) declares an OAuth upstream, and `AuthScheme` has its member — but the
- * engine that mints a token from a stored grant is #256, so an upstream
- * carrying an auth block is answered `unavailable` below rather than served
- * with a credential from the wrong store. Which header a scheme uses is still
- * not a sheet field: that knob stays out of the file an admin edits.
- */
-const SCHEME: AuthScheme = "bearer";
+// The scheme travels on the CredentialSource now — the vault's is a constant
+// bearer source built at the two resolution sites below — so there is no
+// module-wide SCHEME any more. What its old comment promised still holds:
+// which header a scheme uses is not a sheet field, and the auth block (#255)
+// declares *that* an upstream speaks OAuth, never how a header is spelled.
 
 export interface HttpDispatcherOptions {
   /** Opened once at startup. The dispatcher holds it; no route does. */
@@ -259,7 +253,6 @@ function failureLevel(failure: McpFailure): "warn" | "error" {
 export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispatcher {
   const logger = options.logger ?? createSilentLogger();
   const pool: McpPool = createMcpPool({
-    scheme: SCHEME,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.maxResponseBytes !== undefined ? { maxResponseBytes: options.maxResponseBytes } : {}),
     ...(options.maxUpstreamConcurrency !== undefined
@@ -298,7 +291,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       secret = lookup.secret;
     }
 
-    const client = pool.acquire(upstream, secret);
+    const client = pool.acquire(upstream, constantCredential("bearer", secret, upstream.credential));
     return client === null ? { ok: false, reason: "shutting_down" } : { ok: true, client };
   };
 
@@ -387,7 +380,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       // to make here: this destination is the one the sheet declared.
       const destination = destinationHost(upstream.url);
 
-      const client = pool.acquire(upstream, secret);
+      const client = pool.acquire(upstream, constantCredential("bearer", secret, upstream.credential));
       if (client === null) {
         // Shutting down. Answered rather than served over a pool the process is
         // dismantling, and never a refusal: nothing was denied.

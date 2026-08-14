@@ -6,6 +6,7 @@ import { type FakeMcpServer, type FakeReply, startFakeMcpServer } from "./mcp-fa
 // under test cannot catch that code disagreeing with a real server.
 const MCP_PROTOCOL_VERSION = "2026-07-28";
 const METHOD_NOT_FOUND = -32601;
+import { constantCredential } from "./outbound.js";
 import type { Secret } from "./vault.js";
 import type { CallLimits } from "./enforce.js";
 import type { UpstreamCallDefinition } from "./dispatch.js";
@@ -46,9 +47,7 @@ async function clientFor(
   fake = await startFakeMcpServer(overrides);
   return createMcpClient({
     url: fake.url,
-    scheme: "bearer",
-    secret,
-    credentialName: "github_service_account",
+    source: constantCredential("bearer", secret, "github_service_account"),
     timeoutMs: 2000
   });
 }
@@ -141,9 +140,7 @@ describe("the credential", () => {
       fake = await startFakeMcpServer({ echoHeaders: "text" });
       const client = createMcpClient({
         url: fake.url,
-        scheme: "bearer",
-        secret: secretOf(value),
-        credentialName: "c",
+        source: constantCredential("bearer", secretOf(value), "c"),
         timeoutMs: 2000
       });
       const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
@@ -213,9 +210,7 @@ describe("the credential", () => {
         : null;
     const client = createMcpClient({
       url: fake.url,
-      scheme: "bearer",
-      secret: secretOf(VALUE),
-      credentialName: "c",
+      source: constantCredential("bearer", secretOf(VALUE), "c"),
       timeoutMs: 2000
     });
 
@@ -237,9 +232,7 @@ describe("the credential", () => {
       fake.respond = request => (request.rpc?.method === "tools/call" ? respond() : null);
       const client = createMcpClient({
         url: fake.url,
-        scheme: "bearer",
-        secret: secretOf(VALUE),
-        credentialName: "c",
+        source: constantCredential("bearer", secretOf(VALUE), "c"),
         timeoutMs: 2000
       });
 
@@ -262,9 +255,7 @@ describe("when discovery fails", () => {
     fake.respond = () => ({ status: 500, raw: `{"detail":"Bearer ${VALUE} rejected by edge proxy"}` });
     const client = createMcpClient({
       url: fake.url,
-      scheme: "bearer",
-      secret: secretOf(VALUE),
-      credentialName: "c",
+      source: constantCredential("bearer", secretOf(VALUE), "c"),
       timeoutMs: 2000
     });
 
@@ -281,7 +272,7 @@ describe("when discovery fails", () => {
   it("never sends the call", async () => {
     fake = await startFakeMcpServer();
     fake.respond = () => ({ status: 503, raw: "" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
@@ -291,8 +282,7 @@ describe("when discovery fails", () => {
   it("reports an unreachable upstream without a socket", async () => {
     const client = createMcpClient({
       url: "http://127.0.0.1:1/mcp",
-      scheme: "bearer",
-      secret: undefined,
+      source: constantCredential("bearer", undefined),
       timeoutMs: 2000
     });
 
@@ -305,7 +295,7 @@ describe("when discovery fails", () => {
     fake = await startFakeMcpServer();
     let failing = true;
     fake.respond = () => (failing ? { status: 503, raw: "" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect((await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).outcome).toBe("connect_failed");
     failing = false;
@@ -348,7 +338,7 @@ describe("version negotiation", () => {
       request.rpc?.method === "server/discover"
         ? { message: { jsonrpc: "2.0", id: request.rpc.id, error: { code: METHOD_NOT_FOUND, message: "unknown" } } }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
       outcome: "connect_failed",
@@ -475,7 +465,7 @@ describe("the ladder", () => {
 describe("when nothing answered the probe", () => {
   it("never attempts the handshake against a server that does not reply", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy", hangOn: "server/discover" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 150 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 150 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({ outcome: "connect_failed", failure: "timed_out" });
     expect(fake.callsTo("initialize")).toHaveLength(0);
@@ -485,8 +475,7 @@ describe("when nothing answered the probe", () => {
   it("never attempts the handshake against a host nothing listens on", async () => {
     const client = createMcpClient({
       url: "http://127.0.0.1:1/mcp",
-      scheme: "bearer",
-      secret: undefined,
+      source: constantCredential("bearer", undefined),
       timeoutMs: 2000
     });
 
@@ -497,7 +486,7 @@ describe("when nothing answered the probe", () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
     fake.respond = request =>
       request.rpc?.method === "server/discover" ? { status: 307, headers: { location: "http://127.0.0.1:1/" } } : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({ outcome: "connect_failed", failure: "redirected" });
     expect(fake.callsTo("initialize")).toHaveLength(0);
@@ -518,7 +507,7 @@ describe("when nothing answered the probe", () => {
   it("reports an unreadable probe answer without a second attempt", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
     fake.respond = request => (request.rpc?.method === "server/discover" ? { raw: "<html>hello</html>" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
       outcome: "connect_failed",
@@ -541,7 +530,7 @@ describe("when the call fails", () => {
             }
           }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
       outcome: "called",
@@ -572,7 +561,7 @@ describe("when the call fails", () => {
             }
           }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
     expect(outcome.outcome).toBe("called");
@@ -593,7 +582,7 @@ describe("when the call fails", () => {
             }
           }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
       outcome: "call_failed",
@@ -606,7 +595,7 @@ describe("when the call fails", () => {
   it("reports an answer it cannot read as MCP", async () => {
     fake = await startFakeMcpServer();
     fake.respond = request => (request.rpc?.method === "tools/call" ? { raw: "<html>502</html>" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
     expect(outcome).toMatchObject({ outcome: "call_failed", failure: "protocol_error" });
@@ -615,7 +604,7 @@ describe("when the call fails", () => {
   it("relays a non-2xx with its status", async () => {
     fake = await startFakeMcpServer();
     fake.respond = request => (request.rpc?.method === "tools/call" ? { status: 429, raw: "slow down" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
     expect(outcome).toMatchObject({ outcome: "call_failed", failure: "http_error", status: 429 });
@@ -634,7 +623,7 @@ describe("when the call fails", () => {
     fake = await startFakeMcpServer();
     fake.respond = request =>
       request.rpc?.method === "tools/call" ? { status: 500, raw: "x".repeat(100_000) } : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
@@ -672,7 +661,7 @@ describe("an upstream asking for more input", () => {
             }
           }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({ outcome: "call_failed", failure: "input_required" });
   });
@@ -685,7 +674,7 @@ describe("an upstream asking for more input", () => {
       request.rpc?.method === "tools/call"
         ? { message: { jsonrpc: "2.0", id: request.rpc.id, result: { resultType: "input_required" } } }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
@@ -706,7 +695,7 @@ describe("what is never retried", () => {
     for (const protocol of ["stateless", "legacy"] as const) {
       fake = await startFakeMcpServer({ protocol });
       fake.respond = request => (request.rpc?.method === "tools/call" ? reply : null);
-      const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+      const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
       await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
@@ -738,7 +727,7 @@ describe("when the session is lost", () => {
 
   it("reconnects once mid-task and the call completes", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
     expireOn(fake, 1);
 
     expect((await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
@@ -751,7 +740,7 @@ describe("when the session is lost", () => {
 
   it("gives the model an error rather than a loop against a server that forgets every session", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
     expireOn(fake, Number.MAX_SAFE_INTEGER);
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({
@@ -771,7 +760,7 @@ describe("when the session is lost", () => {
   it("treats a 404 from a client with no session as the wrong url it is", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy", sessions: false });
     fake.respond = request => (request.rpc?.method === "tools/call" ? { status: 404, raw: "no such path" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ failure: "http_error", status: 404 });
     expect(fake.callsTo("tools/call")).toHaveLength(1);
@@ -781,7 +770,7 @@ describe("when the session is lost", () => {
   it("treats a 404 to the handshake itself as a refusal rather than a loss", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
     fake.respond = request => (request.rpc?.method === "initialize" ? { status: 404, raw: "" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
       outcome: "connect_failed",
@@ -797,7 +786,7 @@ describe("when the session is lost", () => {
   // the reopen, with the loser's session dropped unterminated at the upstream.
   it("rides a reopen in flight rather than starting a second ladder", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect((await client.callTool("warm", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
     fake.expireSessions();
@@ -824,7 +813,7 @@ describe("when the session is lost", () => {
   // invalidate a session two other calls were about to use.
   it("costs one re-initialize when three calls lose the session at once", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect((await client.callTool("warm", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
     fake.expireSessions();
@@ -847,7 +836,7 @@ describe("listing an upstream's catalog", () => {
   it("lists over both dialects, up the same ladder", async () => {
     for (const protocol of ["stateless", "legacy"] as const) {
       fake = await startFakeMcpServer({ protocol });
-      const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+      const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
       const outcome = await client.listTools(undefined, undefined);
 
@@ -878,7 +867,7 @@ describe("listing an upstream's catalog", () => {
             }
           }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.listTools(undefined, undefined);
     expect(outcome).toMatchObject({ outcome: "listed", nextCursor: null });
@@ -896,7 +885,7 @@ describe("listing an upstream's catalog", () => {
 
   it("sends the negotiated revision to a legacy server, never the pinned constant", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy", legacyVersion: "2025-06-18" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     await client.listTools(undefined, undefined);
 
@@ -925,7 +914,7 @@ describe("listing an upstream's catalog", () => {
     fake = await startFakeMcpServer();
     fake.respond = request =>
       request.rpc?.method === "tools/list" ? { status: 500, raw: `boom ${VALUE}` } : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: secretOf(VALUE), timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", secretOf(VALUE)), timeoutMs: 2000 });
 
     const outcome = await client.listTools(undefined, undefined);
 
@@ -939,7 +928,7 @@ describe("listing an upstream's catalog", () => {
       request.rpc?.method === "tools/list"
         ? { message: { jsonrpc: "2.0", id: request.rpc.id, error: { code: METHOD_NOT_FOUND, message: "nope" } } }
         : null;
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.listTools(undefined, undefined)).toEqual({
       outcome: "call_failed",
@@ -962,7 +951,7 @@ describe("listing an upstream's catalog", () => {
   ])("refuses %s", async (_label, reply) => {
     fake = await startFakeMcpServer();
     fake.respond = request => (request.rpc?.method === "tools/list" ? reply(request.rpc.id) : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.listTools(undefined, undefined)).toEqual({
       outcome: "call_failed",
@@ -984,7 +973,7 @@ describe("listing an upstream's catalog", () => {
     fake = await startFakeMcpServer({ hangOn: "tools/list" });
     // The client's default is twenty times the budget, so a listing that comes
     // back promptly proves the per-call value is the one in force.
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 4000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 4000 });
 
     const started = Date.now();
     expect(await client.listTools(undefined, 200)).toEqual({ outcome: "call_failed", failure: "timed_out" });
@@ -995,7 +984,7 @@ describe("listing an upstream's catalog", () => {
   // precedes dispatch, *and* a listing is a read.
   it("reconnects once when the session was lost, and lists", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy" });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect((await client.listTools(undefined, undefined)).outcome).toBe("listed");
     fake.expireSessions();
@@ -1008,7 +997,7 @@ describe("listing an upstream's catalog", () => {
   it("treats a 404 from a client with no session as the wrong url it is", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy", sessions: false });
     fake.respond = request => (request.rpc?.method === "tools/list" ? { status: 404, raw: "no such path" } : null);
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(await client.listTools(undefined, undefined)).toEqual({
       outcome: "call_failed",
@@ -1054,7 +1043,7 @@ describe("mirroring an argument into a request header", () => {
   // fake that never checked.
   it("sends them on a legacy connection, which is where GitHub demands them", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy", catalog: ANNOTATED, requireParamHeaders: true });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.callTool(
       "create_or_update_file",
@@ -1074,7 +1063,7 @@ describe("mirroring an argument into a request header", () => {
   // vacuous.
   it("is refused -32020 by such a server when it sends none", async () => {
     fake = await startFakeMcpServer({ protocol: "legacy", catalog: ANNOTATED, requireParamHeaders: true });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     expect(
       await client.callTool(
@@ -1106,7 +1095,7 @@ describe("mirroring an argument into a request header", () => {
   // that.
   it("sends them on a modern connection too, where the SDK's own mirroring cannot", async () => {
     fake = await startFakeMcpServer({ protocol: "stateless", catalog: ANNOTATED, requireParamHeaders: true });
-    const client = createMcpClient({ url: fake.url, scheme: "bearer", secret: undefined, timeoutMs: 2000 });
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
 
     const outcome = await client.callTool(
       "create_or_update_file",

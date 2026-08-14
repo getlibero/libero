@@ -10,6 +10,7 @@ import {
   DEFAULT_UPSTREAM_TIMEOUT_MS,
   UpstreamError,
   callUpstream,
+  constantCredential,
   createGuardedFetch,
   readSessionId,
   credentialHeader,
@@ -793,9 +794,7 @@ describe("the guarded fetch", () => {
   ) =>
     createGuardedFetch({
       url: "http://mcp-github:3001/mcp",
-      scheme: "bearer",
-      secret: secretOf(VALUE),
-      credentialName: "github_pat",
+      source: constantCredential("bearer", secretOf(VALUE), "github_pat"),
       ...overrides
     });
 

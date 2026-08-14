@@ -53,6 +53,56 @@ import type { Secret } from "./vault.js";
 export type AuthScheme = "bearer" | "oauth";
 
 /**
+ * Where a request's credential comes from, asked per request.
+ *
+ * The pool keys one client per upstream and keeps it for the process's life,
+ * and until #256 that client captured a `Secret` at construction — correct for
+ * a vault value, whose name names one immutable entry, and wrong for a minted
+ * token, which expires mid-lifetime of the client holding it. This seam is the
+ * repair: the client captures the *source*, which is stable per key, and asks
+ * it before each request. What the token behind it is doing — living in
+ * memory, refreshing, rotating — is the source's business.
+ *
+ * `acquire` is async because for an OAuth source it may be a mint: a
+ * token-endpoint round trip. It resolves *before* header assembly, which is
+ * what keeps `callUpstream`'s reveal synchronous and single.
+ *
+ * `refresh` is the 401 path: the upstream rejected the credential of
+ * generation `rejected`. A successor means "retry once with this"; `null`
+ * means the 401 stands — which is every bearer source, where the value cannot
+ * be freshened by asking again. The generation is what keeps a straggler from
+ * forcing a second refresh when its rejection was already answered by one:
+ * a source holding generation n+1 hands it back rather than minting n+2.
+ */
+export interface CredentialSource {
+  readonly scheme: AuthScheme;
+  /** The credential's team-sheet name, for the redaction marker. */
+  readonly name?: string;
+  acquire(): Promise<{ secret: Secret; generation: number } | undefined>;
+  refresh(rejected: number): Promise<{ secret: Secret; generation: number } | null>;
+}
+
+/**
+ * The vault's form: one value for the client's life, nothing to refresh.
+ *
+ * `undefined` in, `undefined` out of `acquire` — "this upstream needs no
+ * credential" stays the ordinary case it has always been, one source shape
+ * rather than a second path.
+ */
+export function constantCredential(
+  scheme: AuthScheme,
+  secret: Secret | undefined,
+  name?: string
+): CredentialSource {
+  return {
+    scheme,
+    ...(name !== undefined ? { name } : {}),
+    acquire: () => Promise.resolve(secret === undefined ? undefined : { secret, generation: 0 }),
+    refresh: () => Promise.resolve(null)
+  };
+}
+
+/**
  * The verbs this function will send.
  *
  * A closed union rather than a string, for the reason `AuthScheme` is one: this
@@ -638,9 +688,7 @@ export interface GuardedFetchOptions {
    * to anything else is refused unsent.
    */
   readonly url: string;
-  readonly scheme: AuthScheme;
-  readonly secret: Secret | undefined;
-  readonly credentialName?: string;
+  readonly source: CredentialSource;
   readonly timeoutMs?: number;
   /**
    * How many bytes of a response to hold, or a function asked per request.
@@ -735,20 +783,39 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
 
     const bound = typeof options.maxBodyBytes === "function" ? options.maxBodyBytes(method) : options.maxBodyBytes;
 
-    const response = await callUpstream({
-      url: String(url),
-      method,
-      ...(typeof init?.body === "string" ? { body: init.body } : {}),
-      // `RequestInit.signal` admits `null`; both absences mean the same thing.
-      ...(init?.signal != null ? { signal: init.signal } : {}),
-      headers: headersToRecord(init?.headers),
-      scheme: options.scheme,
-      secret: options.secret,
-      ...(options.credentialName !== undefined ? { credentialName: options.credentialName } : {}),
-      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
-      ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
-    });
+    // Resolved before header assembly — for an OAuth source this may be a
+    // token-endpoint round trip — so the reveal inside `callUpstream` stays
+    // synchronous and single.
+    const acquired = await options.source.acquire();
+
+    const call = (secret: Secret | undefined): Promise<UpstreamResponse> =>
+      callUpstream({
+        url: String(url),
+        method,
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+        // `RequestInit.signal` admits `null`; both absences mean the same thing.
+        ...(init?.signal != null ? { signal: init.signal } : {}),
+        headers: headersToRecord(init?.headers),
+        scheme: options.source.scheme,
+        secret,
+        ...(options.source.name !== undefined ? { credentialName: options.source.name } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
+        ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
+      });
+
+    let response = await call(acquired?.secret);
+
+    // The one retry on a 401, and it sits below the SDK on purpose: a
+    // connect-time rejection and a mid-call one take the identical path.
+    // Retrying is safe because a 401 means the upstream refused authentication
+    // and executed nothing. A bearer source answers `null` — the 401 stands,
+    // exactly as it did before this seam existed — and the generation keeps a
+    // straggler from forcing a second refresh past one already made.
+    if (response.status === 401 && acquired !== undefined) {
+      const fresh = await options.source.refresh(acquired.generation);
+      if (fresh !== null) response = await call(fresh.secret);
+    }
 
     const exposed = new Headers();
     const contentType = response.headers["content-type"];
