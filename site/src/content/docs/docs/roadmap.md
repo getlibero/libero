@@ -23,6 +23,8 @@ Two things landed differently from how this phase was first written down, and bo
 
 **Phase 3 — skills. Next.** Author turn, retrieval-based loading, lifecycle job, curator-as-diff.
 
+*Definition of done: a qualifying task leaves a skill that a later task on the same subject retrieves and loads, and an unrelated task does not; retrieval records use, so the lifecycle clocks run on real signal; the files are the source of truth — a skill the team hand-edits is re-indexed and one the team deletes is gone; and the skill layer survives the e2e suite's attacks: authoring cannot escape the channel's skills directory or its size caps, and a poisoned skill loaded into a later task widens nothing — every call it induces still meets the proxy's gates.*
+
 **Phase 4 — ambient.** Heartbeat, `schedule_task`, rate limits — all behind budgets.
 
 **Phase 5 — breadth.** Second platform adapter (Discord), durable multi-day orchestration option (Temporal), hardening pass on the proxy, audit hash-chaining for tamper evidence.
