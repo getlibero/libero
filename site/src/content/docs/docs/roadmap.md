@@ -15,9 +15,13 @@ Phases are gated: later phases do not start until the governed core is solid.
 
 *Definition of done: a hostile or broken MCP upstream cannot wedge the pool, bypass the listing bounds, or widen a channel's grant; SIGTERM loses at most one turn's spend, within a stated bound; a channel can be capped in dollars, failing closed on an unpriced model; the quick start's first command either works or fails loudly; an OAuth-secured MCP upstream can be declared in a sheet and called, with the proxy minting and rotating the token and the agent never seeing it; an operator can follow a guide from a fresh GCP or AWS account to a working mention-and-reply.*
 
-**Phase 2 — memory. In progress.** Curation inner loop with tests, MEMORY.md tooling, sqlite-vec semantic recall.
+**Phase 2 — memory. Shipped.** Curation inner loop with tests, MEMORY.md tooling, sqlite-vec semantic recall.
 
-**Phase 3 — skills.** Author turn, retrieval-based loading, lifecycle job, curator-as-diff.
+*Definition of done: an agent curates `MEMORY.md` through a post-reply inner-loop turn with size-capped writes a later task reads back; semantic recall answers over thread summaries from the same per-channel file; both layers hold the one-file-per-channel isolation boundary and the curation write path survives the e2e suite's attacks.*
+
+Two things landed differently from how this phase was first written down, and both are decisions rather than shortfalls. **The writes are not locked** — a lock file outliving a killed process is a worse failure than the one it prevents, so what replaces it is an atomic rename and a synchronous interface with no point at which a second operation could interleave. And **recall answers over thread summaries and not over curated facts**: `MEMORY.md` is already injected whole into every task's opening context, so retrieving over it would replace all of the corpus with some of it. Summaries are the corpus too large to inject, which is what makes them the one worth searching.
+
+**Phase 3 — skills. Next.** Author turn, retrieval-based loading, lifecycle job, curator-as-diff.
 
 **Phase 4 — ambient.** Heartbeat, `schedule_task`, rate limits — all behind budgets.
 

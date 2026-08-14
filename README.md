@@ -22,7 +22,7 @@
 <p align="center">
   <a href="https://getlibero.com"><img alt="Site: getlibero.com" src="https://img.shields.io/badge/site-getlibero.com-1BA85A?style=flat-square&labelColor=131A18"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1BA85A?style=flat-square&labelColor=131A18">
-  <img alt="Status: Phase 2, pre-release" src="https://img.shields.io/badge/status-phase_2-8FA39D?style=flat-square&labelColor=131A18">
+  <img alt="Status: Phase 3, pre-release" src="https://img.shields.io/badge/status-phase_3-8FA39D?style=flat-square&labelColor=131A18">
   <a href="https://getlibero.com/discord"><img alt="Discord: join the server" src="https://img.shields.io/badge/discord-join-1BA85A?style=flat-square&labelColor=131A18"></a>
 </p>
 
@@ -42,7 +42,7 @@ The end-to-end security suite is written (#41). It runs the proxy as its real bu
 
 GitHub is behind the dispatcher and the governed path completes against it for real (#130) — allowlist, approval, budget, call, redaction, audit — so the served-call path is no longer proven only against a fake. Approvals are joined end to end (#126, #127): a held call raises an amber card in the channel, and an approver's click re-submits the identical call with the ticket. Both images build from `deploy/docker-compose.yml` and CI builds them on every change (#86). The soft in-thread budget warning reaches the channel before a hard limit refuses anything, and `search_channel_history` is a proxied built-in the model can call on demand (#64).
 
-The gaps that matter. Certificate revocation is an edit to a team sheet, and there is no CRL by design — rotation is two commands with that edit between them, without downtime. `[egress]` is validated when a sheet loads and enforced nowhere, because the surface it governs — a code-execution sandbox — is later work (#219); `[ambient]` is parsed and unread until phase 4. Memory is the per-channel store, its index, and read-back into a task's context; curation and semantic recall are phase 2, which is where the work now is.
+The gaps that matter. Certificate revocation is an edit to a team sheet, and there is no CRL by design — rotation is two commands with that edit between them, without downtime. `[egress]` is validated when a sheet loads and enforced nowhere, because the surface it governs — a code-execution sandbox — is later work (#219); `[ambient]` is parsed and unread until phase 4. Memory is whole as of phase 2 — the per-channel store and its index, a curated `MEMORY.md` read back into a task's context, and semantic recall over thread summaries. Two limits there are stated rather than hidden: recall applies no distance cutoff (#283), so a small corpus contributes all of itself, and a long thread becomes one summary and therefore one vector (#284). Skills are phase 3, which is where the work now is.
 
 See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
@@ -71,7 +71,7 @@ packages/schema    zod schemas — single source of truth for team sheets, audit
 packages/gateway   Slack adapter — Socket Mode, mention intake, approval-card rendering
 packages/agent     provider-agnostic agent loop + the proxy client
 packages/proxy     credential vault, team-sheet enforcement, HITL broker, budgets, audit
-packages/memory    per-channel SQLite message store with FTS5 (sqlite-vec recall is phase 2)
+packages/memory    per-channel SQLite store: messages with FTS5, thread summaries, sqlite-vec
 packages/cli       @getlibero/cli — the operator's host-side commands; the only npm-published package
 apps/server        composes gateway + agent + the channel router (service 1)
 apps/proxy-server  composes proxy (service 2)

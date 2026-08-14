@@ -22,8 +22,9 @@ Both services build as images from the compose file, so
 
 What is not finished: certificate rotation and revocation are manual — possible without downtime,
 and driven by a shell script and an edit to a team sheet rather than by anything automated. There
-is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowhere. Memory is the
-message store and its full-text index; curation and semantic recall are phase 2. Point this at a
+is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowhere. Memory is whole — the message
+store and its full-text index, a curated `MEMORY.md`, and semantic recall over thread summaries —
+but skills and ambient mode are later phases. Point this at a
 scratch workspace before a real one.
 :::
 
