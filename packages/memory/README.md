@@ -82,7 +82,7 @@ rule. Two things make that structural rather than a convention:
   and `openMemoryFile` each close over one file, so reaching a second channel is
   not something `MessageStore`, `MessageReader` or `MemoryFile` can express.
 
-## Three openers, and what each one may touch
+## Four openers, and what each one may touch
 
 `openMessageStore` is the gateway's: it creates the schema, stamps the version,
 and holds the six statements that write and read a channel's messages.
@@ -129,8 +129,44 @@ per-connection registration rather than a load from disk.
 
 `openMemoryFile` is the agent's, and it is the only opener of `MEMORY.md` in
 either direction — the proxy neither reads nor writes that file, so there is no
-read-only fourth opener and a type with no caller was not written. It exposes
+read-only counterpart and a type with no caller was not written. It exposes
 `read` and `apply`, and no `close`, because it holds no handle to close.
+
+`openSkillFiles` is the agent's too (#290), over `skills/` beside `MEMORY.md`.
+Same shape and the same reasons — no channel id on any method, no `close`, no
+cache — with three differences that come from its being a *directory* rather than
+a path:
+
+- **A name becomes a path segment**, and `SkillName` in `@getlibero/schema` is
+  the one rule about that, the way `ChannelId` is the one rule about a channel
+  id. A name that parses is already canonical, so it is the filename stem on
+  every filesystem and there is no slug function here — which matters more than
+  it sounds, because this repo is developed on a case-insensitive filesystem and
+  deployed on a case-sensitive one.
+- **`list()` enumerates**, which nothing else in this package does. It is not the
+  cross-channel iteration the proxy's sheet store refuses: the factory closed
+  over one directory, no method takes a channel id, and listing one channel's own
+  skills is the class of act `recent(limit)` already is. It answers names and
+  never text, which is what keeps it cheap enough to be the count an operation is
+  bounded against.
+- **The filter is a name round-trip, not a `.md` suffix.** A stem that does not
+  parse is not a skill, so `Deploy-Runbook.md`, `deploy_runbook.md`,
+  `.hidden.md`, `deploy.md.md` and the temporary file `replaceFileAtomically`
+  plants mid-write are all the same refusal.
+
+Two rules that file settles, because they are hand-edit outcomes rather than edge
+cases. **The filename is the identity**: a `skills/deploy.md` whose frontmatter
+says `name: rollback` is skipped and logged, never re-keyed and never repaired.
+And **existence is a fact about the file, not its contents**, so a create on a
+name whose file is unparseable is `name_taken` while a revise on it succeeds —
+a revision replaces the whole document, so repairing a broken file is what it is
+for, and deciding it the other way would leave a name on which neither operation
+could run.
+
+A revision carries `created` and `status` forward from the file it replaces.
+Neither is the model's — the operation shapes have no field for either — so
+restamping them would reset a date the team can see and un-archive a skill the
+lifecycle job had retired.
 
 Neither store migrates on the reader's side: a version mismatch names both
 numbers and stops, because a reader that repaired a file would be a reader that
@@ -327,6 +363,22 @@ prebuilds cover linux and darwin on x64 and arm64, and win32 on x64; CI runs
 before a maintainer did.
 
 ## What is not here
+
+**Skills have their files and not yet their index.** #290's file half is above;
+the retrieval index over `skills/` — the tables, the FTS index, and the
+reconciliation that makes a hand-edit re-index and a hand-delete drop out — is
+the second half and is not in this package yet. Until it lands, nothing reads a
+skill except a caller that asks for one by name, and `list()` is the only way to
+find out which names exist.
+
+Two things about that index are already decided and belong here rather than
+being rediscovered. **The index will hold no text a caller reads**: a skill's
+words are resolved through `read` on the file, the way a `nearest` hit is
+resolved through `readThreadSummary`, so a hand-deleted skill's stale text can
+never reach a model on a timing accident. And **reconciliation reads files and
+never writes them** — the file is the source of truth for everything a human
+authored, the index for everything the runtime observed about it, which is the
+same split `thread_summary` already keeps against `message`.
 
 Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
 that emits operations (#226), and the read that puts `MEMORY.md` back into the

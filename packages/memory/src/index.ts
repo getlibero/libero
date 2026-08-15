@@ -9,7 +9,8 @@
 //
 // `planMemoryOp` is absent on the same principle: it is exported from
 // ./memory-file.ts for its own test, and a caller holding it would be a caller
-// deciding for itself what a memory operation means. `replaceFileAtomically` is
+// deciding for itself what a memory operation means. `planSkillOp` is absent for
+// exactly that reason too. `replaceFileAtomically` is
 // absent because a caller holding it would be a caller writing into a channel's
 // directory itself, which is the one thing these openers exist to be the only
 // way to do.
@@ -41,6 +42,9 @@ export type {
 
 export { openMemoryFile } from "./memory-file.js";
 export type { MemoryFile, MemoryFileOptions } from "./memory-file.js";
+
+export { openSkillFiles } from "./skill-file.js";
+export type { SkillFiles, SkillFilesOptions } from "./skill-file.js";
 
 export { createSilentLogger } from "./log.js";
 export type { LogFields, LogLevel, Logger } from "./log.js";
