@@ -120,8 +120,9 @@ describe("opening", () => {
   });
 
   // Every method, and nothing that could name another channel or hold a handle.
-  it("offers three operations and no way to name a channel", () => {
-    expect(Object.keys(skills).sort()).toEqual(["apply", "list", "read"]);
+  // No `close`, because there is none to hold.
+  it("offers four operations and no way to name a channel", () => {
+    expect(Object.keys(skills).sort()).toEqual(["apply", "fingerprints", "list", "read"]);
   });
 });
 

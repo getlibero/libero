@@ -153,10 +153,11 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelId } from "@getlibero/schema";
-import type { SummaryShape } from "@getlibero/schema";
+import type { SkillStatus, SummaryShape } from "@getlibero/schema";
 import { getLoadablePath } from "sqlite-vec";
 import type { Logger } from "./log.js";
 
@@ -198,9 +199,18 @@ import type { Logger } from "./log.js";
  * open that channel and migrate it. Paying an availability regression for a
  * refusal nothing needs is the trade the rule exists to prevent.
  *
+ * **#290 added the skill tables and this number did not move either**, measured
+ * the same way. `skill`, `skill_fts` and `skill_use` are ordinary additive DDL
+ * that `db.exec(SCHEMA)` creates on the next writer open, and the proxy's reader
+ * names none of them — it searches messages and nothing else. Skills share the
+ * one `vec_embedding` table rather than getting their own, which is what keeps
+ * them on this side of the line rather than the other; the cost of sharing is
+ * paid in `nearest`'s kind filter, argued there.
+ *
  * The next change here probably does move it. Anything that alters what
  * `nearest` means — a second vec table, a distance metric that is not L2, a
- * dimension no longer fixed per file — is a reader depending on it.
+ * dimension no longer fixed per file — is a reader depending on it. Whoever
+ * makes it should read `readVersion` below before assuming a migration exists.
  */
 export const MESSAGE_STORE_SCHEMA_VERSION = 1;
 
@@ -455,6 +465,159 @@ END;
 CREATE TRIGGER IF NOT EXISTS thread_summary_delete AFTER DELETE ON thread_summary BEGIN
   DELETE FROM embedding_source WHERE source_kind = 'summary' AND source_ref = old.thread_ts;
 END;
+
+-- One skill, as the index knows it (#290). **The file is the source of truth and
+-- this is a cache of it**, which is the opposite of every other table above:
+-- \`message\` and \`thread_summary\` *are* the thing they hold, and these rows are
+-- a copy of \`skills/<name>.md\` maintained by \`reconcileSkills\` below.
+--
+-- \`id INTEGER PRIMARY KEY\` with \`name\` as a separate UNIQUE, for \`message\`'s
+-- reason one screen up: external-content FTS5 joins through \`content_rowid\`,
+-- which is an integer rowid, and \`name TEXT PRIMARY KEY\` would leave it nothing
+-- to point at. \`name\` is the identity a caller holds, and the id never leaves
+-- this module.
+--
+-- \`description\` and \`body\` are here **for the FTS index and for nothing else.**
+-- No read in this module returns either as text, and none should be added: a
+-- skill's words are resolved through \`openSkillFiles().read\`, which is the same
+-- two-step \`nearest\` and \`readThreadSummary\` already keep. That is what makes a
+-- stale index harmless rather than dangerous — a hand-deleted skill still in this
+-- table is a candidate that resolves to nothing and is skipped, instead of a
+-- deleted playbook's text reaching a model because reconciliation had not run
+-- yet. Turning a correctness property into a timing property is the one change
+-- to this table that must not be made.
+--
+-- \`mtime_ms\`, \`size\` and \`ino\` are the change fingerprint —
+-- \`packages/proxy/src/team-sheet-store.ts\`'s three fields, and all three are
+-- carried because the two kinds of writer this directory has miss different ones.
+--
+-- A write through \`./skill-file.ts\` lands by rename, so the **inode always
+-- moves** and catches a rewrite that changed neither the length nor the
+-- millisecond. A person's editor rewrites in place, so the inode does *not* move
+-- and what catches that is mtime and size. Neither pair alone covers both
+-- writers, which is the whole argument for carrying three.
+--
+-- What none of them catches is an in-place rewrite of identical length with the
+-- timestamp forced back — \`touch -r\`, or a restore that preserves times. There
+-- is no cheap fingerprint that would: the exact answer is hashing every file on
+-- every pass, which is the cost this column exists to avoid. The consequence is
+-- bounded rather than silent, and it is bounded by the rule above: the index
+-- holds no text a caller reads, so a row that missed an edit is a candidate that
+-- resolves through the file and comes back current or not at all.
+--
+-- \`mtime_ms\` is compared for inequality and never read as a clock, because a
+-- restore or a \`cp -p\` moves it backwards.
+--
+-- \`description_hash\` is separate from that fingerprint and answers a different
+-- question: the fingerprint decides whether to **re-read** the file, this decides
+-- whether to **re-embed** it. Only the description is embedded (see
+-- \`SKILL_DESCRIPTION_MAX_CHARS\` in the schema package), so a body edit re-indexes
+-- without paying for a vector, and — the case this column exists for — the
+-- lifecycle job rewriting \`status\` in the frontmatter moves mtime and size and
+-- must not cost an embedding call for text that did not change.
+--
+-- No CHECK pinning \`status\`, for \`thread_summary.shape\`'s reason: the set lives
+-- in the schema package where widening it is a type change rather than a
+-- migration.
+CREATE TABLE IF NOT EXISTS skill (
+  id               INTEGER PRIMARY KEY,
+  name             TEXT NOT NULL UNIQUE,
+  description      TEXT NOT NULL,
+  body             TEXT NOT NULL,
+  created          TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  mtime_ms         INTEGER NOT NULL,
+  size             INTEGER NOT NULL,
+  ino              INTEGER NOT NULL,
+  description_hash TEXT NOT NULL
+);
+
+-- External content over \`skill\`, indexing both columns a query might match:
+-- the description says when to reach for a skill, and the body holds the command
+-- names and error strings a lexical index is better at than a vector averaged
+-- over a whole procedure. The tokenizer is \`message_fts\`'s, for its reasons.
+CREATE VIRTUAL TABLE IF NOT EXISTS skill_fts USING fts5(
+  description,
+  body,
+  content=skill,
+  content_rowid=id,
+  tokenize='porter unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS skill_fts_insert AFTER INSERT ON skill BEGIN
+  INSERT INTO skill_fts (rowid, description, body) VALUES (new.id, new.description, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS skill_fts_delete AFTER DELETE ON skill BEGIN
+  INSERT INTO skill_fts (skill_fts, rowid, description, body)
+    VALUES ('delete', old.id, old.description, old.body);
+END;
+
+-- Fires on any UPDATE, exactly as \`message_fts_update\` does and for its reason:
+-- an external-content index whose base table can be updated without it is
+-- silently corrupt and nothing raises. This is also why every observation about
+-- a skill lives in \`skill_use\` below rather than in a column here — recording a
+-- use would otherwise delete and reinsert this row's FTS entries on every task.
+CREATE TRIGGER IF NOT EXISTS skill_fts_update AFTER UPDATE ON skill BEGIN
+  INSERT INTO skill_fts (skill_fts, rowid, description, body)
+    VALUES ('delete', old.id, old.description, old.body);
+  INSERT INTO skill_fts (rowid, description, body) VALUES (new.id, new.description, new.body);
+END;
+
+-- What the runtime observed about a skill, as opposed to what a human wrote in
+-- it. The split is stated on \`SkillFrontmatter\` in the schema package and this
+-- is its storage half: the file is the source of truth for everything authored,
+-- this table for everything observed.
+--
+-- **A separate table rather than columns on \`skill\`**, for three reasons that
+-- converge. An UPDATE on \`skill\` churns the FTS index (see the trigger above),
+-- and a use is recorded for every loaded skill on every task — the same
+-- write-rate argument that kept \`uses\` out of the frontmatter, reappearing
+-- inside the index. These rows must survive a re-index, and here they do
+-- structurally: reconciliation upserts \`skill\` and never touches this. And a
+-- table can be added later where a column cannot — see the note below.
+--
+-- \`status_by_job\` and \`status_by_job_at\` are the lifecycle job's (#294) and
+-- nothing reads them yet. **Columns are the stated exception to this tree's "a
+-- method with no caller was not written" rule**, because \`db.exec(SCHEMA)\`
+-- no-ops on a table that already exists: a column added later is one every
+-- statement naming it throws \`no such column\` on, at open, for every store
+-- already on disk, and this module has no migration. So the columns land with
+-- the table or they need a second table to arrive in.
+--
+-- The rule they encode, recorded here because the job that reads them is not
+-- written: **a missing row means the job has not spoken about this skill.** It
+-- adopts the file's current status as its baseline and writes the row without
+-- changing the file, so a lost index costs one cycle of no-ops rather than
+-- freezing the library. The job may then move a skill only in the direction its
+-- clock indicates, and never over a status changed after its own last write.
+CREATE TABLE IF NOT EXISTS skill_use (
+  name             TEXT PRIMARY KEY,
+  first_seen_at    INTEGER NOT NULL,
+  uses             INTEGER NOT NULL DEFAULT 0,
+  last_used_at     INTEGER,
+  status_by_job    TEXT,
+  status_by_job_at INTEGER
+);
+
+-- A skill's vector and its observations go with the skill, and this is the same
+-- two-level chain \`thread_summary_delete\` is the first link of:
+-- skill -> embedding_source -> vec_embedding.
+--
+-- **A rename resets the observations**, and that follows from this rather than
+-- being decided elsewhere: \`mv deploy.md rollback.md\` is a delete and an add to
+-- everything here, so \`uses\`, \`last_used_at\` and the job's baseline start over.
+-- Worth knowing before #294 reads those clocks.
+--
+-- No \`message\` trigger reaches any of this, unlike \`thread_summary\`'s, and the
+-- absence is deliberate rather than missing: a skill is a distillation of a model
+-- turn with no per-message provenance, so there is no message whose deletion
+-- should retract one. That is the same stated exception a curated fact in
+-- \`MEMORY.md\` already has.
+CREATE TRIGGER IF NOT EXISTS skill_delete AFTER DELETE ON skill BEGIN
+  DELETE FROM embedding_source WHERE source_kind = 'skill' AND source_ref = old.name;
+  DELETE FROM skill_use WHERE name = old.name;
+END;
 `;
 
 /**
@@ -538,9 +701,17 @@ export interface StoredMessage {
  * `ref` is opaque here and its meaning belongs to whoever writes the kind. #231
  * defines what identifies a summary; #233 is where the harder question lives,
  * because a curated fact lives in `MEMORY.md` as markdown with no id at all.
+ * A skill's ref is its name, which is also its filename stem — the one
+ * identifier in this file that is model-authored, and `SkillName` is what bounds
+ * it.
+ *
+ * **`skill` joining this union is why `nearest` grew a kind filter.** Widening
+ * the type cost nothing, as the comment above promised; what cost something is
+ * that every kind now shares one k-NN over one table, so the kinds compete for
+ * the same k slots. See `nearest`.
  */
 export interface EmbeddingSource {
-  readonly kind: "fact" | "summary";
+  readonly kind: "fact" | "summary" | "skill";
   readonly ref: string;
 }
 
@@ -756,8 +927,20 @@ export interface MessageStore {
    * file's throws, for `putEmbedding`'s reason.
    *
    * `limit` is clamped to `READ_MAX_LIMIT`, like every other read here.
+   *
+   * **`kind` is not a convenience, and a caller wanting one corpus must pass
+   * it.** Every kind shares one `vec_embedding`, so an unfiltered k-NN answers
+   * with whatever is nearest — and a channel holding a hundred skills can fill
+   * all five of a recall's slots with them, leaving it with nothing. Filtering
+   * afterwards does not fix that, because by then the k slots are spent; the
+   * filter has to reach vec0 before it picks. It does, so a filtered read is
+   * exact rather than best-effort. See `NEAREST_OF_KIND_SQL`.
    */
-  nearest(vector: Float32Array, limit: number): readonly EmbeddingHit[];
+  nearest(
+    vector: Float32Array,
+    limit: number,
+    kind?: EmbeddingSource["kind"]
+  ): readonly EmbeddingHit[];
   /**
    * Forgets one source's vector. False if there was none.
    *
@@ -828,7 +1011,144 @@ export interface MessageStore {
    * invalidated between the two should skip it rather than fail the task.
    */
   readThreadSummary(thread: string): StoredThreadSummary | null;
+  /**
+   * Every skill this index holds, by name, with the metadata a caller needs to
+   * tell whether its file has moved.
+   *
+   * Metadata and never text, for `StaleThread`'s reason and one sharper: the
+   * file is the source of truth, so a caller that could render a skill from this
+   * table would be a caller rendering whatever the index last saw.
+   */
+  listSkills(): readonly StoredSkill[];
+  /**
+   * Makes the index match the directory, and **it is the only thing that writes
+   * the skill tables.**
+   *
+   * That is the issue's own rule — the files are the source of truth and the
+   * index follows them, never the reverse — expressed as a shape rather than as
+   * a convention. There is no `putSkill` and no `removeSkill`, because either
+   * would be a second path by which this index could come to disagree with the
+   * directory, and neither could be reviewed for whether its caller had looked
+   * at a file first.
+   *
+   * It does no filesystem work of its own: the caller stats and parses, this
+   * writes. That keeps every SQL string in this module without putting a
+   * `readdir` in it.
+   *
+   * Three things happen, and the third is the one worth reading twice.
+   *
+   *   - Every entry in `changed` is upserted. An UPDATE rather than a
+   *     delete-and-insert, so `skill_use` is untouched and a body edit does not
+   *     reset a skill's counters.
+   *   - Every row whose name is not in `present` is deleted, and the trigger
+   *     takes its vector and its observations with it.
+   *   - **A skill whose description changed has its vector invalidated**, and so
+   *     does one that is now archived. Invalidate rather than regenerate —
+   *     `thread_summary_stale_update`'s rule, for its reason: regenerating needs
+   *     a model call and this has none. Without it an edited skill would keep a
+   *     vector built from a description the team replaced, forever, because
+   *     `putEmbedding` upserts on `(kind, ref)` and an edit does not change the
+   *     name.
+   *
+   * Whether the *body* changed does not matter to the vector, because only the
+   * description is embedded. That is what keeps a lifecycle job's weekly status
+   * rewrite from costing an embedding call.
+   */
+  reconcileSkills(state: SkillReconciliation, at: number): SkillReconcileResult;
+  /**
+   * Full-text search over this channel's skills, best first, by name.
+   *
+   * Takes text and never an FTS5 expression, for `search`'s reason, and answers
+   * names rather than rows for `listSkills`' — resolving a name to a skill is
+   * `openSkillFiles().read`, which reads the file rather than this table.
+   *
+   * No score, exactly as `search` returns none: bm25's scale means nothing
+   * outside FTS5, and a caller fusing this with `nearest` fuses on rank.
+   * Archived skills never appear.
+   */
+  searchSkills(text: string, limit: number): readonly string[];
+  /**
+   * Records that these skills were loaded into a task, at this instant.
+   *
+   * The signal the lifecycle clocks run on, and the reason it is here rather
+   * than in the files: recording a use rewrites nothing a human wrote. Silently
+   * ignores a name this index does not hold, which is a skill deleted between
+   * retrieval and the record rather than an error.
+   */
+  recordSkillUse(names: readonly string[], at: number): void;
+  /**
+   * Skills with no vector standing for them, by name.
+   *
+   * `staleThreads`' shape and its purpose: what a caller with an embedding
+   * provider should spend a call on. Derived by join rather than by a stored
+   * flag, so it cannot go out of step with the vectors it describes.
+   *
+   * Never includes an archived skill, which has no business being embedded.
+   */
+  skillsNeedingEmbedding(limit: number): readonly string[];
   close(): void;
+}
+
+/**
+ * What tells this index a skill file has changed.
+ *
+ * The three `statSync` fields `packages/proxy/src/team-sheet-store.ts` compares,
+ * for its reason and one more of this file's own: writes here land by rename, so
+ * the inode always moves and is the only one of the three that catches a
+ * same-millisecond rewrite of identical length.
+ */
+export interface SkillFingerprint {
+  readonly name: string;
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly ino: number;
+}
+
+/**
+ * A skill as the index knows it — metadata only, never its text.
+ *
+ * What `listSkills` answers, and deliberately not enough to render a skill with:
+ * `StaleThread`'s rule, and here it is also what keeps a stale index harmless.
+ */
+export interface StoredSkill extends SkillFingerprint {
+  readonly created: string;
+  readonly status: SkillStatus;
+}
+
+/** One parsed skill file, as reconciliation hands it to the index. */
+export interface SkillEntry extends SkillFingerprint {
+  readonly description: string;
+  readonly body: string;
+  readonly created: string;
+  readonly status: SkillStatus;
+}
+
+/**
+ * The directory as reconciliation observed it.
+ *
+ * `present` is **every** skill the directory holds and `changed` is the subset
+ * whose file moved, so the caller parses only what it must while this module
+ * still learns what has gone. The split is what lets a steady-state pass be
+ * `stat` calls and nothing else.
+ *
+ * `present` empty means the directory is genuinely empty — the file layer throws
+ * on any readdir failure that is not `ENOENT`, so this can never be the answer to
+ * a directory that could not be read. That matters here more than there: this is
+ * the value the index is deleted against.
+ */
+export interface SkillReconciliation {
+  readonly present: readonly string[];
+  readonly changed: readonly SkillEntry[];
+}
+
+/** What one reconciliation did, for the caller's log. */
+export interface SkillReconcileResult {
+  /** Rows written, whether new or updated. */
+  readonly indexed: number;
+  /** Rows removed because their file is gone. */
+  readonly dropped: number;
+  /** Vectors invalidated: an edited description, or a skill now archived. */
+  readonly invalidated: number;
 }
 
 export interface MessageReaderOptions {
@@ -1001,6 +1321,99 @@ const NEAREST_SQL = `SELECT s.source_kind, s.source_ref, hit.distance
               AND k = ?) AS hit
      JOIN embedding_source s ON s.id = hit.hit_id
     ORDER BY hit.distance`;
+
+/**
+ * The nearest-neighbour read of one kind.
+ *
+ * **The filter is a pre-filter, inside the vec0 match, and that is the whole
+ * point.** The corpora share one `vec_embedding`, and `k` is spent *inside* that
+ * match — so a caller that asked for five and filtered afterwards would get
+ * whatever survived, which against a file dominated by another kind is nothing
+ * at all. That is not a degraded answer, it is an empty one, and `apps/server`'s
+ * recall path names exactly that as the worst failure available: a channel with
+ * no recall looks like a channel with no memory rather than like a bug.
+ *
+ * `id IN (SELECT ...)` is how vec0 is told to consider only some rows before it
+ * picks its k, so this is **exact** rather than a heuristic: a query for five
+ * summaries answers with the five nearest summaries, whatever else the file
+ * holds. The column is `id` and not `rowid` because that is what `VEC_SCHEMA`
+ * declares the primary key as, and vec0 answers `no such column: rowid` for the
+ * spelling that would otherwise be the obvious one. Measured, not assumed.
+ *
+ * The alternative considered and dropped was over-fetching by some multiple and
+ * filtering in this module. It is worth knowing why it went: no multiple is
+ * enough, because the ratio between two corpora is unbounded — a channel
+ * accumulates one summary per quiet thread forever while skills are capped at a
+ * hundred — so the failure it leaves is precisely the one this is written to
+ * prevent, arriving later and only in the deployments that have been running
+ * longest.
+ */
+const NEAREST_OF_KIND_SQL = `SELECT s.source_kind, s.source_ref, hit.distance
+     FROM (SELECT id AS hit_id, distance
+             FROM vec_embedding
+            WHERE embedding MATCH ?
+              AND k = ?
+              AND id IN (SELECT id FROM embedding_source WHERE source_kind = ?)) AS hit
+     JOIN embedding_source s ON s.id = hit.hit_id
+    ORDER BY hit.distance`;
+
+/**
+ * The skill index's reads and writes.
+ *
+ * `SEARCH_SKILLS_SQL` is `SEARCH_SQL`'s shape with `NEAREST_OF_KIND_SQL`'s
+ * addition, and for the same reason: an archived skill is out of retrieval
+ * entirely, and a filter applied after the subquery's LIMIT would spend slots on
+ * rows it then discards. FTS5 takes a `rowid IN (...)` constraint beside its
+ * MATCH, so the exclusion happens before the ranking rather than after it and
+ * the read is exact.
+ *
+ * **The filter is in the query rather than left to a caller**, because there are
+ * two retrieval paths — this and `nearest` — and a rule applied by callers is a
+ * rule forgotten in one of them. `nearest` needs no `status` clause of its own
+ * because reconciliation drops an archived skill's vector outright, so there is
+ * nothing there to exclude.
+ *
+ * `SKILLS_NEEDING_EMBEDDING_SQL` is `STALE_THREADS_SQL`'s shape: a LEFT JOIN
+ * that finds rows with nothing standing for them, so what needs embedding is
+ * *derived* rather than flagged. A dirty bit would be a second fact to keep in
+ * step with the first.
+ */
+const LIST_SKILLS_SQL = `SELECT name, created, status, mtime_ms, size, ino
+     FROM skill
+    ORDER BY name`;
+
+const UPSERT_SKILL_SQL = `INSERT INTO skill
+       (name, description, body, created, status, mtime_ms, size, ino, description_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (name) DO UPDATE SET
+         description      = excluded.description,
+         body             = excluded.body,
+         created          = excluded.created,
+         status           = excluded.status,
+         mtime_ms         = excluded.mtime_ms,
+         size             = excluded.size,
+         ino              = excluded.ino,
+         description_hash = excluded.description_hash`;
+
+const SEARCH_SKILLS_SQL = `SELECT s.name
+     FROM skill s
+     JOIN (SELECT rowid AS hit_id, rank AS hit_rank
+             FROM skill_fts
+            WHERE skill_fts MATCH ?
+              AND rowid IN (SELECT id FROM skill WHERE status != 'archived')
+            ORDER BY rank
+            LIMIT ?) AS hit
+       ON s.id = hit.hit_id
+    ORDER BY hit.hit_rank`;
+
+const SKILLS_NEEDING_EMBEDDING_SQL = `SELECT s.name
+     FROM skill s
+     LEFT JOIN embedding_source e
+       ON e.source_kind = 'skill' AND e.source_ref = s.name
+    WHERE e.id IS NULL
+      AND s.status != 'archived'
+    ORDER BY s.name
+    LIMIT ?`;
 
 /**
  * The sweep: quiet threads with nothing current standing for them.
@@ -1189,6 +1602,33 @@ type ThreadSummaryRow = {
   readonly at: number | bigint;
 };
 
+/**
+ * What decides whether a skill's vector is still the right one.
+ *
+ * A hash rather than the description itself, because the column exists to be
+ * *compared* and storing the text twice — once for FTS, once to diff against —
+ * is the "one fact in two places" this file already refuses elsewhere. SHA-256
+ * rather than something cheaper because `node:crypto` is a builtin and nothing
+ * here is hot: reconciliation hashes only the files whose fingerprint moved.
+ *
+ * Not a security boundary. Nothing is authenticated by it; a collision would
+ * cost a skill a re-embedding it needed, which is the same outcome as an
+ * embedding provider being briefly unavailable.
+ */
+function hashOf(description: string): string {
+  return createHash("sha256").update(description, "utf8").digest("hex");
+}
+
+/** A `LIST_SKILLS_SQL` row. `MessageRow`'s reasons apply. */
+type SkillRow = {
+  readonly name: string;
+  readonly created: string;
+  readonly status: string;
+  readonly mtime_ms: number | bigint;
+  readonly size: number | bigint;
+  readonly ino: number | bigint;
+};
+
 /** A `STALE_THREADS_SQL` row. `MessageRow`'s reasons apply. */
 type StaleThreadRow = {
   readonly thread: string;
@@ -1289,6 +1729,27 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     remove: db.prepare(`DELETE FROM message WHERE ts = ?`),
     replaceText: db.prepare(`UPDATE message SET text = ? WHERE ts = ?`),
     search: db.prepare(SEARCH_SQL),
+    listSkills: db.prepare(LIST_SKILLS_SQL),
+    upsertSkill: db.prepare(UPSERT_SKILL_SQL),
+    readSkillHash: db.prepare(`SELECT description_hash FROM skill WHERE name = ?`),
+    deleteSkill: db.prepare(`DELETE FROM skill WHERE name = ?`),
+    // Named directly rather than left to `skill_delete`, because this fires
+    // where the row *stays* — an edited description, or a skill now archived.
+    dropSkillVector: db.prepare(
+      `DELETE FROM embedding_source WHERE source_kind = 'skill' AND source_ref = ?`
+    ),
+    // Created once, when this index first sees a file, and never reset by a
+    // re-index: `first_seen_at` is what a never-used skill's clock runs from, so
+    // restamping it would make every edit look like a new skill.
+    seenSkill: db.prepare(
+      `INSERT INTO skill_use (name, first_seen_at, uses) VALUES (?, ?, 0)
+         ON CONFLICT (name) DO NOTHING`
+    ),
+    recordSkillUse: db.prepare(
+      `UPDATE skill_use SET uses = uses + 1, last_used_at = ? WHERE name = ?`
+    ),
+    searchSkills: db.prepare(SEARCH_SKILLS_SQL),
+    skillsNeedingEmbedding: db.prepare(SKILLS_NEEDING_EMBEDDING_SQL),
     // DESC because the only way to ask SQLite for a tail is to sort backwards
     // and take the head; `recent` reverses the rows before returning them.
     //
@@ -1376,13 +1837,15 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     readonly put: StatementSync;
     readonly remove: StatementSync;
     readonly nearest: StatementSync;
+    readonly nearestOfKind: StatementSync;
   } | null = null;
 
   function prepareVecStatements(): NonNullable<typeof vecStatements> {
     vecStatements ??= {
       put: db.prepare(`INSERT INTO vec_embedding (id, embedding) VALUES (?, ?)`),
       remove: db.prepare(`DELETE FROM vec_embedding WHERE id = ?`),
-      nearest: db.prepare(NEAREST_SQL)
+      nearest: db.prepare(NEAREST_SQL),
+      nearestOfKind: db.prepare(NEAREST_OF_KIND_SQL)
     };
     return vecStatements;
   }
@@ -1521,7 +1984,7 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       vec.put.run(id, toVectorBlob(vector));
     },
 
-    nearest(vector, limit) {
+    nearest(vector, limit, kind) {
       // No vec table means nothing has been embedded here, which is the
       // ordinary state under a deployment that configured no embedding provider
       // — so this answers nothing rather than throwing, exactly as
@@ -1529,10 +1992,20 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       // disagreement is the other thing entirely and still throws, from vec0
       // itself, because there is a table to disagree with.
       if (readEmbeddingModel() === null) return [];
-      const rows = prepareVecStatements().nearest.all(
-        toVectorBlob(vector),
-        clampLimit(limit)
-      ) as HitRow[];
+      const wanted = clampLimit(limit);
+      const statement = prepareVecStatements();
+
+      // Unfiltered reads are unchanged — same statement, same `k`, so a caller
+      // that wants whatever is nearest pays nothing for a filter it did not ask
+      // for. A filtered read is a different statement rather than the same one
+      // with a predicate bolted on, because the predicate has to sit inside the
+      // vec0 match to mean anything.
+      if (kind === undefined) {
+        const rows = statement.nearest.all(toVectorBlob(vector), wanted) as HitRow[];
+        return rows.map(toEmbeddingHit);
+      }
+
+      const rows = statement.nearestOfKind.all(toVectorBlob(vector), wanted, kind) as HitRow[];
       return rows.map(toEmbeddingHit);
     },
 
@@ -1580,6 +2053,96 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       return Number(statements.removeSource.run(source.kind, source.ref).changes) === 1;
     },
 
+    listSkills() {
+      const rows = statements.listSkills.all() as SkillRow[];
+      return rows.map(row => ({
+        name: row.name,
+        created: row.created,
+        status: row.status as SkillStatus,
+        mtimeMs: Number(row.mtime_ms),
+        size: Number(row.size),
+        ino: Number(row.ino)
+      }));
+    },
+
+    reconcileSkills(state, at) {
+      const present = new Set(state.present);
+      let indexed = 0;
+      let dropped = 0;
+      let invalidated = 0;
+
+      // One transaction, so a reconciliation that throws part way leaves the
+      // index as it was rather than half-following a directory. `staleThreads`
+      // needs no equivalent because it only reads; this is the module's one
+      // multi-statement write.
+      db.exec("BEGIN");
+      try {
+        for (const entry of state.changed) {
+          const before = statements.readSkillHash.get(entry.name) as
+            | { description_hash: string }
+            | undefined;
+          const hash = hashOf(entry.description);
+
+          statements.upsertSkill.run(
+            entry.name,
+            entry.description,
+            entry.body,
+            entry.created,
+            entry.status,
+            entry.mtimeMs,
+            entry.size,
+            entry.ino,
+            hash
+          );
+          statements.seenSkill.run(entry.name, at);
+          indexed += 1;
+
+          // The vector goes when the text it stands for changed, or when the
+          // skill has left retrieval. A first index has no `before` and no
+          // vector either, so nothing is deleted and the LEFT JOIN finds it.
+          const rewritten = before !== undefined && before.description_hash !== hash;
+          if (rewritten || entry.status === "archived") {
+            invalidated += Number(statements.dropSkillVector.run(entry.name).changes);
+          }
+        }
+
+        // Deleted here rather than by a NOT IN over `present`, which would be a
+        // placeholder run whose length is the size of the directory. The listing
+        // is already bounded by the caller and this is one statement per row that
+        // actually goes.
+        for (const stored of statements.listSkills.all() as SkillRow[]) {
+          if (present.has(stored.name)) continue;
+          dropped += Number(statements.deleteSkill.run(stored.name).changes);
+        }
+
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+
+      return { indexed, dropped, invalidated };
+    },
+
+    searchSkills(text, limit) {
+      const match = toMatchQuery(text);
+      if (match === undefined) return [];
+      const wanted = clampLimit(limit);
+      const rows = statements.searchSkills.all(match, wanted) as Array<{ readonly name: string }>;
+      return rows.map(row => row.name);
+    },
+
+    recordSkillUse(names, at) {
+      for (const name of names) statements.recordSkillUse.run(at, name);
+    },
+
+    skillsNeedingEmbedding(limit) {
+      const rows = statements.skillsNeedingEmbedding.all(clampLimit(limit)) as Array<{
+        readonly name: string;
+      }>;
+      return rows.map(row => row.name);
+    },
+
     close() {
       db.close();
     }
@@ -1600,6 +2163,14 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
  * A file with no `schema_version` table at all is not a message store, and
  * SQLite's own `no such table` names the table but not the file. This says which
  * file, because the caller passed a root and a channel and never a path.
+ *
+ * **There is no migration anywhere in this module, in either direction, and this
+ * message no longer implies one.** It used to say the gateway migrates an older
+ * file the first time it opens one; it does not — `checkVersion` stamps an
+ * *unstamped* file and throws on any version it does not recognise. Nothing
+ * repairs a store. That is why the rule on `MESSAGE_STORE_SCHEMA_VERSION` is
+ * worth following rather than working around: a bump is not a migration to be
+ * written later, it is every store on disk refusing to open until one is.
  */
 function readVersion(db: DatabaseSync, file: string): void {
   let row: { version: number } | undefined;
@@ -1613,8 +2184,8 @@ function readVersion(db: DatabaseSync, file: string): void {
   if (row === undefined || row.version !== MESSAGE_STORE_SCHEMA_VERSION) {
     throw new Error(
       `memory store: ${file} is schema version ${row?.version ?? "unstamped"}, and this build ` +
-        `reads version ${MESSAGE_STORE_SCHEMA_VERSION}. The gateway migrates an older file the ` +
-        `first time it opens one; a reader does not, because migrating is writing.`
+        `reads version ${MESSAGE_STORE_SCHEMA_VERSION}. A reader does not migrate, because ` +
+        `migrating is writing.`
     );
   }
 }

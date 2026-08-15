@@ -362,23 +362,90 @@ prebuilds cover linux and darwin on x64 and arm64, and win32 on x64; CI runs
 `ubuntu-latest` only, so no CI job would notice a missing darwin-arm64 prebuild
 before a maintainer did.
 
+## The skill index, and the one rule it exists to keep
+
+`skill`, `skill_fts` and `skill_use` are the retrieval half of #290, and
+`reconcileSkillIndex` is what keeps them true. The rule they encode is one
+sentence: **the file is the source of truth for everything a human authored, the
+index for everything the runtime observed about it, and reconciliation reads
+files and never writes them.**
+
+That is a shape rather than a convention. `reconcileSkills` is the *only* thing
+that writes the skill tables — there is no `putSkill` and no `removeSkill` —
+because either would be a second path by which the index could come to disagree
+with the directory, and neither could be reviewed for whether its caller had
+looked at a file first. A skill written through `apply` and a skill somebody
+added with an editor reach the index by exactly the same road.
+
+**The index holds no text a caller reads.** `description` and `body` are columns
+so FTS5 has something to match; nothing returns either. A candidate is resolved
+through `openSkillFiles().read`, the way a `nearest` hit is resolved through
+`readThreadSummary` — which is what makes a stale index harmless rather than
+dangerous. A row standing for a file that was deleted or broken resolves to
+nothing and is skipped; it can never put a deleted playbook's words in front of a
+model because reconciliation had not run yet. That is the one change to this
+table that must not be made.
+
+**Detection is cheap and repair is not, so they are separate.** A steady-state
+pass is a `readdir` and a `stat` per entry: no file is opened and nothing is
+parsed. Only an entry whose fingerprint moved is read, and only a skill whose
+*description* moved costs an embedding — the body and the status can both change
+for free, which is what keeps a lifecycle job's weekly status rewrite from
+paying for a vector it does not need.
+
+The fingerprint is `mtime_ms`, `size` and `ino`, and all three are carried
+because this directory has two kinds of writer that miss different ones. A write
+through `apply` lands by rename, so the inode always moves and catches a rewrite
+that changed neither length nor millisecond; a person's editor rewrites in place,
+so the inode does *not* move and mtime and size are what catch it. What none of
+them catches is an in-place rewrite of identical length with the timestamp forced
+back — `touch -r`, or a restore that preserves times. There is no cheap
+fingerprint that would, and the consequence is bounded by the paragraph above.
+
+**Reconciliation embeds nothing.** This package has no model provider, exactly as
+`putThreadSummary` writes no vector, so what a pass leaves behind is rows with no
+vector standing for them and `skillsNeedingEmbedding` is how a caller that has a
+provider finds them. The honest consequence: a just-edited skill is findable by
+full text on the very next task and semantically only after something has
+embedded it.
+
+Two failures here are not errors. A file that stops parsing **keeps its last good
+row** — a half-saved edit does not erase a skill's use counters — at the cost of
+one parse attempt per pass until somebody fixes it. And a directory holding more
+skills than the sheet allows is **truncated rather than refused**: the first
+`max_skills` by name are the library and the rest are logged and left on disk,
+because losing retrieval entirely is a worse answer than a deterministic subset.
+
+### `nearest` grew a kind, and it was not optional
+
+All three corpora share one `vec_embedding`. `k` is spent *inside* the vec0
+match, so a caller that asked for five and filtered afterwards would get whatever
+survived — and against a file dominated by another kind, that is nothing. A
+recall that quietly returns nothing looks like a channel with no memory rather
+than like a bug, which is the worst failure this layer has.
+
+So `nearest` takes a kind and pushes it into the search as `id IN (SELECT ...)`,
+which vec0 applies *before* it picks its neighbours. That makes a filtered read
+exact rather than a heuristic. Over-fetching some multiple and filtering here was
+the obvious alternative and it is wrong for a reason worth recording: no multiple
+is enough, because the ratio between two corpora is unbounded — a channel
+accumulates one summary per quiet thread forever while skills are capped at a
+hundred — so it would fail exactly where it was needed, and only in the
+deployments that had been running longest. `searchSkills` excludes archived
+skills the same way, with FTS5's `rowid IN (...)` beside its MATCH.
+
+Note the spelling: the vec table's key column is `id`, and `rowid` answers
+`no such column`. Measured rather than assumed.
+
 ## What is not here
 
-**Skills have their files and not yet their index.** #290's file half is above;
-the retrieval index over `skills/` — the tables, the FTS index, and the
-reconciliation that makes a hand-edit re-index and a hand-delete drop out — is
-the second half and is not in this package yet. Until it lands, nothing reads a
-skill except a caller that asks for one by name, and `list()` is the only way to
-find out which names exist.
-
-Two things about that index are already decided and belong here rather than
-being rediscovered. **The index will hold no text a caller reads**: a skill's
-words are resolved through `read` on the file, the way a `nearest` hit is
-resolved through `readThreadSummary`, so a hand-deleted skill's stale text can
-never reach a model on a timing accident. And **reconciliation reads files and
-never writes them** — the file is the source of truth for everything a human
-authored, the index for everything the runtime observed about it, which is the
-same split `thread_summary` already keeps against `message`.
+**Nothing loads a skill into a task yet.** The storage is whole — files, index,
+reconciliation, and both retrieval primitives — but fusing full-text and vector
+hits into a task's opening context, and recording a use when one lands there, is
+`apps/server`'s (#292), and the author turn that writes a skill in the first
+place is #291. `reconcileSkillIndex` has no caller in the tree until #292 wires
+it in at the head of a task, which is where it belongs: the moment correctness is
+required is the moment retrieval runs.
 
 Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
 that emits operations (#226), and the read that puts `MEMORY.md` back into the
