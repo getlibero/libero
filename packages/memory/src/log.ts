@@ -31,25 +31,42 @@ export type LogLevel = "info" | "warn" | "error";
 
 export interface LogFields {
   /**
-   * Fixed vocabulary: "store_opened" when the gateway opens a store to write,
-   * "store_reader_opened" when the proxy opens one to search, and
-   * "memory_file_opened" when the agent opens a channel's `MEMORY.md`. Three
-   * words rather than one because which process opened which of a channel's
-   * files, and whether it can write to it, is the first thing an operator
-   * reading these lines wants.
+   * Fixed vocabulary. Four of these say a channel's file was opened —
+   * "store_opened" when the gateway opens a store to write,
+   * "store_reader_opened" when the proxy opens one to search,
+   * "memory_file_opened" when the agent opens a channel's `MEMORY.md`, and
+   * "skills_opened" when it opens the channel's `skills/` directory. Four words
+   * rather than one because which process opened which of a channel's files, and
+   * whether it can write to it, is the first thing an operator reading these
+   * lines wants.
    *
-   * **There is deliberately no per-operation event.** What a memory operation
-   * did is a `MemoryOpResult` its caller already holds, and the only fields this
+   * Two more say a skill file in that directory was **skipped** —
+   * "skill_file_unusable" for one that does not parse, "skill_file_misnamed" for
+   * one whose frontmatter names a different skill. Kept apart because the fix is
+   * different, and they exist at all because a skipped file is otherwise
+   * indistinguishable from a file nobody wrote.
+   *
+   * **There is deliberately no per-operation event.** What a memory or skill
+   * operation did is a result its caller already holds, and the only fields this
    * shape could carry it in would be fields that hold a channel's own text. A
-   * curation turn's outcome belongs in the log of whoever ran the turn.
+   * curation or authoring turn's outcome belongs in the log of whoever ran the
+   * turn.
    */
   event: string;
   /** The channel this file belongs to. An id — the same one the team sheet is keyed on. */
   channel?: string;
   /**
-   * A file under the state root. A path, and its only variable segment is the
-   * channel id, which is why it carries no content:
-   * `<root>/<channel>/store.db`, or `<root>/<channel>/MEMORY.md`.
+   * A file under the state root. A path, and every variable segment of it is an
+   * id rather than content: `<root>/<channel>/store.db`,
+   * `<root>/<channel>/MEMORY.md`, or `<root>/<channel>/skills/<name>.md`.
+   *
+   * **A skill's name is the second variable segment, and it is model-authored**,
+   * so it is worth saying why it is admitted here. `SkillName` bounds it to a
+   * short lowercase-and-dashes identifier, which is the same class of value as a
+   * tool or credential name — those are bounded precisely so that a nonsense one
+   * is a parse failure at the edge rather than arbitrary text echoed into a log.
+   * A name that reached this field has already passed that parse. Nothing else
+   * from inside a skill may: not its description, not a line of its body.
    */
   file?: string;
 }
