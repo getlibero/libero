@@ -247,18 +247,41 @@ export function createSummarySweep(options: SummarySweepOptions): SummarySweep {
     // Only what has a shape worth retrieving is embedded. A `nothing` row keeps
     // the sweep from asking again; a `nothing` vector would sit in the
     // neighbourhood of every query and dilute it.
-    if (result.summary.shape !== "nothing") await embed(channel, store, thread, result);
+    if (result.summary.shape !== "nothing") {
+      await embed(channel, store, thread, result, `${turnId}.embed`);
+    }
 
     logger.log("info", { event: "summarized", channel, reason: result.summary.shape });
     return true;
   }
 
-  /** The vector, when this deployment has somewhere to get one. */
+  /**
+   * The vector, when this deployment has somewhere to get one.
+   *
+   * **Metered, and on its own turn id.** An embedding call is spend whether it
+   * was spent writing the corpus or reading it — `reportTurn`'s own doc in
+   * ../index.ts says so, and `recall.ts` has always reported the read side. This
+   * is the write side, which did not until #298: the response's `usage` was
+   * fetched and dropped, so a channel's summarization embeddings never reached
+   * `daily_tokens`.
+   *
+   * `turnId` is the completion turn's with `.embed` on it — recall's
+   * `${traceId}.recall` shape — and the suffix is what makes it work rather than
+   * cosmetic. The proxy's meter dedupes on turn id, so reusing the summarization
+   * turn's would have this discarded as a retry of it. Sharing the base keeps
+   * the crash-retry property the base id was chosen for: a second attempt at the
+   * same thread at the same watermark is the same pair of ids and is counted
+   * once.
+   *
+   * Reported **before** `putEmbedding`, which is recall's ordering and the
+   * loop's: what was paid for is counted even if what it bought is then dropped.
+   */
   async function embed(
     channel: string,
     store: MessageStore,
     thread: StaleThread,
-    result: SummarizationTurnResult
+    result: SummarizationTurnResult,
+    turnId: string
   ): Promise<void> {
     const client = options.embedding;
     const model = options.embeddingModel;
@@ -266,6 +289,18 @@ export function createSummarySweep(options: SummarySweepOptions): SummarySweep {
 
     try {
       const response = await client.embed({ model, texts: [result.summary.text] });
+
+      // An absent `usage` means the provider did not report, which is not the
+      // same as free — so nothing is reported rather than a zero being invented.
+      if (response.usage !== undefined) {
+        await options.reportTurn(channel, {
+          usage: { inputTokens: response.usage.inputTokens, outputTokens: 0 },
+          turn: 0,
+          id: turnId,
+          ...(response.model === undefined ? {} : { model: response.model })
+        });
+      }
+
       const vector = response.vectors[0];
       if (vector === undefined) return;
       store.putEmbedding({

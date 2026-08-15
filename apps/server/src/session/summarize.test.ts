@@ -286,15 +286,83 @@ describe("createSummarySweep", () => {
     ]);
   });
 
+  // #298. An embedding call is spend whether it was spent writing the corpus or
+  // reading it, and this side of it went unreported: the response's `usage` was
+  // fetched and dropped. The ids have to differ or the proxy's meter dedupes the
+  // second report away as a retry of the first, which is the failure that makes
+  // this a two-line fix rather than a one-line one.
+  it("meters the embedding call on its own turn id", async () => {
+    store.append(at(90 * MINUTE, "how do we rotate a cert?"));
+
+    const { sweep, reported } = sweepWith({
+      completion: summarizing({ shape: "question_answered", text: "Use --rotate." }).completion,
+      embedding: embedding(),
+      embeddingModel: "test-embedding-model"
+    });
+
+    await sweep(CHANNEL, store);
+
+    expect(reported).toHaveLength(2);
+    const base = `summary-${toSlackTs(NOW - 90 * MINUTE)}-${toSlackTs(NOW - 90 * MINUTE)}`;
+    expect(reported.map(turn => turn.id)).toEqual([base, `${base}.embed`]);
+    // An embedding response has input tokens and no output ones, and the served
+    // model rides along the way the completion turn's does.
+    expect(reported[1]?.usage).toEqual({ inputTokens: 10, outputTokens: 0 });
+    expect(reported[1]?.model).toBe("test-embedding-model");
+  });
+
+  // Recall's ordering, and the loop's: what was paid for is counted even when
+  // what it bought turns out to be nothing.
+  it("meters an embedding whose vector is then dropped", async () => {
+    store.append(at(90 * MINUTE, "how do we rotate a cert?"));
+
+    const { sweep, reported } = sweepWith({
+      completion: summarizing({ shape: "question_answered", text: "Use --rotate." }).completion,
+      embedding: {
+        embed: () =>
+          Promise.resolve({ vectors: [], model: "test-embedding-model", usage: { inputTokens: 10 } })
+      },
+      embeddingModel: "test-embedding-model"
+    });
+
+    await sweep(CHANNEL, store);
+
+    expect(reported).toHaveLength(2);
+    expect(store.nearest(Float32Array.from([1, 0, 0]), 5)).toEqual([]);
+  });
+
+  // An absent `usage` means the provider did not report, which is not the same
+  // as free. Reporting a zero would put a turn in the meter that never happened.
+  it("reports nothing when the embedding response carries no usage", async () => {
+    store.append(at(90 * MINUTE, "how do we rotate a cert?"));
+
+    const { sweep, reported } = sweepWith({
+      completion: summarizing({ shape: "question_answered", text: "Use --rotate." }).completion,
+      embedding: {
+        embed: ({ texts }) =>
+          Promise.resolve({ vectors: texts.map(() => Float32Array.from([1, 0, 0])) })
+      },
+      embeddingModel: "test-embedding-model"
+    });
+
+    await sweep(CHANNEL, store);
+
+    expect(reported).toHaveLength(1);
+    // The vector still landed — metering and storing are separate acts.
+    expect(store.nearest(Float32Array.from([1, 0, 0]), 5)).toHaveLength(1);
+  });
+
   // #230's degradation, carried through: the row is still written, so a
   // deployment that configures a provider later has a corpus to embed rather
   // than a history to re-summarize.
   it("stores the summary with no embedding provider configured", async () => {
     store.append(at(90 * MINUTE, "quiet thread"));
-    const { sweep } = sweepWith({ embedding: null });
+    const { sweep, reported } = sweepWith({ embedding: null });
 
     expect(await sweep(CHANNEL, store)).toBe(1);
     expect(summaries()).toHaveLength(1);
+    // One turn, not two: there was no embedding call to meter.
+    expect(reported).toHaveLength(1);
   });
 
   it("keeps the summary when embedding fails", async () => {
