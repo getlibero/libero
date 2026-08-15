@@ -50,7 +50,7 @@ is open, and its shapes are the first thing in it to land. What exists:
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and thread-summarization turns, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
-| `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries, a sqlite-vec embeddings table, and a read-only opener the proxy uses |
+| `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, semantic recall and the quiescence sweep, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
@@ -79,7 +79,7 @@ code is a paragraph the next reader will not find.
 | Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, approvals, the audit log's write discipline | `packages/proxy/README.md` |
 | Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall enters a task and why not as a tool, what bounds the quiescence sweep | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, the three rules that package keeps | `packages/gateway/README.md` |
-| The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape | `packages/memory/README.md` |
+| The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, and why `nearest` takes a kind | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters | `e2e/README.md` |

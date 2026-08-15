@@ -173,22 +173,37 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, reading, embedding, summarizing, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing skills, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
       "append",
       "close",
+      "listSkills",
       "nearest",
       "putEmbedding",
       "putThreadSummary",
       "readThreadSummary",
       "recent",
       "recentInThread",
+      "reconcileSkills",
+      "recordSkillUse",
       "remove",
       "removeEmbedding",
       "replaceText",
       "search",
+      "searchSkills",
+      "skillsNeedingEmbedding",
       "staleThreads"
     ]);
+  });
+
+  // The index has exactly one writer, and it is reconciliation. A `putSkill` or
+  // a `removeSkill` would be a second path by which the index could come to
+  // disagree with the directory, and neither could be reviewed for whether its
+  // caller had looked at a file first.
+  it("offers no way to write a skill row except by reconciling", () => {
+    for (const forbidden of ["putSkill", "removeSkill", "deleteSkill", "readSkill"]) {
+      expect(Object.keys(store)).not.toContain(forbidden);
+    }
   });
 
   // The file is the channel, so there is no channel column and no argument that
@@ -879,6 +894,80 @@ describe("storing embeddings", () => {
   function near(query: Float32Array, limit = 10): string[] {
     return store.nearest(query, limit).map(hit => `${hit.source.kind}/${hit.source.ref}`);
   }
+
+  /** The same, of one kind only. */
+  function nearOfKind(
+    query: Float32Array,
+    limit: number,
+    kind: "fact" | "summary" | "skill"
+  ): string[] {
+    return store.nearest(query, limit, kind).map(hit => `${hit.source.kind}/${hit.source.ref}`);
+  }
+
+  // **The regression this filter exists to prevent, and the reason it is a
+  // parameter rather than something a caller does afterwards.** Every kind
+  // shares one `vec_embedding`, and `k` is spent inside the vec0 match — so a
+  // caller asking for five and filtering after the fact gets whatever survives,
+  // which against a corpus dominated by another kind is nothing at all. A recall
+  // that quietly returns nothing looks like a channel with no memory rather than
+  // like a bug, which is why this is asserted here rather than left to the
+  // caller's own tests.
+  describe("one corpus among several", () => {
+    beforeEach(() => {
+      // Every skill is nearer to the query than any summary is, so an unfiltered
+      // k-NN of five is five skills.
+      for (let index = 0; index < 100; index += 1) {
+        store.putEmbedding({
+          source: { kind: "skill", ref: `skill-${String(index).padStart(3, "0")}` },
+          vector: vector(1, 0.001 * index, 0),
+          model: "text-embedding-3-small",
+          at: 1
+        });
+      }
+      for (let index = 0; index < 3; index += 1) {
+        store.putEmbedding({
+          source: { kind: "summary", ref: `1.${String(index)}` },
+          vector: vector(0, 1, 0.001 * index),
+          model: "text-embedding-3-small",
+          at: 1
+        });
+      }
+    });
+
+    it("would answer entirely in the wrong kind without a filter", () => {
+      const unfiltered = near(vector(1, 0, 0), 5);
+      expect(unfiltered).toHaveLength(5);
+      expect(unfiltered.every(hit => hit.startsWith("skill/"))).toBe(true);
+    });
+
+    it("still finds every summary with a hundred skill vectors present", () => {
+      const hits = nearOfKind(vector(1, 0, 0), 5, "summary");
+      expect(hits).toHaveLength(3);
+      expect(hits.every(hit => hit.startsWith("summary/"))).toBe(true);
+    });
+
+    it("finds skills without summaries getting in the way", () => {
+      const hits = nearOfKind(vector(0, 1, 0), 5, "skill");
+      expect(hits).toHaveLength(5);
+      expect(hits.every(hit => hit.startsWith("skill/"))).toBe(true);
+    });
+
+    it("answers nothing for a kind this file holds none of", () => {
+      expect(nearOfKind(vector(1, 0, 0), 5, "fact")).toEqual([]);
+    });
+
+    // Over-fetch is best-effort and the file says so; what it must never do is
+    // hand back more than was asked for, or a hit of another kind.
+    it("never answers with more than the limit", () => {
+      expect(nearOfKind(vector(1, 0, 0), 2, "skill")).toHaveLength(2);
+    });
+
+    // An unfiltered read is unchanged, so nothing already calling it pays for a
+    // filter it did not ask for.
+    it("leaves an unfiltered read exactly as it was", () => {
+      expect(near(vector(1, 0, 0), 3)).toHaveLength(3);
+    });
+  });
 
   // The lazy half of the design, and the reason it is lazy: a deployment running
   // Layers 1 and 2 has no embedding provider and should carry no table for one.

@@ -67,7 +67,7 @@
 // as an option and never compared against anything would be a mechanism implying
 // it guards a hazard it cannot reach.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   ChannelId,
@@ -79,6 +79,7 @@ import {
 } from "@getlibero/schema";
 import type { SkillFile, SkillOp, SkillOpResult, SkillStatus } from "@getlibero/schema";
 import { replaceFileAtomically } from "./atomic-write.js";
+import type { SkillFingerprint } from "./store-db.js";
 import type { Logger } from "./log.js";
 
 /**
@@ -153,6 +154,20 @@ export interface SkillFiles {
    * a channel nobody has authored a skill in.
    */
   list(): readonly string[];
+  /**
+   * Every skill this directory holds, with what tells an index whether its file
+   * has moved since it last looked.
+   *
+   * `list()` with a `stat` per entry, which is the whole steady-state cost of
+   * keeping an index honest — no file is opened and nothing is parsed. It lives
+   * here rather than in the caller because this module owns the paths, and the
+   * one thing these openers exist to be is the only way to reach them.
+   *
+   * An entry that vanishes between the listing and its `stat` is dropped rather
+   * than throwing: a skill deleted mid-pass is a skill that is gone, which is
+   * exactly what the caller is about to conclude anyway.
+   */
+  fingerprints(): readonly SkillFingerprint[];
   /**
    * One skill as it is on disk right now, or `null`.
    *
@@ -389,6 +404,23 @@ export function openSkillFiles(options: SkillFilesOptions): SkillFiles {
   return {
     list() {
       return names();
+    },
+
+    fingerprints() {
+      const found: SkillFingerprint[] = [];
+      for (const name of names()) {
+        let stat;
+        try {
+          stat = statSync(fileFor(name));
+        } catch (error) {
+          // Gone between the listing and the stat. Dropping it says the same
+          // thing the next listing would.
+          if (isErrno(error, "ENOENT")) continue;
+          throw error;
+        }
+        found.push({ name, mtimeMs: stat.mtimeMs, size: stat.size, ino: Number(stat.ino) });
+      }
+      return found;
     },
 
     read(name) {

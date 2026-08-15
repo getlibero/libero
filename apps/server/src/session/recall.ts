@@ -190,17 +190,19 @@ export function createRecall(options: RecallOptions): Recall {
     if (vector === undefined) return [];
 
     try {
-      const hits = request.store.nearest(vector, RECALL_LIMIT);
+      // **Only summaries, and asked for as such rather than filtered after.**
+      // `EmbeddingSource.kind` admits `fact`, which nothing produces — curated
+      // facts reach a task through `<channel-memory>`, whole — and since #290 it
+      // admits `skill`, which something very much does. Every kind shares one
+      // vector table and `k` is spent inside the k-NN, so a channel holding a
+      // hundred skills would fill all five of these slots with them and this
+      // would answer nothing. Passing the kind moves the filter inside vec0's
+      // own search, where it costs a slot nothing.
+      const hits = request.store.nearest(vector, RECALL_LIMIT, "summary");
       const recalled: RecalledSummary[] = [];
       let chars = 0;
 
       for (const hit of hits) {
-        // Only summaries. `EmbeddingSource.kind` also admits `fact`, and
-        // nothing produces those: curated facts reach a task through
-        // `<channel-memory>`, whole, so retrieving over them would replace all
-        // of the corpus with some of it. The branch is here rather than in the
-        // query because the kind that has no producer today may have one later.
-        if (hit.source.kind !== "summary") continue;
 
         // Resolved one at a time, and `null` is a real answer: a vector outlives
         // its summary for as long as it takes a trigger to fire, so a hit whose
