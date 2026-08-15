@@ -42,11 +42,11 @@ them; `node_modules` stays excluded (#107).
 ## Current state
 
 Phases 1, 1.5 and 2 are shipped and their milestones closed; phase 3 (skills)
-is the next one and has not opened. What exists:
+is open, and its shapes are the first thing in it to land. What exists:
 
 | Package | What it is |
 | --- | --- |
-| `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, and the audit record |
+| `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and thread-summarization turns, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
@@ -327,8 +327,24 @@ These are load-bearing, not stylistic:
   listing, refusals, the spend report, the proxy error shape, the audit
   record, and the approval ticket and decision. Both services import them —
   `packages/agent` since #109, which is what makes "the two ends agree on one
-  definition" true rather than aspirational. Memory ops are still where that
-  shape goes when the code needing it lands, not something you can import yet.
+  definition" true rather than aspirational. Memory ops joined them in #224, and
+  skills in #289.
+
+  **`src/skill.ts` is the first shape here that is also a file *format*.** It
+  holds the frontmatter, the name — which is a path segment and an index key, so
+  it is `ChannelId`'s kind of primitive rather than a label — and both halves of
+  the `---`-fenced grammar, parser and serializer, round-tripped by a test.
+  The grammar is hand-written rather than YAML: the CLI inlines this package and
+  publishes no dependencies, and YAML's implicit typing would read
+  `description: no` as `false` and `created:` as a zoned `Date`. Two decisions
+  ride on that file's header and neither is re-derivable from the code. **The
+  file is the source of truth for what a human authored and the index for what
+  the runtime observed**, which is why `uses` is a column and not frontmatter
+  even though `architecture.md` used to say otherwise — retrieval records a use
+  per loaded skill per task, and that many rewrites of team-owned markdown loses
+  hand edits. And **no lifecycle clock reads the file**: `created` is
+  documentation, the clocks run on the index's own `first_seen_at` and
+  last-used, or a model writing `created: 2099-01-01` would move one.
 
   `src/audit.ts` is the one shape that never crosses the wire: the proxy builds
   it from its own observation and reads it back out of SQLite on the operator's

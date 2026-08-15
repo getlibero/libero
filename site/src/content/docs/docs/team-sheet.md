@@ -8,8 +8,8 @@ own git repo.
 
 The name is the football one. It is the sheet the manager submits before a match declaring who is
 allowed on the pitch, what position they play, and what needs the gaffer's sign-off. Everything
-enforced at runtime is a lookup into this file — all of it by the proxy except one block, and
-[`[memory]`](#memory) says why it is the exception.
+enforced at runtime is a lookup into this file — all of it by the proxy except two blocks, and
+[`[memory]`](#memory) says why they are the exception.
 
 Nothing in a team sheet is a secret. Credentials appear as **names**, resolved only inside the
 proxy's vault — never in the sheet, the logs, an error message, or anything returned to the agent.
@@ -150,10 +150,55 @@ warn_at = 0.8
 enabled        = true                       # curation: MEMORY.md, written after a reply
 max_file_chars = 32768                      # the whole file; one operation may carry 4096
 
-# Thread summaries. A thread quiet for this long is summarized into the
-# channel's searchable memory, whether or not anyone addressed the agent in it.
+# Thread summaries. A thread that has been quiet for this long is summarized
+# into the channel's searchable memory, whether or not anyone addressed the
+# agent in it — which makes this the one setting here that spends model tokens
+# with nobody waiting on the answer. Two switches rather than one, because a
+# channel may reasonably want the agent to remember what it was asked and not to
+# read conversations it was never part of.
+#
+# Quiet matters for correctness and not politeness: summarizing a thread that is
+# still going records a conclusion the team had not reached yet. Five minutes is
+# the floor, a week the ceiling.
 summarize                    = true
 summarize_after_idle_minutes = 60
+
+# Skills: reusable playbooks the agent writes for itself. After a task that
+# spent more than author_after_tool_calls tool calls, one extra model turn asks
+# whether a playbook emerged — most of the time the answer is no — and if it did,
+# writes it as a markdown file under skills/ in the agent's state root, beside
+# MEMORY.md. At the head of a later task the incoming request is matched against
+# the library and only the top_k best matches are loaded. Never the whole
+# library, and never a skill that has been archived.
+#
+# ON BY DEFAULT, for the same reason curation is: a skill comes out of a task
+# somebody asked for, into capped text your team can read, edit and delete, on a
+# turn metered like every other. Set enabled = false and no author turn runs and
+# nothing is loaded.
+#
+# Two things to know before leaving it on. A skill is PROCEDURAL where a memory
+# fact is declarative: "the team decided X" steers a reply, "to deploy, run Y
+# then Z" steers tool use. And it arrives by retrieval rather than as one file
+# read whole, so you may not see a given skill unless you open the directory —
+# which is why the directory is yours, in plain markdown, in your own state root.
+# Nothing a skill says widens what this channel may do: every call it induces
+# meets the proxy's gates exactly as if the same words had arrived in a mention.
+#
+# Like [memory] above, THIS BLOCK IS HONOURED BY THE AGENT AND NOT BY THE PROXY,
+# with everything that follows from it — including that a sheet the agent cannot
+# read falls back to NO skills, the opposite of the default here.
+#
+# The files are the source of truth. A skill you edit is re-indexed, one you
+# delete is gone, one you write by hand joins the library. How much text one
+# operation may write is not a field here — it is fixed in @getlibero/schema,
+# because it bounds what the MODEL may write; max_skill_chars below bounds what a
+# skill may BE, which is why it may not be set below the model's own ceiling.
+[skills]
+enabled                 = true              # the author turn, and loading at task start
+author_after_tool_calls = 5                 # strictly more than this many served calls
+top_k                   = 3                 # how many skills a task may open with
+max_skill_chars         = 8192              # a skill's body; one operation may write 4096
+max_skills              = 100               # the whole library; nothing else bounds it
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
@@ -512,7 +557,8 @@ deletion of any message in it drops the summary and its embedding outright — s
 from a message outlives the message.
 
 **This block is honoured by the agent, not the proxy** — and it is the first one on this page of
-which that is true. Everything else here is enforced by the tool proxy from its own copy of this
+which that is true; [`[skills]`](#skills) below is the second and the only other. Everything else
+here is enforced by the tool proxy from its own copy of this
 file, and that second copy is what makes an agent process under an attacker's control unable to
 widen its own permissions. The proxy never opens `MEMORY.md`; its only reach into a channel's store
 is a read-only opener, so there is no second copy of these two numbers. In the terms
@@ -520,9 +566,9 @@ is a read-only opener, so there is no second copy of these two numbers. In the t
 standing `daily_tool_calls` has: it holds against a model that has been talked into filling the
 file, and not against a compromised agent process.
 
-It is consequently the one block where a sheet the agent cannot read falls back to *off* rather
-than to the default above. A typo costing a channel its memory is a degradation the reply survives;
-a typo switching curation on for a channel that wrote `enabled = false` would be a policy
+It is consequently one of the two blocks where a sheet the agent cannot read falls back to *off*
+rather than to the default above. A typo costing a channel its memory is a degradation the reply
+survives; a typo switching curation on for a channel that wrote `enabled = false` would be a policy
 violation.
 
 `max_file_chars` is spent on every task in the channel, which is why the default is the order of
@@ -537,6 +583,61 @@ How much one operation may carry is fixed at **4096 characters** in `@getlibero/
 a field here. It bounds what the model may write rather than what this channel may spend — the same
 reason a tool description's length and a search's result limit are not fields either — and
 `max_file_chars` already bounds the total.
+
+### `[skills]`
+
+Reusable playbooks the agent writes for itself. After a task that spent more than
+`author_after_tool_calls` tool calls, one extra model turn asks whether a playbook emerged — most of
+the time the answer is no, and that is the intended answer — and if one did, it is written as a
+markdown file under `skills/` in the agent's state root, beside `MEMORY.md`. At the head of a later
+task the incoming request is matched against the library and only the `top_k` best matches are
+loaded into the opening context. Never the whole library.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `enabled` | no | Whether the author turn runs and skills are loaded at all. **Defaults to `true`.** `false` writes nothing and loads nothing. |
+| `author_after_tool_calls` | no | How many tool calls a task must exceed before the author turn runs. Defaults to `5`. Strictly more than this, and it counts calls the proxy served rather than calls the model attempted. |
+| `top_k` | no | How many skills a task may open with. Defaults to `3`. May not be set below `1` or above `10`. |
+| `max_skill_chars` | no | The longest a skill's body may be, in characters. Defaults to `8192`. May not be set below `4096`, the most one operation may write, or above `65536`. |
+| `max_skills` | no | How many skills this channel may hold. Defaults to `100`. |
+
+**On by default, for the reason [`[memory]`](#memory) is.** A skill comes out of a task somebody
+asked for, into capped text your team can read, edit and delete, on a turn metered through the same
+per-turn spend report as every other turn. Opting out is one line.
+
+Two things are worth understanding before you leave it on, and they are the honest half of the same
+paragraph. **A skill is procedural where a memory fact is declarative**: "the team decided X" steers
+a reply, while "to deploy, run Y then Z" steers tool use. And **a skill arrives by retrieval rather
+than as one file read whole**, so you may never see a given skill unless you open the directory —
+which is why the directory is yours, in plain markdown, in the agent's state root and not somewhere
+you need a tool to read.
+
+What a skill cannot do is widen anything. It is text loaded into a model's context, so every call it
+induces still meets the proxy's gates — the allowlist, approvals, the budget, egress — exactly as if
+the same words had arrived in a message from a person. A skill that says to run a tool this channel
+does not grant produces a refusal and an audit row, not a tool call.
+
+**Like `[memory]`, this block is honoured by the agent and not the proxy**, with everything that
+follows: there is no second copy of these numbers, so it has the standing `daily_tokens` has and not
+the standing `daily_tool_calls` has, and a sheet the agent cannot read falls back to *no skills*
+rather than to the defaults above.
+
+**The files are the source of truth.** A skill your team edits is re-indexed, one you delete is gone,
+one you write by hand joins the library — the index follows the files and never the reverse. What
+the index holds instead is what the runtime observed: when a skill was last retrieved and how often,
+which is what the stale and archive clocks run on. That is deliberately not in the file. Recording a
+use would otherwise mean rewriting `top_k` of your files at the head of every task, and a rewrite
+from a stale read is how an edit somebody made in between gets lost.
+
+`max_skill_chars` may not be set *below* the 4096 characters one operation may write, which is the
+opposite of `max_file_chars`'s floor only in appearance: there the file accretes across operations,
+here one operation writes a whole skill. A cap below what the model is told it may write would
+promise a length this channel refuses. Above it is room for a longer playbook written by hand.
+
+`max_skills` is the only thing bounding the library's size. There is no operation that deletes a
+skill — archiving is a status, and removing a file is your team's act — so the count only ever grows
+on its own, and what grows with it is the work of re-reading the directory and of comparing skills
+against each other for overlap.
 
 ### `[[mcp_server]]`
 

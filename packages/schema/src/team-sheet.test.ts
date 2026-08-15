@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { parse } from "smol-toml";
 import { describe, expect, it } from "vitest";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
+import { SKILL_BODY_MAX_CHARS } from "./skill.js";
 import { TeamSheet } from "./team-sheet.js";
 
 // channels/example/channel.toml is the documented starter sheet and must stay
@@ -64,6 +65,16 @@ describe("the example team sheet", () => {
       max_file_chars: 32_768,
       summarize: true,
       summarize_after_idle_minutes: 60
+    });
+  });
+
+  it("authors skills by default, with the figures the block documents", () => {
+    expect(sheet.skills).toEqual({
+      enabled: true,
+      author_after_tool_calls: 5,
+      top_k: 3,
+      max_skill_chars: 8_192,
+      max_skills: 100
     });
   });
 
@@ -391,6 +402,113 @@ describe("the memory block", () => {
   });
 });
 
+describe("the skills block", () => {
+  const skillsSheet = (skills: unknown) => ({ channel: minimalChannel(), skills });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  // On when absent, like [memory] and unlike [ambient], on the same test: a
+  // skill comes out of a task somebody asked for, into capped text the team can
+  // read and edit, on a metered turn. Asserting the default is how it stays a
+  // decision rather than becoming an accident — and flipping it later would be
+  // a behaviour change for every sheet that never mentioned the block.
+  it("authors skills by default when the block is absent", () => {
+    expect(TeamSheet.parse({ channel: minimalChannel() }).skills.enabled).toBe(true);
+  });
+
+  it("accepts a channel that opts out, and keeps its figures", () => {
+    const sheet = TeamSheet.parse(skillsSheet({ enabled: false, top_k: 5 }));
+    expect(sheet.skills).toEqual({
+      enabled: false,
+      author_after_tool_calls: 5,
+      top_k: 5,
+      max_skill_chars: 8_192,
+      max_skills: 100
+    });
+  });
+
+  it("refuses a non-boolean switch", () => {
+    expect(paths(skillsSheet({ enabled: "yes" }))).toEqual(["skills.enabled: invalid_type"]);
+  });
+
+  // The relationship to `SKILL_BODY_MAX_CHARS` is a floor, not a roof, and it is
+  // the one number on this block most likely to be inverted by someone reading
+  // it quickly. A cap below the constant would publish a JSON Schema promising
+  // the model a length this channel refuses — a per-channel lie inside a module
+  // constant. The issue lands on the field an operator edits, which is why this
+  // is a bound rather than a check on the block.
+  it("refuses a skill cap smaller than one operation, naming the field", () => {
+    expect(paths(skillsSheet({ max_skill_chars: SKILL_BODY_MAX_CHARS - 1 }))).toEqual([
+      "skills.max_skill_chars: too_small"
+    ]);
+  });
+
+  it("accepts a skill cap of exactly one operation", () => {
+    expect(paths(skillsSheet({ max_skill_chars: SKILL_BODY_MAX_CHARS }))).toBeNull();
+  });
+
+  it("refuses a skill cap past the sanity bound", () => {
+    expect(paths(skillsSheet({ max_skill_chars: 65_537 }))).toEqual([
+      "skills.max_skill_chars: too_big"
+    ]);
+    expect(paths(skillsSheet({ max_skill_chars: 65_536 }))).toBeNull();
+  });
+
+  // Zero is `enabled = false` said a second way, and one switch with two
+  // spellings is one of them going untested.
+  it("refuses a top_k of zero", () => {
+    expect(paths(skillsSheet({ top_k: 0 }))).toEqual(["skills.top_k: too_small"]);
+    expect(paths(skillsSheet({ top_k: 1 }))).toBeNull();
+  });
+
+  it("refuses a top_k past the bound", () => {
+    expect(paths(skillsSheet({ top_k: 11 }))).toEqual(["skills.top_k: too_big"]);
+    expect(paths(skillsSheet({ top_k: 10 }))).toBeNull();
+  });
+
+  // Zero would author after a task with no tool calls at all, which is a
+  // different feature and not this one.
+  it("refuses an author threshold of zero", () => {
+    expect(paths(skillsSheet({ author_after_tool_calls: 0 }))).toEqual([
+      "skills.author_after_tool_calls: too_small"
+    ]);
+    expect(paths(skillsSheet({ author_after_tool_calls: 1 }))).toBeNull();
+  });
+
+  // No roof, matching `max_tool_calls_per_task`. A channel that sets it above
+  // its own tool cap has turned authoring off the long way round, which is legal
+  // and does no harm — and refusing the combination would refuse a sheet
+  // mid-edit, while one is being lowered before the other is raised.
+  it("accepts an author threshold above the channel's own tool cap", () => {
+    expect(
+      paths({
+        channel: minimalChannel(),
+        llm: { max_tool_calls_per_task: 5 },
+        skills: { author_after_tool_calls: 50 }
+      })
+    ).toBeNull();
+  });
+
+  it("refuses a library cap of zero, and one past the bound", () => {
+    expect(paths(skillsSheet({ max_skills: 0 }))).toEqual(["skills.max_skills: too_small"]);
+    expect(paths(skillsSheet({ max_skills: 1_001 }))).toEqual(["skills.max_skills: too_big"]);
+    expect(paths(skillsSheet({ max_skills: 1_000 }))).toBeNull();
+  });
+
+  it.each([
+    ["a fraction", 3.5],
+    ["a string", "3"],
+    ["null", null],
+    ["negative", -1]
+  ])("refuses %s as a top_k", (_label, top_k) => {
+    expect(TeamSheet.safeParse(skillsSheet({ top_k })).success).toBe(false);
+  });
+});
+
 describe("defaults", () => {
   // A sheet with no [llm] section must still yield every cap: the composition
   // root maps sheet to caps field by field and has no defaults of its own.
@@ -445,6 +563,13 @@ describe("defaults", () => {
       max_file_chars: 32_768,
       summarize: true,
       summarize_after_idle_minutes: 60
+    });
+    expect(sheet.skills).toEqual({
+      enabled: true,
+      author_after_tool_calls: 5,
+      top_k: 3,
+      max_skill_chars: 8_192,
+      max_skills: 100
     });
   });
 
