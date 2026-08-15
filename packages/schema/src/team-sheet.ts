@@ -2,6 +2,7 @@ import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { CertificateSha256, CredentialName, ResourceName } from "./names.js";
+import { SKILL_BODY_MAX_CHARS } from "./skill.js";
 import { z } from "zod";
 
 /**
@@ -526,6 +527,150 @@ export const TeamSheet = z.object({
       // bounds what the model may write rather than what this channel may spend,
       // and it is chosen against retrieval — one vector stands for one summary,
       // so a longer summary is a vector averaged over more topics.
+    })
+    .prefault({}),
+  // Skills: reusable playbooks the agent writes after a tool-heavy task and
+  // loads back by retrieval at the head of a later one (#287). Files under
+  // `skills/` in the agent state root, beside `MEMORY.md`. See ./skill.ts for
+  // what one is and ./skill-op.ts for the two operations that write them.
+  //
+  // **The second block on this sheet honoured by the agent and not by the
+  // proxy**, and everything `[memory]` says about that standing is true here
+  // word for word: the proxy never opens a skill file, so there is no second
+  // copy of these numbers to check the first against. In ./refusal.ts's terms
+  // this has the standing `daily_tokens` has and not the standing
+  // `daily_tool_calls` has — it holds against a model that has been talked into
+  // filling the directory, and not against a compromised agent process. The same
+  // consequence follows for whoever mirrors these values:
+  // `apps/server/src/session/sheet.ts` must fall back to `enabled: false`,
+  // deliberately not the default below, because for this block the fallback *is*
+  // the decision. Its `DEFAULT_SKILL_SETTINGS` should carry that argument itself
+  // rather than assume the reader has read `DEFAULT_MEMORY_SETTINGS` (#292).
+  //
+  // **On by default, on the same test `[memory]` is on by.** That test asks
+  // whether this is the agent starting work nobody asked for, which is
+  // `[ambient]`, or the agent keeping something from work it was already asked
+  // to do, which is curation. A skill is written out of a task somebody
+  // requested, into capped text the team can read, edit and delete, on a turn
+  // metered through the same per-turn spend report as every other turn. So it is
+  // curation, and opting out is one line.
+  //
+  // Two things about that are worth knowing before leaving it on, and they are
+  // the honest half of the same paragraph. **A skill is procedural where a
+  // memory fact is declarative**: "the team decided X" steers a reply, while
+  // "to deploy, run Y then Z" steers tool use. And it arrives by retrieval
+  // rather than as one file the team reads whole, so a team may never see a
+  // given skill unless they open the directory — which is why the directory is
+  // theirs, in their own state root, in plain markdown. Nothing a skill says
+  // widens what the channel may do: every call it induces meets the proxy's
+  // gates exactly as if the same words had arrived in a mention.
+  //
+  // **Flipping this default to `false` later would be a behaviour change for
+  // every sheet that never mentioned the block**, which is not the additive kind
+  // of change the rest of this file's defaults are. Said now, because the moment
+  // to notice it is before the first sheet is written.
+  skills: z
+    .object({
+      enabled: z.boolean().default(true),
+      // How many tool calls a task must *exceed* before the author turn runs.
+      // Strictly greater, which is what the architecture page's "exceeding a
+      // tool-call threshold" says and is worth pinning here rather than
+      // discovering from two implementations later — this tree has a history of
+      // an off-by-one becoming the contract.
+      //
+      // It counts calls the proxy **served**, not calls the model attempted. A
+      // task whose six calls were all refused learned that this channel's sheet
+      // does not grant those tools, and a playbook written from it would be a
+      // playbook about tools that do not work here.
+      //
+      // Five, from the spec. The number is a proxy for "this task was real
+      // work": below it the task was a question with a lookup, and a playbook
+      // for that is a playbook for reading. No roof, matching
+      // `max_tool_calls_per_task` above — a channel that sets it higher than its
+      // own tool cap has turned authoring off the long way round, which is
+      // legal, does no harm, and is not worth a cross-block rule that would
+      // refuse a sheet mid-edit.
+      author_after_tool_calls: z.number().int().min(1).default(5),
+      // How many skills a task may open with.
+      //
+      // **This is a field where recall's equivalent is a constant, and the
+      // difference is worth stating.** `RECALL_LIMIT` in the server is fixed at
+      // five on the ground that what it bounds is what that process assembles
+      // rather than a policy a channel holds an opinion about. The distinction
+      // that makes this one a field: recall's corpus is grown by the machine —
+      // one summary per quiet thread, whether or not anyone wanted it — while
+      // the skill library is written and owned by the team, so how many of their
+      // own playbooks a task opens with is a policy they do hold an opinion
+      // about.
+      //
+      // Three rather than recall's five, because a skill is up to 4096
+      // characters where a summary is 2048, and skills sit *beside* the recall
+      // block in a task's opening context rather than instead of it. Zero does
+      // not parse: that is `enabled = false` said a second way, and one switch
+      // with two spellings is one of them going untested.
+      //
+      // **What this does not bound is the aggregate**, and the aggregate is what
+      // a task actually pays. `top_k` times `max_skill_chars` is a worst case,
+      // not a budget, and the counterpart to `RECALL_MAX_CHARS` — a ceiling on
+      // the whole skills block, in characters, binding before this number does —
+      // belongs on the agent side with recall's, as a constant, for the reason
+      // recall's is one (#292).
+      top_k: z.number().int().min(1).max(10).default(3),
+      // The longest a skill's body may be, in characters. The body only: the
+      // frontmatter is a handful of short lines and is not charged against this,
+      // so an operation written at the model's own ceiling always fits.
+      //
+      // **The floor is `SKILL_BODY_MAX_CHARS`**, and the relationship is
+      // `[memory]`'s exactly rather than its mirror. The constant in ./skill.ts
+      // bounds what the *model* may write in one operation and is the figure the
+      // published JSON Schema states; this bounds what a body may *be*, which is
+      // a different quantity because a team can hand-write a playbook far longer
+      // than any operation could produce. A cap below the constant would publish
+      // a schema promising a length this channel refuses — a per-channel lie
+      // inside a module constant, which is the exact failure keeping that figure
+      // a constant exists to prevent. A bound rather than a `.check()`, so the
+      // issue lands on `skills.max_skill_chars`, which is what an operator edits.
+      //
+      // The default is 8192 — twice the model's ceiling, which is room for the
+      // team to write a longer playbook by hand without being room for a
+      // document. The roof is a sanity bound in the spirit of `max_file_chars`'s:
+      // past 64k a skill has stopped being a playbook, and unlike `MEMORY.md` it
+      // is not one file but one of `max_skills`.
+      max_skill_chars: z.number().int().min(SKILL_BODY_MAX_CHARS).max(65_536).default(8_192),
+      // How many skills a channel may hold.
+      //
+      // **Nothing else bounds the library's size.** There is no delete
+      // operation, archiving is a status rather than a removal, and the file is
+      // the team's to remove — all of which is right, and all of which means
+      // the count only ever goes up on its own. The costs that grow with it are
+      // not the disk: it is what has to be re-read and re-embedded when the
+      // directory is reconciled, and it is the curator's overlap pass, which
+      // compares skills against each other and so grows as the square.
+      //
+      // A hundred is far more playbooks than a channel will write and far fewer
+      // than the point where any of those hurt. At the cap an operation is
+      // refused and the model is told to revise something instead, which is the
+      // outcome the whole design prefers anyway.
+      max_skills: z.number().int().min(1).max(1_000).default(100),
+      // **How much one operation may carry is deliberately not a field here**,
+      // exactly as `max_op_chars` is not on `[memory]`: `SKILL_BODY_MAX_CHARS`
+      // and `SKILL_DESCRIPTION_MAX_CHARS` in ./skill.ts bound what the model may
+      // write rather than what this channel may spend, and making either
+      // settable would mean building the published JSON Schema per channel, so
+      // `SKILL_TOOLS` would stop being a module constant.
+      //
+      // Nor is the stale/archive clock a field yet. The spec's thirty and ninety
+      // days are the lifecycle job's (#294), which is not written; adding
+      // `stale_after_days` later is a new optional field, so no sheet written
+      // today changes shape.
+      //
+      // One degradation this block does not have a field for and should not
+      // grow one for: a deployment with **no embedding provider configured**
+      // has no vectors, and semantic recall skips entirely in that case. Skills
+      // should not skip — they should retrieve on full text alone, because
+      // unlike a thread summary a skill carries a hand-written description of
+      // when it applies, which is exactly what a lexical index is good at. That
+      // is a behaviour, not a setting (#292).
     })
     .prefault({}),
   mcp_server: McpServerList.default([]),

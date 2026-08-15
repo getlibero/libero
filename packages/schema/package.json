@@ -2,7 +2,7 @@
   "name": "@getlibero/schema",
   "version": "0.0.1",
   "private": true,
-  "description": "Zod schemas for Libero: team sheets, audit records, tool calls, approval requests, memory ops. Single source of truth — both services import from here.",
+  "description": "Zod schemas for Libero: team sheets, audit records, tool calls, approval requests, memory ops, skills. Single source of truth — both services import from here.",
   "license": "MIT",
   "files": ["dist"],
   "type": "module",

@@ -141,6 +141,43 @@ max_file_chars = 32768                      # the whole file; one operation may 
 summarize                    = true
 summarize_after_idle_minutes = 60
 
+# Skills: reusable playbooks the agent writes for itself. After a task that
+# spent more than author_after_tool_calls tool calls, one extra model turn asks
+# whether a playbook emerged — most of the time the answer is no — and if it did,
+# writes it as a markdown file under skills/ in the agent's state root, beside
+# MEMORY.md. At the head of a later task the incoming request is matched against
+# the library and only the top_k best matches are loaded. Never the whole
+# library, and never a skill that has been archived.
+#
+# ON BY DEFAULT, for the same reason curation is: a skill comes out of a task
+# somebody asked for, into capped text your team can read, edit and delete, on a
+# turn metered like every other. Set enabled = false and no author turn runs and
+# nothing is loaded.
+#
+# Two things to know before leaving it on. A skill is PROCEDURAL where a memory
+# fact is declarative: "the team decided X" steers a reply, "to deploy, run Y
+# then Z" steers tool use. And it arrives by retrieval rather than as one file
+# read whole, so you may not see a given skill unless you open the directory —
+# which is why the directory is yours, in plain markdown, in your own state root.
+# Nothing a skill says widens what this channel may do: every call it induces
+# meets the proxy's gates exactly as if the same words had arrived in a mention.
+#
+# Like [memory] above, THIS BLOCK IS HONOURED BY THE AGENT AND NOT BY THE PROXY,
+# with everything that follows from it — including that a sheet the agent cannot
+# read falls back to NO skills, the opposite of the default here.
+#
+# The files are the source of truth. A skill you edit is re-indexed, one you
+# delete is gone, one you write by hand joins the library. How much text one
+# operation may write is not a field here — it is fixed in @getlibero/schema,
+# because it bounds what the MODEL may write; max_skill_chars below bounds what a
+# skill may BE, which is why it may not be set below the model's own ceiling.
+[skills]
+enabled                 = true              # the author turn, and loading at task start
+author_after_tool_calls = 5                 # strictly more than this many served calls
+top_k                   = 3                 # how many skills a task may open with
+max_skill_chars         = 8192              # a skill's body; one operation may write 4096
+max_skills              = 100               # the whole library; nothing else bounds it
+
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
 # can reach: /x/<toolset> picks the toolset and a trailing /readonly drops every
