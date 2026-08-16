@@ -13,18 +13,28 @@
 //
 // What follows is only what differs from recall.
 //
-// ## Reconciliation runs here, and this is the only place it runs
+// ## Reconciliation runs here, and this is where it has to run
 //
 // `reconcileSkillIndex` had no caller until this file, and #290's PR says why
 // this is the right one: the moment correctness is required is the moment
 // retrieval runs, and outside the session's lock it would race the quiescence
 // sweep's writes and — once #291 lands — the previous task's authoring.
 //
-// It is the whole of how a hand-edited or hand-deleted skill takes effect. There
-// is no watcher and no second path: the team's directory is the truth, and this
-// pass is what the index does about it. Its steady-state cost is one `readdir`
-// and a `stat` per file; a file is only re-read when its fingerprint moved, and
-// only re-embedded when its *description* moved.
+// It is the whole of how a hand-edited or hand-deleted skill takes effect *for
+// the task about to run*. There is no watcher: the team's directory is the truth,
+// and this pass is what the index does about it. Its steady-state cost is one
+// `readdir` and a `stat` per file; a file is only re-read when its fingerprint
+// moved, and only re-embedded when its *description* moved.
+//
+// Since #305 it is not the only caller. ./skill-embed.ts reconciles too, on
+// channel activity rather than at task head, because the index is what says
+// which skills still need a vector — so a pass that only read it could embed
+// nothing a task had not already indexed. That is a second caller and not a
+// second path: both hold the session's lock, both call the same function, and
+// what either one does about a changed file is `packages/memory`'s decision
+// rather than this file's. What this file still owns is the guarantee that the
+// index is current *before this task retrieves*, which nothing running on
+// message activity can promise.
 //
 // ## Two legs, and the fusion is a shape rather than a tuned number
 //
@@ -71,6 +81,12 @@
 // retrieve. The team sheet says this is the intended behaviour and refuses to
 // make it a field: "skills should retrieve on full text alone in that case, as a
 // behaviour, not a setting".
+//
+// Between #292 and #305 that was every deployment, not just the ones with no
+// provider: nothing embedded a skill, so `nearest` answered nothing and this
+// fusion ran on one leg everywhere. ./skill-embed.ts is what fills the other in,
+// and nothing here changed for it — the vector leg was always written to answer
+// with whatever the store had.
 //
 // ## What is deliberately not decided here
 //

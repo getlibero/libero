@@ -33,6 +33,7 @@ import type { PromptTarget } from "./approvals/prompter.js";
 import type { ChecklistReporter, ChecklistTarget } from "./checklist/checklist.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import type { SessionRegistry } from "./session/registry.js";
+import type { SkillEmbedSweep } from "./session/skill-embed.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { ChannelRouter } from "./session/router.js";
 
@@ -85,6 +86,19 @@ export interface MessageIngestOptions {
    * Layers 1 and 2 are whole without them.
    */
   summarize?: SummarySweep;
+  /**
+   * The skill-embedding pass (#305), run beside the sweep and for its reason.
+   *
+   * A separate option rather than a leg of `summarize`, because the two gate on
+   * different blocks of the team sheet — `[memory] summarize` against
+   * `[skills] enabled` — and a deployment is entitled to either without the
+   * other.
+   *
+   * Optional, and its absence is a deployment whose skills retrieve on full text
+   * alone: the lexical leg needs no vector, which is what #292 shipped and what
+   * a process with no embedding provider does anyway.
+   */
+  embedSkills?: SkillEmbedSweep;
   /**
    * Where a follow-up's checklist goes. Optional per call for `onHeld`'s
    * reason and answered by the same knot in compose.ts — the card poster is
@@ -139,6 +153,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
   const route = options.route;
   const onHeld = options.onHeld;
   const summarize = options.summarize;
+  const embedSkills = options.embedSkills;
 
   return async (message: SlackMessage): Promise<SlackReply | undefined> => {
     const session = options.sessions.open({
@@ -216,6 +231,22 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
       if (summarize !== undefined) {
         const store = session.store;
         void session.mutex.run(() => summarize(message.channelId, store)).catch(() => {});
+      }
+
+      // The skill-embedding pass (#305), on every clause above: the mutex,
+      // because it reconciles the skill index and writes vectors into the same
+      // file a task's context read goes through; not awaited, because a reply
+      // must not sit behind a provider round trip about a playbook; after the
+      // append, though nothing here reads messages, so that the two passes queue
+      // in a stated order rather than an incidental one.
+      //
+      // Its own `mutex.run` rather than a shared one with the sweep. Two
+      // independent passes that each answer to a different sheet block should
+      // not be able to cost each other a turn — and the mutex is FIFO, so this
+      // still runs after the sweep when both are wired.
+      if (embedSkills !== undefined) {
+        const store = session.store;
+        void session.mutex.run(() => embedSkills(message.channelId, store)).catch(() => {});
       }
     }
 

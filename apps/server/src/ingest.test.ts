@@ -435,6 +435,107 @@ describe("createMessageIngest", () => {
   });
 });
 
+// The two passes that run on channel activity rather than on a mention: the
+// quiescence sweep (#231) and the skill-embedding pass (#305). Both are wired
+// the same way and both are asserted the same way, because the wiring is the
+// claim — each one's own behaviour is its own file's.
+describe("the background passes", () => {
+  /** Records which pass ran in which channel, in the order they ran. */
+  function recordingPasses(): {
+    ran: Array<[string, string]>;
+    summarize: (channel: string, store: MessageStore) => Promise<number>;
+    embedSkills: (channel: string, store: MessageStore) => Promise<number>;
+  } {
+    const ran: Array<[string, string]> = [];
+    return {
+      ran,
+      summarize: channel => {
+        ran.push(["summarize", channel]);
+        return Promise.resolve(0);
+      },
+      embedSkills: channel => {
+        ran.push(["embedSkills", channel]);
+        return Promise.resolve(0);
+      }
+    };
+  }
+
+  it("runs both passes for a message it filed, in one order rather than a race", async () => {
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+    const passes = recordingPasses();
+    const session = sessions.open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId });
+
+    await createMessageIngest({
+      sessions,
+      summarize: passes.summarize,
+      embedSkills: passes.embedSkills
+    })(MESSAGE);
+
+    // Queued behind both, which is how a test waits on work the handler
+    // deliberately did not wait on. The mutex is FIFO, so the order is the order
+    // they were queued in rather than whichever finished first.
+    await session.mutex.run(() => Promise.resolve());
+
+    expect(passes.ran).toEqual([
+      ["summarize", MESSAGE.channelId],
+      ["embedSkills", MESSAGE.channelId]
+    ]);
+  });
+
+  it("does not wait for either of them", async () => {
+    // The handler resolves while the first is still running. A reply, and the
+    // Slack acknowledgement behind it, must not sit behind a provider round trip
+    // about some other thread or some other playbook.
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+    const session = sessions.open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId });
+    let release = (): void => {};
+
+    await createMessageIngest({
+      sessions,
+      summarize: () => new Promise<number>(resolve => (release = () => resolve(0))),
+      embedSkills: () => Promise.resolve(0)
+    })(MESSAGE);
+
+    // On the mutex — both of them read and write the channel's file, so they
+    // serialize against a task's context read rather than racing it.
+    expect(session.mutex.pending).toBeGreaterThan(0);
+    release();
+  });
+
+  it("runs neither for a channel with no store", async () => {
+    const sessions = createSessionRegistry({ openStore: () => null });
+    const passes = recordingPasses();
+
+    await createMessageIngest({
+      sessions,
+      summarize: passes.summarize,
+      embedSkills: passes.embedSkills
+    })(MESSAGE);
+
+    expect(passes.ran).toEqual([]);
+  });
+
+  it("stays up when a pass rejects, which it is documented never to do", async () => {
+    // Defence rather than a path: both are documented never to reject, and this
+    // is the one place in the process where a broken promise would reach an
+    // unhandled rejection with no task to attribute it to.
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+
+    await expect(
+      createMessageIngest({
+        sessions,
+        summarize: () => Promise.reject(new Error("sweep is broken")),
+        embedSkills: () => Promise.reject(new Error("pass is broken"))
+      })(MESSAGE)
+    ).resolves.toBeUndefined();
+
+    expect(recorded.appended).toHaveLength(1);
+  });
+});
+
 describe("answering a follow-up", () => {
   const THREAD = "1717171717.000100";
   const NOW = 1_700_000_000_000;

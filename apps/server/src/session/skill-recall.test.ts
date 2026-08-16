@@ -90,10 +90,11 @@ function handWritten(name: string, frontmatter: string, body: string): void {
  * Gives a skill a vector, which is what reconciliation deliberately does not do.
  *
  * `reconcileSkillIndex` embeds nothing — `packages/memory` has no model provider
- * — so it leaves rows for `skillsNeedingEmbedding` to surface. Nothing in this
- * tree fills them in yet, which is why the fixture does it: the vector leg has
- * to be exercised now even though the backfill that would produce one in
- * production is not written.
+ * — so it leaves rows for `skillsNeedingEmbedding` to surface. In production that
+ * is `./skill-embed.ts`'s job since #305; here it stays a fixture, because what
+ * these cases are about is what retrieval does with a vector rather than where
+ * one came from, and going through the pass would put a fake embedding provider
+ * between every case and the thing it asserts.
  */
 function embed(name: string, description: string): void {
   store.putEmbedding({

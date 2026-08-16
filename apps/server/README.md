@@ -153,8 +153,10 @@ than two copies of one secret.
 **Unset is a supported deployment, and the only optional provider here.** Memory
 Layers 1 and 2 — full-text search and the curated `MEMORY.md` — are whole
 without embeddings, so a process with `AGENT_EMBEDDING_PROVIDER` unset answers
-every mention exactly as before and simply has no semantic recall. It logs
-`embeddings_unconfigured` once at startup and carries on. That is the opposite
+every mention exactly as before and simply has no semantic recall. Skills still
+retrieve, on their full-text leg alone, which the team sheet calls a behaviour
+rather than a setting — nothing embeds a skill in that deployment and nothing
+tries. It logs `embeddings_unconfigured` once at startup and carries on. That is the opposite
 of the `PROXY_*` rule below, and deliberately: a missing proxy is a misconfigured
 deployment, a missing embedding provider is a smaller one.
 
@@ -565,15 +567,17 @@ argument above about where retrieval belongs applies unchanged and is not
 restated: a model-invoked skill search would be the same ungoverned twin of the
 same governed built-in.
 
-**It is where reconciliation runs, and the only place it runs.**
+**It is where reconciliation runs for the task about to start.**
 `reconcileSkillIndex` had no caller until this file. The moment correctness is
 required is the moment retrieval runs, and outside the lock the pass would race
 the quiescence sweep's writes and, once #291 lands, the previous task's
 authoring. That pass is the whole of how a hand-edited or hand-deleted skill
-takes effect: no watcher, no second path, and the team's directory is the truth.
-Its steady-state cost is a `readdir` and a `stat` per file — a file is re-read
-only when its fingerprint moved, and re-embedded only when its *description*
-moved.
+takes effect: no watcher, and the team's directory is the truth. Its steady-state
+cost is a `readdir` and a `stat` per file — a file is re-read only when its
+fingerprint moved, and re-embedded only when its *description* moved. Since #305
+`src/session/skill-embed.ts` calls it too, on channel activity; that is a second
+caller of one function inside the same lock rather than a second path, and it is
+below.
 
 **Two legs, fused by a round-robin interleave.** `nearest` answers by L2 distance
 and `searchSkills` by FTS5 rank, which are not comparable — the same argument
@@ -587,7 +591,10 @@ falling out of the shape rather than a knob.
 **A missing vector does not end it.** Recall stops dead without one; a skill also
 carries a full-text index over its description and body, so with no embedding
 provider the lexical leg runs alone. The team sheet says this is the intended
-behaviour and refuses to make it a field.
+behaviour and refuses to make it a field. Between #292 and #305 that was *every*
+deployment rather than only the ones with no provider — nothing embedded a skill,
+so `nearest` answered nothing and the fusion below ran on one leg everywhere.
+That is what the next section is.
 
 Bounded three times, and the third is this process's: `top_k` from the sheet,
 `max_skill_chars` per skill — read here because `packages/memory` declined the
@@ -617,6 +624,68 @@ other three do, and that is deliberate: history, curated facts and summaries are
 things to reason from, and a playbook is a thing to follow. What replaces it says
 that following one grants nothing — a statement of fact the proxy enforces, not a
 mitigation the words perform.
+
+## The skill-embedding pass: what makes the vector leg answer
+
+`src/session/skill-embed.ts` answers #305. `reconcileSkillIndex` writes no
+vector — `packages/memory` has no model provider, by design — so it leaves rows
+for `skillsNeedingEmbedding` to surface, and until this file nothing surfaced
+them. This is the caller that does.
+
+**It runs where the sweep runs, and for the same reason.** A skill file changes
+through somebody saving a file, which fires no event this process can see, so the
+reliable moment to look is when something else happens in the channel: the
+message ingest path, queued on the session mutex, deliberately not awaited. It
+shares `SWEEP_INTERVAL_MS` rather than restating it — that constant is how often
+this process bothers to look, and there is one such number.
+
+**The head of a task is the wrong place, and it is worth writing down so nobody
+re-derives it.** Reconciliation runs there because correctness is required at
+that moment; embedding is a provider round trip whose benefit the *next* task
+collects, so putting one in front of every reply buys latency for a benefit
+nobody in that thread receives. A task already pays for one embedding call at its
+head — a second is a different trade.
+
+**A separate pass rather than a leg of the sweep**, because the two answer to
+different blocks of the sheet: `[memory] summarize` against `[skills] enabled`.
+Folding them together would mean a channel that turned thread summaries off lost
+skill embedding with them.
+
+**It reconciles first**, which is why it is `reconcileSkillIndex`'s second
+caller. The index is what says which skills need a vector, so a pass that only
+read it could embed nothing a task had not already indexed — a skill somebody
+wrote with an editor would wait for a mention before it could even become a
+candidate, and one the author turn wrote would wait for the task after the one
+that wrote it. Reconciling first is also what makes the archived rule structural:
+`skillsNeedingEmbedding` excludes archived rows, and reconciliation is what puts
+a hand-set `status: archived` into that column.
+
+What bounds it: `[skills] enabled` and `max_skills` from the sheet;
+`SWEEP_INTERVAL_MS`; and `MAX_SKILLS_PER_EMBED_PASS`, which is ten rather than
+the sweep's three because what it bounds is different — one pass is **one**
+provider call whatever its size, `EmbeddingRequest` taking texts plural for
+exactly that, so the figure bounds tokens rather than calls, and a description is
+a few hundred characters where a thread is sixty messages. `skillsNeedingEmbedding`
+answers in name order, so a full library is worked through deterministically over
+successive passes rather than dropped.
+
+**Only the description is embedded**, never the body — the same text
+`description_hash` stands for. So a body edit and a rewritten `status` cost
+nothing, an edited description costs exactly one re-embedding, and the pass holds
+no opinion about any of that: what needs a vector is a LEFT JOIN and what
+invalidates one is `reconcileSkills` noticing the hash moved.
+
+The call is metered on the same `SpendReport` path recall and the sweep use, with
+a turn id of `skills-embed-<hash of the batch>`. That is `summary-<thread>-<watermark>`'s
+property reached by hashing rather than by having a watermark to name: the same
+batch of the same text is the same id, so a crash-retry is counted once, and an
+edited description makes a different one. Its cost is stated rather than hidden —
+a description edited and edited back inside a day re-embeds free on the meter,
+which is the cheaper of the two errors available.
+
+**A deployment with no embedding provider is unchanged**: the pass returns before
+it reads a sheet or opens a directory, so there is no error, no retry loop, and
+no log line, and skills go on retrieving from full text.
 
 ## Thread summaries
 
