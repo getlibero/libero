@@ -174,8 +174,9 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing skills, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing and ageing skills, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
+      "adoptSkillStatus",
       "append",
       "close",
       "listSkills",
@@ -186,15 +187,27 @@ describe("the interface", () => {
       "recent",
       "recentInThread",
       "reconcileSkills",
+      "recordSkillStatus",
       "recordSkillUse",
       "remove",
       "removeEmbedding",
       "replaceText",
       "search",
       "searchSkills",
+      "skillClocks",
       "skillsNeedingEmbedding",
       "staleThreads"
     ]);
+  });
+
+  // The three the lifecycle job added (#294) write `skill_use` and nothing else,
+  // which is why the rule below still holds with them present: the job records
+  // what it observed and what it wrote, and the index's own rows still come from
+  // reconciliation alone.
+  it("offers the lifecycle job a clock read and two stamps, and no skill writer", () => {
+    for (const method of ["skillClocks", "adoptSkillStatus", "recordSkillStatus"]) {
+      expect(Object.keys(store)).toContain(method);
+    }
   });
 
   // The index has exactly one writer, and it is reconciliation. A `putSkill` or

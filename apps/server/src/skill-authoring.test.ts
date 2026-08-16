@@ -49,7 +49,9 @@ const AUTHORING: SkillSettings = {
   authorAfterToolCalls: 5,
   topK: 3,
   maxSkillChars: 8_192,
-  maxSkills: 100
+  maxSkills: 100,
+  staleAfterMs: 30 * 86_400_000,
+  archiveAfterMs: 90 * 86_400_000
 };
 
 const CURATING: MemorySettings = {

@@ -32,10 +32,10 @@
 // `top_k` rename-over-file writes to team-owned markdown per task, each one a
 // read-compute-rename with a documented cross-process lost-update window and
 // deliberately no lock (`packages/memory/src/memory-file.ts`). Say *rate*,
-// because the lifecycle job does write `status` into these same files — weekly,
-// and only where a clock moved — so the principle version of this ("machinery
-// does not rewrite the team's files") is not the rule and would be false the
-// moment that job lands.
+// because the lifecycle job does write `status` into these same files — through
+// `SkillFiles.setStatus`, and only where a clock moved — so the principle
+// version of this ("machinery does not rewrite the team's files") is not the
+// rule and is false as of #294.
 //
 // Two arguments that look like they support the same conclusion are wrong and
 // should not be reached for. That a hand-editable counter would be *falsifiable*
@@ -192,23 +192,62 @@ export const SKILL_DESCRIPTION_MAX_CHARS = 512;
  * There is no `pinned`. A team pinning a skill against the clock is real and the
  * lifecycle job is required to honour it, but it is not a *state* — it is the
  * job knowing which of them last spoke, which is a fact about the job and lives
- * where the job's other observations live. The rule that leaves, recorded here
- * because the job is not written yet and this is what it inherits: **the index
- * records the status the job last wrote and when. The job may move a skill only
- * in the direction its clock indicates, it never overwrites a status changed
- * after its own last write, and a missing row means the job has not spoken here
- * — it adopts the file's current status as its baseline and writes the row
- * without changing the file.** Directional rather than equality-based, so a lost
- * index costs one cycle of no-ops instead of freezing the library forever, and a
- * hand-authored skill that the job has never seen is not exempt from a clock it
- * never had.
+ * where the job's other observations live. That is `skill_use.status_by_job` and
+ * `status_by_job_at`, and the rule they encode, as #294 landed it:
+ *
+ * - **The job compares values, not timestamps.** A file whose `status` differs
+ *   from `status_by_job` is a status somebody else wrote, and a missing row is
+ *   the job having never spoken here. In both cases it *adopts* — it records the
+ *   file's status as its new baseline and changes no file that run.
+ * - **Adopting restamps `status_by_job_at`, and that stamp is part of the
+ *   clock.** The origin a skill ages from is
+ *   `max(last_used_at ?? first_seen_at, status_by_job_at)`, so a hand edit buys
+ *   a full stale window before the clock speaks again. Without it, a team
+ *   un-archiving a long-unused skill would watch the job re-archive it a cycle
+ *   later, which is fighting the team rather than respecting them.
+ * - **The job's own move does not restamp `status_by_job_at`.** That asymmetry
+ *   is load-bearing: the clock is what its decisions are made against, so a job
+ *   that reset the clock every time it acted could never reach its second
+ *   threshold — a skill marked stale at thirty days would archive at a hundred
+ *   and twenty rather than ninety.
+ * - **Ageing needs only time; freshening needs a use.** The clock alone may move
+ *   a skill toward `archived`, because idle time is evidence it has gone quiet.
+ *   It may not move one back the same way, because "not idle" is evidence of
+ *   nothing — a skill somebody archived by hand this morning is not idle. A move
+ *   toward `active` also requires that the most recent thing that happened to
+ *   the skill was a task loading it, which is what makes `archived` **terminal**
+ *   without a rule saying so: an archived skill is out of retrieval, so it can
+ *   never record the use that is the only road back.
+ *
+ * This is a **deliberate widening of what an earlier draft of this comment
+ * said**, and the difference is worth naming because the old sentence is easy to
+ * reach for again. It said a lost index costs *one cycle of no-ops*; including
+ * the stamp in the clock makes it cost *one full stale window*. That is the
+ * better failure — an operator restoring a store should not have their whole
+ * library archived on the next message — and it is the same mechanism that makes
+ * a hand-set status survive, so the two cannot be separated.
  */
 export const SkillStatus = z.enum([
   /** Retrievable, and the clocks are running. What a new skill is. */
   "active",
-  /** Unused long enough to be doubted. Still retrievable; the lifecycle job decides how. */
+  /**
+   * Unused long enough to be doubted, and one step from `archived`.
+   *
+   * **It means nothing to retrieval**, which is #294's call: a stale skill is
+   * loaded exactly as an active one is. Deprioritizing it would need a weight,
+   * and the fusion it would go in is a round-robin interleave with no weights
+   * and no RRF constant — there is nothing to express it in. What `stale` is for
+   * is the team: a line that changed in their own directory and their own git
+   * history, before anything leaves retrieval.
+   */
   "stale",
-  /** Out of retrieval entirely. A status, never a deletion — the file stays. */
+  /**
+   * Out of retrieval entirely. A status, never a deletion — the file stays.
+   *
+   * Terminal as far as the lifecycle job is concerned, and by consequence rather
+   * than by rule: what would move a skill back is a task loading it, and nothing
+   * archived is ever loaded. A person editing the file is the road back.
+   */
   "archived"
 ]);
 

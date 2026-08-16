@@ -421,3 +421,176 @@ describe("skills needing embedding", () => {
     expect(store.skillsNeedingEmbedding(10)).toEqual([]);
   });
 });
+
+describe("the lifecycle clocks", () => {
+  const DAY = 86_400_000;
+
+  it("answers one row per indexed skill, in name order", () => {
+    create("rotate-a-cert");
+    create("deploy-to-staging");
+    reconcile();
+
+    expect(store.skillClocks().map(clock => clock.name)).toEqual([
+      "deploy-to-staging",
+      "rotate-a-cert"
+    ]);
+  });
+
+  // A never-used, never-judged skill: the clock it has is the one the index
+  // stamped, and everything the job would have recorded is null.
+  it("carries nulls for a skill nothing has used and nothing has judged", () => {
+    create("rotate-a-cert");
+    reconcile();
+
+    expect(store.skillClocks()).toEqual([
+      {
+        name: "rotate-a-cert",
+        status: "active",
+        firstSeenAt: NOW,
+        lastUsedAt: null,
+        statusByJob: null,
+        statusByJobAt: null
+      }
+    ]);
+  });
+
+  // The file's status, not the job's — which is what makes comparing the two a
+  // test of whether somebody else has written since the job last did.
+  it("reports the status the file carries", () => {
+    handWrite("rotate-a-cert", skillText("rotate-a-cert", { status: "archived" }));
+    reconcile();
+
+    expect(store.skillClocks()[0]?.status).toBe("archived");
+  });
+
+  it("reports a use", () => {
+    create("rotate-a-cert");
+    reconcile();
+    store.recordSkillUse(["rotate-a-cert"], NOW + DAY);
+
+    expect(store.skillClocks()[0]?.lastUsedAt).toBe(NOW + DAY);
+  });
+
+  // The pair of assertions the whole design turns on. Adopting restarts the
+  // clock a skill ages from; the job's own move must not, or its second
+  // threshold would be measured from its first decision.
+  it("stamps both columns when the job adopts a status it read", () => {
+    create("rotate-a-cert");
+    reconcile();
+
+    store.adoptSkillStatus([{ name: "rotate-a-cert", status: "active" }], NOW + DAY);
+
+    expect(store.skillClocks()[0]).toMatchObject({
+      statusByJob: "active",
+      statusByJobAt: NOW + DAY
+    });
+  });
+
+  it("leaves the stamp alone when the job records a status it wrote", () => {
+    create("rotate-a-cert");
+    reconcile();
+    store.adoptSkillStatus([{ name: "rotate-a-cert", status: "active" }], NOW);
+
+    store.recordSkillStatus([{ name: "rotate-a-cert", status: "stale" }]);
+
+    expect(store.skillClocks()[0]).toMatchObject({
+      statusByJob: "stale",
+      statusByJobAt: NOW
+    });
+  });
+
+  // `recordSkillUse`'s behaviour, for its reason: a skill deleted between the
+  // clock read and the write is gone, which is not an error.
+  it.each([
+    ["adopting", (name: string) => store.adoptSkillStatus([{ name, status: "stale" }], NOW)],
+    ["recording", (name: string) => store.recordSkillStatus([{ name, status: "stale" }])]
+  ])("ignores a name the index does not hold when %s", (_label, write) => {
+    create("rotate-a-cert");
+    reconcile();
+
+    expect(() => write("never-indexed")).not.toThrow();
+    expect(store.skillClocks()[0]?.statusByJob).toBeNull();
+  });
+
+  // Every indexed skill has a clock row, structurally — the inner join in
+  // `SKILL_CLOCKS_SQL` depends on it, and `seenSkill` beside the upsert is what
+  // makes it true.
+  it("holds a row for every skill the index does", () => {
+    create("rotate-a-cert");
+    handWrite("hand-written", skillText("hand-written"));
+    reconcile();
+
+    expect(store.skillClocks()).toHaveLength(store.listSkills().length);
+  });
+
+  it("loses the clock when the file goes", () => {
+    create("rotate-a-cert");
+    reconcile();
+    unlinkSync(join(directory, "rotate-a-cert.md"));
+
+    reconcile();
+
+    expect(store.skillClocks()).toEqual([]);
+  });
+
+  // Reconciliation writes `skill` and never these observations, which is what
+  // lets a job rewrite a status without resetting the clock it just read.
+  it("survives a re-index of the file it describes", () => {
+    create("rotate-a-cert");
+    reconcile();
+    store.recordSkillUse(["rotate-a-cert"], NOW);
+    store.adoptSkillStatus([{ name: "rotate-a-cert", status: "active" }], NOW);
+
+    files.setStatus("rotate-a-cert", "stale");
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    expect(store.skillClocks()[0]).toEqual({
+      name: "rotate-a-cert",
+      status: "stale",
+      firstSeenAt: NOW,
+      lastUsedAt: NOW,
+      statusByJob: "active",
+      statusByJobAt: NOW
+    });
+  });
+
+  // The property that keeps a weekly status rewrite free: only a moved
+  // *description* costs a vector, and a status is not one.
+  it("costs no embedding when a status is rewritten", () => {
+    create("rotate-a-cert");
+    reconcile();
+    embed("rotate-a-cert", [1, 0, 0]);
+
+    files.setStatus("rotate-a-cert", "stale");
+
+    expect(reconcile(MAX_SKILLS, NOW + DAY)).toMatchObject({ indexed: 1, invalidated: 0 });
+    expect(sources()).toEqual([{ source_kind: "skill", source_ref: "rotate-a-cert" }]);
+  });
+
+  // Archiving is the exception, and it is the one that has to hold: an archived
+  // skill leaves retrieval by having nothing for `nearest` to answer with.
+  it("drops the vector when the status written is archived", () => {
+    create("rotate-a-cert");
+    reconcile();
+    embed("rotate-a-cert", [1, 0, 0]);
+
+    files.setStatus("rotate-a-cert", "archived");
+
+    expect(reconcile(MAX_SKILLS, NOW + DAY)).toMatchObject({ invalidated: 1 });
+    expect(sources()).toEqual([]);
+    expect(store.skillsNeedingEmbedding(10)).toEqual([]);
+  });
+
+  // And the road back: un-archiving by hand puts the skill in front of whatever
+  // embeds, so its vector comes back for the price of one call.
+  it("offers an un-archived skill for embedding again", () => {
+    handWrite("rotate-a-cert", skillText("rotate-a-cert", { status: "archived" }));
+    reconcile();
+    expect(store.skillsNeedingEmbedding(10)).toEqual([]);
+
+    handWrite("rotate-a-cert", skillText("rotate-a-cert", { status: "active" }));
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    expect(store.skillsNeedingEmbedding(10)).toEqual(["rotate-a-cert"]);
+  });
+});

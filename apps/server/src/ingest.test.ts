@@ -67,6 +67,9 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       searchSkills: () => [],
       recordSkillUse: () => {},
       skillsNeedingEmbedding: () => [],
+      skillClocks: () => [],
+      adoptSkillStatus: () => {},
+      recordSkillStatus: () => {},
       readThreadSummary: () => null,
       close: () => {
         closed += 1;
@@ -364,6 +367,9 @@ describe("createMessageIngest", () => {
         searchSkills: () => [],
         recordSkillUse: () => {},
         skillsNeedingEmbedding: () => [],
+        skillClocks: () => [],
+        adoptSkillStatus: () => {},
+        recordSkillStatus: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -407,6 +413,9 @@ describe("createMessageIngest", () => {
         searchSkills: () => [],
         recordSkillUse: () => {},
         skillsNeedingEmbedding: () => [],
+        skillClocks: () => [],
+        adoptSkillStatus: () => {},
+        recordSkillStatus: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -435,16 +444,18 @@ describe("createMessageIngest", () => {
   });
 });
 
-// The two passes that run on channel activity rather than on a mention: the
-// quiescence sweep (#231) and the skill-embedding pass (#305). Both are wired
-// the same way and both are asserted the same way, because the wiring is the
-// claim — each one's own behaviour is its own file's.
+// The three passes that run on channel activity rather than on a mention: the
+// quiescence sweep (#231), the skill-embedding pass (#305) and the skill
+// lifecycle job (#294). All are wired the same way and all are asserted the same
+// way, because the wiring is the claim — each one's own behaviour is its own
+// file's.
 describe("the background passes", () => {
   /** Records which pass ran in which channel, in the order they ran. */
   function recordingPasses(): {
     ran: Array<[string, string]>;
     summarize: (channel: string, store: MessageStore) => Promise<number>;
     embedSkills: (channel: string, store: MessageStore) => Promise<number>;
+    lifecycleSkills: (channel: string, store: MessageStore) => Promise<number>;
   } {
     const ran: Array<[string, string]> = [];
     return {
@@ -456,11 +467,15 @@ describe("the background passes", () => {
       embedSkills: channel => {
         ran.push(["embedSkills", channel]);
         return Promise.resolve(0);
+      },
+      lifecycleSkills: channel => {
+        ran.push(["lifecycleSkills", channel]);
+        return Promise.resolve(0);
       }
     };
   }
 
-  it("runs both passes for a message it filed, in one order rather than a race", async () => {
+  it("runs all three passes for a message it filed, in one order rather than a race", async () => {
     const recorded = recordingStore();
     const sessions = createSessionRegistry({ openStore: () => recorded.store });
     const passes = recordingPasses();
@@ -469,7 +484,8 @@ describe("the background passes", () => {
     await createMessageIngest({
       sessions,
       summarize: passes.summarize,
-      embedSkills: passes.embedSkills
+      embedSkills: passes.embedSkills,
+      lifecycleSkills: passes.lifecycleSkills
     })(MESSAGE);
 
     // Queued behind both, which is how a test waits on work the handler
@@ -479,11 +495,12 @@ describe("the background passes", () => {
 
     expect(passes.ran).toEqual([
       ["summarize", MESSAGE.channelId],
-      ["embedSkills", MESSAGE.channelId]
+      ["embedSkills", MESSAGE.channelId],
+      ["lifecycleSkills", MESSAGE.channelId]
     ]);
   });
 
-  it("does not wait for either of them", async () => {
+  it("does not wait for any of them", async () => {
     // The handler resolves while the first is still running. A reply, and the
     // Slack acknowledgement behind it, must not sit behind a provider round trip
     // about some other thread or some other playbook.
@@ -495,31 +512,33 @@ describe("the background passes", () => {
     await createMessageIngest({
       sessions,
       summarize: () => new Promise<number>(resolve => (release = () => resolve(0))),
-      embedSkills: () => Promise.resolve(0)
+      embedSkills: () => Promise.resolve(0),
+      lifecycleSkills: () => Promise.resolve(0)
     })(MESSAGE);
 
-    // On the mutex — both of them read and write the channel's file, so they
+    // On the mutex — all three read and write the channel's file, so they
     // serialize against a task's context read rather than racing it.
     expect(session.mutex.pending).toBeGreaterThan(0);
     release();
   });
 
-  it("runs neither for a channel with no store", async () => {
+  it("runs none of them for a channel with no store", async () => {
     const sessions = createSessionRegistry({ openStore: () => null });
     const passes = recordingPasses();
 
     await createMessageIngest({
       sessions,
       summarize: passes.summarize,
-      embedSkills: passes.embedSkills
+      embedSkills: passes.embedSkills,
+      lifecycleSkills: passes.lifecycleSkills
     })(MESSAGE);
 
     expect(passes.ran).toEqual([]);
   });
 
   it("stays up when a pass rejects, which it is documented never to do", async () => {
-    // Defence rather than a path: both are documented never to reject, and this
-    // is the one place in the process where a broken promise would reach an
+    // Defence rather than a path: all three are documented never to reject, and
+    // this is the one place in the process where a broken promise would reach an
     // unhandled rejection with no task to attribute it to.
     const recorded = recordingStore();
     const sessions = createSessionRegistry({ openStore: () => recorded.store });
@@ -528,7 +547,8 @@ describe("the background passes", () => {
       createMessageIngest({
         sessions,
         summarize: () => Promise.reject(new Error("sweep is broken")),
-        embedSkills: () => Promise.reject(new Error("pass is broken"))
+        embedSkills: () => Promise.reject(new Error("pass is broken")),
+        lifecycleSkills: () => Promise.reject(new Error("job is broken"))
       })(MESSAGE)
     ).resolves.toBeUndefined();
 
@@ -804,6 +824,9 @@ describe("createRevisionIngest", () => {
         searchSkills: () => [],
         recordSkillUse: () => {},
         skillsNeedingEmbedding: () => [],
+        skillClocks: () => [],
+        adoptSkillStatus: () => {},
+        recordSkillStatus: () => {},
         readThreadSummary: () => null,
         close: () => {}
       }
@@ -890,6 +913,9 @@ describe("createRevisionIngest", () => {
         searchSkills: () => [],
         recordSkillUse: () => {},
         skillsNeedingEmbedding: () => [],
+        skillClocks: () => [],
+        adoptSkillStatus: () => {},
+        recordSkillStatus: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -933,6 +959,9 @@ describe("createRevisionIngest", () => {
         searchSkills: () => [],
         recordSkillUse: () => {},
         skillsNeedingEmbedding: () => [],
+        skillClocks: () => [],
+        adoptSkillStatus: () => {},
+        recordSkillStatus: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })

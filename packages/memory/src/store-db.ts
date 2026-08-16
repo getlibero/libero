@@ -577,20 +577,37 @@ END;
 -- structurally: reconciliation upserts \`skill\` and never touches this. And a
 -- table can be added later where a column cannot — see the note below.
 --
--- \`status_by_job\` and \`status_by_job_at\` are the lifecycle job's (#294) and
--- nothing reads them yet. **Columns are the stated exception to this tree's "a
+-- \`status_by_job\` and \`status_by_job_at\` are the lifecycle job's (#294), read
+-- through \`skillClocks\` and written through \`adoptSkillStatus\` and
+-- \`recordSkillStatus\`. They landed one issue ahead of their reader, and the
+-- reason is worth keeping: **columns are the stated exception to this tree's "a
 -- method with no caller was not written" rule**, because \`db.exec(SCHEMA)\`
--- no-ops on a table that already exists: a column added later is one every
+-- no-ops on a table that already exists, so a column added later is one every
 -- statement naming it throws \`no such column\` on, at open, for every store
--- already on disk, and this module has no migration. So the columns land with
--- the table or they need a second table to arrive in.
+-- already on disk, and this module has no migration.
 --
--- The rule they encode, recorded here because the job that reads them is not
--- written: **a missing row means the job has not spoken about this skill.** It
--- adopts the file's current status as its baseline and writes the row without
--- changing the file, so a lost index costs one cycle of no-ops rather than
--- freezing the library. The job may then move a skill only in the direction its
--- clock indicates, and never over a status changed after its own last write.
+-- What each holds, precisely, because the two are easy to collapse:
+--
+--   - \`status_by_job\` is **the status the job last recorded for this skill**,
+--     whether it wrote that status into the file or merely read it there. A row
+--     whose value differs from \`skill.status\` is therefore a status somebody
+--     else wrote, and a missing row is the job never having spoken here. Both
+--     make the job *adopt*: it records what the file says and changes no file.
+--   - \`status_by_job_at\` is **when the job last adopted**, and it is part of the
+--     clock rather than bookkeeping. A skill ages from
+--     \`max(last_used_at ?? first_seen_at, status_by_job_at)\`, so adopting a
+--     status a person set restarts the clock and buys them a full stale window
+--     before the job speaks again. The job's own move deliberately does **not**
+--     restamp it — the clock is what its decisions are measured against, and a
+--     job that reset it every time it acted could never reach its second
+--     threshold.
+--
+-- The consequence of folding the stamp into the clock, stated because an earlier
+-- draft of this comment said otherwise: a lost index costs **one full stale
+-- window** of no-ops rather than one cycle. That is the better failure — an
+-- operator restoring a store should not have their library archived on the next
+-- message — and it is the same mechanism that makes a hand-set status survive,
+-- so the two cannot be had separately.
 CREATE TABLE IF NOT EXISTS skill_use (
   name             TEXT PRIMARY KEY,
   first_seen_at    INTEGER NOT NULL,
@@ -1093,6 +1110,47 @@ export interface MessageStore {
    * Never includes an archived skill, which has no business being embedded.
    */
   skillsNeedingEmbedding(limit: number): readonly string[];
+  /**
+   * Every indexed skill with everything a lifecycle clock is read from, in name
+   * order (#294).
+   *
+   * One row per skill, joining what the file says its status is against what the
+   * job last recorded — which is the whole of how the job tells the team's word
+   * from its own. `status` here is the *file's*, as of the last reconciliation,
+   * so a caller that has not reconciled is comparing against a stale read; the
+   * job reconciles first for exactly that reason.
+   *
+   * Unbounded, like `listSkills` and for its reason: this is the same set, capped
+   * by `[skills] max_skills`. What a caller bounds is its writes.
+   */
+  skillClocks(): readonly SkillClock[];
+  /**
+   * Adopt these statuses as the job's baseline: it read them, it did not write
+   * them.
+   *
+   * Sets **both** `status_by_job` and `status_by_job_at`, and the second is what
+   * makes this different from `recordSkillStatus`. The stamp is part of the clock
+   * a skill ages from, so adopting a status somebody else wrote restarts that
+   * clock and buys the team a full stale window before the job speaks again. See
+   * `SkillStatus` in `@getlibero/schema` for why that is the rule.
+   *
+   * Silently ignores a name this index does not hold, `recordSkillUse`'s
+   * behaviour and its reason.
+   */
+  adoptSkillStatus(stamps: readonly SkillStatusStamp[], at: number): void;
+  /**
+   * Record statuses the job itself wrote into the files.
+   *
+   * Sets `status_by_job` and **deliberately leaves `status_by_job_at` alone**.
+   * The clock is what the job's own decisions are made against, so a job that
+   * restamped it every time it acted could never reach its second threshold — a
+   * skill marked stale at thirty days would archive at a hundred and twenty
+   * rather than ninety.
+   *
+   * Two methods rather than one with a flag, because that asymmetry *is* the
+   * design, and a boolean parameter is where such a thing goes to get inverted.
+   */
+  recordSkillStatus(stamps: readonly SkillStatusStamp[]): void;
   close(): void;
 }
 
@@ -1119,6 +1177,34 @@ export interface SkillFingerprint {
  */
 export interface StoredSkill extends SkillFingerprint {
   readonly created: string;
+  readonly status: SkillStatus;
+}
+
+/**
+ * One skill and everything the lifecycle clocks are decided from (#294).
+ *
+ * The two halves of the split this table keeps, in one row: `status` is what the
+ * *file* said at the last reconciliation, and the rest is what this index
+ * observed. Comparing the first against `statusByJob` is how the job tells a
+ * status somebody else wrote from the one it wrote itself.
+ *
+ * `lastUsedAt` is null for a skill no task has ever loaded, and `firstSeenAt` is
+ * what it clocks from instead — never `created`, which is model-authored text in
+ * a file the team may edit. `statusByJob` and `statusByJobAt` are both null until
+ * the job has spoken about this skill once.
+ */
+export interface SkillClock {
+  readonly name: string;
+  readonly status: SkillStatus;
+  readonly firstSeenAt: number;
+  readonly lastUsedAt: number | null;
+  readonly statusByJob: SkillStatus | null;
+  readonly statusByJobAt: number | null;
+}
+
+/** One skill and the status a caller is recording against it. */
+export interface SkillStatusStamp {
+  readonly name: string;
   readonly status: SkillStatus;
 }
 
@@ -1490,6 +1576,49 @@ const SKILLS_NEEDING_EMBEDDING_SQL = `SELECT s.name
     LIMIT ?`;
 
 /**
+ * The lifecycle clocks (#294), and why the join is an inner one.
+ *
+ * **Every indexed skill has a `skill_use` row**, structurally: the only way into
+ * `skill` is `reconcileSkills`' upsert, which runs `seenSkill` beside it, and
+ * `skill_delete` takes the clock row away again. So a `LEFT JOIN` would be
+ * defending against a state this schema cannot reach, and it would have to
+ * invent a `first_seen_at` for the row it found — which is the one thing this
+ * design refuses, because inventing a clock origin is how a model writing
+ * `created: 2099-01-01` would have moved an archival clock.
+ *
+ * Ordered by name for `LIST_SKILLS_SQL`'s reason: a caller that bounds its writes
+ * takes a deterministic prefix rather than whatever the query planner returned.
+ */
+const SKILL_CLOCKS_SQL = `SELECT s.name, s.status, u.first_seen_at, u.last_used_at,
+                                 u.status_by_job, u.status_by_job_at
+     FROM skill s
+     JOIN skill_use u ON u.name = s.name
+    ORDER BY s.name`;
+
+/**
+ * The job adopting a status it read, and the job recording one it wrote.
+ *
+ * Two statements differing in one column, and that column is the design: adopting
+ * restamps `status_by_job_at`, which is part of the clock a skill ages from, so a
+ * status somebody else wrote restarts the clock and buys them a full window. The
+ * job's own move must not restamp it, or its second threshold would be measured
+ * from its first decision and a skill would archive sixty days late.
+ *
+ * Neither is wrapped in a transaction. The file write these follow lives outside
+ * SQLite, so a transaction could not make the pair atomic — it could only hide
+ * which half landed. Each row is independent and idempotent, and the crash
+ * between a file write and its stamp is answered by the arbitration reading it as
+ * somebody else's edit on the next pass.
+ */
+const ADOPT_SKILL_STATUS_SQL = `UPDATE skill_use
+       SET status_by_job = ?, status_by_job_at = ?
+     WHERE name = ?`;
+
+const RECORD_SKILL_STATUS_SQL = `UPDATE skill_use
+       SET status_by_job = ?
+     WHERE name = ?`;
+
+/**
  * The sweep: quiet threads with nothing current standing for them.
  *
  * The subquery folds a channel's messages into threads — `COALESCE(thread_ts,
@@ -1703,6 +1832,16 @@ type SkillRow = {
   readonly ino: number | bigint;
 };
 
+/** A `SKILL_CLOCKS_SQL` row. `MessageRow`'s reasons apply. */
+type SkillClockRow = {
+  readonly name: string;
+  readonly status: string;
+  readonly first_seen_at: number | bigint;
+  readonly last_used_at: number | bigint | null;
+  readonly status_by_job: string | null;
+  readonly status_by_job_at: number | bigint | null;
+};
+
 /** A `STALE_THREADS_SQL` row. `MessageRow`'s reasons apply. */
 type StaleThreadRow = {
   readonly thread: string;
@@ -1824,6 +1963,9 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     ),
     searchSkills: db.prepare(SEARCH_SKILLS_SQL),
     skillsNeedingEmbedding: db.prepare(SKILLS_NEEDING_EMBEDDING_SQL),
+    skillClocks: db.prepare(SKILL_CLOCKS_SQL),
+    adoptSkillStatus: db.prepare(ADOPT_SKILL_STATUS_SQL),
+    recordSkillStatus: db.prepare(RECORD_SKILL_STATUS_SQL),
     // DESC because the only way to ask SQLite for a tail is to sort backwards
     // and take the head; `recent` reverses the rows before returning them.
     //
@@ -2218,6 +2360,28 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         readonly name: string;
       }>;
       return rows.map(row => row.name);
+    },
+
+    skillClocks() {
+      const rows = statements.skillClocks.all() as SkillClockRow[];
+      return rows.map(row => ({
+        name: row.name,
+        // The cast is `listSkills`' — the column was written from a parsed
+        // `SkillStatus` and this module trusts its own writes.
+        status: row.status as SkillStatus,
+        firstSeenAt: Number(row.first_seen_at),
+        lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
+        statusByJob: row.status_by_job === null ? null : (row.status_by_job as SkillStatus),
+        statusByJobAt: row.status_by_job_at === null ? null : Number(row.status_by_job_at)
+      }));
+    },
+
+    adoptSkillStatus(stamps, at) {
+      for (const stamp of stamps) statements.adoptSkillStatus.run(stamp.status, at, stamp.name);
+    },
+
+    recordSkillStatus(stamps) {
+      for (const stamp of stamps) statements.recordSkillStatus.run(stamp.status, stamp.name);
     },
 
     close() {

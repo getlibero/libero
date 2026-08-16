@@ -115,7 +115,7 @@ export const DEFAULT_MEMORY_SETTINGS = {
  * for none — a policy violation this process committed on its own, and one
  * nobody in the channel can see. The two failures are not symmetric.
  *
- * The three numbers are still the schema's figures. They only matter once
+ * The other numbers are still the schema's figures. They only matter once
  * something is enabled, and inventing a second set for a disabled feature is
  * how two copies of a number drift.
  */
@@ -124,7 +124,9 @@ export const DEFAULT_SKILL_SETTINGS = {
   authorAfterToolCalls: 5,
   topK: 3,
   maxSkillChars: 8_192,
-  maxSkills: 100
+  maxSkills: 100,
+  staleAfterMs: 30 * 86_400_000,
+  archiveAfterMs: 90 * 86_400_000
 } as const;
 
 export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
@@ -191,7 +193,11 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
       authorAfterToolCalls: sheet.skills.author_after_tool_calls,
       topK: sheet.skills.top_k,
       maxSkillChars: sheet.skills.max_skill_chars,
-      maxSkills: sheet.skills.max_skills
+      maxSkills: sheet.skills.max_skills,
+      // Days there, milliseconds here — `summarizeAfterIdleMs`'s conversion,
+      // made once, where the sheet stops and this process starts.
+      staleAfterMs: sheet.skills.stale_after_days * 86_400_000,
+      archiveAfterMs: sheet.skills.archive_after_days * 86_400_000
     }
   };
 }

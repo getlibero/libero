@@ -168,6 +168,18 @@ Neither is the model's — the operation shapes have no field for either — so
 restamping them would reset a date the team can see and un-archive a skill the
 lifecycle job had retired.
 
+`setStatus` is the fifth operation and the lifecycle job's only write (#294). It
+is a method rather than a third `SkillOp` precisely so the model cannot reach it:
+the operation shapes are strict and have no `status` field, so what moves one is
+either a hand edit or a clock. Three properties are worth stating because each is
+a test. It **reads before it writes and refuses a file it could not parse**,
+which is what stops a weekly clock overwriting somebody's half-saved edit. It
+**creates nothing** — no `mkdir`, no file — so it can never be what brings
+`skills/` into being for a channel whose sheet turned the feature off. And it
+**answers `unchanged` without touching the file** when the status already
+matches, which is what keeps a steady-state pass from renaming every skill in the
+library and making the next reconciliation re-read all of them.
+
 Neither store migrates on the reader's side: a version mismatch names both
 numbers and stops, because a reader that repaired a file would be a reader that
 changed the evidence — and here the evidence is a transcript a model reasons
@@ -390,8 +402,9 @@ table that must not be made.
 pass is a `readdir` and a `stat` per entry: no file is opened and nothing is
 parsed. Only an entry whose fingerprint moved is read, and only a skill whose
 *description* moved costs an embedding — the body and the status can both change
-for free, which is what keeps a lifecycle job's weekly status rewrite from
-paying for a vector it does not need.
+for free, which is what keeps the lifecycle job's status rewrite from paying for
+a vector it does not need. That last is tested rather than asserted as of #294:
+ageing a skill and then asking `skillsNeedingEmbedding` answers nothing.
 
 The fingerprint is `mtime_ms`, `size` and `ino`, and all three are carried
 because this directory has two kinds of writer that miss different ones. A write
@@ -415,6 +428,44 @@ one parse attempt per pass until somebody fixes it. And a directory holding more
 skills than the sheet allows is **truncated rather than refused**: the first
 `max_skills` by name are the library and the rest are logged and left on disk,
 because losing retrieval entirely is a worse answer than a deterministic subset.
+
+### The clocks, and the two stamps that are not one
+
+`skillClocks` is the lifecycle job's read (#294): one row per indexed skill,
+joining the status the *file* carries against the two columns recording what the
+job itself last said. Comparing those two is the whole of how the job tells the
+team's word from its own, and it is a value comparison rather than a timestamp
+one — there is no clock on these files this package trusts, which is why
+`mtime_ms` is compared for inequality and never read as a time.
+
+The join is an **inner** one, and that is a claim rather than a shortcut. Every
+row in `skill` arrives through `reconcileSkills`' upsert, which runs `seenSkill`
+beside it, and `skill_delete` takes the clock row away again — so a skill with no
+clock row is a state this schema cannot reach. A `LEFT JOIN` would have to invent
+a `first_seen_at` for the row it found, and inventing a clock origin is exactly
+what keeping `created` out of the clocks exists to prevent.
+
+`adoptSkillStatus` and `recordSkillStatus` differ in one column and that column is
+the design. Adopting sets `status_by_job_at` as well, and that stamp is **part of
+the clock** — a skill ages from `max(last_used_at ?? first_seen_at,
+status_by_job_at)`, so adopting a status a person set restarts the clock and buys
+them a full stale window before the job speaks again. The job's own move must not
+restamp it, or its second threshold would be measured from its first decision and
+a skill marked stale at thirty days would archive at a hundred and twenty. Two
+methods rather than one with a flag, because a boolean parameter is where that
+asymmetry would go to get inverted.
+
+Neither is wrapped in a transaction, and the reason is that a transaction could
+not help: the file write these stamps follow is outside SQLite, so all it could do
+is hide which half landed. What answers the crash between the two is the job's own
+arbitration — a file it wrote with a baseline it did not record reads, next pass,
+as somebody else's edit, and costs one stale window.
+
+The consequence of folding the stamp into the clock is stated where the column is
+defined, because an earlier draft of that comment said otherwise: **a lost index
+costs one full stale window** of no-ops rather than one cycle. That is the better
+failure, and it is the same mechanism that makes a hand-set status survive, so
+the two cannot be had separately.
 
 ### `nearest` grew a kind, and it was not optional
 
@@ -488,10 +539,11 @@ task collects. Nothing here changed for it: the LEFT JOIN was always the answer
 to "what has no vector", and `description_hash` was always what decides whether
 one still stands.
 
-What is not here is the lifecycle job that runs the stale and archive clocks over
-`skill_use` (#294), and the curator that proposes merges of overlapping skills
-(#295). `status_by_job` and `status_by_job_at` are the columns waiting for the
-first of those.
+What is not here is the curator that proposes merges of overlapping skills
+(#295). The lifecycle job landed in #294 and its two halves are described below —
+the file writer it needed and the clock read it decides on. The job itself is
+`apps/server/src/session/skill-lifecycle.ts`, because the thresholds are a team
+sheet's and this package holds no sheet.
 
 `reconcileSkillIndex` has two callers, both in `apps/server` and both inside the
 session's lock. `session/skill-recall.ts` runs it at the head of a task, which is

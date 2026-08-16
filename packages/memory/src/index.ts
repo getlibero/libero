@@ -30,10 +30,12 @@ export {
 export type {
   EmbeddingHit,
   EmbeddingSource,
+  SkillClock,
   SkillEntry,
   SkillFingerprint,
   SkillReconcileResult,
   SkillReconciliation,
+  SkillStatusStamp,
   StaleThread,
   StoredSkill,
   MessageReader,
@@ -49,7 +51,7 @@ export { openMemoryFile } from "./memory-file.js";
 export type { MemoryFile, MemoryFileOptions } from "./memory-file.js";
 
 export { openSkillFiles } from "./skill-file.js";
-export type { SkillFiles, SkillFilesOptions } from "./skill-file.js";
+export type { SkillFiles, SkillFilesOptions, SkillStatusResult } from "./skill-file.js";
 
 export { reconcileSkillIndex } from "./skill-store.js";
 export type { SkillReconcileOptions } from "./skill-store.js";

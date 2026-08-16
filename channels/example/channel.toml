@@ -171,12 +171,28 @@ summarize_after_idle_minutes = 60
 # operation may write is not a field here — it is fixed in @getlibero/schema,
 # because it bounds what the MODEL may write; max_skill_chars below bounds what a
 # skill may BE, which is why it may not be set below the model's own ceiling.
+#
+# The last two fields are the lifecycle clocks. A playbook nothing has loaded for
+# stale_after_days is marked `stale` in its own frontmatter — still retrieved,
+# just visibly ageing in your git history — and one nothing has loaded for
+# archive_after_days is marked `archived` and leaves retrieval. The job that does
+# this runs no model call and spends nothing.
+#
+# Three things it will not do. It NEVER DELETES A FILE: archiving is a status,
+# and removing a playbook is your team's act. Loading a skill resets both clocks,
+# so a playbook in use stays active. And a status YOU set by hand is respected —
+# the job adopts it and starts the clock again from that moment, so archiving
+# something early or reactivating something it retired both stick, and you get a
+# full stale window before it has an opinion again. What ages a skill is when a
+# task last loaded it, never the `created:` line in the file.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
 author_after_tool_calls = 5                 # strictly more than this many served calls
 top_k                   = 3                 # how many skills a task may open with
 max_skill_chars         = 8192              # a skill's body; one operation may write 4096
 max_skills              = 100               # the whole library; nothing else bounds it
+stale_after_days        = 30                # unloaded this long and a skill is marked stale
+archive_after_days      = 90                # unloaded this long and it leaves retrieval
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero

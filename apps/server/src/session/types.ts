@@ -226,6 +226,28 @@ export interface SkillSettings {
   readonly maxSkillChars: number;
   /** `[skills] max_skills`, the whole library's ceiling. */
   readonly maxSkills: number;
+  /**
+   * `[skills] stale_after_days`, in milliseconds. Unused this long and the
+   * lifecycle job marks a skill `stale`.
+   *
+   * Days in the sheet and milliseconds here, the conversion
+   * `summarizeAfterIdleMs` already makes and for its reason: the sheet carries
+   * the unit an operator thinks in.
+   *
+   * What "unused" is measured from is the *index* — when a task last loaded the
+   * skill, or when this store first saw it — and never `created` in the file,
+   * which is model-authored text a team may edit.
+   */
+  readonly staleAfterMs: number;
+  /**
+   * `[skills] archive_after_days`, in milliseconds. Unused this long and the
+   * skill leaves retrieval entirely.
+   *
+   * Never below `staleAfterMs`: the schema refuses a sheet that says otherwise,
+   * because the wrong order makes `stale` unreachable rather than expressing a
+   * policy anybody meant.
+   */
+  readonly archiveAfterMs: number;
 }
 
 /** What a channel's team sheet resolved to. Everything here came out of the file. */

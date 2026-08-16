@@ -114,7 +114,9 @@ describe("settingsFrom", () => {
         authorAfterToolCalls: 5,
         topK: 3,
         maxSkillChars: 8_192,
-        maxSkills: 100
+        maxSkills: 100,
+        staleAfterMs: 30 * 86_400_000,
+        archiveAfterMs: 90 * 86_400_000
       }
     });
   });
@@ -146,7 +148,9 @@ describe("settingsFrom", () => {
         authorAfterToolCalls: 5,
         topK: 3,
         maxSkillChars: 8_192,
-        maxSkills: 100
+        maxSkills: 100,
+        staleAfterMs: 30 * 86_400_000,
+        archiveAfterMs: 90 * 86_400_000
       }
     });
   });
@@ -239,7 +243,9 @@ describe("createSheetResolver", () => {
         authorAfterToolCalls: 5,
         topK: 3,
         maxSkillChars: 8_192,
-        maxSkills: 100
+        maxSkills: 100,
+        staleAfterMs: 30 * 86_400_000,
+        archiveAfterMs: 90 * 86_400_000
       }
     });
   });
@@ -449,7 +455,9 @@ describe("the skills fallback", () => {
       authorAfterToolCalls: 5,
       topK: 3,
       maxSkillChars: 8_192,
-      maxSkills: 100
+      maxSkills: 100,
+      staleAfterMs: 30 * 86_400_000,
+      archiveAfterMs: 90 * 86_400_000
     });
   });
 

@@ -34,6 +34,7 @@ import type { ChecklistReporter, ChecklistTarget } from "./checklist/checklist.j
 import type { DisplayNameLookup } from "./session/names.js";
 import type { SessionRegistry } from "./session/registry.js";
 import type { SkillEmbedSweep } from "./session/skill-embed.js";
+import type { SkillLifecyclePass } from "./session/skill-lifecycle.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { ChannelRouter } from "./session/router.js";
 
@@ -100,6 +101,22 @@ export interface MessageIngestOptions {
    */
   embedSkills?: SkillEmbedSweep;
   /**
+   * The skill lifecycle job (#294), run beside the other two and for their
+   * reason: a status ages through nothing happening, which fires no event.
+   *
+   * A third option rather than a leg of `embedSkills`, though both gate on
+   * `[skills] enabled`. The decisive reason is that the embedding pass returns
+   * before it reads a sheet when this deployment has no embedding provider — a
+   * supported configuration — so folding the clocks in would make a channel's
+   * lifecycle depend on a key it does not have. The two also want different
+   * rates, and keeping the provider client and the spend reporter out of the
+   * lifecycle module is what makes "it spends nothing" structural.
+   *
+   * Optional, and its absence is a deployment whose skill statuses only ever
+   * move by hand.
+   */
+  lifecycleSkills?: SkillLifecyclePass;
+  /**
    * Where a follow-up's checklist goes. Optional per call for `onHeld`'s
    * reason and answered by the same knot in compose.ts — the card poster is
    * built after this handler is.
@@ -154,6 +171,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
   const onHeld = options.onHeld;
   const summarize = options.summarize;
   const embedSkills = options.embedSkills;
+  const lifecycleSkills = options.lifecycleSkills;
 
   return async (message: SlackMessage): Promise<SlackReply | undefined> => {
     const session = options.sessions.open({
@@ -247,6 +265,19 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
       if (embedSkills !== undefined) {
         const store = session.store;
         void session.mutex.run(() => embedSkills(message.channelId, store)).catch(() => {});
+      }
+
+      // The skill lifecycle job (#294), on every clause above: the mutex,
+      // because it reconciles the skill index and rewrites skill files a task's
+      // context read goes through; not awaited, because nothing is waiting on a
+      // clock; after the append, so the three passes queue in a stated order.
+      //
+      // Its own `mutex.run` again, for the reason the pass above has one and one
+      // of its own: this is the pass that spends nothing, and a job with no
+      // provider to wait on should not be able to sit behind two that have.
+      if (lifecycleSkills !== undefined) {
+        const store = session.store;
+        void session.mutex.run(() => lifecycleSkills(message.channelId, store)).catch(() => {});
       }
     }
 
