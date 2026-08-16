@@ -387,6 +387,47 @@ now has something in it. `startRig({ users })` seeds the directory those
 messages are attributed by; an author with no entry renders as their id, which
 is a real state rather than a gap.
 
+**`[skills]` is off in every sheet this harness writes too, and for a stronger
+version of curation's reason.** The schema prefaults `[skills] enabled = true`,
+so a sheet that said nothing would give every case here a reconcile and a
+retrieval at the head of every task — and, above the threshold, an author turn,
+which is a model turn that consumes the next script entry. `channels.ts` writes
+`enabled = false` unless a `SheetSpec.skills` says otherwise. `authorAfterToolCalls`
+is on that spec because the default of five would make a case about the write
+half script six served calls to reach it; the schema's floor is `1` and the
+comparison is strictly greater, so `1` means "two served calls".
+
+**No embedding client is wired into the rig, so skill retrieval runs on full
+text alone.** That is a real deployment rather than a gap — the team sheet names
+it the behaviour for a process with no embedding provider — and it is the right
+one here, because an embedding client is a second live provider the ESLint block
+exists to keep out and a fake one would put a hand-built vector space between an
+attack and the thing it attacks. The consequence for a case: **word the question
+to share vocabulary with the skill it should reach**, or the arrival assertion
+fails for a reason that has nothing to do with what is under test.
+
+**The author turn is post-reply, exactly like curation.** `deliverMention`
+resolves while it is still to run, so an assertion about a skill file has to wait
+on `agent.waitForLog({ event: "authored" }, N)` first. Same counting rule, same
+reason.
+
+**A task's opening context is not `model.seen[n]`.** Dropping the author turns by
+`system === SKILL_AUTHOR_SYSTEM_PROMPT` leaves every *turn* of every task, and a
+tool-heavy task has several — so "the second task" is not the second entry.
+`memory-curation.test.ts` gets away with indexing because each of its tasks is a
+single turn; a skills case does not. Filter to the turns seeded with exactly one
+message: `assembleContext` returns one `user` message however much it packed into
+it, and every later turn of the same task carries the transcript grown from it.
+`skill-poisoning.test.ts`'s `openingContexts` is that filter.
+
+**A `respond` hook must envelope its result.** `completeResult` (and
+`completeListResult` for a catalog) adds the `resultType` the 2026-07-28
+revision made mandatory, and a real client refuses a result without it. A
+hand-built object fails as *"the tool server's answer could not be read as
+MCP"* — on **every** call the hook let through, not only the one being poisoned,
+which reads like the fall-through is broken rather than like the envelope is
+missing.
+
 **Curation is off in every sheet this harness writes, and turning it on is a
 case's own decision.** The schema prefaults `[memory] enabled = true`, so a
 sheet that said nothing would give every case in this suite a curation turn —
@@ -483,6 +524,14 @@ outlive the run.
   malformed operations refused with the file provably unchanged, the curation
   turn's own tokens on the proxy's meter, and the one case here that documents
   an exposure rather than a defence.
+- `src/skill-poisoning.test.ts` — #293, the skill layer: a skill authored,
+  landed on the split roots and provably arriving in a later task's opening
+  context; the write path's traversal and oversize attempts leaving the
+  filesystem untouched; a planted hostile skill changing nothing about what the
+  channel may do, refused at both gates — the agent's name map and the proxy's
+  approval hold, the second with the audit row to show for it; and the surface
+  this suite had not met, a skill as a *persistent* place a credential could come
+  to rest, attacked over both the elided path and the kept one.
 - `src/deletion-derived.test.ts` — #233, Slack retention reaching derived data:
   a real `message_deleted`, `message_changed` and tombstone event through the
   gateway, each taking the thread's summary and that summary's embedding with

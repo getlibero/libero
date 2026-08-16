@@ -38,7 +38,9 @@ import {
   createMemoryFileOpener,
   createMessageStoreOpener,
   createServer,
-  createSheetResolver
+  createSheetResolver,
+  createSkillFilesOpener,
+  createSkillRecall
 } from "@getlibero/server";
 import type { Cleanup } from "./cleanup.js";
 
@@ -228,6 +230,25 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       channelsRoot: options.channelsRoot,
       logger
     }),
+    // The skills directory and the retrieval over it (#293), on the memory
+    // opener's terms and for its reason: `channels.ts` writes
+    // `[skills] enabled = false` unless a sheet says otherwise, so wiring these
+    // changes nothing for a case that did not ask, and a case that *does* ask
+    // gets the production path over the same split roots — `skills/` beside
+    // `store.db`, and provably not in the channels root.
+    //
+    // **No `embed` is wired, so retrieval runs on full text alone.** That is a
+    // real deployment rather than a gap — the team sheet calls it the behaviour
+    // for a process with no embedding provider — and it is the right one here:
+    // an embedding client is a second live provider this suite's ESLint block
+    // exists to keep out, and a fake one would put a hand-built vector space
+    // between an attack and the thing it is attacking.
+    skills: createSkillFilesOpener({
+      storeRoot: options.storeRoot,
+      channelsRoot: options.channelsRoot,
+      logger
+    }),
+    skillRecall: createSkillRecall({ logger }),
     signal: tasks.signal,
     logger,
     ...(options.now !== undefined ? { now: options.now } : {}),
