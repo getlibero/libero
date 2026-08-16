@@ -479,16 +479,32 @@ turn writes through `openSkillFiles().apply` (#291). A skill somebody adds with
 an editor and a skill an operation wrote reach the index by the same road, which
 is what this package was built for and is still the only road there is.
 
+`skillsNeedingEmbedding` got its production caller in #305, and until then it had
+none: nothing embedded a skill, so `nearest(vector, k, "skill")` answered `[]` in
+every deployment and the hybrid retrieval above ran on its lexical leg alone. The
+caller is `apps/server/src/session/skill-embed.ts`, on channel activity rather
+than at task head — embedding is a provider round trip whose benefit the *next*
+task collects. Nothing here changed for it: the LEFT JOIN was always the answer
+to "what has no vector", and `description_hash` was always what decides whether
+one still stands.
+
 What is not here is the lifecycle job that runs the stale and archive clocks over
 `skill_use` (#294), and the curator that proposes merges of overlapping skills
 (#295). `status_by_job` and `status_by_job_at` are the columns waiting for the
 first of those.
 
-`reconcileSkillIndex`'s caller is `apps/server/src/session/skill-recall.ts`, and
-it is the only one. It runs at the head of a task inside the session's lock,
-which is where it belongs: the moment correctness is required is the moment
-retrieval runs, and outside the lock the pass would race the quiescence sweep's
-writes and, once #291 lands, the previous task's authoring. The fusion itself —
+`reconcileSkillIndex` has two callers, both in `apps/server` and both inside the
+session's lock. `session/skill-recall.ts` runs it at the head of a task, which is
+where it belongs: the moment correctness is required is the moment retrieval
+runs, and outside the lock the pass would race the quiescence sweep's writes and,
+once #291 lands, the previous task's authoring. `session/skill-embed.ts` runs it
+on channel activity as the first half of the embedding pass (#305), and has to:
+this table is what says which skills have no vector standing for them, so a pass
+that only read it could embed nothing a task had not already indexed — a skill
+somebody wrote with an editor would wait for a mention before it could even
+become a candidate. Two callers of one function rather than two paths, and the
+rule above is unaffected: `reconcileSkills` is still the only writer, and neither
+caller writes a file. The fusion itself —
 a round-robin interleave over the two rank lists, on the argument that an L2
 distance and an FTS5 rank are not comparable — is over there rather than here,
 with the bounds it applies. See `apps/server/README.md`.

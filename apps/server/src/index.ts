@@ -43,6 +43,7 @@ import {
 import { createMemoryFileOpener } from "./session/memory.js";
 import { createQueryEmbedder } from "./session/embed.js";
 import { createRecall } from "./session/recall.js";
+import { createSkillEmbedSweep } from "./session/skill-embed.js";
 import { createSkillRecall } from "./session/skill-recall.js";
 import { createSkillFilesOpener } from "./session/skills.js";
 import { createSheetResolver } from "./session/sheet.js";
@@ -177,6 +178,34 @@ const recall = createRecall({ logger });
 // sheet says is the behaviour rather than a setting.
 const skillRecall = createSkillRecall({ logger });
 
+// How a channel's `skills/` directory is opened. Hoisted out of the dependency
+// object below because two things need it now: the router, per task, and the
+// embedding pass, per sweep. One opener, so both reach the same directory under
+// the same rules.
+const skills = createSkillFilesOpener({ storeRoot, channelsRoot, logger });
+
+// The skill-embedding pass (#305), which is what gives skill retrieval its
+// second leg: `reconcileSkillIndex` writes no vector, so without this
+// `nearest(…, "skill")` answers nothing and the hybrid fusion runs on full text.
+// Built here beside the sweep and for its reasons — the embedding client and the
+// spend reporter are this file's.
+//
+// It reads the same resolver every task reads, so `[skills] enabled` and
+// `max_skills` are as fresh for a pass as they are for a reply, and a channel
+// with no sheet embeds nothing.
+const embedSkills = createSkillEmbedSweep({
+  embedding: embeddings,
+  ...(embedding === null ? {} : { embeddingModel: embedding.model }),
+  files: skills,
+  settings: async channel => {
+    const settings = await sheets(channel);
+    return { enabled: settings.skills.enabled, maxSkills: settings.skills.maxSkills };
+  },
+  reportTurn,
+  signal: tasks.signal,
+  logger
+});
+
 const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
@@ -208,8 +237,9 @@ const { gateway } = createServer({
   sheets: sheets,
   store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
-  skills: createSkillFilesOpener({ storeRoot, channelsRoot, logger }),
+  skills,
   summarize,
+  embedSkills,
   recall,
   embed,
   skillRecall,

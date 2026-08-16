@@ -40,6 +40,7 @@ import { createMentionHandler } from "./handler.js";
 import { createMessageIngest, createRevisionIngest } from "./ingest.js";
 import type { QueryEmbedder } from "./session/embed.js";
 import type { Recall } from "./session/recall.js";
+import type { SkillEmbedSweep } from "./session/skill-embed.js";
 import type { SkillRecall } from "./session/skill-recall.js";
 import type { SkillFilesOpener } from "./session/skills.js";
 import type { SummarySweep } from "./session/summarize.js";
@@ -189,6 +190,18 @@ export interface ServerDeps {
    * way round, and so a test can supply either half.
    */
   readonly skillRecall?: SkillRecall;
+  /**
+   * The skill-embedding pass (#305), run on channel activity beside `summarize`.
+   *
+   * Built by the process for `summarize`'s reason — it needs an embedding client
+   * and the spend reporter, neither of which this file holds. Its absence is a
+   * deployment whose skills retrieve on their lexical leg alone, which is what
+   * #292 shipped and what a process with no embedding provider does regardless.
+   *
+   * It takes the same `skills` opener this file already holds, so wiring it
+   * without that one is a pass that opens no directory and embeds nothing.
+   */
+  readonly embedSkills?: SkillEmbedSweep;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -342,6 +355,7 @@ export function createServer(deps: ServerDeps): Server {
     onHeld: target => prompter?.(target),
     checklist: target => checklists?.(target),
     ...(deps.summarize !== undefined ? { summarize: deps.summarize } : {}),
+    ...(deps.embedSkills !== undefined ? { embedSkills: deps.embedSkills } : {}),
     logger,
     ...clock
   });
