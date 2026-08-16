@@ -44,6 +44,7 @@ import { createMemoryFileOpener } from "./session/memory.js";
 import { createQueryEmbedder } from "./session/embed.js";
 import { createRecall } from "./session/recall.js";
 import { createSkillEmbedSweep } from "./session/skill-embed.js";
+import { createSkillLifecyclePass } from "./session/skill-lifecycle.js";
 import { createSkillRecall } from "./session/skill-recall.js";
 import { createSkillFilesOpener } from "./session/skills.js";
 import { createSheetResolver } from "./session/sheet.js";
@@ -206,6 +207,33 @@ const embedSkills = createSkillEmbedSweep({
   logger
 });
 
+// The skill lifecycle job (#294): the stale and archive clocks, on channel
+// activity beside the two passes above.
+//
+// **No `reportTurn`, and that is the point rather than an omission.** This is the
+// first background pass in the process that holds nothing it could spend with —
+// no completion client, no embedding client, no meter — so "deterministic, no
+// model call" is a fact about what was wired rather than a promise the module
+// makes. Anyone adding one of those here should treat that as the question.
+//
+// Same resolver and same opener as the pass above, so `[skills] enabled` is as
+// fresh for a clock as it is for a reply, and a channel with no sheet ages
+// nothing.
+const lifecycleSkills = createSkillLifecyclePass({
+  files: skills,
+  settings: async channel => {
+    const settings = await sheets(channel);
+    return {
+      enabled: settings.skills.enabled,
+      maxSkills: settings.skills.maxSkills,
+      staleAfterMs: settings.skills.staleAfterMs,
+      archiveAfterMs: settings.skills.archiveAfterMs
+    };
+  },
+  signal: tasks.signal,
+  logger
+});
+
 const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
@@ -240,6 +268,7 @@ const { gateway } = createServer({
   skills,
   summarize,
   embedSkills,
+  lifecycleSkills,
   recall,
   embed,
   skillRecall,

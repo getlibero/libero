@@ -365,7 +365,8 @@ describe("what reconciliation does for retrieval", () => {
       list: () => files.list(),
       fingerprints: () => files.fingerprints(),
       read: name => (name === "cut-a-release" ? null : files.read(name)),
-      apply: op => files.apply(op)
+      apply: op => files.apply(op),
+      setStatus: (name, status) => files.setStatus(name, status)
     };
 
     const loaded = await retrieve(ask("how is a release cut", { files: vanishing }));
@@ -562,7 +563,8 @@ describe("what a failure costs", () => {
         throw new Error("EACCES");
       },
       read: () => null,
-      apply: () => ({ outcome: "failed", reason: "malformed_arguments" })
+      apply: () => ({ outcome: "failed", reason: "malformed_arguments" }),
+      setStatus: () => ({ outcome: "unusable" })
     };
 
     await expect(
@@ -598,7 +600,8 @@ describe("what a failure costs", () => {
         throw new Error("EACCES");
       },
       read: () => null,
-      apply: () => ({ outcome: "failed", reason: "malformed_arguments" })
+      apply: () => ({ outcome: "failed", reason: "malformed_arguments" }),
+      setStatus: () => ({ outcome: "unusable" })
     };
 
     await retrieverWith({ logger })(ask("how is a release cut", { files: broken }));

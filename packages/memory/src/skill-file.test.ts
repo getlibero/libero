@@ -121,8 +121,21 @@ describe("opening", () => {
 
   // Every method, and nothing that could name another channel or hold a handle.
   // No `close`, because there is none to hold.
-  it("offers four operations and no way to name a channel", () => {
-    expect(Object.keys(skills).sort()).toEqual(["apply", "fingerprints", "list", "read"]);
+  it("offers five operations and no way to name a channel", () => {
+    expect(Object.keys(skills).sort()).toEqual([
+      "apply",
+      "fingerprints",
+      "list",
+      "read",
+      "setStatus"
+    ]);
+  });
+
+  // The fifth is the lifecycle job's, and what it is not is the point: there is
+  // still no delete, and `setStatus` is the only writer that is not `apply`.
+  it("offers no way to delete a skill", () => {
+    expect(Object.keys(skills)).not.toContain("delete");
+    expect(Object.keys(skills)).not.toContain("remove");
   });
 });
 
@@ -409,6 +422,124 @@ describe("reading a skill", () => {
     handWrite("rotate-a-cert.md", skillFile("rotate-a-cert", { description: "after" }));
 
     expect(skills.read("rotate-a-cert")?.frontmatter.description).toBe("after");
+  });
+});
+
+describe("moving a skill's status", () => {
+  it("writes the new status and nothing else", () => {
+    create("rotate-a-cert");
+    const before = onDisk("rotate-a-cert") ?? "";
+
+    expect(skills.setStatus("rotate-a-cert", "stale")).toEqual({
+      outcome: "written",
+      from: "active"
+    });
+
+    // The whole point of `serializeSkillFile`'s fixed field order: one line
+    // moved and the rest of the document — description, created, body, the
+    // trailing newline — is byte for byte what it was.
+    const after = onDisk("rotate-a-cert") ?? "";
+    const changed = before
+      .split("\n")
+      .map((line, index) => [line, after.split("\n")[index]] as const)
+      .filter(([was, is]) => was !== is);
+    expect(changed).toEqual([["status: active", "status: stale"]]);
+  });
+
+  it("reads the new status back", () => {
+    create("rotate-a-cert");
+    skills.setStatus("rotate-a-cert", "archived");
+
+    expect(skills.read("rotate-a-cert")?.frontmatter.status).toBe("archived");
+  });
+
+  // The outcome that keeps a steady-state pass free: no rename, so no
+  // fingerprint moves and nothing re-indexes.
+  it("writes nothing at all when the file already says so", () => {
+    create("rotate-a-cert");
+    const before = statSync(join(directory, "rotate-a-cert.md"));
+
+    expect(skills.setStatus("rotate-a-cert", "active")).toEqual({
+      outcome: "unchanged",
+      status: "active"
+    });
+
+    const after = statSync(join(directory, "rotate-a-cert.md"));
+    expect(after.ino).toBe(before.ino);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    expect(after.size).toBe(before.size);
+  });
+
+  it.each([
+    ["a name nobody wrote", "never-written"],
+    ["a name that could never be a filename", "../escape"]
+  ])("answers unusable for %s", (_label, name) => {
+    expect(skills.setStatus(name, "stale")).toEqual({ outcome: "unusable" });
+  });
+
+  // The property that protects a half-saved edit: a clock never overwrites a
+  // file it could not read.
+  it("leaves a file that does not parse exactly as it found it", () => {
+    handWrite("broken.md", "no frontmatter here");
+
+    expect(skills.setStatus("broken", "archived")).toEqual({ outcome: "unusable" });
+    expect(onDisk("broken")).toBe("no frontmatter here");
+  });
+
+  it("leaves a misnamed file alone", () => {
+    handWrite("deploy.md", skillFile("rollback"));
+
+    expect(skills.setStatus("deploy", "archived")).toEqual({ outcome: "unusable" });
+    expect(onDisk("deploy")).toContain("status: active");
+  });
+
+  // A status write only ever lands on a file that exists, so it can never be
+  // what creates `skills/` for a channel whose sheet turned the feature off.
+  it("creates no directory", () => {
+    expect(skills.setStatus("never-written", "archived")).toEqual({ outcome: "unusable" });
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it("gives a hand-written file with no status line one, keeping everything else", () => {
+    handWrite(
+      "deploy.md",
+      "---\nname: deploy\ndescription: How we ship.\ncreated: 2026-01-01\n---\n\nRun the script.\n"
+    );
+
+    expect(skills.setStatus("deploy", "stale")).toEqual({ outcome: "written", from: "active" });
+
+    const after = skills.read("deploy");
+    expect(after?.frontmatter).toEqual({
+      name: "deploy",
+      description: "How we ship.",
+      created: "2026-01-01",
+      status: "stale"
+    });
+    expect(after?.body).toBe("Run the script.");
+  });
+
+  // It is a status change, not an operation: nothing about it is decided
+  // against the library's ceiling.
+  it("works on a full library", () => {
+    for (let index = 0; index < MAX_SKILLS; index += 1) create(`skill-${String(index)}`);
+
+    expect(skills.setStatus("skill-0", "archived")).toMatchObject({ outcome: "written" });
+  });
+
+  it("carries a revision's status forward rather than resetting it", () => {
+    create("rotate-a-cert");
+    skills.setStatus("rotate-a-cert", "archived");
+
+    revise("rotate-a-cert");
+
+    expect(skills.read("rotate-a-cert")?.frontmatter.status).toBe("archived");
+  });
+
+  it("leaves no temporary file behind", () => {
+    create("rotate-a-cert");
+    skills.setStatus("rotate-a-cert", "stale");
+
+    expect(entries()).toEqual(["rotate-a-cert.md"]);
   });
 });
 

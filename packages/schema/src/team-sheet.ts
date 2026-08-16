@@ -652,17 +652,37 @@ export const TeamSheet = z.object({
       // refused and the model is told to revise something instead, which is the
       // outcome the whole design prefers anyway.
       max_skills: z.number().int().min(1).max(1_000).default(100),
+      // The two clocks the lifecycle job runs (#294). A skill nothing has
+      // loaded for `stale_after_days` goes `stale`, and one nothing has loaded
+      // for `archive_after_days` goes `archived` and leaves retrieval. The job
+      // is deterministic, spends no tokens, and **never deletes a file** —
+      // archiving is a status, and removing the file is the team's act.
+      //
+      // Thirty and ninety, from the spec.
+      //
+      // **Days rather than milliseconds**, which is
+      // `summarize_after_idle_minutes`'s precedent: this sheet carries the unit
+      // an operator thinks in and the conversion happens once, where the
+      // settings are resolved. Nothing here is a duration a machine chose.
+      //
+      // **`min(1)` rather than `min(0)`.** Zero would be a second spelling of
+      // "the clocks are off", which is the call `top_k` already made against
+      // itself — one switch with two spellings is one of them going untested. A
+      // channel that wants no archiving in practice writes a large number, and
+      // the roof leaves ten years for it.
+      //
+      // What the clocks run on is **not** `created` in the file: that line is
+      // model-authored, hand-editable documentation and no clock reads it. See
+      // ./skill.ts. The index stamps when it first saw a skill and when a task
+      // last loaded one, and those are what age it.
+      stale_after_days: z.number().int().min(1).max(3_650).default(30),
+      archive_after_days: z.number().int().min(1).max(3_650).default(90),
       // **How much one operation may carry is deliberately not a field here**,
       // exactly as `max_op_chars` is not on `[memory]`: `SKILL_BODY_MAX_CHARS`
       // and `SKILL_DESCRIPTION_MAX_CHARS` in ./skill.ts bound what the model may
       // write rather than what this channel may spend, and making either
       // settable would mean building the published JSON Schema per channel, so
       // `SKILL_TOOLS` would stop being a module constant.
-      //
-      // Nor is the stale/archive clock a field yet. The spec's thirty and ninety
-      // days are the lifecycle job's (#294), which is not written; adding
-      // `stale_after_days` later is a new optional field, so no sheet written
-      // today changes shape.
       //
       // One degradation this block does not have a field for and should not
       // grow one for: a deployment with **no embedding provider configured**
@@ -671,6 +691,29 @@ export const TeamSheet = z.object({
       // unlike a thread summary a skill carries a hand-written description of
       // when it applies, which is exactly what a lexical index is good at. That
       // is a behaviour, not a setting (#292).
+    })
+    // **The one `.check()` on a block that spends model tokens, and the note on
+    // `[memory]` above explains why it is not the exception it looks like.**
+    // That note rejected two candidates, and both were rules across *different*
+    // quantities: a character cap against a token cap, and a size beside a
+    // switch. This is two fields in one block, in one unit, measuring one
+    // ordered quantity — and the wrong order does not express a policy anybody
+    // meant. It makes `stale` unreachable: a skill would archive before it could
+    // ever be marked, so the waypoint the team is supposed to see in git never
+    // appears.
+    //
+    // The issue lands on `archive_after_days` because that is the field an
+    // operator edits to fix it, and because the defaults resolve first — so a
+    // sheet that sets only `stale_after_days = 120` is refused against the
+    // default ninety, which is the case the message has to read well for.
+    .check(ctx => {
+      if (ctx.value.archive_after_days >= ctx.value.stale_after_days) return;
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value.archive_after_days,
+        path: ["archive_after_days"],
+        message: "a skill cannot archive before it goes stale",
+      });
     })
     .prefault({}),
   mcp_server: McpServerList.default([]),

@@ -193,12 +193,28 @@ summarize_after_idle_minutes = 60
 # operation may write is not a field here — it is fixed in @getlibero/schema,
 # because it bounds what the MODEL may write; max_skill_chars below bounds what a
 # skill may BE, which is why it may not be set below the model's own ceiling.
+#
+# The last two fields are the lifecycle clocks. A playbook nothing has loaded for
+# stale_after_days is marked `stale` in its own frontmatter — still retrieved,
+# just visibly ageing in your git history — and one nothing has loaded for
+# archive_after_days is marked `archived` and leaves retrieval. The job that does
+# this runs no model call and spends nothing.
+#
+# Three things it will not do. It NEVER DELETES A FILE: archiving is a status,
+# and removing a playbook is your team's act. Loading a skill resets both clocks,
+# so a playbook in use stays active. And a status YOU set by hand is respected —
+# the job adopts it and starts the clock again from that moment, so archiving
+# something early or reactivating something it retired both stick, and you get a
+# full stale window before it has an opinion again. What ages a skill is when a
+# task last loaded it, never the `created:` line in the file.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
 author_after_tool_calls = 5                 # strictly more than this many served calls
 top_k                   = 3                 # how many skills a task may open with
 max_skill_chars         = 8192              # a skill's body; one operation may write 4096
 max_skills              = 100               # the whole library; nothing else bounds it
+stale_after_days        = 30                # unloaded this long and a skill is marked stale
+archive_after_days      = 90                # unloaded this long and it leaves retrieval
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
@@ -600,6 +616,8 @@ loaded into the opening context. Never the whole library.
 | `top_k` | no | How many skills a task may open with. Defaults to `3`. May not be set below `1` or above `10`. |
 | `max_skill_chars` | no | The longest a skill's body may be, in characters. Defaults to `8192`. May not be set below `4096`, the most one operation may write, or above `65536`. |
 | `max_skills` | no | How many skills this channel may hold. Defaults to `100`. |
+| `stale_after_days` | no | How long a skill goes unloaded before it is marked `stale`. Defaults to `30`. |
+| `archive_after_days` | no | How long a skill goes unloaded before it is marked `archived` and leaves retrieval. Defaults to `90`. May not be below `stale_after_days`. |
 
 **On by default, for the reason [`[memory]`](#memory) is.** A skill comes out of a task somebody
 asked for, into capped text your team can read, edit and delete, on a turn metered through the same
@@ -638,6 +656,23 @@ promise a length this channel refuses. Above it is room for a longer playbook wr
 skill — archiving is a status, and removing a file is your team's act — so the count only ever grows
 on its own, and what grows with it is the work of re-reading the directory and of comparing skills
 against each other for overlap.
+
+**The two clocks are the last two fields, and what they will not do matters more than what they
+will.** A playbook nothing has loaded for `stale_after_days` is marked `stale` in its own
+frontmatter — still retrieved exactly as before, just visibly ageing in your git history — and one
+nothing has loaded for `archive_after_days` is marked `archived` and drops out of retrieval. The job
+that does this runs on channel activity, makes no model call, and spends nothing.
+
+It **never deletes a file**: archiving is a status, and removing a playbook is your team's act.
+Loading a skill resets both clocks, so a playbook in use stays active. And **a status you set by
+hand is input the job respects rather than fights** — it adopts what your file says and restarts the
+clock from that moment, so archiving something early or reactivating something it retired both
+stick, and you get a full stale window before it has an opinion again. Archiving by hand is
+permanent unless you undo it, because what would bring a skill back is a task loading it and nothing
+archived is ever loaded.
+
+What ages a skill is when a task last loaded it, or, for one no task ever has, when the agent first
+saw the file. Never the `created:` line — that is documentation you may edit, and no clock reads it.
 
 ### `[[mcp_server]]`
 

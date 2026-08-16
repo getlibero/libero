@@ -44,7 +44,13 @@ export interface LogFields {
    * "skills_loaded", "skills_over_cap", "skill_reconcile_failed",
    * "skill_recall_failed", "skill_oversize", "skill_file_unusable",
    * "skill_file_misnamed", "authored", "authoring_failed", "skills_embedded",
-   * "skill_embed_failed" — the last pair is the skill-embedding pass (#305),
+   * "skill_embed_failed", "skills_adopted", "skills_marked_stale",
+   * "skills_archived", "skills_reactivated", "skills_lifecycle_failed"
+   * — the last five are the lifecycle job (#294), and they are four words for
+   * four outcomes rather than one with a field because what an operator wants to
+   * grep for is a library ageing, a library being adopted after a restore, and a
+   * job that could not write. "skills_adopted" is the line that explains a run
+   * that moved nothing. The pair before them is the skill-embedding pass (#305),
    * which is separate from "summary_embed_failed" because the two corpora fail
    * for different reasons and an operator grepping one is not asking about the
    * other. "authored"/"authoring_failed" is

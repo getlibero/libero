@@ -55,6 +55,13 @@
 // silently reset a `created` date the team can see and un-archive a skill the
 // lifecycle job had retired.
 //
+// `status` has one writer that is not a person and not a revision, and it is
+// `setStatus` below (#294). It is a fifth operation rather than a third `SkillOp`
+// precisely so the model cannot reach it: the operation shapes are strict and
+// have no field for a status, so what moves one is either a hand edit or a
+// clock. It reads before it writes and refuses a file it could not parse, which
+// is what keeps a weekly clock from overwriting somebody's half-saved edit.
+//
 // ## No `max_skill_chars` here
 //
 // The sheet's per-body cap is deliberately absent from this module's options, and
@@ -136,10 +143,10 @@ export interface SkillFilesOptions {
  * and a number, and every descriptor it opens is closed inside the operation
  * that opened it.
  *
- * **There is no delete.** Archiving is a status the lifecycle job writes and
- * removing a file is the team's own act on their own directory; an operation
- * that erased a playbook after one task is not something the author turn should
- * be able to reach for.
+ * **There is no delete.** Archiving is a status the lifecycle job writes through
+ * `setStatus` and removing a file is the team's own act on their own directory;
+ * an operation that erased a playbook after one task is not something the author
+ * turn should be able to reach for.
  */
 export interface SkillFiles {
   /**
@@ -182,7 +189,44 @@ export interface SkillFiles {
   read(name: string): SkillFile | null;
   /** Run one operation, and answer what it did. */
   apply(op: SkillOp): SkillOpResult;
+  /**
+   * Move one skill's `status`, leaving every other byte of the file alone.
+   *
+   * The lifecycle job's only write (#294), and the only place in this package
+   * where machinery rewrites a file a team authored. What it cannot do is the
+   * point of its being a separate method rather than a third `SkillOp`: it
+   * cannot create a file, cannot name a body or a description, cannot move
+   * `created`, and **cannot write a file it could not first read** — which is
+   * what protects a half-saved edit from being overwritten by a clock.
+   *
+   * It is also not reachable by a model. The operation shapes in
+   * `@getlibero/schema` are strict and have no `status` field, deliberately, so
+   * a status is something the team sets and something a clock sets and nothing
+   * else.
+   */
+  setStatus(name: string, status: SkillStatus): SkillStatusResult;
 }
+
+/**
+ * What `setStatus` answers. Never an exception for an ordinary outcome, which is
+ * `apply`'s discipline — an exception here is the operator's problem (`EACCES`,
+ * `ENOSPC`) and not the caller's.
+ *
+ * `unusable` is `read`'s three nulls collapsed — no such file, a file that does
+ * not parse, a file whose frontmatter names something else — for `read`'s
+ * reason: a caller does the same thing in all three, which is nothing. The file
+ * layer has already logged which it was.
+ *
+ * `unchanged` is separate from `written` because it is the outcome that keeps a
+ * steady-state pass free. A status write lands by rename, so it moves all three
+ * fingerprint fields and costs the next reconciliation a re-read; answering
+ * `unchanged` without touching the file is what stops a weekly clock from
+ * re-indexing a whole library that did not move.
+ */
+export type SkillStatusResult =
+  | { readonly outcome: "written"; readonly from: SkillStatus }
+  | { readonly outcome: "unchanged"; readonly status: SkillStatus }
+  | { readonly outcome: "unusable" };
 
 /**
  * What the directory looks like to `planSkillOp`.
@@ -456,6 +500,33 @@ export function openSkillFiles(options: SkillFilesOptions): SkillFiles {
       ensureDirectory();
       replaceFileAtomically(fileFor(op.name), Buffer.from(text, "utf8"));
       return plan.result;
+    },
+
+    setStatus(name, status) {
+      if (!SkillName.safeParse(name).success) return { outcome: "unusable" };
+
+      // Read first, always. The rest of the file is carried through untouched,
+      // and `serializeSkillFile`'s fixed field order is what makes the result a
+      // one-line diff in the team's git history rather than a reordered header.
+      const previous = readFile(name);
+      if (previous === null) return { outcome: "unusable" };
+
+      const from = previous.frontmatter.status;
+      if (from === status) return { outcome: "unchanged", status: from };
+
+      const text = serializeSkillFile({
+        frontmatter: { ...previous.frontmatter, status },
+        body: previous.body
+      });
+
+      // No `ensureDirectory()`, and no `planSkillOp`. A status write only ever
+      // lands on a file that already exists, so it cannot create the `skills/`
+      // directory a `[skills] enabled = false` channel was deliberately spared;
+      // and `maxSkills` bounds what an operation may *add*, where this adds
+      // nothing. Routing it through the planner would put a `SkillOp` shape
+      // around something no model can ask for.
+      replaceFileAtomically(fileFor(name), Buffer.from(text, "utf8"));
+      return { outcome: "written", from };
     }
   };
 }

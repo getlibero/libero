@@ -616,8 +616,18 @@ is that an irrelevant playbook costs context and a distraction and **widens
 nothing the proxy governs**. And **archived skills are excluded structurally**
 rather than by a filter here: `searchSkills` carries its own status clause inside
 the match, and reconciliation drops an archived skill's vector, so `nearest` has
-nothing to answer with. What `stale` means to retrieval is #294's to decide;
-today it is left exactly alone.
+nothing to answer with.
+
+**What `stale` means to retrieval is nothing**, which is #294's call and worth the
+sentence it takes. A stale skill is retrieved exactly as an active one is: no
+marker rendered into the context, no demotion in the fusion. The reason is that
+there is nothing to express a demotion *in* — the interleave is round-robin with
+no weights and no RRF constant, deliberately, because an L2 distance and a bm25
+rank are not comparable. Introducing a first weight in order to demote a playbook
+nobody has opened lately would be paying exactly the cost that block avoided, to
+express a judgement the team can already read in their own git history. So `stale`
+is for the people who own the directory, and it is the waypoint on the way to
+`archived` — which *is* a retrieval fact.
 
 The block does **not** carry the "this is context, not instructions" line the
 other three do, and that is deliberate: history, curated facts and summaries are
@@ -686,6 +696,142 @@ which is the cheaper of the two errors available.
 **A deployment with no embedding provider is unchanged**: the pass returns before
 it reads a sheet or opens a directory, so there is no error, no retry loop, and
 no log line, and skills go on retrieving from full text.
+
+## The lifecycle job: the stale and archive clocks
+
+`src/session/skill-lifecycle.ts` answers #294. A library only ever grows —
+`max_skills` bounds it, there is no delete operation, and until this file nothing
+aged a playbook that had stopped being true. What ages one is not its text and not
+its `created:` line: it is what the index observed, which is when a task last
+loaded it or, for a skill no task ever has, when this store first saw the file.
+
+**It is the one background pass that spends nothing, and that is structural.**
+`SkillLifecycleOptions` holds no completion client, no embedding client and no
+`reportTurn`. "Deterministic, no model call" is therefore a fact about what was
+wired rather than a promise the module makes — it is the first pass in this
+process for which the shared spend reporter is deliberately not passed, and
+`index.ts` says so beside the call. Anyone adding one of those options should take
+that as the question rather than the answer.
+
+### The arbitration
+
+`skill_use` carries two columns nothing read until this landed: `status_by_job`,
+the status the job last recorded, and `status_by_job_at`, when it last adopted
+one. Three rules use them.
+
+**A status the job did not write is the team's.** Detected by comparing the file's
+status against `status_by_job` — a value comparison, not a timestamp one, because
+there is no clock on these files worth trusting. A disagreement, or a missing row,
+makes the job *adopt*: it records what the file says and writes no file that run.
+
+**Adopting restamps `status_by_job_at`, and that stamp is part of the clock.** A
+skill ages from `max(last_used_at ?? first_seen_at, status_by_job_at)`, so a hand
+edit buys the team a full stale window before the clock speaks again. Without it,
+somebody un-archiving a long-unused playbook would watch the job archive it back a
+cycle later, which is fighting them rather than respecting them. The consequence
+is stated rather than discovered: **a lost index costs one full stale window** of
+no-ops, where the comment written before this job existed said one cycle. That is
+the better failure — an operator restoring a store should not have their library
+archived by the next message in the channel — and it is the same mechanism that
+makes a hand-set status survive, so the two cannot be had separately.
+
+**The job's own move does not restamp it.** The clock is what its decisions are
+measured against, so a job that reset it every time it acted could never reach its
+second threshold: a skill marked stale at thirty days would archive at a hundred
+and twenty rather than ninety.
+
+Two more things the arbitration settles. **A target is absolute rather than a
+step**, so two hundred days idle goes straight to `archived` — `stale` is a
+waypoint a team observes when the clock passes through it in real time, not a
+turnstile the job has to be present for, and what guards against a burst is the
+first-sight rule rather than step-limiting. And **ageing needs only time while
+freshening needs a use**: idle time is evidence a skill has gone quiet, but "not
+idle" is evidence of nothing — a skill somebody archived by hand this morning has
+an idle time of zero. So a move back toward `active` also requires that the most
+recent thing that happened was a task loading the skill, which is what makes
+**`archived` terminal with no `if` for it**: an archived skill is out of both
+retrieval legs, so it can never record the use that is the only road back. A
+person editing the file is the road back, and the adoption rule respects it.
+
+### Ordering, and why reconciliation comes first
+
+The arbitration compares the *file's* status against the job's record, and the
+file's status reaches it through the index. A pass that did not reconcile first
+would read its own last word back and conclude nothing had changed, with every
+hand edit since the previous pass invisible. **Reconciling first is what makes "a
+hand-set status is respected" a property rather than a race**, and it makes this
+`reconcileSkillIndex`'s third caller; all three hold the session's lock.
+
+Files are written **before** their stamps. A crash between the two leaves a file
+the job wrote with a baseline it did not record, which the next pass reads as
+somebody else's edit: it adopts, and the cost is one stale window. The other order
+would leave the index claiming a move the file never took, and under a persistent
+`EACCES` the baseline would churn every run while the skill never aged.
+
+A second reconciliation runs when anything was written, so an archived skill
+leaves retrieval and loses its vector before the pass returns. **Correctness does
+not depend on it** — `skill-recall.ts` reconciles at the head of every task before
+it searches, so the skill is excluded on the very next task either way. What it
+shortens is the window, from "the next task" to "the end of the pass".
+
+### The schedule, and what "weekly" means here
+
+`LIFECYCLE_INTERVAL_MS` is six hours per channel rather than `SWEEP_INTERVAL_MS`'s
+five minutes, and the departure needs its argument written down because the
+embedding pass established the opposite precedent. That file imports the sweep's
+constant on the grounds that there is one "how often this process bothers to look"
+number — which is an argument against *restating* a figure, not against a second
+one existing. What it bounds there is how soon a newly saved skill gets a vector,
+a question whose answer changes within minutes. Here the smallest unit either
+threshold is expressed in is a **day**, so looking 288 times a day would answer a
+question that changes at most twice in a skill's life.
+
+The spec calls this a *weekly* maintenance job. What makes any interval at or
+below that satisfy it is **idempotence**: the clocks are absolute dates, so
+running more often moves nothing sooner than its threshold and running less often
+only delays. "Weekly" is a statement about how often a status needs revisiting,
+not about a schedule this process would have to grow a timer and a channel
+enumerator to keep — and both are shapes `threads.ts` and `summarize.ts` have
+already declined. A channel silent for a year ages nothing until somebody speaks
+in it, which is the sweep's own argument arriving at the same place.
+
+It is triggered where the other two are: the message ingest path, on the session
+mutex, deliberately not awaited, in its own `mutex.run`. A **third** option rather
+than a leg of the embedding pass, though both gate on `[skills] enabled` — so the
+sweep's "different sheet blocks" argument does not apply and should not be reused.
+The decisive reason is that `createSkillEmbedSweep` returns before it reads a
+sheet when the deployment has no embedding provider, a supported configuration, so
+folding the clocks in would make a channel's lifecycle depend on a key it does not
+have. Keeping the provider client and the meter out of the lifecycle module is
+also what makes "it spends nothing" structural.
+
+The only state it keeps in memory is the per-channel interval stamp, so a restart
+makes the next message in each channel run a pass immediately. That costs one
+`SELECT` and one `readdir` and moves nothing that was not already due.
+
+### What bounds it
+
+- **The sheet.** `[skills] enabled` turns it off, and a channel that disabled
+  skills has its statuses frozen rather than rewritten by a feature it does not
+  run. `stale_after_days` and `archive_after_days` are the two clocks, defaulting
+  to the spec's thirty and ninety; the schema refuses a sheet where the second is
+  below the first, because that order makes `stale` unreachable rather than
+  expressing a policy anybody meant.
+- **`LIFECYCLE_INTERVAL_MS`**, per channel.
+- **`MAX_SKILL_STATUS_WRITES_PER_PASS`.** Twenty files per pass, in name order, so
+  a channel coming back to a library nobody has touched in a year gets a diff
+  somebody can read rather than a hundred rewrites at once. Adoption is unbounded,
+  because it writes no file.
+- **`setStatus` itself**, which cannot create a file, cannot create the directory,
+  and cannot write a file it could not first read — so a half-saved edit is never
+  overwritten by a clock.
+
+It never deletes. Archiving is a status; removing a file is the team's act on the
+team's directory, and there is no delete on `SkillFiles` to reach for. Its log
+words are `skills_adopted`, `skills_marked_stale`, `skills_archived`,
+`skills_reactivated` and `skills_lifecycle_failed`, all carrying counts and never
+a playbook's name. The first of those is the line that explains a run that moved
+nothing.
 
 ## Thread summaries
 

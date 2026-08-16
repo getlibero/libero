@@ -74,7 +74,9 @@ describe("the example team sheet", () => {
       author_after_tool_calls: 5,
       top_k: 3,
       max_skill_chars: 8_192,
-      max_skills: 100
+      max_skills: 100,
+      stale_after_days: 30,
+      archive_after_days: 90
     });
   });
 
@@ -427,7 +429,9 @@ describe("the skills block", () => {
       author_after_tool_calls: 5,
       top_k: 5,
       max_skill_chars: 8_192,
-      max_skills: 100
+      max_skills: 100,
+      stale_after_days: 30,
+      archive_after_days: 90
     });
   });
 
@@ -507,6 +511,54 @@ describe("the skills block", () => {
   ])("refuses %s as a top_k", (_label, top_k) => {
     expect(TeamSheet.safeParse(skillsSheet({ top_k })).success).toBe(false);
   });
+
+  // The two clocks (#294). The spec's figures, and the claim the block made
+  // before they existed: adding them was a new optional field either way, so a
+  // sheet written against the old schema still parses to the same behaviour.
+  it("runs the spec's clocks by default", () => {
+    const sheet = TeamSheet.parse({ channel: minimalChannel() });
+    expect(sheet.skills.stale_after_days).toBe(30);
+    expect(sheet.skills.archive_after_days).toBe(90);
+  });
+
+  it("takes a channel's own clocks", () => {
+    const sheet = TeamSheet.parse(skillsSheet({ stale_after_days: 7, archive_after_days: 14 }));
+    expect(sheet.skills.stale_after_days).toBe(7);
+    expect(sheet.skills.archive_after_days).toBe(14);
+  });
+
+  // Not a policy anybody meant: it makes `stale` unreachable, so the waypoint a
+  // team is supposed to see in git never appears.
+  it("refuses a sheet that would archive before it goes stale", () => {
+    expect(paths(skillsSheet({ stale_after_days: 60, archive_after_days: 30 }))).toEqual([
+      "skills.archive_after_days: custom"
+    ]);
+  });
+
+  // The case the message has to read well for: only one field was set, and the
+  // other is the default it now contradicts.
+  it("refuses a stale threshold set past the default archive one", () => {
+    expect(paths(skillsSheet({ stale_after_days: 120 }))).toEqual([
+      "skills.archive_after_days: custom"
+    ]);
+  });
+
+  it("accepts the two set equal", () => {
+    expect(paths(skillsSheet({ stale_after_days: 30, archive_after_days: 30 }))).toBeNull();
+  });
+
+  // Zero is the clocks turned off said a second way, which is `top_k`'s call.
+  it.each([["stale_after_days"], ["archive_after_days"]])("refuses a %s of zero", field => {
+    expect(paths(skillsSheet({ [field]: 0 }))).toContain(`skills.${field}: too_small`);
+  });
+
+  it("refuses a clock past the sanity bound", () => {
+    expect(paths(skillsSheet({ stale_after_days: 3_651, archive_after_days: 3_651 }))).toEqual([
+      "skills.stale_after_days: too_big",
+      "skills.archive_after_days: too_big"
+    ]);
+    expect(paths(skillsSheet({ stale_after_days: 3_650, archive_after_days: 3_650 }))).toBeNull();
+  });
 });
 
 describe("defaults", () => {
@@ -569,7 +621,9 @@ describe("defaults", () => {
       author_after_tool_calls: 5,
       top_k: 3,
       max_skill_chars: 8_192,
-      max_skills: 100
+      max_skills: 100,
+      stale_after_days: 30,
+      archive_after_days: 90
     });
   });
 

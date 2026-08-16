@@ -41,6 +41,7 @@ import { createMessageIngest, createRevisionIngest } from "./ingest.js";
 import type { QueryEmbedder } from "./session/embed.js";
 import type { Recall } from "./session/recall.js";
 import type { SkillEmbedSweep } from "./session/skill-embed.js";
+import type { SkillLifecyclePass } from "./session/skill-lifecycle.js";
 import type { SkillRecall } from "./session/skill-recall.js";
 import type { SkillFilesOpener } from "./session/skills.js";
 import type { SummarySweep } from "./session/summarize.js";
@@ -202,6 +203,17 @@ export interface ServerDeps {
    * without that one is a pass that opens no directory and embeds nothing.
    */
   readonly embedSkills?: SkillEmbedSweep;
+  /**
+   * The skill lifecycle job (#294), run on channel activity beside the other two.
+   *
+   * Built by the process for their reason and for none of their reasons: it needs
+   * neither a model client nor the spend reporter, because it spends nothing. It
+   * is built out there because the sheet resolver and the `skills` opener are, and
+   * a pass wired without the latter opens no directory and ages nothing.
+   *
+   * Its absence is a deployment whose skill statuses only ever move by hand.
+   */
+  readonly lifecycleSkills?: SkillLifecyclePass;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -356,6 +368,7 @@ export function createServer(deps: ServerDeps): Server {
     checklist: target => checklists?.(target),
     ...(deps.summarize !== undefined ? { summarize: deps.summarize } : {}),
     ...(deps.embedSkills !== undefined ? { embedSkills: deps.embedSkills } : {}),
+    ...(deps.lifecycleSkills !== undefined ? { lifecycleSkills: deps.lifecycleSkills } : {}),
     logger,
     ...clock
   });
