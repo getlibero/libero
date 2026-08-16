@@ -38,7 +38,10 @@ import { createApprovalRegistry } from "./approvals/registry.js";
 import type { ApprovalRegistry } from "./approvals/registry.js";
 import { createMentionHandler } from "./handler.js";
 import { createMessageIngest, createRevisionIngest } from "./ingest.js";
+import type { QueryEmbedder } from "./session/embed.js";
 import type { Recall } from "./session/recall.js";
+import type { SkillRecall } from "./session/skill-recall.js";
+import type { SkillFilesOpener } from "./session/skills.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { DisplayNameLookup } from "./session/names.js";
 import { createSessionRegistry } from "./session/registry.js";
@@ -161,6 +164,31 @@ export interface ServerDeps {
    * task that starts from the transcript and `MEMORY.md` alone.
    */
   readonly recall?: Recall;
+  /**
+   * The one embedding of the incoming request (#292), shared by both retrievers.
+   *
+   * Built by the process for `recall`'s reason, and the two now come as a pair:
+   * `recall` no longer embeds anything of its own, so wiring it without this is
+   * a deployment whose semantic recall never returns anything.
+   */
+  readonly embed?: QueryEmbedder;
+  /**
+   * How a channel's `skills/` directory is opened (#292).
+   *
+   * `memory`'s shape and its reason — opened per task because its cap is the
+   * sheet's. Its absence is a task that starts with no playbooks, which is how
+   * every task started before phase 3.
+   */
+  readonly skills?: SkillFilesOpener;
+  /**
+   * Skill retrieval at the head of a task (#292).
+   *
+   * Unlike `recall`, this one *can* be built here — it needs no embedding client,
+   * because the vector reaches it as an argument. It is a dependency anyway, so
+   * that a deployment can wire the directory without the retrieval or the other
+   * way round, and so a test can supply either half.
+   */
+  readonly skillRecall?: SkillRecall;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -193,6 +221,7 @@ export {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_SKILL_SETTINGS,
   createSheetResolver
 } from "./session/sheet.js";
 export type { SheetResolver } from "./session/sheet.js";
@@ -201,7 +230,13 @@ export { createMessageStoreOpener } from "./session/store.js";
 export { createMemoryFileOpener } from "./session/memory.js";
 export type { MemoryFileOpener, MemoryFileOpenerOptions } from "./session/memory.js";
 export type { MessageStoreOpener, MessageStoreOpenerOptions } from "./session/store.js";
-export type { MemorySettings } from "./session/types.js";
+export { createSkillFilesOpener } from "./session/skills.js";
+export type { SkillFilesOpener, SkillFilesOpenerOptions } from "./session/skills.js";
+export { SKILLS_MAX_CHARS, createSkillRecall } from "./session/skill-recall.js";
+export type { LoadedSkill, SkillRecall } from "./session/skill-recall.js";
+export { createQueryEmbedder } from "./session/embed.js";
+export type { QueryEmbedder } from "./session/embed.js";
+export type { MemorySettings, SkillSettings } from "./session/types.js";
 export type {
   ChannelSettings,
   HistoryBounds,
@@ -283,6 +318,9 @@ export function createServer(deps: ServerDeps): Server {
     names,
     ...(deps.memory !== undefined ? { memory: deps.memory } : {}),
     ...(deps.recall !== undefined ? { recall: deps.recall } : {}),
+    ...(deps.embed !== undefined ? { embed: deps.embed } : {}),
+    ...(deps.skills !== undefined ? { skills: deps.skills } : {}),
+    ...(deps.skillRecall !== undefined ? { skillRecall: deps.skillRecall } : {}),
     task: createTaskRunner({
       completion: deps.completion,
       transport: deps.transport,

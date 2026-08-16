@@ -27,8 +27,11 @@ import type { DisplayNameLookup } from "./names.js";
 import type { SessionRegistry } from "./registry.js";
 import { createSessionRegistry } from "./registry.js";
 import type { MemoryFileOpener } from "./memory.js";
+import type { QueryEmbedder } from "./embed.js";
 import type { Recall } from "./recall.js";
 import type { SheetResolver } from "./sheet.js";
+import type { SkillFilesOpener } from "./skills.js";
+import type { SkillRecall } from "./skill-recall.js";
 import type { TaskReply, TaskRequest, TaskRunner } from "./types.js";
 
 /** Answers `undefined` for everyone. What a front-end with no directory has. */
@@ -66,6 +69,30 @@ export interface ChannelRouterOptions {
    * how one still starts in a deployment with no embedding provider.
    */
   recall?: Recall;
+  /**
+   * The one embedding of the incoming request (#292), shared by both retrievers.
+   *
+   * Optional, and its absence is not the same thing as a deployment with no
+   * embedding provider: `createQueryEmbedder` answers `null` for that and skill
+   * retrieval still runs on full text. Omitting it here is a caller that wired
+   * neither retriever.
+   */
+  embed?: QueryEmbedder;
+  /**
+   * How a channel's `skills/` directory is opened, when it has one.
+   *
+   * Optional, on `memory`'s pattern, and opened here for `memory`'s reason: the
+   * cap comes from the team sheet and the sheet is read per task inside this
+   * lock — see `session/skills.ts`.
+   */
+  skills?: SkillFilesOpener;
+  /**
+   * Skill retrieval (#292), run at the head of every task.
+   *
+   * Optional, and its absence is a task that starts without playbooks — which is
+   * how every task started before phase 3.
+   */
+  skillRecall?: SkillRecall;
   logger?: Logger;
   now?: () => number;
 }
@@ -166,12 +193,49 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
             ? (options.memory?.(request.key.channel, settings.memory.maxFileChars) ?? undefined)
             : undefined;
 
-        // And so is the transcript, for a second reason on top of that one: the
-        // read has to see the messages the previous task's conversation left
-        // behind, and a read outside the lock could run while that task was
-        // still going. The assembler is here rather than in the sheet resolver
-        // because it needs the session — its store and its name cache — and
-        // `SheetResolver` is given a channel id and nothing else.
+        // This channel's `skills/` directory, on `memoryFile`'s pattern and
+        // inside the lock for its reason: the cap is the sheet's, and #292's
+        // reconciliation writes the index the same serialized step reads.
+        //
+        // A channel whose sheet disables skills opens nothing, exactly as it
+        // opens no memory file — and here that also keeps `openSkillFiles` from
+        // ever being in a position to create a `skills/` directory the team
+        // never asked for.
+        const skillFiles =
+          settings.skills.enabled === true
+            ? (options.skills?.(request.key.channel, settings.skills.maxSkills) ?? undefined)
+            : undefined;
+
+        const store = session.store;
+
+        // One embedding of the question, shared by both retrievers (#292).
+        //
+        // **Asked for only when something would search with it.** A channel with
+        // summarization off and skills off must not pay for a vector nothing
+        // reads — and the converse now holds too: a channel with `[memory]
+        // summarize = false` and `[skills] enabled = true` does pay for one it
+        // did not before phase 3. That is the cost of the feature it turned on
+        // rather than a regression in the one it turned off.
+        //
+        // Awaited, unlike the curation turn queued below, and that is the cost
+        // this shape carries: one embedding round trip in front of every task,
+        // before the model has been asked anything. `createQueryEmbedder` never
+        // rejects, so its failure is a task with weaker context rather than a
+        // mention with no reply.
+        const searching =
+          store !== null &&
+          ((options.recall !== undefined && settings.memory.summarize) ||
+            (options.skillRecall !== undefined && skillFiles !== undefined));
+
+        const vector =
+          searching && options.embed !== undefined
+            ? await options.embed({
+                channel: request.key.channel,
+                query: request.text,
+                turnId: `${request.traceId}.embed`
+              })
+            : null;
+
         // Semantic recall (#232), inside the lock for the reason everything
         // here is: it reads the same store the previous task's curation and the
         // sweep write, and a read racing those would assemble a context out of
@@ -182,31 +246,46 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         // summarization off should not go on being answered out of summaries it
         // asked to stop producing, and half a feature is a worse answer than
         // none of it.
-        //
-        // Awaited, unlike the curation turn queued below, and that is the cost
-        // this decision carries: it is one embedding round trip in front of
-        // every task, before the model has been asked anything. `createRecall`
-        // never rejects, so the failure of it is a task with no recall rather
-        // than a mention with no reply.
         const recalled =
-          options.recall === undefined || session.store === null
+          options.recall === undefined || store === null
             ? []
             : await options.recall({
                 channel: request.key.channel,
-                store: session.store,
+                store,
+                vector,
+                enabled: settings.memory.summarize
+              });
+
+        // Skill retrieval (#292), inside the lock for recall's reason and one of
+        // its own: this is where `reconcileSkillIndex` runs, so the index and the
+        // directory are reconciled in the same serialized step that reads them.
+        //
+        // Gated by the directory rather than by a second reading of the sheet —
+        // `skillFiles` is `undefined` exactly when the channel disabled skills or
+        // could not be opened, so there is one place that decides.
+        const skills =
+          options.skillRecall === undefined || store === null || skillFiles === undefined
+            ? []
+            : await options.skillRecall({
+                channel: request.key.channel,
+                store,
+                files: skillFiles,
+                vector,
                 query: request.text,
-                enabled: settings.memory.summarize,
-                turnId: `${request.traceId}.recall`
+                topK: settings.skills.topK,
+                maxSkillChars: settings.skills.maxSkillChars,
+                maxSkills: settings.skills.maxSkills
               });
 
         const messages = await assembleContext({
-          store: session.store,
+          store,
           names: session.names,
           lookup: names,
           request,
           bounds: settings.history,
           memory: memoryFile?.read() ?? "",
-          recalled
+          recalled,
+          skills
         });
 
         const outcome = await options.task(request, {

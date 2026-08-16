@@ -169,6 +169,52 @@ export interface MemorySettings {
   readonly maxFileChars: number;
 }
 
+/**
+ * What a channel's `[skills]` block resolved to.
+ *
+ * **The second block this process honours alone**, and everything
+ * `MemorySettings` says about that standing is true here word for word: the
+ * proxy never opens a skill file and holds no second copy of these numbers, so
+ * this is the decision rather than a restatement of one. The fallback therefore
+ * differs from the schema's default, and it is argued where the fallback lives.
+ *
+ * `author_after_tool_calls` is deliberately absent. It bounds the author turn
+ * (#291), which nothing here runs yet, and a field with no reader is a field a
+ * test cannot tell from a typo.
+ */
+export interface SkillSettings {
+  /**
+   * `[skills] enabled`. False loads no skill into a task's context.
+   *
+   * One switch rather than a read half and a write half, unlike `[memory]`'s
+   * pair. Curation and summarization authorize different acts — one follows a
+   * task somebody asked for, the other spends on threads nobody addressed —
+   * whereas both halves of skills follow a task somebody asked for. A channel
+   * that wants the library read but not written has said so by not raising the
+   * author threshold, which is a number rather than a second switch.
+   */
+  readonly enabled: boolean;
+  /** `[skills] top_k`. How many skills a task may open with. */
+  readonly topK: number;
+  /**
+   * `[skills] max_skill_chars`. The longest a single skill's body may be.
+   *
+   * **Read here rather than in `packages/memory`, which is where #300 said it
+   * would land.** That package declined the field on the grounds that what it
+   * bounds is what a body may *be* once somebody has hand-written one — a fact
+   * about a file nothing there wrote — and that refusing such a file "is the
+   * indexer's outcome to name". This is the indexer's caller, so this names it:
+   * an over-cap skill is not loaded into a task.
+   *
+   * No operation can produce one, because the schema's floor for this field is
+   * `SKILL_BODY_MAX_CHARS`. What it bites on is a playbook the team wrote by
+   * hand and then let grow.
+   */
+  readonly maxSkillChars: number;
+  /** `[skills] max_skills`, the whole library's ceiling. */
+  readonly maxSkills: number;
+}
+
 /** What a channel's team sheet resolved to. Everything here came out of the file. */
 export interface ChannelSettings {
   /** The sheet's `[llm] model`, or `AGENT_MODEL`. Passed to the provider verbatim. */
@@ -190,6 +236,8 @@ export interface ChannelSettings {
   readonly followUpWindowMs: number;
   /** The `[memory]` block. See `MemorySettings` for why it is not like the rest. */
   readonly memory: MemorySettings;
+  /** The `[skills]` block, which is not like the rest for the same reason. */
+  readonly skills: SkillSettings;
 }
 
 /**

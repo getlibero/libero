@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_SKILL_SETTINGS,
   DEFAULT_HISTORY_BOUNDS,
   SHEET_FILENAME,
   createSheetResolver,
@@ -105,7 +106,10 @@ describe("settingsFrom", () => {
         maxFileChars: 32_768,
         summarize: true,
         summarizeAfterIdleMs: 60 * 60_000
-      }
+      },
+      // The schema's defaults again, and the same argument: a sheet that parsed
+      // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
+      skills: { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 }
     });
   });
 
@@ -128,7 +132,10 @@ describe("settingsFrom", () => {
         maxFileChars: 32_768,
         summarize: true,
         summarizeAfterIdleMs: 60 * 60_000
-      }
+      },
+      // The schema's defaults again, and the same argument: a sheet that parsed
+      // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
+      skills: { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 }
     });
   });
 
@@ -212,7 +219,10 @@ describe("createSheetResolver", () => {
         maxFileChars: 32_768,
         summarize: true,
         summarizeAfterIdleMs: 60 * 60_000
-      }
+      },
+      // The schema's defaults again, and the same argument: a sheet that parsed
+      // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
+      skills: { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 }
     });
   });
 
@@ -241,7 +251,8 @@ describe("createSheetResolver", () => {
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-      memory: { ...DEFAULT_MEMORY_SETTINGS }
+      memory: { ...DEFAULT_MEMORY_SETTINGS },
+      skills: { ...DEFAULT_SKILL_SETTINGS }
     });
     expect(captured.lines).toEqual([]);
   });
@@ -254,7 +265,8 @@ describe("createSheetResolver", () => {
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-      memory: { ...DEFAULT_MEMORY_SETTINGS }
+      memory: { ...DEFAULT_MEMORY_SETTINGS },
+      skills: { ...DEFAULT_SKILL_SETTINGS }
     });
   });
 
@@ -271,7 +283,8 @@ describe("createSheetResolver", () => {
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-      memory: { ...DEFAULT_MEMORY_SETTINGS }
+      memory: { ...DEFAULT_MEMORY_SETTINGS },
+      skills: { ...DEFAULT_SKILL_SETTINGS }
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({
@@ -307,7 +320,8 @@ describe("createSheetResolver", () => {
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-      memory: { ...DEFAULT_MEMORY_SETTINGS }
+      memory: { ...DEFAULT_MEMORY_SETTINGS },
+      skills: { ...DEFAULT_SKILL_SETTINGS }
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({ event: "team_sheet_unreadable", channel: CHANNEL })
@@ -332,7 +346,8 @@ describe("createSheetResolver", () => {
         caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-      memory: { ...DEFAULT_MEMORY_SETTINGS }
+      memory: { ...DEFAULT_MEMORY_SETTINGS },
+      skills: { ...DEFAULT_SKILL_SETTINGS }
       });
       expect(captured.lines).toContainEqual(
         expect.objectContaining({ event: "team_sheet_invalid", reason: "channel_id" })
@@ -372,5 +387,59 @@ describe("the summarization fallback", () => {
   it("is off, like curation's and for a stronger reason", () => {
     expect(DEFAULT_MEMORY_SETTINGS.summarize).toBe(false);
     expect(DEFAULT_MEMORY_SETTINGS.enabled).toBe(false);
+  });
+});
+
+// The second block whose fallback departs from the schema's default, and the
+// second one this process honours alone. The proxy never opens a skill file, so
+// nothing checks this resolution against a second copy: what this line says is
+// what happens. A typo that costs a channel its playbooks is a degradation its
+// replies survive; a typo that switches skill loading *on* for a channel that
+// wrote `enabled = false` would put model-authored, cross-task text into a
+// channel that asked for none.
+describe("the skills fallback", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "libero-agent-skill-sheets-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const write = async (channel: string, text: string): Promise<void> => {
+    await mkdir(join(root, channel), { recursive: true });
+    await writeFile(join(root, channel, SHEET_FILENAME), text, "utf8");
+  };
+
+  it("is off, for the same reason curation's is", () => {
+    expect(DEFAULT_SKILL_SETTINGS.enabled).toBe(false);
+  });
+
+  // The numbers are still the schema's. They only matter once something is
+  // enabled, and inventing a second set for a disabled feature is how two copies
+  // of one figure drift.
+  it("keeps the schema's own numbers even though it disables the feature", async () => {
+    await write(CHANNEL, "this is not toml");
+    const resolve = createSheetResolver({ root, model: MODEL });
+
+    const settings = await resolve(CHANNEL);
+
+    expect(settings.skills).toEqual({
+      enabled: false,
+      topK: 3,
+      maxSkillChars: 8_192,
+      maxSkills: 100
+    });
+  });
+
+  // A sheet that parsed has said, so `enabled = true` by omission is honoured —
+  // the fallback only covers the case where nothing was read at all.
+  it("does not disable skills for a sheet that simply omits the block", async () => {
+    await write(CHANNEL, NO_LLM_BLOCK);
+    const resolve = createSheetResolver({ root, model: MODEL });
+
+    expect((await resolve(CHANNEL)).skills.enabled).toBe(true);
   });
 });

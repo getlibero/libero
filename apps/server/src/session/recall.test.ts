@@ -2,15 +2,18 @@
 //
 // `packages/memory` is opened for real rather than faked, for the reason
 // `summarize.test.ts` gives: the half worth testing is the nearest-neighbour
-// query and the trigger behaviour around it, both of which live in SQL. The
-// embedding provider is faked at its client seam, and the fake is what makes the
-// acceptance criterion checkable at all — see `EMBEDDINGS` below.
+// query and the trigger behaviour around it, both of which live in SQL.
+//
+// **The embedding provider is not faked here any more.** Since #292 the call
+// lives in ./embed.ts and recall takes the vector it produced, so what is
+// supplied below is a point out of the same hand-built space the summaries were
+// stored with — see `EMBEDDINGS`. The provider's own behaviour, its metering,
+// and what an empty question does are `embed.test.ts`'s now.
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CompletedTurn, EmbeddingClient } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore, StoredMessage } from "@getlibero/memory";
 import { openMessageStore } from "@getlibero/memory";
@@ -49,25 +52,6 @@ function vectorFor(text: string): Float32Array {
   return Float32Array.from(point);
 }
 
-function embeddingClient(): EmbeddingClient {
-  return {
-    embed: ({ texts }) =>
-      Promise.resolve({
-        vectors: texts.map(vectorFor),
-        model: "test-embedding-model",
-        usage: { inputTokens: 12 }
-      })
-  };
-}
-
-/** A provider that reports no usage. `TokenUsage`'s "absent is not zero". */
-function unmeteredEmbeddingClient(): EmbeddingClient {
-  return {
-    embed: ({ texts }) =>
-      Promise.resolve({ vectors: texts.map(vectorFor), model: "test-embedding-model" })
-  };
-}
-
 function capturingLogger(): { lines: Array<{ level: LogLevel } & LogFields>; logger: Logger } {
   const lines: Array<{ level: LogLevel } & LogFields> = [];
   return { lines, logger: { log: (level, fields) => lines.push({ level, ...fields }) } };
@@ -97,27 +81,21 @@ function summarized(thread: string, text: string, shape = "question_answered" as
 }
 
 function recallWith(overrides: Partial<RecallOptions> = {}) {
-  const reported: Array<CompletedTurn & { id: string }> = [];
-  return {
-    reported,
-    recall: createRecall({
-      embedding: embeddingClient(),
-      embeddingModel: "test-embedding-model",
-      reportTurn: (_channel, turn) => {
-        reported.push(turn);
-        return Promise.resolve();
-      },
-      ...overrides
-    })
-  };
+  return { recall: createRecall({ ...overrides }) };
 }
 
+/**
+ * A question, already embedded — which is what recall takes now.
+ *
+ * The query text is still named rather than a bare vector, so a case reads as a
+ * question being asked. `vectorFor` is the same fixture the summaries were
+ * stored with, which is what makes "shares no stem" a real claim.
+ */
 const ask = (query: string) => ({
   channel: CHANNEL,
   store,
-  query,
-  enabled: true,
-  turnId: "T1.recall"
+  vector: vectorFor(query),
+  enabled: true
 });
 
 beforeEach(() => {
@@ -196,75 +174,34 @@ describe("createRecall", () => {
   it("recalls nothing when the channel turned summarization off", async () => {
     summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
 
-    const { recall, reported } = recallWith();
-    const recalled = await recall({ ...ask("how do we roll a new key for a channel"), enabled: false });
+    const { recall } = recallWith();
+    const recalled = await recall({
+      ...ask("how do we roll a new key for a channel"),
+      enabled: false
+    });
 
     expect(recalled).toEqual([]);
-    // And it costs nothing: the embedding call is not made either.
-    expect(reported).toEqual([]);
   });
 
-  // #230's degradation, carried to the read side.
-  it("recalls nothing with no embedding provider configured", async () => {
+  // #230's degradation, carried to the read side — and, since #292, arriving as
+  // a null vector rather than as a null client. It collapses three cases
+  // ./embed.ts keeps apart, and this end treats all three the same because a
+  // summary has no index but its vector. **`skill-recall.test.ts` asserts the
+  // opposite for the same input**, which is the asymmetry both headers name.
+  it("recalls nothing with no vector, whatever produced the null", async () => {
     summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
 
-    const { recall } = recallWith({ embedding: null });
+    const { recall } = recallWith();
 
-    expect(await recall(ask("how do we roll a new key for a channel"))).toEqual([]);
+    expect(
+      await recall({ ...ask("how do we roll a new key for a channel"), vector: null })
+    ).toEqual([]);
   });
 
   it("recalls nothing for a channel with no summaries yet", async () => {
     const { recall } = recallWith();
 
     expect(await recall(ask("how do we roll a new key for a channel"))).toEqual([]);
-  });
-
-  it("recalls nothing for an empty question, without calling the provider", async () => {
-    summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
-    const { recall, reported } = recallWith();
-
-    expect(await recall({ ...ask("how do we roll a new key for a channel"), query: "   " })).toEqual(
-      []
-    );
-    expect(reported).toEqual([]);
-  });
-
-  it("meters the query embedding as input tokens with no output", async () => {
-    summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
-    const { recall, reported } = recallWith();
-
-    await recall(ask("how do we roll a new key for a channel"));
-
-    expect(reported).toEqual([
-      {
-        usage: { inputTokens: 12, outputTokens: 0 },
-        turn: 0,
-        id: "T1.recall",
-        model: "test-embedding-model"
-      }
-    ]);
-  });
-
-  it("reports nothing when the provider reports no usage", async () => {
-    summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
-    const { recall, reported } = recallWith({ embedding: unmeteredEmbeddingClient() });
-
-    await recall(ask("how do we roll a new key for a channel"));
-
-    expect(reported).toEqual([]);
-  });
-
-  // Recall is an improvement to an answer, not a precondition for one.
-  it("answers nothing rather than throwing when the provider fails", async () => {
-    summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
-    const { lines, logger } = capturingLogger();
-    const { recall } = recallWith({
-      embedding: { embed: () => Promise.reject(new Error("embed upstream down")) },
-      logger
-    });
-
-    await expect(recall(ask("how do we roll a new key for a channel"))).resolves.toEqual([]);
-    expect(lines.map(line => line.event)).toContain("recall_failed");
   });
 
   it("logs a count and never the summaries themselves", async () => {

@@ -42,7 +42,7 @@ them; `node_modules` stays excluded (#107).
 ## Current state
 
 Phases 1, 1.5 and 2 are shipped and their milestones closed; phase 3 (skills)
-is open, and its shapes are the first thing in it to land. What exists:
+is open, and its shapes, its storage and its read path have landed. What exists:
 
 | Package | What it is |
 | --- | --- |
@@ -52,7 +52,7 @@ is open, and its shapes are the first thing in it to land. What exists:
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
-| `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, semantic recall and the quiescence sweep, approvals and checklist clients, lifecycle |
+| `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |
@@ -64,6 +64,14 @@ per turn, and every decided call leaves an audit row. Memory is whole as of
 phase 2: a channel's messages are searchable, its `MEMORY.md` is curated after a
 reply and read back before the next task, its quiet threads are summarized and
 embedded, and a task starts with whatever of that bears on the question.
+
+Skills have their read half as of #292: a channel's `skills/` directory is
+reconciled against its index at the head of every task, the playbooks matching
+the incoming request are loaded into the opening context, and each one that lands
+there records a use. Nothing writes a skill yet — the author turn is #291 — so
+every skill a deployment holds today is one a team member wrote by hand, which is
+the case `packages/memory` was built to treat as first-class rather than as a
+stand-in.
 
 ## Where the reasoning lives
 
@@ -77,9 +85,9 @@ code is a paragraph the next reader will not find.
 | --- | --- |
 | What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes | `packages/agent/README.md` |
 | Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, approvals, the audit log's write discipline | `packages/proxy/README.md` |
-| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall enters a task and why not as a tool, what bounds the quiescence sweep | `apps/server/README.md` |
+| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, what bounds the quiescence sweep | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, the three rules that package keeps | `packages/gateway/README.md` |
-| The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, and why `nearest` takes a kind | `packages/memory/README.md` |
+| The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, and why `searchSkills` ORs its terms where `search` ANDs them | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters | `e2e/README.md` |

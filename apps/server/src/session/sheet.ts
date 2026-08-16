@@ -93,6 +93,39 @@ export const DEFAULT_MEMORY_SETTINGS = {
   summarizeAfterIdleMs: 60 * 60_000
 } as const;
 
+/**
+ * What a channel gets when no sheet resolved: **skills off**, and the argument
+ * is this file's second departure from the schema's own default rather than a
+ * copy of the one above it.
+ *
+ * The schema asks that this constant make the case itself rather than point at
+ * `DEFAULT_MEMORY_SETTINGS`, so: every other default on this page falls back to
+ * the schema's figure because a fallback here cannot loosen an authorization
+ * decision — the proxy enforces the same file from its own copy, so what is
+ * resolved here is defence in depth. `[skills]` has no second copy. The proxy
+ * never opens a skill file, never reads this directory, and has no opinion about
+ * `top_k`; whatever this line says is what happens. So for this block the
+ * fallback *is* the decision, and a decision made on a channel whose sheet could
+ * not be read should be the quiet one.
+ *
+ * Concretely: a mistyped sheet that costs a channel its skills is a degradation
+ * its replies survive and an operator notices. A mistyped sheet that switches
+ * skill loading *on* for a channel that wrote `enabled = false` would be this
+ * process injecting model-authored, cross-task text into a channel that asked
+ * for none — a policy violation this process committed on its own, and one
+ * nobody in the channel can see. The two failures are not symmetric.
+ *
+ * The three numbers are still the schema's figures. They only matter once
+ * something is enabled, and inventing a second set for a disabled feature is
+ * how two copies of a number drift.
+ */
+export const DEFAULT_SKILL_SETTINGS = {
+  enabled: false,
+  topK: 3,
+  maxSkillChars: 8_192,
+  maxSkills: 100
+} as const;
+
 export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
 
 export interface SheetResolverOptions {
@@ -147,6 +180,16 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
       // in this process is already in and two units for one quantity is how a
       // number gets read as the wrong one.
       summarizeAfterIdleMs: sheet.memory.summarize_after_idle_minutes * 60_000
+    },
+    // Renames, and the same standing as the block above it — see
+    // `DEFAULT_SKILL_SETTINGS` for why its fallback is not the schema's default.
+    // `author_after_tool_calls` is not carried, because nothing reads it until
+    // the author turn lands (#291).
+    skills: {
+      enabled: sheet.skills.enabled,
+      topK: sheet.skills.top_k,
+      maxSkillChars: sheet.skills.max_skill_chars,
+      maxSkills: sheet.skills.max_skills
     }
   };
 }
@@ -178,7 +221,8 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
     caps: { ...DEFAULT_AGENT_LOOP_CAPS },
     history: { ...DEFAULT_HISTORY_BOUNDS },
     followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-    memory: { ...DEFAULT_MEMORY_SETTINGS }
+    memory: { ...DEFAULT_MEMORY_SETTINGS },
+    skills: { ...DEFAULT_SKILL_SETTINGS }
   });
 
   return async (channel: string): Promise<ChannelSettings> => {

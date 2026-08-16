@@ -41,7 +41,10 @@ import {
   storeRootFromEnv
 } from "./env.js";
 import { createMemoryFileOpener } from "./session/memory.js";
+import { createQueryEmbedder } from "./session/embed.js";
 import { createRecall } from "./session/recall.js";
+import { createSkillRecall } from "./session/skill-recall.js";
+import { createSkillFilesOpener } from "./session/skills.js";
 import { createSheetResolver } from "./session/sheet.js";
 import { createSummarySweep } from "./session/summarize.js";
 import { createMessageStoreOpener } from "./session/store.js";
@@ -152,14 +155,27 @@ const summarize = createSummarySweep({
   logger
 });
 
-// Semantic recall (#232), sharing the sweep's meter path: an embedding call is
-// spend whether it was spent writing the corpus or reading it.
-const recall = createRecall({
+// The one embedding of a task's question (#292), sharing the sweep's meter path:
+// an embedding call is spend whether it was spent writing the corpus or reading
+// it. Built once and handed to the router, which calls it once per task and
+// gives the vector to both retrievers — see `session/embed.ts` on why this is a
+// call site rather than a cache.
+const embed = createQueryEmbedder({
   embedding: embeddings,
   ...(embedding === null ? {} : { embeddingModel: embedding.model }),
   reportTurn,
   logger
 });
+
+// Semantic recall (#232). It embeds nothing of its own since #292 — what it
+// takes is the vector above, so a deployment with no embedding provider gets a
+// null and no summaries, which is #230's stated degradation unchanged.
+const recall = createRecall({ logger });
+
+// Skill retrieval (#292). No embedding client and no meter: the vector arrives
+// as an argument, and with none it retrieves on full text alone, which the team
+// sheet says is the behaviour rather than a setting.
+const skillRecall = createSkillRecall({ logger });
 
 const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
@@ -192,8 +208,11 @@ const { gateway } = createServer({
   sheets: sheets,
   store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
+  skills: createSkillFilesOpener({ storeRoot, channelsRoot, logger }),
   summarize,
   recall,
+  embed,
+  skillRecall,
   signal: tasks.signal,
   logger
 });

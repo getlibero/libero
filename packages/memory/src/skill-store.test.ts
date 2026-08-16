@@ -365,6 +365,42 @@ describe("searching skills", () => {
     expect(store.searchSkills("certificate", 5)).toEqual(["rotate-a-cert"]);
     expect(JSON.stringify(store.searchSkills("certificate", 5))).not.toContain("secret");
   });
+
+  // **The difference from `search`, and the case #292 exists against.** What
+  // reaches this is a whole question somebody asked in Slack, not words a person
+  // chose — so the terms are OR-ed. Under `search`'s implicit AND this answers
+  // nothing, always, because no playbook contains every word of a sentence.
+  it("matches a whole question, not only a query every term of which appears", () => {
+    create("rotate-a-cert", "when a certificate is expiring", "run dev-certs.sh --rotate");
+    reconcile();
+
+    expect(store.searchSkills("how do we rotate an expiring certificate?", 5)).toEqual([
+      "rotate-a-cert"
+    ]);
+    // The control: the message index answers the same question conjunctively and
+    // finds nothing, which is what makes the paragraph above a difference rather
+    // than a restatement.
+    store.append({
+      ts: "1.1",
+      threadTs: null,
+      userId: "U0ALICE",
+      displayName: null,
+      text: "when a certificate is expiring",
+      at: 1
+    });
+    expect(store.search("how do we rotate an expiring certificate?", 5)).toEqual([]);
+  });
+
+  // What OR costs, stated as a test so it is a known trade rather than a
+  // surprise: a question sharing one word retrieves weakly. bm25 ranks it below
+  // a real match and the caller's `top_k` cuts the tail.
+  it("ranks a skill matching two terms above one matching a single common word", () => {
+    create("rotate-a-cert", "when a certificate is expiring", "run dev-certs.sh --rotate");
+    create("deploy", "when shipping to staging", "run the deploy script");
+    reconcile();
+
+    expect(store.searchSkills("run the expiring certificate rotation", 5)[0]).toBe("rotate-a-cert");
+  });
 });
 
 describe("skills needing embedding", () => {
