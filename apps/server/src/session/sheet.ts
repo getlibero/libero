@@ -121,6 +121,7 @@ export const DEFAULT_MEMORY_SETTINGS = {
  */
 export const DEFAULT_SKILL_SETTINGS = {
   enabled: false,
+  authorAfterToolCalls: 5,
   topK: 3,
   maxSkillChars: 8_192,
   maxSkills: 100
@@ -187,6 +188,7 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     // the author turn lands (#291).
     skills: {
       enabled: sheet.skills.enabled,
+      authorAfterToolCalls: sheet.skills.author_after_tool_calls,
       topK: sheet.skills.top_k,
       maxSkillChars: sheet.skills.max_skill_chars,
       maxSkills: sheet.skills.max_skills

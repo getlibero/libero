@@ -43,7 +43,9 @@ export interface LogFields {
    * from whoever is reading. Skills: "skills_opened", "skills_unavailable",
    * "skills_loaded", "skills_over_cap", "skill_reconcile_failed",
    * "skill_recall_failed", "skill_oversize", "skill_file_unusable",
-   * "skill_file_misnamed" — the two failures are separate words for that same
+   * "skill_file_misnamed", "authored", "authoring_failed" — the last pair is
+   * "curated"/"curation_failed"'s counterpart for the skill-author turn, and the
+   * two failures above are separate words for that same
    * reason, since a directory this process cannot read is a mount or a
    * permission where a store that cannot answer is a database, and
    * "query_embedding_failed" is separate from "recall_failed" because one of

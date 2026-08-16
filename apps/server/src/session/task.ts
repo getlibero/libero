@@ -34,6 +34,7 @@ import {
   createProxyToolClient,
   runAgentTask,
   runCurationTurn,
+  runSkillAuthorTurn,
   totalTokens
 } from "@getlibero/agent";
 import type {
@@ -300,6 +301,27 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     let ending: ChecklistOutcome = "failed";
     let endingNote: string | undefined;
 
+    /**
+     * How many tool calls the proxy served and answered without an error.
+     *
+     * **The author turn's threshold is compared against this and not against
+     * `AgentTaskResult.toolCalls` (#291), and the difference is the issue's own
+     * words rather than a preference.** `[skills] author_after_tool_calls` says
+     * it counts calls the proxy *served*; the loop's counter increments the
+     * moment a call is dispatched, before the executor runs, so a refused tool,
+     * an unmapped name and an upstream 500 are all in it. A task whose six calls
+     * were all refused learned that this channel's sheet does not grant those
+     * tools, and a playbook written from it would be a playbook about tools that
+     * do not work here.
+     *
+     * The issue asks for "no new counting", and this keeps that promise where it
+     * can: nothing is added to the loop, and the number comes off `onToolCall`,
+     * a callback that already existed for the checklist. What it costs is that
+     * the hook is now always wired rather than only when a checklist was built,
+     * which is the sentence below.
+     */
+    let served = 0;
+
     // Minted here rather than by the loop, which is what `taskId` is for: a
     // turn's report has to be named before the turn happens, and the loop only
     // hands its id back when the task is over. Every turn's id derives from
@@ -342,13 +364,27 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           // Reported as the turns happen, not when the task ends. See
           // `reportSpend`.
           onTurn: completed => reportSpend(spend, taskId, completed, request, logger),
-          // Where the checklist's rows come from. Synchronous and not awaited,
-          // which is the hook's contract: the reporter coalesces behind it, so
-          // a fast loop does not wait on a Slack edit between tool calls.
-          // Absent when the front-end gave the request no checklist.
-          ...(request.checklist !== undefined
-            ? { onToolCall: (step: ToolCallStep) => { request.checklist?.report(step); } }
-            : {}),
+          // Where the checklist's rows come from, and since #291 where the
+          // author turn's threshold comes from too. Synchronous and not
+          // awaited, which is the hook's contract: the reporter coalesces
+          // behind it, so a fast loop does not wait on a Slack edit between
+          // tool calls.
+          //
+          // **Always wired now, where it used to be omitted for a request with
+          // no checklist.** Two consumers with different lifetimes: a card is
+          // the front-end's and may not exist, and the count is this file's and
+          // always does. The checklist half keeps its own `undefined` check, so
+          // a request without one still reports nothing anywhere.
+          //
+          // `ok` and not `!isError`: `ToolCallState` has four members and the
+          // other three — `running`, `error`, `skipped` — are each a call that
+          // taught the model something about this channel's limits rather than
+          // a step of a playbook. Counting `running` would also double-count
+          // every call, since each one reports twice.
+          onToolCall: (step: ToolCallStep) => {
+            if (step.state === "ok") served += 1;
+            request.checklist?.report(step);
+          },
           ...(options.signal !== undefined ? { signal: options.signal } : {})
         });
         ending = result.stopReason;
@@ -400,8 +436,16 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
       });
 
       const reply = replyFor(result, warning);
-      const curate = curationFor({ options, logger, request, settings, result, spend });
-      return curate === undefined ? { reply } : { reply, curate };
+      const afterReply = afterReplyFor({
+        options,
+        logger,
+        request,
+        settings,
+        result,
+        spend,
+        served
+      });
+      return afterReply === undefined ? { reply } : { reply, afterReply };
     } finally {
       // Awaited, so the card is terminal before the reply lands under it. It
       // never rejects: `close` is total, for the reason `reportSpend` is.
@@ -410,18 +454,20 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
   };
 }
 
-interface CurationInputs {
+interface AfterReplyInputs {
   readonly options: TaskRunnerOptions;
   readonly logger: Logger;
   readonly request: TaskRequest;
   readonly settings: TaskSettings;
   readonly result: AgentTaskResult;
   readonly spend: ProxySpendClient;
+  /** Tool calls this task made that the proxy served and answered. See `served`. */
+  readonly served: number;
 }
 
 /**
- * The curation turn, closed over everything it needs, or `undefined` when this
- * channel does not curate.
+ * Everything that follows the reply, as one thunk, or `undefined` when nothing
+ * does.
  *
  * **Built here and run elsewhere, which is the ordering decision (#227).** All
  * of its inputs are local to a finished task — the task id the spend report keys
@@ -431,16 +477,65 @@ interface CurationInputs {
  * this closes over the answer to "what", and hands the router the "when".
  *
  * The router enqueues it on the same per-channel mutex the task held, without
- * awaiting it: the reply is not delayed by a second model call, and the next
- * task's context read is still serialized against this write. What that costs is
- * stated in `apps/server/README.md` — a follow-up that queued *during* the task
- * goes ahead of this one and reads the file as it was.
+ * awaiting it: the reply is not delayed by two more model calls, and the next
+ * task's context read is still serialized against these writes. What that costs
+ * is stated in `apps/server/README.md` — a follow-up that queued *during* the
+ * task goes ahead of this one and reads the file as it was.
+ *
+ * **One thunk covering both turns rather than one each (#291).** They share a
+ * turn counter, and that is not tidiness: `<task>.<n>` is the spend meter's
+ * idempotency key, curation takes `result.turns + 1`, and a sibling closure
+ * cannot know whether curation ran — so it would have to claim `+ 2`
+ * unconditionally and leave a gap whenever `[memory] enabled = false`, which
+ * `CurationTurnOptions.turn` explicitly promises will not happen. A local
+ * counter keeps the promise for every combination.
+ *
+ * **Curation first, then authoring**, and the order is only weakly load-bearing:
+ * neither reads what the other writes, so what it really settles is that a
+ * process asked to stop mid-way drops the newer feature rather than the shipped
+ * one.
  *
  * **It never rejects.** It is invoked detached, so a rejection would be an
  * unhandled one at the process level rather than something a caller could relay,
  * and the reply it follows has already been produced. Every failure is a line.
  */
-function curationFor(inputs: CurationInputs): (() => Promise<void>) | undefined {
+function afterReplyFor(inputs: AfterReplyInputs): (() => Promise<void>) | undefined {
+  const curate = curationFor(inputs);
+  const author = authoringFor(inputs);
+  if (curate === undefined && author === undefined) return undefined;
+
+  const { options, result } = inputs;
+
+  // The shared counter, and the reason this is one function. Curation takes the
+  // task's turn count plus one; whichever runs next takes the one after that.
+  let turn = result.turns;
+  const next = (): number => {
+    turn += 1;
+    return turn;
+  };
+
+  return async (): Promise<void> => {
+    // Queued when the process was asked to stop. The reply these follow may not
+    // have posted at all — the gateway drops one when it is no longer running —
+    // so spending two model calls on it is work nobody asked for. Checked once
+    // here rather than in each half, because a shutdown between them is not a
+    // state worth distinguishing.
+    if (options.signal?.aborted === true) return;
+
+    if (curate !== undefined) await curate(next());
+    if (author !== undefined) await author(next());
+  };
+}
+
+/**
+ * The curation turn, closed over everything but its turn number, or `undefined`
+ * when this channel does not curate.
+ *
+ * It takes the number rather than closing over one because `afterReplyFor` owns
+ * the counter — see there for why that has to be shared. Everything else about
+ * where this is built and when it runs is on `afterReplyFor` too.
+ */
+function curationFor(inputs: AfterReplyInputs): ((turn: number) => Promise<void>) | undefined {
   const { options, logger, request, settings, result, spend } = inputs;
   const file = settings.memoryFile;
 
@@ -452,12 +547,7 @@ function curationFor(inputs: CurationInputs): (() => Promise<void>) | undefined 
 
   const channel = request.key.channel;
 
-  return async (): Promise<void> => {
-    // Queued when the process was asked to stop. The reply this follows may not
-    // have posted at all — the gateway drops one when it is no longer running —
-    // so spending a model call to remember it is work nobody asked for.
-    if (options.signal?.aborted === true) return;
-
+  return async (turn: number): Promise<void> => {
     try {
       const curated = await runCurationTurn({
         completion: options.completion,
@@ -473,8 +563,9 @@ function curationFor(inputs: CurationInputs): (() => Promise<void>) | undefined 
         // worth remembering.
         maxTokens: settings.caps.maxOutputTokensPerTurn,
         // Continues the task's own numbering, so the spend report's idempotency
-        // key stays `<task>.<n>` with no gap and no collision.
-        turn: result.turns + 1,
+        // key stays `<task>.<n>` with no gap and no collision. The number is
+        // `afterReplyFor`'s to hand out, because the author turn shares it.
+        turn,
         onTurn: completed => reportSpend(spend, result.taskId, completed, request, logger),
         ...(options.signal !== undefined ? { signal: options.signal } : {})
       });
@@ -496,6 +587,85 @@ function curationFor(inputs: CurationInputs): (() => Promise<void>) | undefined 
       // curation must not become an unhandled rejection that ends the process.
       logger.log("error", {
         event: "curation_failed",
+        channel,
+        eventId: request.traceId,
+        task: result.taskId,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+    }
+  };
+}
+
+/**
+ * The skill-author turn, or `undefined` when this task earned no playbook (#291).
+ *
+ * `curationFor`'s shape, with a different set of ways not to run. Two of them
+ * are the same — the sheet said no, and the directory could not be opened, which
+ * `session/skills.ts` has already logged — and the third is this turn's own.
+ *
+ * **The threshold is strictly greater**, which the schema pins rather than
+ * leaving two implementations to discover, and it is compared against tool calls
+ * the proxy *served* rather than against `AgentTaskResult.toolCalls`. See
+ * `served` in the runner for why those are different numbers.
+ *
+ * There is deliberately no `result.turns === 0` clause to mirror curation's. A
+ * task that ran no turns served no tool calls either, so the threshold has
+ * already refused it, and a second guard on a state the first makes unreachable
+ * would be a mechanism implying a hazard it cannot reach.
+ */
+function authoringFor(inputs: AfterReplyInputs): ((turn: number) => Promise<void>) | undefined {
+  const { options, logger, request, settings, result, spend, served } = inputs;
+  const files = settings.skillFiles;
+
+  if (!settings.skills.enabled || files === undefined) return undefined;
+  if (served <= settings.skills.authorAfterToolCalls) return undefined;
+
+  const channel = request.key.channel;
+
+  return async (turn: number): Promise<void> => {
+    try {
+      const authored = await runSkillAuthorTurn({
+        completion: options.completion,
+        model: settings.model,
+        messages: result.messages,
+        // What retrieval already loaded at the head of this task (#292), rather
+        // than a second search. These are the nearest existing skills on this
+        // task's own subject by construction, and they are what makes a
+        // `skill_revise` a revision instead of a blind overwrite.
+        nearby: settings.loadedSkills ?? [],
+        // Counted here rather than when the task started: the previous task's
+        // own authoring, or a team member with an editor, may have landed in
+        // between. `list` answers names and opens no file, which is what makes
+        // it cheap enough to read per turn.
+        skills: files.list().length,
+        maxSkills: settings.skills.maxSkills,
+        applyOp: op => files.apply(op),
+        // The per-turn ceiling, never `max_tokens_per_task` — and here the task
+        // most worth a playbook is exactly the long tool-heavy one most likely
+        // to have spent that cap.
+        maxTokens: settings.caps.maxOutputTokensPerTurn,
+        turn,
+        onTurn: completed => reportSpend(spend, result.taskId, completed, request, logger),
+        ...(options.signal !== undefined ? { signal: options.signal } : {})
+      });
+
+      logger.log("info", {
+        event: "authored",
+        channel,
+        eventId: request.traceId,
+        task: result.taskId,
+        // How many operations the model asked for, not how many landed, and
+        // never what any of them said: a playbook is the team's own text and
+        // `LogFields` has no member that could carry it. `curated` logs its
+        // count the same way and through the same field.
+        ops: authored.ops.length
+      });
+    } catch (error) {
+      // Swallowed, for `curationFor`'s reason: the reply has been produced,
+      // nothing above is awaiting this, and a provider outage here must not
+      // become an unhandled rejection that ends the process.
+      logger.log("error", {
+        event: "authoring_failed",
         channel,
         eventId: request.traceId,
         task: result.taskId,
