@@ -20,6 +20,7 @@ import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_SKILL_SETTINGS,
   createServer
 } from "./compose.js";
 
@@ -100,7 +101,8 @@ function rig(perTurn: string[], maxToolCalls = 25) {
         caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls },
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
-        memory: { ...DEFAULT_MEMORY_SETTINGS }
+        memory: { ...DEFAULT_MEMORY_SETTINGS },
+        skills: { ...DEFAULT_SKILL_SETTINGS }
       }),
     logger
   });

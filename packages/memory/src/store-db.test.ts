@@ -12,6 +12,7 @@ import {
   loadVec,
   openMessageReader,
   openMessageStore,
+  toAnyMatchQuery,
   toMatchQuery
 } from "./store-db.js";
 import type { MessageStore, StoredMessage } from "./store-db.js";
@@ -683,6 +684,40 @@ describe("the query is text and not an expression", () => {
   it("caps the number of terms", () => {
     const query = toMatchQuery("term ".repeat(SEARCH_MAX_TERMS + 10));
     expect(query?.split(" ").length).toBe(SEARCH_MAX_TERMS);
+  });
+
+  // The second builder, added for `searchSkills` in #292. Same escaping, same
+  // bounds, different joiner — and the joiner is the whole of the difference,
+  // which is why these assert against `toMatchQuery` rather than in isolation.
+  describe("toAnyMatchQuery", () => {
+    it("escapes exactly as the conjunctive builder does", () => {
+      expect(toAnyMatchQuery('say "hi"')).toBe('"say" OR """hi"""');
+    });
+
+    it("joins the terms with OR", () => {
+      expect(toAnyMatchQuery("vault friday")).toBe('"vault" OR "friday"');
+    });
+
+    it("answers undefined for a query with no terms", () => {
+      expect(toAnyMatchQuery("")).toBeUndefined();
+      expect(toAnyMatchQuery("   ")).toBeUndefined();
+    });
+
+    it("caps the number of terms on the same bound", () => {
+      const query = toAnyMatchQuery("term ".repeat(SEARCH_MAX_TERMS + 10));
+      expect(query?.split(" OR ").length).toBe(SEARCH_MAX_TERMS);
+    });
+
+    it("is one term, indistinguishable from the other builder, for a single word", () => {
+      expect(toAnyMatchQuery("vault")).toBe(toMatchQuery("vault"));
+    });
+
+    // The operators `toMatchQuery`'s own table covers, checked again here
+    // because a joiner that is itself an FTS5 keyword is the one place these two
+    // could diverge in behaviour rather than only in shape.
+    it.each([["AND"], ["OR"], ["NOT"], ["NEAR"]])("still quotes a bare %s", operator => {
+      expect(toAnyMatchQuery(`vault ${operator}`)).toBe(`"vault" OR "${operator}"`);
+    });
   });
 
   // Each of these is a syntax error, or a different query than the caller

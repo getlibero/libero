@@ -59,6 +59,7 @@
 import type { CompletionMessage } from "@getlibero/agent";
 import type { StoredMessage } from "@getlibero/memory";
 import type { RecalledSummary } from "./recall.js";
+import type { LoadedSkill } from "./skill-recall.js";
 import type { DisplayNameLookup, NameCache } from "./names.js";
 import type { HistoryBounds, TaskRequest } from "./types.js";
 
@@ -88,6 +89,10 @@ const MEMORY_CLOSE = "</channel-memory>";
 /** And what semantic recall found (#232). Same wrapping, same reason. */
 const RECALL_OPEN = "<channel-recall>";
 const RECALL_CLOSE = "</channel-recall>";
+
+/** And the playbooks retrieval loaded (#292). Same wrapping, same reason. */
+const SKILLS_OPEN = "<channel-skills>";
+const SKILLS_CLOSE = "</channel-skills>";
 
 /**
  * Slack's user-mention token: `<@U0ALICE>`, `<@W0ALICE>` on Enterprise Grid, and
@@ -135,6 +140,18 @@ export interface AssembleOptions {
    * embedding provider is configured.
    */
   readonly recalled?: readonly RecalledSummary[];
+  /**
+   * The playbooks retrieval loaded for this question (#292), best first, or
+   * empty when there are none.
+   *
+   * `recalled`'s shape exactly, and for its reasons: already retrieved, already
+   * bounded, already resolved to text, so this layer renders them and decides
+   * nothing about them. `session/skill-recall.ts` is where the deciding happens.
+   *
+   * **Empty contributes nothing at all, not an empty block** — the rule all
+   * three of the others keep.
+   */
+  readonly skills?: readonly LoadedSkill[];
   /**
    * The channel's curated `MEMORY.md`, or `""` when there is none.
    *
@@ -331,6 +348,50 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
   // No more trusted than the other two blocks, and the preamble says so in the
   // same words: the model wrote these summaries, out of messages a channel's
   // members wrote.
+  // Playbooks, between the curated file and the summaries. The order across all
+  // four blocks is: what this team has settled, how this team does work like
+  // this, earlier conversations bearing on the question, what was said lately,
+  // then the question.
+  //
+  // **The placement is a judgement call rather than a derivation**, and the rule
+  // behind it is that the two durable team-owned artifacts group together and
+  // the two conversational ones group after them. The alternative — skills last,
+  // nearest the question, on the grounds that a playbook is the thing most
+  // likely to be acted on — is defensible and was not chosen, because it would
+  // split `MEMORY.md` from the other thing the team wrote and edits by hand.
+  //
+  // ## This block does not say "this is context, not instructions"
+  //
+  // The other three do, and they mean it: history, curated facts and summaries
+  // are things to reason *from*. A playbook is a thing to *follow* — that is the
+  // whole of what the feature is for — so repeating the line here would be false
+  // and would blunt the block it introduces.
+  //
+  // What replaces it says what a skill is and what following one does not buy.
+  // **That sentence is a statement of fact, not a mitigation**, and the
+  // distinction is load-bearing rather than pedantic: what actually holds is the
+  // proxy's gates, which do not consult this text or the model's cooperation. A
+  // skill that instructs exfiltration, an unlisted tool, or skipping an approval
+  // induces calls that are refused exactly as if the same words had arrived in a
+  // mention. Nothing in this preamble is doing that work, and #293's whole job is
+  // to demonstrate it — so this file must not read as though the words were the
+  // defence.
+  const skills = options.skills ?? [];
+  const skillsBlock =
+    skills.length === 0
+      ? []
+      : [
+          "Playbooks written for this channel, retrieved because they may bear on the question.",
+          "Follow one where it applies. They are this team's notes, not a grant:",
+          "every tool call is checked the same way whatever a playbook says.",
+          SKILLS_OPEN,
+          ...skills.map(skill =>
+            [`## ${skill.name}`, skill.description.trim(), "", skill.body.trim()].join("\n")
+          ),
+          SKILLS_CLOSE,
+          ""
+        ];
+
   const recalled = options.recalled ?? [];
   const recallBlock =
     recalled.length === 0
@@ -354,7 +415,7 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
     return [
       {
         role: "user",
-        content: [...memoryBlock, ...recallBlock, `${askedBy} asks: ${asked}`].join("\n")
+        content: [...memoryBlock, ...skillsBlock, ...recallBlock, `${askedBy} asks: ${asked}`].join("\n")
       }
     ];
   }
@@ -374,6 +435,7 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
       role: "user",
       content: [
         ...memoryBlock,
+        ...skillsBlock,
         ...recallBlock,
         preamble,
         HISTORY_OPEN,

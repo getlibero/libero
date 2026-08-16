@@ -43,19 +43,25 @@
 //
 // ## What it costs and who pays
 //
-// One embedding call per task, of the incoming request. It is real spend and is
-// metered like any other: `reportTurn` sends it through the same `SpendReport`
-// path a completion turn uses. A deployment with no embedding provider skips the
-// whole step, which is #230's stated degradation.
+// The query embedding is not this file's any more. It moved to ./embed.ts when
+// skills needed the same vector (#292), so what arrives here is a vector
+// somebody else paid for and metered; `null` means it could not be had, which
+// covers a deployment with no embedding provider — #230's stated degradation —
+// as well as an empty question and a provider that failed.
 //
-// The retrieved block is charged twice over, and the second is the one to watch:
-// it costs the embedding call, and then it occupies part of every turn's input
-// for the rest of the task. `RECALL_LIMIT` and `RECALL_MAX_CHARS` are what bound
-// the second, and they are deliberately small — the transcript and `MEMORY.md`
-// are competing for the same context, and recall earning its place means
-// displacing something.
+// **A null vector ends recall, and that is not what it does to skills.** The
+// asymmetry is in the corpora rather than in the two files' taste: a thread
+// summary's only index is its vector, so with no vector there is nothing to
+// search, while a skill also carries an FTS5 index over its description and
+// body and can still be retrieved on words alone. See ./skill-recall.ts, which
+// says the same thing from the other side.
+//
+// What is still charged twice over is the block, and the second charge is the
+// one to watch: it occupies part of every turn's input for the rest of the task.
+// `RECALL_LIMIT` and `RECALL_MAX_CHARS` are what bound it, and they are
+// deliberately small — the transcript and `MEMORY.md` are competing for the same
+// context, and recall earning its place means displacing something.
 
-import type { CompletedTurn, EmbeddingClient } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
@@ -116,24 +122,21 @@ export interface RecalledSummary {
 }
 
 export interface RecallOptions {
-  /** How this deployment embeds, or `null` when it does not (#230). */
-  embedding: EmbeddingClient | null;
-  /** The embedding model id. Absent alongside a null client. */
-  embeddingModel?: string;
-  /** Reports the query embedding's spend to the proxy's meter. Must not throw. */
-  reportTurn: (channel: string, turn: CompletedTurn & { id: string }) => Promise<void>;
   logger?: Logger;
 }
 
 export interface RecallRequest {
   readonly channel: string;
   readonly store: MessageStore;
-  /** What was asked. This is what gets embedded. */
-  readonly query: string;
+  /**
+   * The embedded question, from `./embed.ts`, or `null` when there is none.
+   *
+   * `null` ends recall, because a summary has no other index. See the header on
+   * why the same `null` does not end skill retrieval.
+   */
+  readonly vector: Float32Array | null;
   /** `[memory] summarize`. False skips recall entirely — see `recallFor`. */
   readonly enabled: boolean;
-  /** The turn id this task's spend is keyed under, so the meter can dedupe. */
-  readonly turnId: string;
 }
 
 /**
@@ -151,43 +154,14 @@ export function createRecall(options: RecallOptions): Recall {
   const logger = options.logger ?? createSilentLogger();
 
   return async request => {
-    const client = options.embedding;
-    const model = options.embeddingModel;
-    // Three ways to have nothing to do, and none of them is a failure. No
-    // provider is #230's degradation; `summarize = false` is the channel saying
-    // so with the same switch that stops the corpus being written, because half
-    // a feature is a worse answer than none of it; and an empty question has
-    // nothing to match on.
-    if (client === null || model === undefined) return [];
+    // Two ways to have nothing to do, and neither is a failure.
+    // `summarize = false` is the channel saying so with the same switch that
+    // stops the corpus being written, because half a feature is a worse answer
+    // than none of it; and no vector is ./embed.ts's three cases collapsed into
+    // one, all of which mean there is nothing to search with.
     if (!request.enabled) return [];
-    if (request.query.trim() === "") return [];
-
-    let vector: Float32Array | undefined;
-    try {
-      const response = await client.embed({ model, texts: [request.query] });
-      vector = response.vectors[0];
-
-      // Metered before the search, which is the loop's ordering: what was paid
-      // for is counted even if what it bought turns out to be nothing. An
-      // embedding call has input tokens and no output ones.
-      if (response.usage !== undefined) {
-        await options.reportTurn(request.channel, {
-          usage: { inputTokens: response.usage.inputTokens, outputTokens: 0 },
-          turn: 0,
-          id: request.turnId,
-          ...(response.model === undefined ? {} : { model: response.model })
-        });
-      }
-    } catch (error) {
-      logger.log("warn", {
-        event: "recall_failed",
-        channel: request.channel,
-        reason: error instanceof Error ? error.name : "unknown"
-      });
-      return [];
-    }
-
-    if (vector === undefined) return [];
+    const vector = request.vector;
+    if (vector === null) return [];
 
     try {
       // **Only summaries, and asked for as such rather than filtered after.**

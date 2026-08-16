@@ -1062,6 +1062,13 @@ export interface MessageStore {
    * names rather than rows for `listSkills`' — resolving a name to a skill is
    * `openSkillFiles().read`, which reads the file rather than this table.
    *
+   * **The terms are OR-ed, where `search` AND-s them**, because the two answer
+   * different questions: `search` is handed words a person chose, and this is
+   * handed a whole question somebody asked. The argument, and what it costs, is
+   * on `toAnyMatchQuery`. The short form: under AND this would answer nothing
+   * for any real question, and bm25's ranking is what keeps OR from being a
+   * firehose.
+   *
    * No score, exactly as `search` returns none: bm25's scale means nothing
    * outside FTS5, and a caller fusing this with `nearest` fuses on rank.
    * Archived skills never appear.
@@ -1269,13 +1276,56 @@ export const READ_MAX_LIMIT = 200;
  * caller holding it would be a caller building its own MATCH expression.
  */
 export function toMatchQuery(text: string): string | undefined {
-  const terms = text
+  const terms = quotedTerms(text);
+  return terms.length === 0 ? undefined : terms.join(" ");
+}
+
+/**
+ * The same escaping, joined by OR instead of by the implicit AND.
+ *
+ * **The two exist because they answer two different questions**, and #292 is
+ * where the difference stopped being theoretical. `search` answers *find me the
+ * messages containing these words*, which a person types deliberately and means
+ * conjunctively — dropping to OR there would drown a real search in documents
+ * matching one common word. `searchSkills` answers *which playbook is this
+ * question about*, and what it is handed is a whole sentence somebody said in
+ * Slack. Under AND, "how do we cut a release?" requires every one of `how`,
+ * `do`, `we`, `cut`, `a` and `release` to appear in the skill, which no real
+ * playbook does — so the lexical leg of skill retrieval would answer nothing,
+ * always, and the deployments it matters most to are exactly the ones the team
+ * sheet points at: those with no embedding provider, where full text is the only
+ * leg there is.
+ *
+ * **Ranking is what makes OR usable rather than a firehose.** FTS5 orders by
+ * bm25, so a skill matching `release` and `cut` outranks one matching only `a`,
+ * and `limit` cuts the tail. What it does not do is exclude the tail: a question
+ * sharing one common word with a skill retrieves that skill weakly. That is the
+ * same trade `session/recall.ts` records for having no distance cutoff, made for
+ * the same reason — something weak and visible beats nothing at all — and it is
+ * bounded by `[skills] top_k` and by the character ceiling on the caller's side.
+ *
+ * There is deliberately no stop-word list. It would be a fixed English one in a
+ * module whose tokenizer is already `unicode61`, and bm25 does the same job by
+ * measuring the corpus instead of by asserting a language.
+ */
+export function toAnyMatchQuery(text: string): string | undefined {
+  const terms = quotedTerms(text);
+  return terms.length === 0 ? undefined : terms.join(" OR ");
+}
+
+/**
+ * One double-quoted string per whitespace chunk, bounded and escaped.
+ *
+ * Shared by the two builders above so the escaping — which is the part carrying
+ * the hazard — has one definition. What differs between them is only the joiner.
+ */
+function quotedTerms(text: string): string[] {
+  return text
     .slice(0, SEARCH_MAX_QUERY_CHARS)
     .split(/\s+/u)
     .filter(term => term.length > 0)
     .slice(0, SEARCH_MAX_TERMS)
     .map(term => `"${term.replaceAll('"', '""')}"`);
-  return terms.length === 0 ? undefined : terms.join(" ");
 }
 
 /**
@@ -1395,6 +1445,30 @@ const UPSERT_SKILL_SQL = `INSERT INTO skill
          ino              = excluded.ino,
          description_hash = excluded.description_hash`;
 
+/**
+ * There is no rank floor here, and it was tried before it was rejected.
+ *
+ * `searchSkills` ORs its terms (see `toAnyMatchQuery`), so a question sharing
+ * only `a` or `the` with a skill still produces a hit. Dropping those looks like
+ * a one-line `AND rank < ?`, and FTS5 does accept one beside the MATCH —
+ * measured. On a three-skill corpus the separation is even clean: a question
+ * sharing a content word scores −1.46, one sharing only stop words scores
+ * −1.3e-6.
+ *
+ * **It fails on the corpus this actually runs against.** bm25's IDF is
+ * `log((N - n + 0.5) / (n + 0.5))`, floored at `1e-6` when that is not positive
+ * — and for a channel holding *one* skill, every term is in every document, so
+ * every term takes the floor and every match scores `1e-6`. Any threshold that
+ * excludes a stop-word match in a large library also excludes the only skill a
+ * small one has. A skill library is small by design: `[skills] max_skills`
+ * defaults to a hundred and a real channel holds a handful.
+ *
+ * So the weak match stands, and it is the same trade `session/recall.ts` records
+ * for having no distance cutoff, reached for a different reason and pointing the
+ * same way: something weak and visible beats a channel that looks like it has no
+ * playbooks. What bounds it is the caller's — `[skills] top_k` and the character
+ * ceiling in `session/skill-recall.ts`.
+ */
 const SEARCH_SKILLS_SQL = `SELECT s.name
      FROM skill s
      JOIN (SELECT rowid AS hit_id, rank AS hit_rank
@@ -2125,7 +2199,10 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     },
 
     searchSkills(text, limit) {
-      const match = toMatchQuery(text);
+      // `toAnyMatchQuery`, not `toMatchQuery` — see that function on why the two
+      // exist. What arrives here is a whole question, not a search somebody
+      // typed, and under AND it would match nothing.
+      const match = toAnyMatchQuery(text);
       if (match === undefined) return [];
       const wanted = clampLimit(limit);
       const rows = statements.searchSkills.all(match, wanted) as Array<{ readonly name: string }>;

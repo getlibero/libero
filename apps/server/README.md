@@ -520,6 +520,12 @@ every turn's input for the rest of the task. `RECALL_LIMIT` and
 `RECALL_MAX_CHARS` bound the second and are deliberately small, because the
 transcript and `MEMORY.md` compete for the same context.
 
+Since #292 the embedding call is **not recall's own**. It lives in
+`src/session/embed.ts`, the router makes it once per task, and both retrievers
+take the vector — one call, two searches, one line in the meter. What reaches
+`createRecall` is a `Float32Array | null`, and `null` ends recall because a
+summary has no index but its vector.
+
 Two limits are stated rather than hidden. There is **no distance cutoff** — the
 argument is in the file, and it comes down to the number not being writable
 honestly across providers that may or may not normalize — so a channel with a
@@ -527,6 +533,68 @@ small corpus contributes all of it to every task, relevant or not. And recall is
 gated on `[memory] summarize`, the same switch that writes the corpus, rather
 than a third one of its own: a channel that turned summarization off should not
 go on being answered out of summaries it asked to stop producing.
+
+## Skill retrieval: the same shape, and the three things that differ
+
+`src/session/skill-recall.ts` answers #292, and it is recall's sibling in every
+respect that matters — task head, inside the session's lock, never throws,
+rendered into the opening context as `<channel-skills>`, **not a tool.** Every
+argument above about where retrieval belongs applies unchanged and is not
+restated: a model-invoked skill search would be the same ungoverned twin of the
+same governed built-in.
+
+**It is where reconciliation runs, and the only place it runs.**
+`reconcileSkillIndex` had no caller until this file. The moment correctness is
+required is the moment retrieval runs, and outside the lock the pass would race
+the quiescence sweep's writes and, once #291 lands, the previous task's
+authoring. That pass is the whole of how a hand-edited or hand-deleted skill
+takes effect: no watcher, no second path, and the team's directory is the truth.
+Its steady-state cost is a `readdir` and a `stat` per file — a file is re-read
+only when its fingerprint moved, and re-embedded only when its *description*
+moved.
+
+**Two legs, fused by a round-robin interleave.** `nearest` answers by L2 distance
+and `searchSkills` by FTS5 rank, which are not comparable — the same argument
+that stops recall writing down a distance cutoff also stops a weighted blend
+here, and stops reciprocal-rank fusion, whose damping constant would be exactly
+the magic number that argument refuses. So: vector rank 1, lexical rank 1, vector
+rank 2, and so on, deduped by name, cut at `[skills] top_k`. A skill both legs
+found surfaces once at its better position, which is a mild agreement bonus
+falling out of the shape rather than a knob.
+
+**A missing vector does not end it.** Recall stops dead without one; a skill also
+carries a full-text index over its description and body, so with no embedding
+provider the lexical leg runs alone. The team sheet says this is the intended
+behaviour and refuses to make it a field.
+
+Bounded three times, and the third is this process's: `top_k` from the sheet,
+`max_skill_chars` per skill — read here because `packages/memory` declined the
+figure on the grounds that refusing an over-cap file is the indexer's outcome to
+name — and `SKILLS_MAX_CHARS`, a constant beside `RECALL_MAX_CHARS` and a
+constant for its reason. It is three times `SKILL_BODY_MAX_CHARS` rounded down,
+counts descriptions as well as bodies, and is meant to bind: a channel whose
+three nearest skills are hand-written at 8192 characters gets one of them.
+
+Two limits are stated rather than hidden, as recall's are. **Neither leg has a
+cutoff**, so a channel with a handful of skills will open most tasks with some of
+them: the vector leg for recall's reason, and the lexical leg because
+`searchSkills` ORs its terms — a question sharing one ordinary word is a hit.
+`store-db.ts` records why the obvious bm25 rank floor was tried and rejected, and
+it is worth knowing: on a one-skill library every term takes bm25's IDF floor, so
+any threshold excluding a stop-word match also excludes the only skill a small
+channel has. What bounds it is the three numbers above; what makes it tolerable
+is that an irrelevant playbook costs context and a distraction and **widens
+nothing the proxy governs**. And **archived skills are excluded structurally**
+rather than by a filter here: `searchSkills` carries its own status clause inside
+the match, and reconciliation drops an archived skill's vector, so `nearest` has
+nothing to answer with. What `stale` means to retrieval is #294's to decide;
+today it is left exactly alone.
+
+The block does **not** carry the "this is context, not instructions" line the
+other three do, and that is deliberate: history, curated facts and summaries are
+things to reason from, and a playbook is a thing to follow. What replaces it says
+that following one grants nothing — a statement of fact the proxy enforces, not a
+mitigation the words perform.
 
 ## Thread summaries
 

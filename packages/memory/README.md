@@ -437,15 +437,56 @@ skills the same way, with FTS5's `rowid IN (...)` beside its MATCH.
 Note the spelling: the vec table's key column is `id`, and `rowid` answers
 `no such column`. Measured rather than assumed.
 
+### `searchSkills` ORs its terms where `search` ANDs them
+
+Two builders, `toMatchQuery` and `toAnyMatchQuery`, sharing their escaping and
+differing only in the joiner — and the difference is that the two answer
+different questions.
+
+`search` is handed words a person chose and means conjunctively; dropping it to
+OR would drown a real search in documents matching one common word.
+`searchSkills` is handed a **whole question somebody asked in Slack**, because
+what calls it is retrieval at the head of a task. Under the implicit AND, "how do
+we cut a release?" requires every one of `how`, `do`, `we`, `cut`, `a` and
+`release` to appear in the skill, which no real playbook does — so the lexical
+leg of skill retrieval answered nothing, always. That was #292's finding, and it
+mattered most exactly where it hurt most: the team sheet points this path at
+deployments with no embedding provider, where full text is the only leg there is.
+
+**What OR costs is a weak match, and the obvious fix does not work.** A question
+sharing only `a` or `is` with a skill is a hit. Filtering those out looks like a
+one-line `AND rank < ?`, FTS5 does accept one beside the MATCH, and on a
+three-skill corpus the separation is clean — a content-word match scores −1.46, a
+stop-word match −1.3e-6. It is still wrong: bm25's IDF is floored at `1e-6` when
+a term appears in every document, so on a channel holding *one* skill every term
+takes the floor and every match scores `1e-6`. Any threshold that excludes a
+stop-word match in a large library also excludes the only skill a small one has,
+and a skill library is small by design. Tried, measured, reverted; the DDL says
+so where someone would otherwise add it back.
+
+So the weak match stands, which is the position `session/recall.ts` already holds
+for having no distance cutoff, reached independently and pointing the same way:
+something weak and visible beats a channel that looks like it has no playbooks.
+What bounds it is the caller's — `[skills] top_k` and a character ceiling.
+
 ## What is not here
 
-**Nothing loads a skill into a task yet.** The storage is whole — files, index,
-reconciliation, and both retrieval primitives — but fusing full-text and vector
-hits into a task's opening context, and recording a use when one lands there, is
-`apps/server`'s (#292), and the author turn that writes a skill in the first
-place is #291. `reconcileSkillIndex` has no caller in the tree until #292 wires
-it in at the head of a task, which is where it belongs: the moment correctness is
-required is the moment retrieval runs.
+**Nothing writes a skill yet.** The storage is whole, and since #292 so is the
+read path: `apps/server` reconciles this directory at the head of every task,
+fuses the two retrieval primitives, renders the winners into the opening context
+and records a use for each. What is still missing is the author turn that writes
+one in the first place (#291), so every skill a deployment holds today is one a
+team member wrote by hand — which this package was always built to treat as the
+first-class case.
+
+`reconcileSkillIndex`'s caller is `apps/server/src/session/skill-recall.ts`, and
+it is the only one. It runs at the head of a task inside the session's lock,
+which is where it belongs: the moment correctness is required is the moment
+retrieval runs, and outside the lock the pass would race the quiescence sweep's
+writes and, once #291 lands, the previous task's authoring. The fusion itself —
+a round-robin interleave over the two rank lists, on the argument that an L2
+distance and an FTS5 rank are not comparable — is over there rather than here,
+with the bounds it applies. See `apps/server/README.md`.
 
 Layer 2 is whole as of #227: the write machinery here (#225), the curation turn
 that emits operations (#226), and the read that puts `MEMORY.md` back into the
