@@ -174,19 +174,22 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing and ageing skills, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing, ageing and pairing skills, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
       "adoptSkillStatus",
       "append",
       "close",
+      "forgetSkillMergeProposal",
       "listSkills",
       "nearest",
+      "orphanedSkillMergeProposals",
       "putEmbedding",
       "putThreadSummary",
       "readThreadSummary",
       "recent",
       "recentInThread",
       "reconcileSkills",
+      "recordSkillMergeConsidered",
       "recordSkillStatus",
       "recordSkillUse",
       "remove",
@@ -195,6 +198,7 @@ describe("the interface", () => {
       "search",
       "searchSkills",
       "skillClocks",
+      "skillMergeCandidate",
       "skillsNeedingEmbedding",
       "staleThreads"
     ]);
@@ -210,10 +214,26 @@ describe("the interface", () => {
     }
   });
 
+  // The four the merge curator added (#295) write `skill_merge_proposal` and
+  // read `vec_embedding`, and none of them touches a skill row or a skill file —
+  // which is what keeps the rule below true with them present too.
+  it("offers the curator a nomination, a record, and a way to clean up after one", () => {
+    for (const method of [
+      "skillMergeCandidate",
+      "recordSkillMergeConsidered",
+      "orphanedSkillMergeProposals",
+      "forgetSkillMergeProposal"
+    ]) {
+      expect(Object.keys(store)).toContain(method);
+    }
+  });
+
   // The index has exactly one writer, and it is reconciliation. A `putSkill` or
   // a `removeSkill` would be a second path by which the index could come to
   // disagree with the directory, and neither could be reviewed for whether its
-  // caller had looked at a file first.
+  // caller had looked at a file first. This still passes unchanged after #294
+  // and #295, which is the argument their writers are legitimate: one writes
+  // `skill_use`, the other `skill_merge_proposal`, and neither writes `skill`.
   it("offers no way to write a skill row except by reconciling", () => {
     for (const forbidden of ["putSkill", "removeSkill", "deleteSkill", "readSkill"]) {
       expect(Object.keys(store)).not.toContain(forbidden);

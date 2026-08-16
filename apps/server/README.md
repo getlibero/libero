@@ -122,7 +122,7 @@ the far end of a thread.
 | `AGENT_PROVIDER` | `anthropic` or `openai-compatible`. |
 | `AGENT_MODEL` | Model id, passed to the provider verbatim. The fallback for a channel whose sheet names none. |
 | `AGENT_CHANNELS_ROOT` | The team sheets: one directory per channel, each with a `channel.toml`. Read only. |
-| `AGENT_STORE_ROOT` | The agent's own state: one directory per channel, each with a `store.db` and a curated `MEMORY.md`. Written. Not the same root. |
+| `AGENT_STORE_ROOT` | The agent's own state: one directory per channel, each holding a `store.db`, a curated `MEMORY.md`, a `skills/` directory of playbooks, and a `proposals/` one of merge drafts. Written. Not the same root. |
 | `ANTHROPIC_API_KEY` | Required when `AGENT_PROVIDER=anthropic`. |
 | `OPENAI_API_KEY` | Required when `AGENT_PROVIDER=openai-compatible`. |
 | `ANTHROPIC_BASE_URL` | Optional. Anthropic's own endpoint when unset. |
@@ -833,6 +833,137 @@ words are `skills_adopted`, `skills_marked_stale`, `skills_archived`,
 a playbook's name. The first of those is the line that explains a run that moved
 nothing.
 
+## The curator pass: a proposal, and who applies it
+
+`src/session/skill-curate.ts` answers #295, the last of phase 3. The author turn
+sees only the skills retrieval had already loaded, so a playbook gets written
+twice by a turn that could not see the first copy. This is what notices — and
+what it does about it is **propose**, never rewrite.
+
+### The review surface is the filesystem, and that is forced rather than chosen
+
+The obvious surface is the channel: post the diff where the team is. **This
+process cannot.** `MessagePoster.postThreadReply` is deliberately withheld from
+the composing app — `packages/gateway`'s `SlackSurface` narrows to `CardPoster`
+precisely so a handler cannot post out of band — and a card needs a `threadTs`
+from an inbound event, which a background pass does not have. A new top-level
+message is ambient mode's mechanic, which ships in a later phase and behind its
+own switch.
+
+Approval cards are separately not it, and the reason is worth keeping because it
+is the one somebody will reach for: **a card is the proxy's mechanic for a held
+tool call, and this is not a tool call.** Borrowing the card machinery would put
+a proxy dependency in a pass that has none.
+
+So a proposal is `proposals/<a>--<b>.md`, a sibling of `skills/` in the channel's
+own state root. It shows the merged playbook as a **complete file** — frontmatter
+included, `created` and `status` carried from the kept skill — with both
+originals quoted beside it, so applying is a paste rather than surgery. Not a
+unified diff: a merged body is a rewrite rather than an edit, hunks over two
+rewritten playbooks are unreadable, and a diff format would imply a patch tool
+that does not exist here.
+
+**A sibling and never a child.** Anything under `skills/` whose filename stem
+parses as a `SkillName` is indexed as a skill, so a proposal quoting two
+playbooks would become a retrievable third. The `--` in the filename is a
+sequence `SKILL_NAME_PATTERN` cannot produce.
+
+### Nomination is the index's job; the model only drafts
+
+`skillMergeCandidate` answers the closest **mutual nearest neighbour** pair not
+yet considered — B is A's nearest live skill and A is B's. The full argument is
+on the SQL in `packages/memory`; what matters here is that it needs no distance
+constant, which this tree has now refused three times for the same reason, and
+that it replaces a rule that would have been quietly disastrous. "The closest
+pair nobody has looked at yet" terminates only after every pair has had its turn:
+a hundred-skill library would work through 4950 mostly unrelated pairs at one a
+day, for thirteen years.
+
+The model's job is the other half, and only that: it is handed two playbooks in
+full and asked whether they are one. Declining is calling no tool, which is the
+ordinary answer — the pair is the closest two in a library, not two anybody
+judged similar, and the system prompt says so because a model that believes they
+were selected *because* they overlap will find the overlap.
+
+### What stops a declined proposal coming back
+
+`skill_merge_proposal` records every pair the pass has **considered**, drafted or
+declined, with the two description hashes it considered them at. The nomination
+query excludes a pair whose row still matches, so a pair is raised once and not
+again until somebody edits one of the two descriptions.
+
+**Deleting the file is the decline, and nothing observes it.** Ignoring a
+proposal and declining it therefore come to exactly the same thing, which is the
+point: the team never has to tell this process anything, and there is no state
+they can get wrong. It also means the steady state is free — a library nobody has
+edited answers one SELECT and makes no call at all.
+
+The one outcome that records nothing is a provider that threw. That is an outage
+rather than an answer, so the pair comes back next run. A call that did not fit
+the schema *is* recorded, and that asymmetry is deliberate: the spend already
+happened, and a pair that costs a call a day forever because a model could not
+pick between two names it was given is the failure the whole rule exists to
+prevent.
+
+### Ordering, and what bounds it
+
+One instant for the pass. It reconciles first — `reconcileSkillIndex`'s fourth
+caller, all four inside the session's lock — because the index is what nominates
+the pair *and* what holds the hashes the bound is decided on, so skipping it
+would nominate against a directory that has moved. Then it prunes, then it
+checks the cap, then it nominates, then it resolves both skills through
+`files.read`, and only then does it spend anything.
+
+**Pruning comes before the cap check**, so a slot freed by a proposal somebody
+applied is usable on the same run rather than a day later. A pair whose skill the
+index no longer holds is how an applied — or half-applied — proposal is found:
+the file goes first and then the row, so a crash between them leaves a row with
+no file, which prunes again harmlessly, where the other order would leave a file
+nothing could ever find and a cap slot consumed forever. **That is also why no
+trigger drops these rows when a skill is deleted**: the surviving row is the only
+record of which file to remove.
+
+What bounds it: `[skills] enabled` and `[skills] curate`; `CURATE_INTERVAL_MS`, a
+day per channel; **one pair and one model call per run**, structurally, because
+the nomination answers one row and there is no loop; `MAX_OPEN_PROPOSALS`, so a
+team that never opens the directory stops being asked after three; the hash rule;
+and the meter, which is the backstop rather than the mechanism. The turn id is
+`skills-merge-<hash of the pair and its two texts>`, so a crash-retry is counted
+once and a re-consideration after an edit is a different turn.
+
+A day rather than the lifecycle job's six hours, and the difference is what is
+being bounded: those passes bound how stale a derived thing may get, and this one
+bounds **how often a team may be asked to read something**. Nothing is lost by
+waiting, because the candidate set only moves when a hash does.
+
+### What it does not do
+
+**It writes no skill file, and holds nothing that could.** That is two structural
+halves rather than a rule anybody keeps: `SkillProposals` has no method that
+names a skill file, and `runSkillMergeTurn` in `packages/agent` takes no handler
+at all, where the author turn takes an `applyOp`.
+
+**Nothing reads a proposal back.** There is no `read` on `SkillProposals`, which
+means there is no path by which model-authored text in `proposals/` re-enters a
+model's context — the shape `e2e/skill-poisoning.test.ts` exists to keep closed.
+It also means the file needs no parser and no version, and a team may annotate or
+rewrite a proposal before applying it without anything noticing.
+
+**A deployment with no embedding provider proposes nothing at all.** The
+nomination returns before it touches a vec table that may not exist, so there is
+no error, no log line and no retry. This is a **behaviour difference from skill
+retrieval**, which degrades to full text and is documented as a supported
+deployment: there is no lexical answer to "are these two near each other",
+because bm25 answers a question about a query rather than about a pair.
+
+Its log words are `skill_merge_proposed`, `skill_merge_none` — the line that
+explains a run that spent tokens and produced nothing — `skill_merge_unusable`,
+`skill_merge_failed`, `skill_merge_backlog` and `skill_merge_pruned`. The middle
+two are kept apart for the reason `summary_failed` and `summary_unusable` are:
+"the provider is down" and "the model cannot follow the schema" want different
+answers from whoever is reading. All carry counts and reason codes, never a
+playbook's name.
+
 ## Thread summaries
 
 `src/session/summarize.ts` is the quiescence sweep (#231): the part neither
@@ -994,6 +1125,14 @@ brings it back once the environment is fixed.
   comes from the team sheet; and it absorbs the three throws `openMemoryFile`
   makes, which is the never-throw shape that package's README asks its caller
   for by name.
+- `src/session/skills.ts` — a channel's `skills/` directory, gated and total for
+  `memory.ts`'s reasons. Takes the sheet's `max_skills`, so it is opened per task
+  for that file's reason, and creates no directory: `openSkillFiles` makes one
+  lazily on the first write, which is what keeps a channel with skills turned off
+  from acquiring an empty one.
+- `src/session/proposals.ts` — a channel's `proposals/` directory, `skills.ts`'s
+  twin. No cap to take, because this directory enforces none — what bounds a
+  backlog is the curator's own constant, compared against `count()`.
 - `src/session/names.ts` — one display-name lookup per user per session. Takes
   the lookup as a parameter rather than holding one, so nothing under
   `session/` has to name a Slack type.

@@ -48,6 +48,7 @@ const CHANNEL = "C024BE91L";
 /** Skills on, at the schema's own figures — what a sheet that parsed resolves to. */
 const LOADING: SkillSettings = {
   enabled: true,
+  curate: false,
   authorAfterToolCalls: 5,
   topK: 3,
   maxSkillChars: 8_192,

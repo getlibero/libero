@@ -371,6 +371,39 @@ answers `unknown_tool` for anything else and dispatches it nowhere, the two size
 caps and `max_skills` are the store's, and the tokens reach the proxy's meter
 through the same per-turn report every other turn uses.
 
+## The merge turn, and the option it does not have
+
+`src/skill/merge.ts` is the curator's half of #295: one call handed two playbooks
+in full and asked whether they are one, drafting a merge if they are and calling
+nothing if they are not. Structurally it is `runSummarizationTurn` rather than the
+author turn above it, and the difference between those two is the whole point.
+
+**It takes no handler.** `runSkillAuthorTurn` takes an `applyOp` because authoring
+writes; this produces a value and the caller decides what to do with it. So "the
+curator writes no skill file" is not a promise this package makes but a shape it
+has — there is no callback here that could be wired to one, and `packages/agent`
+still writes nothing at all. What the caller does with the draft is render it into
+a file that nothing ever reads back.
+
+**Its tool is not a third `SkillToolName`**, and that is a schema decision this
+turn depends on: that enum's totality drives `SKILL_TOOLS`, and
+`skillToolDefinitions()` above maps over its options — so a third member would
+hand the *author* turn a tool that writes nothing and names a pair it was never
+given. The two vocabularies stay apart, and a test holds the enum at two.
+
+Both skills are rendered whole, `nearby`'s argument sharpened: a merge replaces
+the kept body outright, so a model that cannot see the body it is replacing can
+only overwrite it blind. `created` and `status` are not shown — they are not the
+model's, they play no part in whether two playbooks are one, and the merged skill
+inherits them from whichever name survives.
+
+The one thing the system prompt says that the tool description does not is why the
+pair is in front of the model at all. Nomination is "these two are each other's
+nearest", which on a small library is a statement about the library rather than
+about the pair — and a model that believes two playbooks were selected *because*
+they overlap will find the overlap. Declining is the ordinary answer here, and it
+costs nothing.
+
 ## Layout
 
 | Path | What it is |

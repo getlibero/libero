@@ -111,6 +111,7 @@ describe("settingsFrom", () => {
       // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
       skills: {
         enabled: true,
+        curate: true,
         authorAfterToolCalls: 5,
         topK: 3,
         maxSkillChars: 8_192,
@@ -145,6 +146,7 @@ describe("settingsFrom", () => {
       // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
       skills: {
         enabled: true,
+        curate: true,
         authorAfterToolCalls: 5,
         topK: 3,
         maxSkillChars: 8_192,
@@ -240,6 +242,7 @@ describe("createSheetResolver", () => {
       // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
       skills: {
         enabled: true,
+        curate: true,
         authorAfterToolCalls: 5,
         topK: 3,
         maxSkillChars: 8_192,
@@ -452,6 +455,7 @@ describe("the skills fallback", () => {
 
     expect(settings.skills).toEqual({
       enabled: false,
+      curate: false,
       authorAfterToolCalls: 5,
       topK: 3,
       maxSkillChars: 8_192,

@@ -87,6 +87,17 @@ export type {
 } from "./skill/turn.js";
 
 export {
+  SKILL_MERGE_SYSTEM_PROMPT,
+  runSkillMergeTurn,
+  skillMergeToolDefinition
+} from "./skill/merge.js";
+export type {
+  MergeCandidate,
+  SkillMergeTurnOptions,
+  SkillMergeTurnResult
+} from "./skill/merge.js";
+
+export {
   SUMMARIZATION_SYSTEM_PROMPT,
   runSummarizationTurn
 } from "./summarize/turn.js";

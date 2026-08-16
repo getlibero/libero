@@ -131,7 +131,8 @@ max_file_chars = 32768                      # the whole file; one operation may 
 # Thread summaries. A thread that has been quiet for this long is summarized
 # into the channel's searchable memory, whether or not anyone addressed the
 # agent in it — which makes this the one setting here that spends model tokens
-# with nobody waiting on the answer. Two switches rather than one, because a
+# with nobody waiting on the answer — the first of two, [skills] curate below
+# being the other. Two switches rather than one, because a
 # channel may reasonably want the agent to remember what it was asked and not to
 # read conversations it was never part of.
 #
@@ -172,6 +173,20 @@ summarize_after_idle_minutes = 60
 # because it bounds what the MODEL may write; max_skill_chars below bounds what a
 # skill may BE, which is why it may not be set below the model's own ceiling.
 #
+# curate is the merge curator, and it is the SECOND setting in this file that
+# spends model tokens with nobody waiting on the answer — [memory] summarize
+# being the first. Once a day at most, it looks for two playbooks that are one
+# playbook written twice, drafts the merge, and writes it as a PROPOSAL into
+# proposals/ beside skills/. It rewrites nothing. You apply a proposal by
+# replacing one skill file with the block it shows you and deleting the other;
+# you decline it by deleting the proposal, and nothing needs telling.
+#
+# A pair is raised once and not again until one of the two descriptions changes,
+# so ignoring a proposal and declining it are the same act. Three unread
+# proposals stop it making more. And a deployment with NO EMBEDDING PROVIDER
+# proposes nothing at all — overlap is a question about two vectors, and unlike
+# retrieval there is no lexical answer to fall back on.
+#
 # The last two fields are the lifecycle clocks. A playbook nothing has loaded for
 # stale_after_days is marked `stale` in its own frontmatter — still retrieved,
 # just visibly ageing in your git history — and one nothing has loaded for
@@ -187,6 +202,7 @@ summarize_after_idle_minutes = 60
 # task last loaded it, never the `created:` line in the file.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
+curate                  = true              # propose merges of overlapping playbooks
 author_after_tool_calls = 5                 # strictly more than this many served calls
 top_k                   = 3                 # how many skills a task may open with
 max_skill_chars         = 8192              # a skill's body; one operation may write 4096

@@ -572,6 +572,36 @@ export const TeamSheet = z.object({
   skills: z
     .object({
       enabled: z.boolean().default(true),
+      // The merge curator (#295): a pass that looks for two playbooks that are
+      // one playbook written twice, drafts the merge, and writes it as a
+      // **proposal a person reads** into `proposals/` beside `skills/`. It
+      // rewrites nothing. Applying it is editing one file and deleting another;
+      // declining it is deleting the proposal.
+      //
+      // **This is the second thing on this sheet that spends model tokens with
+      // nobody waiting on the answer**, `[memory] summarize` being the first, and
+      // it takes that field's standing rather than `[ambient]`'s. The test
+      // `enabled` above is decided on asks whether the agent is acting on the
+      // world unbidden. This writes a document into the team's own directory and
+      // does nothing else — no post, no tool call, and nothing the runtime ever
+      // reads back. That is a draft left on a desk, not an act.
+      //
+      // **A second switch where the rest of the block is one**, for `[memory]`'s
+      // reason exactly: `enabled = false` freezes the whole feature, and this
+      // stops only the pass that proposes merges. A channel that wants its
+      // playbooks written and retrieved but never second-guessed says so here
+      // without giving up either.
+      //
+      // What bounds it is not this field: one pair per run, one run per channel
+      // per day, a cap on how many proposals may be waiting unread, and the rule
+      // that a pair is not reconsidered until one of the two descriptions moves.
+      // A deployment with **no embedding provider** proposes nothing at all —
+      // overlap is a question about two vectors, and unlike retrieval there is no
+      // lexical answer to fall back to.
+      //
+      // Flipping this default to `false` later is `enabled`'s hazard again, and
+      // the paragraph below applies to both.
+      curate: z.boolean().default(true),
       // How many tool calls a task must *exceed* before the author turn runs.
       // Strictly greater, which is what the architecture page's "exceeding a
       // tool-call threshold" says and is worth pinning here rather than

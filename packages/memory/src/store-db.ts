@@ -207,6 +207,17 @@ import type { Logger } from "./log.js";
  * them on this side of the line rather than the other; the cost of sharing is
  * paid in `nearest`'s kind filter, argued there.
  *
+ * **#295 added `skill_merge_proposal` and it did not move either**, measured the
+ * same way again: additive DDL, and the reader names it nowhere. That change did
+ * turn up a hazard this rule's sibling has, and it belongs here because the next
+ * person to meet it will be reading this paragraph. **`CREATE TRIGGER IF NOT
+ * EXISTS` no-ops against a trigger of that name that already exists**, exactly as
+ * `CREATE TABLE IF NOT EXISTS` does, so *editing the body of an existing trigger
+ * reaches new files only* — every store on disk keeps the old body and nothing
+ * raises. A change to what a trigger does therefore needs a new trigger name, in
+ * the same way a change to what a row holds needs a new column to land with its
+ * table. See `skill_merge_proposal`'s comment for the case that surfaced it.
+ *
  * The next change here probably does move it. Anything that alters what
  * `nearest` means — a second vec table, a distance metric that is not L2, a
  * dimension no longer fixed per file — is a reader depending on it. Whoever
@@ -635,6 +646,58 @@ CREATE TRIGGER IF NOT EXISTS skill_delete AFTER DELETE ON skill BEGIN
   DELETE FROM embedding_source WHERE source_kind = 'skill' AND source_ref = old.name;
   DELETE FROM skill_use WHERE name = old.name;
 END;
+
+-- One pair of skills the merge curator has already looked at, and the two texts
+-- it looked at them as (#295). **This table is the whole of "a declined proposal
+-- is not proposed again every week forever."**
+--
+-- A row is written for every pair the curator *considered*, whether the model
+-- drafted a merge or declined. A declined pair with no row would be paid for
+-- again on the next run and on every run after it, which is the failure
+-- \`thread_summary\` writes a \`nothing\` row to avoid.
+--
+-- **Keyed on the pair in name order**, so (a, b) and (b, a) are one row and the
+-- caller canonicalizes before it asks. The primary key is what makes a second
+-- look at the same pair an UPDATE rather than a second row.
+--
+-- \`hash_a\` and \`hash_b\` are \`skill.description_hash\` for the two, and comparing
+-- them against the current ones is the entire bounding rule: a pair is not
+-- reconsidered until one of the two descriptions moves. **Not a timestamp** — a
+-- clock would re-propose a merge somebody declined every N days, which is the
+-- behaviour this exists to prevent. **Not a body hash** — the description is what
+-- retrieval matches on and what the overlap question is about, so a body edit
+-- that leaves the description alone is not new evidence that two playbooks are
+-- one.
+--
+-- **Deleting the proposal file is the decline, and it is not observed here.**
+-- Ignoring a proposal and declining it therefore have exactly the same effect,
+-- which is the point: the team never has to tell this process anything.
+--
+-- **No trigger takes these rows away when a skill goes, and that is the design
+-- rather than an omission.** The surviving row is the only record of which
+-- proposal file names a skill that no longer exists, so a caller can find the
+-- file and remove it — see \`orphanedSkillMergeProposals\`. A trigger would delete
+-- the evidence and orphan the file permanently, which then consumes one of the
+-- caller's open-proposal slots forever.
+--
+-- It would also not take effect where it was wanted. **\`CREATE TRIGGER IF NOT
+-- EXISTS\` no-ops against a trigger of that name that already exists**, so
+-- extending \`skill_delete\`'s body above would reach new files only and every
+-- store already on disk would keep the old body. That is the trigger equivalent
+-- of the column hazard \`skill_use\` records, it has not come up before, and the
+-- rule it leaves is: **a change to an existing trigger needs a new trigger name**.
+--
+-- \`at\` is written and read by nothing. It is the one column an operator looking
+-- at a pair that stopped being proposed can ask a question of, and columns are
+-- this schema's stated exception to the tree's no-uncalled-code rule.
+CREATE TABLE IF NOT EXISTS skill_merge_proposal (
+  skill_a TEXT NOT NULL,
+  skill_b TEXT NOT NULL,
+  hash_a  TEXT NOT NULL,
+  hash_b  TEXT NOT NULL,
+  at      INTEGER NOT NULL,
+  PRIMARY KEY (skill_a, skill_b)
+);
 `;
 
 /**
@@ -1151,6 +1214,37 @@ export interface MessageStore {
    * design, and a boolean parameter is where such a thing goes to get inverted.
    */
   recordSkillStatus(stamps: readonly SkillStatusStamp[]): void;
+  /**
+   * The next pair of skills worth asking a model about, or `null` (#295).
+   *
+   * `null` covers three states a caller cannot usefully tell apart and does the
+   * same thing in all of: this deployment has embedded nothing, this library has
+   * no mutual nearest pair, and every mutual pair has already been considered at
+   * these texts. The first of those is why this can be called on a store with no
+   * `vec_embedding` table at all without throwing.
+   *
+   * This proposes nothing and records nothing — it is a read. See
+   * `SKILL_MERGE_CANDIDATE_SQL` for the nomination rule and what bounds it.
+   */
+  skillMergeCandidate(): SkillMergePair | null;
+  /**
+   * Record that this pair was considered, at these two texts.
+   *
+   * Written whether or not a merge was drafted: a declined pair with no row is a
+   * pair paid for again on every later run.
+   */
+  recordSkillMergeConsidered(pair: SkillMergePair, at: number): void;
+  /**
+   * Considered pairs at least one of whose skills the index no longer holds, in
+   * pair order.
+   *
+   * What a caller does with these is remove the proposal file that named them
+   * and then forget the row — the two halves of cleaning up after a merge
+   * somebody applied, or half-applied.
+   */
+  orphanedSkillMergeProposals(limit: number): readonly SkillPairKey[];
+  /** Forget one considered pair, so a later pair of the same names is fresh. */
+  forgetSkillMergeProposal(pair: SkillPairKey): void;
   close(): void;
 }
 
@@ -1206,6 +1300,30 @@ export interface SkillClock {
 export interface SkillStatusStamp {
   readonly name: string;
   readonly status: SkillStatus;
+}
+
+/**
+ * Two skills the index nominated for a merge, and the two texts it nominated
+ * them as (#295).
+ *
+ * `a` and `b` are in name order, which is what makes the pair a key rather than
+ * an ordered thing a caller could hand back the other way round.
+ *
+ * **It deliberately carries no distance.** The query orders on one, nothing
+ * outside can act on one, and a number a caller cannot act on is a number that
+ * ends up in a log line — where `LogFields` has no place for it.
+ */
+export interface SkillMergePair {
+  readonly a: string;
+  readonly b: string;
+  readonly hashA: string;
+  readonly hashB: string;
+}
+
+/** One considered pair, by name. */
+export interface SkillPairKey {
+  readonly a: string;
+  readonly b: string;
 }
 
 /** One parsed skill file, as reconciliation hands it to the index. */
@@ -1619,6 +1737,131 @@ const RECORD_SKILL_STATUS_SQL = `UPDATE skill_use
      WHERE name = ?`;
 
 /**
+ * The pair of skills worth asking a model about next, or nothing (#295).
+ *
+ * ## Mutual nearest neighbour, and why there is no distance constant
+ *
+ * A pair (A, B) is a candidate only when B is A's nearest other live skill *and*
+ * A is B's. That is the whole nomination rule, and what it buys is a bound with
+ * no magic number in it. This tree has refused a threshold twice already —
+ * `session/recall.ts` on an L2 cutoff, `SEARCH_SKILLS_SQL` above on a bm25 rank
+ * floor — both because a figure tuned against a large corpus is wrong for the
+ * small one this actually runs on. A threshold here would be worse than either,
+ * because "how far apart are two playbooks" has no natural scale at all: L2 over
+ * whatever a provider emits is not a similarity anybody can defend a number in.
+ *
+ * **The rule this replaces is "the closest pair nobody has looked at yet"**, and
+ * it is worth recording why that fails. The hash rule below stops a pair being
+ * looked at *twice*, not from being looked at *once* — so that rule terminates
+ * only after every pair has had its turn, which is n(n-1)/2 model calls. A
+ * hundred-skill library would work through 4950 mostly-unrelated pairs at one a
+ * day, for thirteen years.
+ *
+ * ## What this actually bounds
+ *
+ * At most one candidate exists per matching, so the standing candidate set is
+ * ⌊n/2⌋ rather than n(n-1)/2. The stronger property is the one that matters:
+ * **the candidate set changes only when a `description_hash` moves.** A steady
+ * library reaches a fixed point where every mutual pair has a row and this
+ * answers nothing at all, at the cost of one SELECT. An edit to one description
+ * un-considers that skill's pair and the pairs of skills whose nearest it was —
+ * a constant number of model calls per edit, not a function of n.
+ *
+ * What it gives up is chains: with A–B–C where A and B are each other's nearest,
+ * C is never nominated against B until A and B merge. That is a delay rather than
+ * a miss — the next round re-ranks against the merged skill — and it is the price
+ * of not having a constant.
+ *
+ * ## The shape
+ *
+ * `live` is the skills that both have a vector and are not archived. An archived
+ * skill has no vector anyway, because reconciliation drops one the moment a
+ * status reaches `archived`, but the status join is written rather than relied on
+ * for `SEARCH_SKILLS_SQL`'s stated reason: a rule applied by its callers is a
+ * rule one of them forgets.
+ *
+ * `vec_distance_l2` is a scalar function over the vec0 column rather than a MATCH,
+ * so the whole comparison happens in one statement and **no vector crosses into
+ * JS**. It is O(n^2) distances — 9900 at the default `[skills] max_skills` of a
+ * hundred, and a second or two at the schema's roof of a thousand, once per
+ * channel per day on a background pass. Any nearest-neighbour formulation over
+ * this file is the same order, because vec0 0.1.x scans rather than indexes.
+ *
+ * `ORDER BY d, b` inside the window rather than `ORDER BY d`: `ROW_NUMBER` over a
+ * partial order picks its winner arbitrarily, and two skills at an identical
+ * distance would otherwise make the mutuality test depend on the query plan.
+ *
+ * The LEFT JOIN and its two `IS NOT` tests are the bounding rule. `IS NOT` rather
+ * than `!=` because the left side is NULL for a pair never considered, and `!=`
+ * against NULL is NULL rather than true.
+ */
+const SKILL_MERGE_CANDIDATE_SQL = `
+WITH live AS (
+  SELECT e.id AS id, s.name AS name, s.description_hash AS hash
+    FROM embedding_source e
+    JOIN skill s ON s.name = e.source_ref
+   WHERE e.source_kind = 'skill'
+     AND s.status != 'archived'
+),
+pair AS (
+  SELECT la.name AS a, lb.name AS b,
+         la.hash AS hash_a, lb.hash AS hash_b,
+         vec_distance_l2(va.embedding, vb.embedding) AS d
+    FROM live la
+    JOIN live lb ON lb.id != la.id
+    JOIN vec_embedding va ON va.id = la.id
+    JOIN vec_embedding vb ON vb.id = lb.id
+),
+ranked AS (
+  SELECT a, b, hash_a, hash_b, d,
+         ROW_NUMBER() OVER (PARTITION BY a ORDER BY d, b) AS rn
+    FROM pair
+)
+SELECT r.a AS a, r.b AS b, r.hash_a AS hash_a, r.hash_b AS hash_b
+  FROM ranked r
+  JOIN ranked back ON back.a = r.b AND back.b = r.a AND back.rn = 1
+  LEFT JOIN skill_merge_proposal p ON p.skill_a = r.a AND p.skill_b = r.b
+ WHERE r.rn = 1
+   AND r.a < r.b
+   AND (p.skill_a IS NULL
+        OR p.hash_a IS NOT r.hash_a
+        OR p.hash_b IS NOT r.hash_b)
+ ORDER BY r.d, r.a
+ LIMIT 1`;
+
+/**
+ * The pair was considered, at these two texts.
+ *
+ * An upsert, so one pair is one row for the life of the store: a second look
+ * after an edit replaces the hashes rather than accumulating a history nothing
+ * reads.
+ */
+const RECORD_SKILL_MERGE_SQL = `INSERT INTO skill_merge_proposal
+       (skill_a, skill_b, hash_a, hash_b, at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (skill_a, skill_b) DO UPDATE SET
+         hash_a = excluded.hash_a,
+         hash_b = excluded.hash_b,
+         at     = excluded.at`;
+
+/**
+ * Considered pairs at least one of whose skills the index no longer holds.
+ *
+ * How a caller finds a proposal file about a skill somebody deleted — which is
+ * both the applied proposal and the half-applied one. See the DDL on why no
+ * trigger takes these rows away instead.
+ */
+const ORPHANED_SKILL_MERGE_SQL = `SELECT p.skill_a, p.skill_b
+     FROM skill_merge_proposal p
+    WHERE NOT EXISTS (SELECT 1 FROM skill s WHERE s.name = p.skill_a)
+       OR NOT EXISTS (SELECT 1 FROM skill s WHERE s.name = p.skill_b)
+    ORDER BY p.skill_a, p.skill_b
+    LIMIT ?`;
+
+const FORGET_SKILL_MERGE_SQL = `DELETE FROM skill_merge_proposal
+     WHERE skill_a = ? AND skill_b = ?`;
+
+/**
  * The sweep: quiet threads with nothing current standing for them.
  *
  * The subquery folds a channel's messages into threads — `COALESCE(thread_ts,
@@ -1966,6 +2209,9 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     skillClocks: db.prepare(SKILL_CLOCKS_SQL),
     adoptSkillStatus: db.prepare(ADOPT_SKILL_STATUS_SQL),
     recordSkillStatus: db.prepare(RECORD_SKILL_STATUS_SQL),
+    recordSkillMerge: db.prepare(RECORD_SKILL_MERGE_SQL),
+    orphanedSkillMerges: db.prepare(ORPHANED_SKILL_MERGE_SQL),
+    forgetSkillMerge: db.prepare(FORGET_SKILL_MERGE_SQL),
     // DESC because the only way to ask SQLite for a tail is to sort backwards
     // and take the head; `recent` reverses the rows before returning them.
     //
@@ -2054,6 +2300,7 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     readonly remove: StatementSync;
     readonly nearest: StatementSync;
     readonly nearestOfKind: StatementSync;
+    readonly mergeCandidate: StatementSync;
   } | null = null;
 
   function prepareVecStatements(): NonNullable<typeof vecStatements> {
@@ -2061,7 +2308,13 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       put: db.prepare(`INSERT INTO vec_embedding (id, embedding) VALUES (?, ?)`),
       remove: db.prepare(`DELETE FROM vec_embedding WHERE id = ?`),
       nearest: db.prepare(NEAREST_SQL),
-      nearestOfKind: db.prepare(NEAREST_OF_KIND_SQL)
+      nearestOfKind: db.prepare(NEAREST_OF_KIND_SQL),
+      // Here rather than beside the others for this block's whole reason: it
+      // names `vec_embedding`, which does not exist until something has been
+      // embedded. That is also where the no-embedding-provider guard comes from
+      // for free — `skillMergeCandidate` checks `readEmbeddingModel()` first,
+      // exactly as `nearest` does, and never reaches this.
+      mergeCandidate: db.prepare(SKILL_MERGE_CANDIDATE_SQL)
     };
     return vecStatements;
   }
@@ -2382,6 +2635,37 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
 
     recordSkillStatus(stamps) {
       for (const stamp of stamps) statements.recordSkillStatus.run(stamp.status, stamp.name);
+    },
+
+    skillMergeCandidate() {
+      // `nearest`'s guard, for its reason and one more: a store under a
+      // deployment with no embedding provider has no `vec_embedding` table at
+      // all, and preparing a statement that names it throws at prepare time.
+      // The three states this returns `null` for are documented on the
+      // interface, and a caller does the same thing in all of them.
+      if (readEmbeddingModel() === null) return null;
+
+      const row = prepareVecStatements().mergeCandidate.get() as
+        | { a: string; b: string; hash_a: string; hash_b: string }
+        | undefined;
+      if (row === undefined) return null;
+      return { a: row.a, b: row.b, hashA: row.hash_a, hashB: row.hash_b };
+    },
+
+    recordSkillMergeConsidered(pair, at) {
+      statements.recordSkillMerge.run(pair.a, pair.b, pair.hashA, pair.hashB, at);
+    },
+
+    orphanedSkillMergeProposals(limit) {
+      const rows = statements.orphanedSkillMerges.all(clampLimit(limit)) as Array<{
+        readonly skill_a: string;
+        readonly skill_b: string;
+      }>;
+      return rows.map(row => ({ a: row.skill_a, b: row.skill_b }));
+    },
+
+    forgetSkillMergeProposal(pair) {
+      statements.forgetSkillMerge.run(pair.a, pair.b);
     },
 
     close() {

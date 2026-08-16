@@ -31,14 +31,15 @@ export type LogLevel = "info" | "warn" | "error";
 
 export interface LogFields {
   /**
-   * Fixed vocabulary. Four of these say a channel's file was opened —
+   * Fixed vocabulary. Five of these say a channel's file was opened —
    * "store_opened" when the gateway opens a store to write,
    * "store_reader_opened" when the proxy opens one to search,
-   * "memory_file_opened" when the agent opens a channel's `MEMORY.md`, and
-   * "skills_opened" when it opens the channel's `skills/` directory. Four words
-   * rather than one because which process opened which of a channel's files, and
-   * whether it can write to it, is the first thing an operator reading these
-   * lines wants.
+   * "memory_file_opened" when the agent opens a channel's `MEMORY.md`,
+   * "skills_opened" when it opens the channel's `skills/` directory, and
+   * "proposals_opened" when it opens the merge curator's `proposals/` beside it.
+   * Five words rather than one because which process opened which of a channel's
+   * files, and whether it can write to it, is the first thing an operator reading
+   * these lines wants.
    *
    * Two more say a skill file in that directory was **skipped** —
    * "skill_file_unusable" for one that does not parse, "skill_file_misnamed" for
@@ -58,7 +59,8 @@ export interface LogFields {
   /**
    * A file under the state root. A path, and every variable segment of it is an
    * id rather than content: `<root>/<channel>/store.db`,
-   * `<root>/<channel>/MEMORY.md`, or `<root>/<channel>/skills/<name>.md`.
+   * `<root>/<channel>/MEMORY.md`, `<root>/<channel>/skills/<name>.md`, or
+   * `<root>/<channel>/proposals/<name>--<name>.md`.
    *
    * **A skill's name is the second variable segment, and it is model-authored**,
    * so it is worth saying why it is admitted here. `SkillName` bounds it to a
@@ -66,7 +68,9 @@ export interface LogFields {
    * tool or credential name — those are bounded precisely so that a nonsense one
    * is a parse failure at the edge rather than arbitrary text echoed into a log.
    * A name that reached this field has already passed that parse. Nothing else
-   * from inside a skill may: not its description, not a line of its body.
+   * from inside a skill may: not its description, not a line of its body. A
+   * proposal's segment is two such names joined by a separator neither can
+   * contain, which is the same admission twice rather than a new one.
    */
   file?: string;
 }

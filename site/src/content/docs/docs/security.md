@@ -203,6 +203,13 @@ the same review the section above argues is what makes curated memory liveable a
 retention policy requires that nothing survive a deletion anywhere, `[memory] enabled = false` is
 the switch, and it is the honest answer rather than a partial one.
 
+**`skills/` and `proposals/` are the same exception on the same terms**, and the second is the
+milder of the two. A playbook is a distillation with no per-message provenance, exactly as a curated
+fact is, and `[skills] enabled = false` is its switch. A merge proposal is a draft quoting two
+playbooks, so it holds no text that is not already in `skills/` — and deleting it is not a special
+act you have to learn, because deleting it is how you decline it. `[skills] curate = false` stops
+the pass writing any.
+
 Two things follow that are easy to assume otherwise. Nothing embeds curated facts today, so there
 is no vector of a fact to outlive anything either. And a channel that turns summarization off with
 `[memory] summarize = false` has no summaries to delete, which makes the deletion story simpler

@@ -115,12 +115,21 @@ export const DEFAULT_MEMORY_SETTINGS = {
  * for none — a policy violation this process committed on its own, and one
  * nobody in the channel can see. The two failures are not symmetric.
  *
+ * `curate` is `false` here too, and writing it rather than leaving it to
+ * `enabled` is deliberate even though the pass checks both. A fallback for a
+ * block with no second copy *is* the decision, so a reader should be able to see
+ * it rather than prove it by composition — and the failure it stands against is
+ * the sharper one of the two: an unreadable sheet that switched *curation* on
+ * would be this process spending a channel's budget on a background turn and
+ * writing files into their directory, on a channel whose sheet nobody could read.
+ *
  * The other numbers are still the schema's figures. They only matter once
  * something is enabled, and inventing a second set for a disabled feature is
  * how two copies of a number drift.
  */
 export const DEFAULT_SKILL_SETTINGS = {
   enabled: false,
+  curate: false,
   authorAfterToolCalls: 5,
   topK: 3,
   maxSkillChars: 8_192,
@@ -190,6 +199,7 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     // the author turn lands (#291).
     skills: {
       enabled: sheet.skills.enabled,
+      curate: sheet.skills.curate,
       authorAfterToolCalls: sheet.skills.author_after_tool_calls,
       topK: sheet.skills.top_k,
       maxSkillChars: sheet.skills.max_skill_chars,

@@ -44,8 +44,10 @@ import { createMemoryFileOpener } from "./session/memory.js";
 import { createQueryEmbedder } from "./session/embed.js";
 import { createRecall } from "./session/recall.js";
 import { createSkillEmbedSweep } from "./session/skill-embed.js";
+import { createSkillCuratePass } from "./session/skill-curate.js";
 import { createSkillLifecyclePass } from "./session/skill-lifecycle.js";
 import { createSkillRecall } from "./session/skill-recall.js";
+import { createSkillProposalsOpener } from "./session/proposals.js";
 import { createSkillFilesOpener } from "./session/skills.js";
 import { createSheetResolver } from "./session/sheet.js";
 import { createSummarySweep } from "./session/summarize.js";
@@ -234,6 +236,37 @@ const lifecycleSkills = createSkillLifecyclePass({
   logger
 });
 
+// The merge curator (#295): one model call a day, per channel, about the two
+// playbooks the index says are closest to each other — and a file in
+// `proposals/` that a person reads and applies, or deletes.
+//
+// Built here rather than in compose.ts because it needs the completion client
+// and the spend reporter, which is `summarize`'s reason and not the lifecycle
+// job's: that one is deliberately wired without either.
+//
+// It shares the `skills` opener with the two passes above and gets its own for
+// `proposals/`, which is a sibling directory rather than a child — anything
+// inside `skills/` whose name parses is a retrievable skill, and a proposal
+// quoting two playbooks must never become a third.
+const curateSkills = createSkillCuratePass({
+  completion,
+  files: skills,
+  proposals: createSkillProposalsOpener({ storeRoot, channelsRoot, logger }),
+  settings: async channel => {
+    const settings = await sheets(channel);
+    return {
+      enabled: settings.skills.enabled,
+      curate: settings.skills.curate,
+      maxSkills: settings.skills.maxSkills,
+      model: settings.model,
+      maxTokens: settings.caps.maxOutputTokensPerTurn
+    };
+  },
+  reportTurn,
+  signal: tasks.signal,
+  logger
+});
+
 const { gateway } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
@@ -269,6 +302,7 @@ const { gateway } = createServer({
   summarize,
   embedSkills,
   lifecycleSkills,
+  curateSkills,
   recall,
   embed,
   skillRecall,
