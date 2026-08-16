@@ -71,8 +71,10 @@ the incoming request are loaded into the opening context and record a use (#292)
 and a task whose *served* tool calls exceed the channel's threshold gets one
 extra model call that decides whether a reusable playbook emerged and writes it
 (#291). A skill somebody added with an editor and a skill the turn wrote reach
-the index by the same road. What remains in the phase is the lifecycle job
-(#294), the curator (#295), and the e2e suite that attacks the layer (#293).
+the index by the same road. The layer is attacked in `e2e/` as of #293, which
+states the claim narrowly: a poisoned skill can steer the model, and what it
+must not do is widen anything the proxy governs. What remains in the phase is the
+lifecycle job (#294) and the curator (#295).
 
 ## Where the reasoning lives
 
@@ -91,7 +93,7 @@ code is a paragraph the next reader will not find.
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, and why `searchSkills` ORs its terms where `search` ANDs them | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
-| The harness API, what is faked, why the positive control matters | `e2e/README.md` |
+| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |

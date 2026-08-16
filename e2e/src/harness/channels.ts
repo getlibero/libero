@@ -122,6 +122,31 @@ export interface SheetSpec {
    */
   readonly memory?: { readonly enabled?: boolean; readonly maxFileChars?: number };
   /**
+   * The `[skills]` block: whether this channel loads playbooks at the head of a
+   * task and writes one after a tool-heavy one (#292, #291).
+   *
+   * **Off unless a case says otherwise, for `memory`'s reason exactly**, and the
+   * argument is a little stronger here because both halves would bite. The
+   * schema prefaults `enabled = true`, so a sheet that said nothing would give
+   * every case in this suite a reconcile and a retrieval at the head of every
+   * task — and, above the threshold, an author turn, which is a model turn that
+   * consumes the next entry of a script written before skills existed.
+   *
+   * `authorAfterToolCalls` is here because a case about the write half should
+   * not have to script six served tool calls to reach the default threshold. It
+   * is the channel's `author_after_tool_calls` and the comparison is still
+   * **strictly** greater, so the schema's floor of `1` is the cheapest a sheet
+   * can ask for and means "two served calls". A case wanting the turn *not* to
+   * fire says so with a script that serves fewer, not with a smaller number.
+   */
+  readonly skills?: {
+    readonly enabled?: boolean;
+    readonly authorAfterToolCalls?: number;
+    readonly topK?: number;
+    readonly maxSkillChars?: number;
+    readonly maxSkills?: number;
+  };
+  /**
    * The certificates allowed to speak for this channel, as SHA-256 digests
    * (#79).
    *
@@ -224,6 +249,19 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           `enabled = ${spec.memory?.enabled ?? false}`,
           ...(spec.memory?.maxFileChars !== undefined
             ? [`max_file_chars = ${spec.memory.maxFileChars}`]
+            : []),
+          ``,
+          `[skills]`,
+          `enabled = ${spec.skills?.enabled ?? false}`,
+          ...(spec.skills?.authorAfterToolCalls !== undefined
+            ? [`author_after_tool_calls = ${spec.skills.authorAfterToolCalls}`]
+            : []),
+          ...(spec.skills?.topK !== undefined ? [`top_k = ${spec.skills.topK}`] : []),
+          ...(spec.skills?.maxSkillChars !== undefined
+            ? [`max_skill_chars = ${spec.skills.maxSkillChars}`]
+            : []),
+          ...(spec.skills?.maxSkills !== undefined
+            ? [`max_skills = ${spec.skills.maxSkills}`]
             : []),
           ``,
           `[[mcp_server]]`,
