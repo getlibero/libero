@@ -327,6 +327,50 @@ depends on `@getlibero/schema` and nothing else, which is what keeps the package
 whose job is talking to a model free of a state root, a file handle and a SQLite
 dependency.
 
+## The skill-author turn
+
+`src/skill/turn.ts` is one model call after a tool-heavy task has replied,
+deciding whether a reusable playbook emerged and writing it through the two
+operations `@getlibero/schema` publishes (#291). Curation's shape again — one
+call, no loop, no reachable proxied tool, nothing here that writes a file, spend
+through the same `onTurn` before any operation runs — and it differs in three
+ways.
+
+**It is triggered by a count, and the caller owns the count.** Curation follows
+every task; this follows only one whose *served* tool calls exceeded `[skills]
+author_after_tool_calls`. The threshold is a channel's policy and this package
+cannot read a team sheet, so the test lives in `apps/server`. Below the line the
+task was a question with a lookup, and a playbook for that is a playbook for
+reading. Declining is still the ordinary outcome above it, and there is no
+`skill_none` to say so with: nothing re-triggers this turn, so absence is the
+decline and a member for it would be a row nothing reads.
+
+**It sees the tool traffic, where curation deliberately does not.**
+`curationTranscript` strips it, on the argument that a durable fact reaches the
+reply. That argument inverts here, because `SKILL_TOOLS` asks a body for exactly
+the traffic curation throws away — the calls that worked, in an order that
+matters, with the parts that are easy to get wrong. So `skillTranscript` renders
+each assistant turn as its own words plus a line per call, and applies one rule:
+**a success contributes its name and arguments and not its result; a failure
+keeps its text.** A JSON response cut at `SKILL_STEP_MAX_CHARS` ends mid-object
+and teaches nothing, where a refusal or a 404 is short, complete, and the thing a
+playbook should warn about. It is rendered rather than replayed because a
+tool-use block with no matching result is not a conversation a provider accepts,
+and because `providerState` belongs to the conversation that produced it.
+
+**Its neighbours are handed in.** `nearby` is what retrieval already loaded at
+the head of this task (#292) — the nearest existing skills on its own subject,
+resolved once, at no extra cost. That is what makes `skill_revise` usable at all:
+a revision replaces a body outright, so a model that cannot see the body it is
+replacing can only overwrite it blind. They are rendered in full, and the type is
+`NearbySkill` rather than `SkillFile` deliberately: `created` and `status` are
+not the model's, so they are not shown to it.
+
+None of that is what governs the turn. The tool set is two, `parseSkillOp`
+answers `unknown_tool` for anything else and dispatches it nowhere, the two size
+caps and `max_skills` are the store's, and the tokens reach the proxy's meter
+through the same per-turn report every other turn uses.
+
 ## Layout
 
 | Path | What it is |
@@ -338,6 +382,7 @@ dependency.
 | `loop/types.ts` | `AgentLoopCaps`, `AgentStopReason`, the hook contracts |
 | `curation/turn.ts` | The post-reply memory turn, its prompt, and `MemoryOpHandler` |
 | `summarize/turn.ts` | The quiescence summarization turn and its prompt |
+| `skill/turn.ts` | The post-reply skill-author turn, its prompt, `skillTranscript` and `SkillOpHandler` |
 | `proxy/transport.ts` | mTLS over `node:https` |
 | `proxy/tools.ts` | `ToolSource` + `ToolExecutor`, and the held-call path |
 | `proxy/tool-names.ts` | Flat name to `(server, tool)`, and why it is a lookup |

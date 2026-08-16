@@ -72,6 +72,21 @@ export type {
 } from "./curation/turn.js";
 
 export {
+  SKILL_AUTHOR_SYSTEM_PROMPT,
+  SKILL_STEP_MAX_CHARS,
+  runSkillAuthorTurn,
+  skillToolDefinitions,
+  skillTranscript
+} from "./skill/turn.js";
+export type {
+  NearbySkill,
+  SkillAuthorTurnOptions,
+  SkillAuthorTurnResult,
+  SkillOpHandler,
+  SkillOpOutcome
+} from "./skill/turn.js";
+
+export {
   SUMMARIZATION_SYSTEM_PROMPT,
   runSummarizationTurn
 } from "./summarize/turn.js";

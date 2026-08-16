@@ -278,14 +278,25 @@ A message that is *answered* — see below — does take the queue, because it i
 model turn like any other. The write happens first either way, so the transcript
 its own task assembles already holds the thing it was asked about.
 
-### Where the curation turn sits in the queue
+### Where the post-reply turns sit in the queue
 
-After a task's reply has been produced, the router enqueues a **curation turn**
-on that same session queue — one extra model call, offered the memory tools and
-nothing else, which decides whether anything about the task was worth keeping in
-the channel's `MEMORY.md`. It is **not awaited**: the reply goes back to the
-gateway and into the thread at the moment it always did, and the person who asked
-waits for nothing extra.
+After a task's reply has been produced, the router enqueues **one thunk** on that
+same session queue, and it runs whichever post-reply turns this channel earned:
+the **curation turn**, which decides whether anything about the task belongs in
+`MEMORY.md`, and then the **skill-author turn**, which decides whether the task
+left behind a reusable playbook. It is **not awaited**: the reply goes back to
+the gateway and into the thread at the moment it always did, and the person who
+asked waits for nothing extra.
+
+**One thunk rather than one each (#291), and the reason is the turn id.** A turn
+reports its spend under `<task>.<n>`, which is the meter's idempotency key.
+Curation takes the task's turn count plus one; a sibling thunk for authoring
+could not know whether curation had run, so it would have to claim `+ 2`
+unconditionally and leave a gap whenever `[memory] enabled = false` — which is
+exactly what `CurationTurnOptions.turn` promises will not happen. One closure
+holds the counter and the promise survives every combination. Curation runs
+first, which mostly settles that a process asked to stop mid-way drops the newer
+feature rather than the shipped one; neither reads what the other writes.
 
 Enqueueing it rather than detaching it buys three things at once. The next task's
 context read is *serialized against* this write rather than racing it, which is
@@ -310,9 +321,20 @@ the previous answer was in the channel. Shutdown is handled by the same signal
 the task runner takes: a curation turn that wakes up during a drain does nothing,
 because the reply it would have been remembering was never posted.
 
-A curation failure is a `curation_failed` line and nothing else. The reply has
-already been produced, nothing is awaiting the turn, and the session goes on
-answering.
+A failure in either turn is a `curation_failed` or `authoring_failed` line and
+nothing else. The reply has already been produced, nothing is awaiting the thunk,
+and the session goes on answering.
+
+**What triggers the author turn is a count, and it is not the loop's count.**
+`[skills] author_after_tool_calls` says it counts tool calls the proxy *served*,
+strictly more than the figure — and `AgentTaskResult.toolCalls` is a different
+number, because the loop increments it the moment it dispatches a call, before
+the executor runs. A refused tool, a name this channel was never granted and an
+upstream 500 are all in it. So the runner counts `onToolCall` steps that reached
+`ok` instead, which adds nothing to the loop and reuses a callback the checklist
+already needed. A task whose calls were all refused learned that this channel's
+sheet does not grant those tools, and a playbook written from it would be a
+playbook about tools that do not work here.
 
 **Messages are deduplicated by the store's `ts`, and never by the gateway's
 `seen` set.** The store's insert is `ON CONFLICT DO NOTHING` on a UNIQUE column,

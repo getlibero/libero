@@ -137,7 +137,7 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
     // Filled by the critical section below, and read after it. The task builds
     // it because everything it closes over is the task's; this file decides when
     // it runs, because the queue is this file's.
-    let curate: (() => Promise<void>) | undefined;
+    let afterReply: (() => Promise<void>) | undefined;
 
     const reply = await session.mutex.run(async () => {
       if (waited) {
@@ -291,10 +291,16 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         const outcome = await options.task(request, {
           ...settings,
           messages,
-          ...(memoryFile !== undefined ? { memoryFile } : {})
+          ...(memoryFile !== undefined ? { memoryFile } : {}),
+          // The directory the author turn writes through, and what retrieval
+          // already loaded out of it. Both are this step's, so the turn that
+          // follows the reply sees the library as this task saw it rather than
+          // opening it a second time.
+          ...(skillFiles !== undefined ? { skillFiles } : {}),
+          loadedSkills: skills
         });
 
-        curate = outcome.curate;
+        afterReply = outcome.afterReply;
         return outcome.reply;
       } finally {
         const finishedAt = now();
@@ -325,7 +331,7 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
     // `void` and no `catch`: the thunk is documented never to reject, and it
     // swallows into a log line where it has a logger. A `.catch` here would be
     // asserting otherwise.
-    if (curate !== undefined) void session.mutex.run(curate);
+    if (afterReply !== undefined) void session.mutex.run(afterReply);
 
     return reply;
   };

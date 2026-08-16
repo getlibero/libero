@@ -47,7 +47,7 @@ is open, and its shapes, its storage and its read path have landed. What exists:
 | Package | What it is |
 | --- | --- |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
-| `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and thread-summarization turns, and the mTLS client that reaches tools through the proxy and nowhere else |
+| `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization turn, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, and a read-only opener the proxy uses |
@@ -65,13 +65,14 @@ phase 2: a channel's messages are searchable, its `MEMORY.md` is curated after a
 reply and read back before the next task, its quiet threads are summarized and
 embedded, and a task starts with whatever of that bears on the question.
 
-Skills have their read half as of #292: a channel's `skills/` directory is
+Skills close the same loop as of #291: a channel's `skills/` directory is
 reconciled against its index at the head of every task, the playbooks matching
-the incoming request are loaded into the opening context, and each one that lands
-there records a use. Nothing writes a skill yet — the author turn is #291 — so
-every skill a deployment holds today is one a team member wrote by hand, which is
-the case `packages/memory` was built to treat as first-class rather than as a
-stand-in.
+the incoming request are loaded into the opening context and record a use (#292),
+and a task whose *served* tool calls exceed the channel's threshold gets one
+extra model call that decides whether a reusable playbook emerged and writes it
+(#291). A skill somebody added with an editor and a skill the turn wrote reach
+the index by the same road. What remains in the phase is the lifecycle job
+(#294), the curator (#295), and the e2e suite that attacks the layer (#293).
 
 ## Where the reasoning lives
 
@@ -83,9 +84,9 @@ code is a paragraph the next reader will not find.
 
 | Question | Read |
 | --- | --- |
-| What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes | `packages/agent/README.md` |
+| What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes, and what the skill-author turn sees of a task that curation deliberately does not | `packages/agent/README.md` |
 | Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, approvals, the audit log's write discipline | `packages/proxy/README.md` |
-| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, what bounds the quiescence sweep | `apps/server/README.md` |
+| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, and why `searchSkills` ORs its terms where `search` ANDs them | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |

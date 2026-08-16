@@ -15,8 +15,9 @@
 // carries.
 
 import type { AgentLoopCaps, CompletionMessage, HeldCallPrompter } from "@getlibero/agent";
-import type { MemoryFile } from "@getlibero/memory";
+import type { MemoryFile, SkillFiles } from "@getlibero/memory";
 import type { ChecklistReporter } from "../checklist/checklist.js";
+import type { LoadedSkill } from "./skill-recall.js";
 
 /**
  * Which session a request belongs to.
@@ -178,11 +179,23 @@ export interface MemorySettings {
  * this is the decision rather than a restatement of one. The fallback therefore
  * differs from the schema's default, and it is argued where the fallback lives.
  *
- * `author_after_tool_calls` is deliberately absent. It bounds the author turn
- * (#291), which nothing here runs yet, and a field with no reader is a field a
- * test cannot tell from a typo.
  */
 export interface SkillSettings {
+  /**
+   * `[skills] author_after_tool_calls`. **Strictly more than this many.**
+   *
+   * The schema pins the comparison rather than leaving two implementations to
+   * discover it, and it counts calls the proxy **served** — not calls the model
+   * attempted. A task whose six calls were all refused learned that this
+   * channel's sheet does not grant those tools, and a playbook written from it
+   * would be a playbook about tools that do not work here.
+   *
+   * That distinction is why `AgentTaskResult.toolCalls` is not what this is
+   * compared against: the loop increments its counter for every call it
+   * *dispatches*, before the executor runs, so refusals and errors are in it.
+   * `session/task.ts` counts `onToolCall` steps that reached `ok` instead.
+   */
+  readonly authorAfterToolCalls: number;
   /**
    * `[skills] enabled`. False loads no skill into a task's context.
    *
@@ -275,35 +288,70 @@ export interface TaskSettings extends ChannelSettings {
    * This is the file itself.
    */
   readonly memoryFile?: MemoryFile;
+  /**
+   * This channel's `skills/` directory, opened for the same serialized step.
+   *
+   * `memoryFile`'s shape and its asymmetry: absent means no author turn runs,
+   * which is a state the deployment can legitimately be in — the sheet disabled
+   * skills, or the directory could not be opened. Named apart from
+   * `ChannelSettings.skills`, which is what the *sheet* said.
+   */
+  readonly skillFiles?: SkillFiles;
+  /**
+   * The skills retrieval loaded into this task's opening context (#292).
+   *
+   * Carried through to the author turn rather than retrieved a second time:
+   * these are already the nearest existing skills on the task's own subject, and
+   * a second search would spend an embedding to answer a question that has just
+   * been answered. Empty is ordinary.
+   *
+   * **Not the same fact as `messages`, even though they are rendered into it.**
+   * The transcript holds them as one block of prose inside a `user` message; the
+   * author turn needs them as structured files, because it shows each one under
+   * its own name so a `skill_revise` can address it.
+   */
+  readonly loadedSkills?: readonly LoadedSkill[];
 }
 
 /**
- * What a finished task leaves behind: the reply, and the memory work that should
+ * What a finished task leaves behind: the reply, and the model work that should
  * follow it.
  *
- * **`curate` is a thunk rather than something the runner already did, and the
- * split is the ordering decision (#227).** Everything curation needs — the task
- * id the spend report keys on, the finished transcript, the turn count that
+ * **`afterReply` is a thunk rather than something the runner already did, and
+ * the split is the ordering decision (#227).** Everything those turns need — the
+ * task id the spend report keys on, the finished transcript, the turn count that
  * makes the next turn id `<task>.<n+1>` — is function-local to the runner and
  * escapes nowhere else. But *when* it runs is a question about the session
  * queue, which the runner cannot see and the router owns. So the runner closes
  * over the answer and the router decides when to ask for it.
  *
- * Absent when the channel's sheet disables curation, when the task produced
- * nothing to curate, or when there is no memory file to write.
+ * It was called `curate` until #291, when the skill-author turn became the
+ * second thing that follows a reply.
  */
 export interface TaskOutcome {
   /** What to post. `undefined` posts nothing. */
   readonly reply: TaskReply | undefined;
   /**
-   * The curation turn, ready to run.
+   * Every model turn that follows the reply, as one thunk, ready to run.
+   *
+   * **One thunk and not one per turn**, which #291 decided when the author turn
+   * joined curation here. A turn id is `<task>.<n>` and is the spend meter's
+   * idempotency key, so the two have to agree on a counter — and a sibling thunk
+   * could not, because it cannot know whether the other one ran. It would have
+   * to claim `result.turns + 2` unconditionally and leave a gap whenever
+   * `[memory] enabled = false`, which is exactly what `CurationTurnOptions.turn`
+   * promises will not happen. One thunk holds the counter in a closure and the
+   * promise stays true whichever turns fire.
+   *
+   * Absent when neither turn would run. The individual reasons are the runner's;
+   * from here it is one question.
    *
    * **It never rejects**, for `reportSpend`'s reason: it is invoked detached
    * from the reply that has already been produced, so a rejection would be an
    * unhandled one at the process level rather than something a caller could
    * relay. It swallows and logs where it has a logger.
    */
-  readonly curate?: () => Promise<void>;
+  readonly afterReply?: () => Promise<void>;
 }
 
 /**

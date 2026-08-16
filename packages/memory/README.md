@@ -471,13 +471,18 @@ What bounds it is the caller's — `[skills] top_k` and a character ceiling.
 
 ## What is not here
 
-**Nothing writes a skill yet.** The storage is whole, and since #292 so is the
-read path: `apps/server` reconciles this directory at the head of every task,
-fuses the two retrieval primitives, renders the winners into the opening context
-and records a use for each. What is still missing is the author turn that writes
-one in the first place (#291), so every skill a deployment holds today is one a
-team member wrote by hand — which this package was always built to treat as the
-first-class case.
+**Skills are whole as of #291**, storage and both directions. `apps/server`
+reconciles this directory at the head of every task, fuses the two retrieval
+primitives, renders the winners into the opening context and records a use for
+each (#292); after a task heavy enough in served tool calls, the skill-author
+turn writes through `openSkillFiles().apply` (#291). A skill somebody adds with
+an editor and a skill an operation wrote reach the index by the same road, which
+is what this package was built for and is still the only road there is.
+
+What is not here is the lifecycle job that runs the stale and archive clocks over
+`skill_use` (#294), and the curator that proposes merges of overlapping skills
+(#295). `status_by_job` and `status_by_job_at` are the columns waiting for the
+first of those.
 
 `reconcileSkillIndex`'s caller is `apps/server/src/session/skill-recall.ts`, and
 it is the only one. It runs at the head of a task inside the session's lock,

@@ -109,7 +109,13 @@ describe("settingsFrom", () => {
       },
       // The schema's defaults again, and the same argument: a sheet that parsed
       // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
-      skills: { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 }
+      skills: {
+        enabled: true,
+        authorAfterToolCalls: 5,
+        topK: 3,
+        maxSkillChars: 8_192,
+        maxSkills: 100
+      }
     });
   });
 
@@ -135,7 +141,13 @@ describe("settingsFrom", () => {
       },
       // The schema's defaults again, and the same argument: a sheet that parsed
       // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
-      skills: { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 }
+      skills: {
+        enabled: true,
+        authorAfterToolCalls: 5,
+        topK: 3,
+        maxSkillChars: 8_192,
+        maxSkills: 100
+      }
     });
   });
 
@@ -222,7 +234,13 @@ describe("createSheetResolver", () => {
       },
       // The schema's defaults again, and the same argument: a sheet that parsed
       // has said, so this is not `DEFAULT_SKILL_SETTINGS`.
-      skills: { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 }
+      skills: {
+        enabled: true,
+        authorAfterToolCalls: 5,
+        topK: 3,
+        maxSkillChars: 8_192,
+        maxSkills: 100
+      }
     });
   });
 
@@ -428,6 +446,7 @@ describe("the skills fallback", () => {
 
     expect(settings.skills).toEqual({
       enabled: false,
+      authorAfterToolCalls: 5,
       topK: 3,
       maxSkillChars: 8_192,
       maxSkills: 100

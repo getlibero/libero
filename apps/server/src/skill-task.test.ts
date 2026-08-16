@@ -46,7 +46,13 @@ const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
 
 /** Skills on, at the schema's own figures — what a sheet that parsed resolves to. */
-const LOADING: SkillSettings = { enabled: true, topK: 3, maxSkillChars: 8_192, maxSkills: 100 };
+const LOADING: SkillSettings = {
+  enabled: true,
+  authorAfterToolCalls: 5,
+  topK: 3,
+  maxSkillChars: 8_192,
+  maxSkills: 100
+};
 
 let channelsRoot: string;
 let storeRoot: string;
