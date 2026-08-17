@@ -1897,6 +1897,15 @@ const STALE_THREADS_SQL = `SELECT t.thread, t.newest, t.n
  * is not defensive noise: a `Float32Array` produced by `subarray` shares its
  * neighbour's backing store, so `Buffer.from(vector.buffer)` would hand vec0 the
  * whole allocation and fail on a dimension the caller never asked for.
+ *
+ * What this is **not** is a workaround for `node:sqlite` (#309). Measured
+ * against the real sqlite-vec binary on 24.0.0 — the repository's floor —
+ * 24.19.0 and 26.7.0, binding the bare `Float32Array` view stores the three
+ * floats the caller meant on all three: the bind path honours a view's offset
+ * and length, and there is no supported runtime where it does not. So this
+ * function earns its place against the *conversion* being written the obvious
+ * wrong way, not against the driver, and `store-db.test.ts` pins exactly that
+ * much.
  */
 function toVectorBlob(vector: Float32Array): Buffer {
   return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
