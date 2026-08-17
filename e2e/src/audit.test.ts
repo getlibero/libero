@@ -25,18 +25,18 @@
 // claim — the audit table holds no credential value, and the reader does not
 // reconstruct one.
 
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   CANARY,
   CHANNEL,
-  approvalCardOf,
   auditRows,
   calls,
   lastAuditId,
   rigOf,
   runAuditCli,
   says,
-  startRig
+  startRig,
+  waitForApprovalCard
 } from "./harness/index.js";
 import type { AuditRow, Rig } from "./harness/index.js";
 
@@ -149,13 +149,10 @@ beforeAll(async () => {
   const pending = agent.slack.deliverMention(mention("Ev00000003", "<@U0BOTBOTB> tidy the branches"));
   // The card is what says the hold has happened and the row is written; reading
   // the ticket before it appears is a race the run would lose intermittently.
-  await vi.waitFor(() => {
-    expect(approvalCardOf(agent)).toBeDefined();
-  });
+  const card = await waitForApprovalCard(agent);
   // The ticket comes off the proxy's own `held` row rather than being invented
   // here — the card offers the proxy's id, and a click has to carry it back.
   const ticket = heldTicket(auditRows(rig.auditDb, start));
-  const card = approvalCardOf(agent);
   await agent.slack.deliverDecision({
     teamId: "T024BE7LD",
     channelId: CHANNEL,
