@@ -394,9 +394,9 @@ export default tseslint.config(
               // re-exported from @getlibero/agent, so a real provider client is
               // reachable without any file here naming a provider.
               name: "@getlibero/agent",
-              importNames: ["createCompletionClient"],
+              importNames: ["createCompletionClient", "createEmbeddingClient"],
               message:
-                "The e2e suite's model is a scripted CompletionClient — see e2e/src/harness/model.ts. createCompletionClient builds a real one and would reach a provider with a real key."
+                "The e2e suite's model is a scripted CompletionClient and its embedder is a constant fake — see e2e/src/harness/model.ts and harness/embedding.ts. Both factories build real clients and would reach a provider with a real key."
             }
           ]
         }

@@ -397,19 +397,102 @@ is on that spec because the default of five would make a case about the write
 half script six served calls to reach it; the schema's floor is `1` and the
 comparison is strictly greater, so `1` means "two served calls".
 
-**No embedding client is wired into the rig, so skill retrieval runs on full
-text alone.** That is a real deployment rather than a gap — the team sheet names
-it the behaviour for a process with no embedding provider — and it is the right
-one here, because an embedding client is a second live provider the ESLint block
-exists to keep out and a fake one would put a hand-built vector space between an
-attack and the thing it attacks. The consequence for a case: **word the question
-to share vocabulary with the skill it should reach**, or the arrival assertion
-fails for a reason that has nothing to do with what is under test.
+**No embedding client is wired unless a case asks for one, so skill retrieval
+runs on full text alone.** That is a real deployment rather than a gap — the team
+sheet names it the behaviour for a process with no embedding provider — and it is
+what three of the four background passes degrade to: the sweep writes a summary
+with no vector, the embedding pass returns before it reads a sheet, and the
+curator proposes nothing, because overlap is a question about two vectors and,
+unlike retrieval, there is no lexical answer to fall back on. The consequence for
+a retrieval case is unchanged: **word the question to share vocabulary with the
+skill it should reach**, or the arrival assertion fails for a reason that has
+nothing to do with what is under test.
+
+**`startRig({ embedding: "constant" })` is the one fake there is, and its shape is
+the whole of why it is allowed.** The original refusal ran two arguments
+together. *A second live provider the ESLint block exists to keep out* — true, and
+a fake answers that rather than being an instance of it; `createEmbeddingClient`
+now sits beside `createCompletionClient` in that block, so reaching for the real
+one is a lint error. *A hand-built vector space between an attack and the thing
+it attacks* — true only of a fake that **ranks**, and this one answers the same
+vector for every text. It is an observation point, exactly as the fake upstream
+is for tool calls: what a case reads is `rig.embeddings.texts()`.
+
+So there is a rule that comes with it. **No case may assert that retrieval
+reached a skill through the vector leg**, because with one constant vector every
+skill is equidistant from every query and `nearest` answers in an order nothing
+here chose. What the fake exists for is one claim that cannot be made without it:
+the embedding pass bounds itself to *the description and never the body*, a skill
+body is where a credential ends up when a failed call's text is written into a
+playbook, and `texts()` is where "a playbook's body never left this process" is
+checkable — with the description's arrival as the positive control that comes
+first.
+
+**A case that needs a vector to exist plants one.** `deletion-derived.test.ts`'s
+rule and its argument: wiring a pass and a provider to arrive at a row the test
+could have written directly is machinery, not coverage.
+`store.putEmbedding({ source: { kind: "skill", ref: name }, … })` through a second
+`openMessageStore` handle is how the curator's pair is nominated. Plant exactly
+two — the nomination is a *mutual* nearest pair, which two skills satisfy
+trivially and three make depend on arithmetic the case did not choose.
 
 **The author turn is post-reply, exactly like curation.** `deliverMention`
 resolves while it is still to run, so an assertion about a skill file has to wait
 on `agent.waitForLog({ event: "authored" }, N)` first. Same counting rule, same
 reason.
+
+**The four background passes are opt-in, one per case, and they have their own
+clock.** `startRig({ passes: ["lifecycleSkills"], passClock })` composes exactly
+what it names and nothing else — which is why every file written before #308
+still passes untouched. They fire from the message ingest on an ordinary
+`deliverMessage`, **never on `deliverMention`**, queue on one session mutex in
+`ingest.ts`'s order, and none is awaited by the delivery, so every assertion goes
+behind a counted `agent.waitForLog`. The event words are `summarized`,
+`skills_embedded`, `skills_adopted` / `skills_marked_stale` / `skills_archived`,
+and `skill_merge_proposed`.
+
+**Name only the pass under test.** Four wired at once is four writers to one
+directory, and a case's assertion behind three of them.
+
+**`passClock` is real time plus an offset, moving forward only.** It reaches the
+passes and nothing else — not the loop's `AbortSignal.timeout`, which no clock
+here fakes, so "everything runs on real time" is unchanged. Start it at
+`Date.now()` and only add: the ingest stamps `at` and retrieval stamps
+`last_used_at` on the real clock, and a lifecycle threshold compares against
+both, so a clock set to a fiction makes every stamp look like the future. Step
+over the interval you mean **by name** — `SWEEP_INTERVAL_MS`,
+`LIFECYCLE_INTERVAL_MS`, `CURATE_INTERVAL_MS` — rather than by a literal nobody
+can check. A `passClock` or an `embedding` with no `passes` throws at
+`startRig`, because a knob that silently does nothing is worse than one that is
+missing.
+
+**The lifecycle job's first run on a file writes nothing.** It adopts what the
+file says as its baseline, which is what makes a hand-set status survive — so a
+case that wants a status moved needs two runs, and the second has to clear
+**both** the pass's interval and the sheet's stale clock. Clearing only one is a
+silent no-op.
+
+**A message that triggers a sweep is also a thread that sweep can see.**
+`staleThreads` has no minimum message count, so a trigger message with an old
+`ts` gets summarized alongside the thread you meant — and `MAX_THREADS_PER_SWEEP`
+is three, so that is three script entries rather than one. Compute timestamps
+from the pass clock with `toSlackTs`: old for what should be summarized, fresh
+for the trigger.
+
+**A background pass that throws is swallowed.** `ingest.ts` fires each as
+`void session.mutex.run(…).catch(() => {})`, and every pass catches its own
+failures and logs a `*_failed` word. So a script that ran out inside a pass does
+**not** fail with "the model was asked for turn N" — it fails ten seconds later
+as a `waitForLog` timeout on an event that never came, pointing at the wrong
+thing. Assert that `summary_failed`, `summary_unusable`, `skill_embed_failed`,
+`skills_lifecycle_failed`, `skill_merge_failed` and `skill_reconcile_failed` are
+absent before looking anywhere else.
+
+**A pass's tokens land on the proxy's meter.** The rig builds the same
+`reportTurn` `index.ts` does, over the same transport, so `spendFor(budgetDb,
+CHANNEL)` is where a sweep's or a curator's spend shows up — which is the whole
+reason these cases are worth running here rather than in `apps/server`. Give each
+turn a distinctive `withUsage` so the number identifies itself.
 
 **A task's opening context is not `model.seen[n]`.** Dropping the author turns by
 `system === SKILL_AUTHOR_SYSTEM_PROMPT` leaves every *turn* of every task, and a
@@ -418,7 +501,12 @@ tool-heavy task has several — so "the second task" is not the second entry.
 single turn; a skills case does not. Filter to the turns seeded with exactly one
 message: `assembleContext` returns one `user` message however much it packed into
 it, and every later turn of the same task carries the transcript grown from it.
-`skill-poisoning.test.ts`'s `openingContexts` is that filter.
+`openingContexts` in `harness/model.ts` is that filter. **Its first half is a
+named set, not one prompt**, and it has to gain a member whenever the composition
+grows a turn nobody asked for: the author turn, the curation turn, the
+summarization turn and the merge turn all seed exactly one message, so a filter
+that named only one of them would silently count the others as tasks and put
+every index after them off by one.
 
 **A `respond` hook must envelope its result.** `completeResult` (and
 `completeListResult` for a catalog) adds the `resultType` the 2026-07-28
@@ -428,8 +516,8 @@ MCP"* — on **every** call the hook let through, not only the one being poisone
 which reads like the fall-through is broken rather than like the envelope is
 missing.
 
-**Curation is off in every sheet this harness writes, and turning it on is a
-case's own decision.** The schema prefaults `[memory] enabled = true`, so a
+**Curation, summarization and merge curation are all off in every sheet this
+harness writes, and turning one on is a case's own decision.** The schema prefaults `[memory] enabled = true`, so a
 sheet that said nothing would give every case in this suite a curation turn —
 and a curation turn is a model turn, which consumes the next entry of a script
 written before curation existed. Files would fail with "the model was asked for
@@ -438,6 +526,16 @@ a transcript with an extra call in it. So `channels.ts` writes `enabled = false`
 unless a `SheetSpec` says otherwise, for the reason `dailyUsd` is absent by
 default: the value a fixture takes should be the one that leaves every other
 case as it was.
+
+**`[memory] summarize` and `[skills] curate` are written out too, and they are
+the pair that would have bitten silently.** The sweep gates on `summarize` and
+**not** on `enabled`; the curator gates on `enabled && curate`. Both prefault
+`true`, so before #308 every sheet this harness wrote already carried
+`summarize = true` — invisible only because no sweep was composed. The moment one
+was, `staleThreads` has no minimum message count and every fixture `ts` here is
+months in the past, so four files would have got up to three summarization turns
+each, three of them against one-entry scripts. `channels.ts` now writes both
+`false` unless a case asks.
 
 **A curation turn is not finished when the mention that started it is.** It is
 enqueued on the session's queue behind the reply and deliberately not awaited
@@ -500,7 +598,12 @@ outlive the run.
 - `src/harness/canary.ts` — the planted secret and the surface scan.
 - `src/harness/certs.ts` · `channels.ts` · `vault.ts` — the material the proxy reads.
 - `src/harness/upstream.ts` — the recording MCP server.
-- `src/harness/model.ts` — the scripted `CompletionClient`.
+- `src/harness/model.ts` — the scripted `CompletionClient`, and
+  `openingContexts`.
+- `src/harness/embedding.ts` — the constant fake embedder, and the rule it
+  carries.
+- `src/harness/passes.ts` — the four background passes, mirroring
+  `apps/server/src/index.ts` rather than restating it.
 - `src/harness/client.ts` — the attacker's own mutual-TLS client.
 - `src/harness/records.ts` — reading the audit log and the meter back.
 - `src/harness/budget-cli.ts` — the operator's `budget` entrypoint, spawned.
@@ -524,6 +627,17 @@ outlive the run.
   malformed operations refused with the file provably unchanged, the curation
   turn's own tokens on the proxy's meter, and the one case here that documents
   an exposure rather than a defence.
+- `src/summary-sweep.test.ts` — #308/#231, the quiescence sweep: a quiet thread
+  summarized into the channel's own file with no vector behind it, charged to
+  the proxy's meter from a call nobody asked for; and a summarization turn
+  reaching for a proxied tool reaching no upstream and no audit row. The other
+  half of `deletion-derived.test.ts`, which plants what this writes.
+- `src/skill-maintenance.test.ts` — #308/#305/#294/#295, the background half of
+  the skill layer: the embedding pass sending descriptions and provably never a
+  body; the lifecycle job writing nothing on first sight and then moving exactly
+  one line, leaving a hand-archived playbook alone; and the curator writing a
+  proposal beside the skills, rewriting none of them, and never reading it back
+  into a later task.
 - `src/skill-poisoning.test.ts` — #293, the skill layer: a skill authored,
   landed on the split roots and provably arriving in a later task's opening
   context; the write path's traversal and oversize attempts leaving the

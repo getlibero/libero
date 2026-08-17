@@ -11,11 +11,16 @@
 //
 // ## Why the derived rows are planted rather than summarized
 //
-// The rig composes `createServer` without the quiescence sweep, so nothing here
-// would write a summary on its own — and wiring one in would mean a fake
-// embedding provider, sheet fields, and messages back-dated past an idle
-// threshold, all to arrive at a row this test could have written directly.
-// #231's suite already proves the sweep writes them.
+// This rig composes `createServer` without the quiescence sweep — it names no
+// `passes`, so nothing here writes a summary on its own. Wiring one in would
+// mean sheet fields and messages back-dated past an idle threshold, all to
+// arrive at a row this test could have written directly, and it would put a
+// second writer into the very tables this case counts.
+//
+// Since #308 the rig *can* compose one, and `summary-sweep.test.ts` is where it
+// does: that file proves the sweep writes these rows and this one proves a Slack
+// deletion takes them away. Keeping them apart is the point rather than an
+// accident of ordering.
 //
 // What matters is that the rows are real rows in the real file, put there
 // through the same package the sweep uses, and that **nothing in this test

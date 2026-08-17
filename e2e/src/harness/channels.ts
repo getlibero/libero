@@ -119,8 +119,30 @@ export interface SheetSpec {
    * reason: the default a fixture takes should be the one that leaves every
    * other case exactly as it was, and turning the feature on is what a case
    * about the feature does.
+   *
+   * **`summarize` is written out beside `enabled`, and it has to be, because it
+   * is not gated by it (#308).** `createSummarySweep` tests `[memory] summarize`
+   * and nothing else, so a sheet that turned memory *off* and said nothing about
+   * summarizing would still carry `summarize = true` from the schema's prefault
+   * — and every sheet this harness wrote before #308 did exactly that. Nothing
+   * noticed only because no sweep was composed.
+   *
+   * What it would have cost the moment one was: `staleThreads` has no minimum
+   * message count, every fixture `ts` in this suite is months in the past, and
+   * `MAX_THREADS_PER_SWEEP` is three — so the four files that deliver a plain
+   * message would each have got up to three summarization turns, three of them
+   * against one-entry scripts. They would have failed with "the model was asked
+   * for turn N; the script has 1", which reads like a bug in the sweep.
+   *
+   * The inversion is `enabled`'s, for a sharper reason: there the prefault is
+   * merely on, here it is on *and* unreachable from the switch a reader would
+   * expect to turn it off.
    */
-  readonly memory?: { readonly enabled?: boolean; readonly maxFileChars?: number };
+  readonly memory?: {
+    readonly enabled?: boolean;
+    readonly summarize?: boolean;
+    readonly maxFileChars?: number;
+  };
   /**
    * The `[skills]` block: whether this channel loads playbooks at the head of a
    * task and writes one after a tool-heavy one (#292, #291).
@@ -138,13 +160,29 @@ export interface SheetSpec {
    * **strictly** greater, so the schema's floor of `1` is the cheapest a sheet
    * can ask for and means "two served calls". A case wanting the turn *not* to
    * fire says so with a script that serves fewer, not with a smaller number.
+   *
+   * `curate` is written out for `[memory] summarize`'s reason exactly (#308).
+   * The schema prefaults it `true` (#295) and the merge curator gates on
+   * `enabled && curate`, so a case that turned skills on to test retrieval would
+   * silently also be a case that spends a model call a day proposing merges. It
+   * is off unless asked.
+   *
+   * The two clocks take the ordinary spread-ternary rather than joining the two
+   * switches, because inheriting their schema defaults costs nothing: thirty and
+   * ninety days spend nothing, write nothing, and consume no script entry. Only
+   * a case driving the clocks has an opinion, and the schema refuses
+   * `stale_after_days` above `archive_after_days` — so lowering the first alone
+   * parses and raising it alone does not.
    */
   readonly skills?: {
     readonly enabled?: boolean;
+    readonly curate?: boolean;
     readonly authorAfterToolCalls?: number;
     readonly topK?: number;
     readonly maxSkillChars?: number;
     readonly maxSkills?: number;
+    readonly staleAfterDays?: number;
+    readonly archiveAfterDays?: number;
   };
   /**
    * The certificates allowed to speak for this channel, as SHA-256 digests
@@ -247,12 +285,14 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           ``,
           `[memory]`,
           `enabled = ${spec.memory?.enabled ?? false}`,
+          `summarize = ${spec.memory?.summarize ?? false}`,
           ...(spec.memory?.maxFileChars !== undefined
             ? [`max_file_chars = ${spec.memory.maxFileChars}`]
             : []),
           ``,
           `[skills]`,
           `enabled = ${spec.skills?.enabled ?? false}`,
+          `curate = ${spec.skills?.curate ?? false}`,
           ...(spec.skills?.authorAfterToolCalls !== undefined
             ? [`author_after_tool_calls = ${spec.skills.authorAfterToolCalls}`]
             : []),
@@ -262,6 +302,12 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
             : []),
           ...(spec.skills?.maxSkills !== undefined
             ? [`max_skills = ${spec.skills.maxSkills}`]
+            : []),
+          ...(spec.skills?.staleAfterDays !== undefined
+            ? [`stale_after_days = ${spec.skills.staleAfterDays}`]
+            : []),
+          ...(spec.skills?.archiveAfterDays !== undefined
+            ? [`archive_after_days = ${spec.skills.archiveAfterDays}`]
             : []),
           ``,
           `[[mcp_server]]`,
