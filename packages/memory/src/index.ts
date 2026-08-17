@@ -10,10 +10,14 @@
 // `planMemoryOp` is absent on the same principle: it is exported from
 // ./memory-file.ts for its own test, and a caller holding it would be a caller
 // deciding for itself what a memory operation means. `planSkillOp` is absent for
-// exactly that reason too. `replaceFileAtomically` is
-// absent because a caller holding it would be a caller writing into a channel's
-// directory itself, which is the one thing these openers exist to be the only
-// way to do.
+// exactly that reason too. `replaceFileAtomically` is absent for a related
+// reason and by a shorter route since #272: it is not this package's to
+// re-export — it belongs to `@getlibero/atomic-write`, which this package
+// depends on and does not pass through. The claim is the same one it always
+// was. A caller reaching a channel's directory through this barrel would be a
+// caller writing into it itself, which is the one thing these openers exist to
+// be the only way to do; a caller that wants the recipe can name the package
+// that owns it, and will not be handed a channel by doing so.
 //
 // `loadVec` is absent for `assertFts5`'s reason exactly: both openers already
 // run it, and a caller holding it would be a caller loading a native extension

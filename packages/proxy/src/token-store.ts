@@ -35,7 +35,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CredentialName } from "@getlibero/schema";
-import { replaceFileAtomically } from "./atomic-write.js";
+import { replaceFileAtomically } from "@getlibero/atomic-write";
 import { EnvelopeError, type EnvelopeSpec, openEnvelope, sealEnvelope } from "./envelope.js";
 import type { Logger } from "./log.js";
 import { MAX_SECRET_BYTES, MAX_VAULT_BYTES, isAbsence, makeSecret } from "./vault.js";

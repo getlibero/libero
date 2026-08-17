@@ -299,6 +299,30 @@ describe("re-running", () => {
 
     expect(readdirSync(join(dir, "deploy")).sort()).toEqual([".env", "docker-compose.yml"]);
   });
+
+  // The rewrite goes through `replaceFileAtomically`, and these are the two
+  // things that would still be true if it went back to a bare write. The mode
+  // matters because the merged file carries the key an operator cannot retype;
+  // the inode is the observable signature of write-temp-then-rename, and #272 is
+  // here because the version this replaced renamed without fsyncing anything.
+  it("leaves a rewritten file readable only by its owner", async () => {
+    const file = join(dir, "deploy", ".env");
+    writeFileSync(file, "SLACK_APP_TOKEN=xapp-mine\n", { mode: 0o644 });
+
+    await run(["init"]);
+
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("lands the rewrite by rename, so the inode changes", async () => {
+    const file = join(dir, "deploy", ".env");
+    writeFileSync(file, "SLACK_APP_TOKEN=xapp-mine\n");
+    const before = statSync(file).ino;
+
+    await run(["init"]);
+
+    expect(statSync(file).ino).not.toBe(before);
+  });
 });
 
 describe("bad arguments", () => {

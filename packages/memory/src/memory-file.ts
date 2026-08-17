@@ -40,7 +40,7 @@
 // that ground, and nothing about this file argues differently. What replaces it
 // is two properties that between them cover what a lock would have:
 //
-//   - **Every write lands by rename.** `./atomic-write.ts` writes a whole
+//   - **Every write lands by rename.** `@getlibero/atomic-write` writes a whole
 //     temporary file and renames it over the target, so a reader holds either
 //     the old file or the new one. No reader ever sees a torn file, and no
 //     writer's bytes ever land inside another's.
@@ -113,7 +113,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelId, MEMORY_OP_MAX_TEXT_CHARS } from "@getlibero/schema";
 import type { MemoryOp, MemoryOpResult } from "@getlibero/schema";
-import { replaceFileAtomically } from "./atomic-write.js";
+import { replaceFileAtomically } from "@getlibero/atomic-write";
 import type { Logger } from "./log.js";
 
 /**

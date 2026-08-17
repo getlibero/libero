@@ -426,14 +426,14 @@ inherits the vault CLI's discipline whole.
 cover a grant run racing a rotation, so what replaces it: the proxy serializes
 its own writes behind one mutex — refreshes for one grant are already
 single-flighted (#256) — and both writers re-read the file, apply their one
-entry, and rename, `vault-file.ts`'s recipe. The residual race is a grant and
-a rotation interleaving within milliseconds, between events hours apart, and
-its worst outcome is one lost refresh token: the next refresh presents a stale
-one, the issuer refuses, the call fails `unavailable` by name, and the remedy
-is re-running the grant. No outcome of the race discloses a value or widens a
-permission — it degrades to a loud re-grant. A lock file was rejected for the
-reason the vault already gives: one that outlives a killed process is a worse
-failure than the one it prevents.
+entry, and rename, `@getlibero/atomic-write`'s recipe. The residual race is a
+grant and a rotation interleaving within milliseconds, between events hours
+apart, and its worst outcome is one lost refresh token: the next refresh
+presents a stale one, the issuer refuses, the call fails `unavailable` by name,
+and the remedy is re-running the grant. No outcome of the race discloses a
+value or widens a permission — it degrades to a loud re-grant. A lock file was
+rejected for the reason the vault already gives: one that outlives a killed
+process is a worse failure than the one it prevents.
 
 **Rotation is persisted before the successor is used.** Exchange, receive the
 rotated refresh token, fsync it into the store — then use the access token

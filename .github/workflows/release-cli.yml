@@ -34,12 +34,13 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
         # The trailing `...` is load-bearing: it selects the CLI *and its
-        # workspace dependencies*, so `@getlibero/schema` is built first.
+        # workspace dependencies*, so `@getlibero/schema` and
+        # `@getlibero/atomic-write` are built first.
         #
         # Without it this step passes locally and fails only here. The CLI
-        # imports the schema, whose `types` point at `dist/index.d.ts`, and a
-        # bare `--filter @getlibero/cli` never builds it — so `tsc` cannot
-        # resolve the module. CI's build job never sees this, because
+        # imports both, and their `types` point at `dist/index.d.ts`, which a
+        # bare `--filter @getlibero/cli` never builds — so `tsc` cannot
+        # resolve the modules. CI's build job never sees this, because
         # `pnpm -r build` builds the whole workspace in dependency order, which
         # means the only run that can catch it is a release. cli-v0.1.0 is how
         # we found out.
@@ -56,10 +57,10 @@ jobs:
       # and a direct npm publish.
       - run: npm install -g npm@latest
       - name: Drop the build-only dependencies from what is published
-        # The package has one workspace dependency, `@getlibero/schema`, and it
-        # is a dependency of the *build*: packages/cli/build.mjs inlines the
-        # schema into dist/index.js with esbuild, so an installer needs it for
-        # nothing. It has to leave the manifest, because npm — unlike pnpm —
+        # The package's workspace dependencies — `@getlibero/schema` and, since
+        # #272, `@getlibero/atomic-write` — are dependencies of the *build*:
+        # packages/cli/build.mjs inlines both into dist/index.js with esbuild, so
+        # an installer needs them for nothing. It has to leave the manifest, because npm — unlike pnpm —
         # does not rewrite `workspace:*`, and publishing that literal specifier
         # would put a version no registry client can resolve into the one
         # package people install. That is what makes publishing from this

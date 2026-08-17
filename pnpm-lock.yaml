@@ -109,8 +109,17 @@ importers:
         specifier: ^24.13.3
         version: 24.13.3
 
+  packages/atomic-write:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
+
   packages/cli:
     devDependencies:
+      '@getlibero/atomic-write':
+        specifier: workspace:*
+        version: link:../atomic-write
       '@getlibero/schema':
         specifier: workspace:*
         version: link:../schema
@@ -148,6 +157,9 @@ importers:
 
   packages/memory:
     dependencies:
+      '@getlibero/atomic-write':
+        specifier: workspace:*
+        version: link:../atomic-write
       '@getlibero/schema':
         specifier: workspace:*
         version: link:../schema
@@ -161,6 +173,9 @@ importers:
 
   packages/proxy:
     dependencies:
+      '@getlibero/atomic-write':
+        specifier: workspace:*
+        version: link:../atomic-write
       '@getlibero/memory':
         specifier: workspace:*
         version: link:../memory

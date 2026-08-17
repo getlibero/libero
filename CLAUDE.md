@@ -47,6 +47,7 @@ exists:
 
 | Package | What it is |
 | --- | --- |
+| `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization turn, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
@@ -156,6 +157,17 @@ one back — so it must be importable from either side. `src/log.ts` duplicating
 `Logger` interface is the visible cost; the hazard it avoids is live rather than
 prospective, since a gateway import would put the Slack SDK into the proxy's
 image through an edge that exists today.
+
+**What a leaf may import is a package with nothing under it.** The ban is on the
+two services, not on dependencies, and the test is whether the edge would put
+either service's code into the other's image. `@getlibero/schema` passes and
+`@getlibero/atomic-write` passes — the second declares no dependencies at all,
+which is its charter rather than a fact about today. That is the difference
+between the two duplications this repository has carried: the durable-replace
+recipe was copied because a leaf could not import the proxy, and #272 removed the
+copy by giving the recipe a package instead; `Logger` stays duplicated because an
+interface the gateway declares has no third home worth making. **Copy only what
+has nowhere else to go, and say which it is.**
 
 **A refusal is a served request, and a failure is not.** `ToolRefusal` is a
 closed set of governance decisions with no free-text member, worded once by
@@ -428,6 +440,18 @@ the tarball and asserts both halves on every pull request. The rule this leaves:
 validating a model id or a team sheet differently from the proxy would be a
 second answer to what a deployment is.
 
+#272 made that two inlined packages rather than one, and the rule generalizes
+from shapes to guarantees: `@getlibero/atomic-write` is inlined the same way, so
+`libero init` writes the file holding `PROXY_VAULT_KEY` with the recipe the vault
+uses rather than its own weaker copy of it. Two things follow. **A package the
+CLI inlines must declare nothing the bundle cannot carry** — an edge to
+`@getlibero/memory` would drag `sqlite-vec` into the one artifact people install
+from npm, which is why the recipe got a package of its own rather than a home in
+the message store. And **`build.mjs` reads the third-party notices off every
+inlined workspace package**, not off a hardcoded path to the schema; the second
+one changed no output, and the generator being right by coincidence was the point
+of fixing it.
+
   Three things about the reader are settled. **It is a second connection, opened
   `readOnly`**, so SQLite refuses a write before the append-only triggers have
   to; the `-wal`/`-shm` sidecars it creates are bookkeeping beside the file
@@ -539,6 +563,7 @@ Docker images built from `deploy/docker-compose.yml`. Pushing a `cli-v*` tag
 triggers `release-cli.yml`, which publishes with npm provenance attestations.
 
 It publishes **one file and no dependencies**: `packages/cli/build.mjs` bundles
-`@getlibero/schema` in with esbuild, and the workflow deletes `devDependencies`
-before `npm publish` so the workspace edge never reaches the registry. See the
-#98 paragraph above for why that, rather than publishing the schema.
+`@getlibero/schema` and `@getlibero/atomic-write` in with esbuild, and the
+workflow deletes `devDependencies` before `npm publish` so the workspace edges
+never reach the registry. See the #98 paragraph above for why that, rather than
+publishing them.
