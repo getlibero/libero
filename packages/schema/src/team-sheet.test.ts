@@ -81,6 +81,19 @@ describe("the example team sheet", () => {
     });
   });
 
+  // The starter had no assertion at all on this block until #316, which is how
+  // it kept shipping `schedule = "0 9 * * 1-5"` — a cron expression nothing
+  // validated and nothing read. It is off, and the two figures it documents are
+  // the schema's own defaults, so the sheet an operator copies asks for nothing
+  // they did not already have.
+  it("does not post proactively, and documents the schema's own figures", () => {
+    expect(sheet.ambient).toEqual({
+      enabled: false,
+      heartbeat_every_minutes: 15,
+      answer_after_idle_minutes: 60
+    });
+  });
+
   it("carries the documented tool allowlist, approval mode, and result bound", () => {
     const github = sheet.mcp_server[0];
     expect(github?.name).toBe("github");
@@ -579,6 +592,108 @@ describe("the skills block", () => {
   });
 });
 
+describe("the ambient block", () => {
+  const ambientSheet = (ambient: unknown) => ({ channel: minimalChannel(), ambient });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  // Off when absent, unlike [memory] and [skills], and this is the block those
+  // two argue their own defaults against: ambient is the agent starting work
+  // nobody asked for. The figures are the ordinary kind and default beside it.
+  it("is off by default, with a cadence and a threshold beside it", () => {
+    expect(TeamSheet.parse({ channel: minimalChannel() }).ambient).toEqual({
+      enabled: false,
+      heartbeat_every_minutes: 15,
+      answer_after_idle_minutes: 60
+    });
+  });
+
+  // The decision #316 landed on: `enabled = true` with nothing else written is a
+  // sheet, not an error. The switch is `enabled`; the figures beside it default,
+  // as they do on every other block. There is no `.check()` here to trip.
+  it("accepts a channel that opts in and writes no figures", () => {
+    expect(TeamSheet.parse(ambientSheet({ enabled: true })).ambient).toEqual({
+      enabled: true,
+      heartbeat_every_minutes: 15,
+      answer_after_idle_minutes: 60
+    });
+  });
+
+  // The other direction, which [memory]'s note relies on staying true: a channel
+  // keeping its figures through a temporary opt-out is the ordinary case.
+  it("accepts figures set beside an opted-out switch", () => {
+    expect(paths(ambientSheet({ enabled: false, heartbeat_every_minutes: 60 }))).toBeNull();
+  });
+
+  // Zero is `enabled = false` said a second way, which is the call `top_k` and
+  // the skill clocks already made against themselves.
+  it("refuses a cadence of zero", () => {
+    expect(paths(ambientSheet({ heartbeat_every_minutes: 0 }))).toEqual([
+      "ambient.heartbeat_every_minutes: too_small"
+    ]);
+    expect(paths(ambientSheet({ heartbeat_every_minutes: 1 }))).toBeNull();
+  });
+
+  // Past a day the heartbeat is not noticing anything.
+  it("refuses a cadence beyond a day", () => {
+    expect(paths(ambientSheet({ heartbeat_every_minutes: 1_441 }))).toEqual([
+      "ambient.heartbeat_every_minutes: too_big"
+    ]);
+    expect(paths(ambientSheet({ heartbeat_every_minutes: 1_440 }))).toBeNull();
+  });
+
+  // The threshold's bounds are `summarize_after_idle_minutes`', because
+  // architecture.md names it that field's sibling. A threshold this low answers a
+  // question the team is still in the middle of asking.
+  it("refuses an answer threshold below five minutes", () => {
+    expect(paths(ambientSheet({ answer_after_idle_minutes: 4 }))).toEqual([
+      "ambient.answer_after_idle_minutes: too_small"
+    ]);
+    expect(paths(ambientSheet({ answer_after_idle_minutes: 5 }))).toBeNull();
+  });
+
+  it("refuses an answer threshold beyond a week", () => {
+    expect(paths(ambientSheet({ answer_after_idle_minutes: 10_081 }))).toEqual([
+      "ambient.answer_after_idle_minutes: too_big"
+    ]);
+    expect(paths(ambientSheet({ answer_after_idle_minutes: 10_080 }))).toBeNull();
+  });
+
+  it.each([
+    ["a fraction", 15.5],
+    ["a string", "15"],
+    ["null", null]
+  ])("refuses %s as a cadence", (_label, heartbeat_every_minutes) => {
+    expect(TeamSheet.safeParse(ambientSheet({ heartbeat_every_minutes })).success).toBe(false);
+  });
+
+  it.each([
+    ["a fraction", 60.5],
+    ["a string", "60"],
+    ["null", null]
+  ])("refuses %s as an answer threshold", (_label, answer_after_idle_minutes) => {
+    expect(TeamSheet.safeParse(ambientSheet({ answer_after_idle_minutes })).success).toBe(false);
+  });
+
+  it("refuses a non-boolean switch", () => {
+    expect(paths(ambientSheet({ enabled: "yes" }))).toEqual(["ambient.enabled: invalid_type"]);
+  });
+
+  // The field this block carried from the initial commit until #316, when the
+  // grammar question was answered by not having one: an interval is a number,
+  // and this sheet spells durations as integers with the unit in the name. An
+  // unknown key strips rather than failing, so the assertion is that the old
+  // spelling reaches nothing rather than that it is rejected.
+  it("does not carry a cron schedule", () => {
+    const sheet = TeamSheet.parse(ambientSheet({ schedule: "0 9 * * 1-5" }));
+    expect(sheet.ambient).not.toHaveProperty("schedule");
+  });
+});
+
 describe("defaults", () => {
   // A sheet with no [llm] section must still yield every cap: the composition
   // root maps sheet to caps field by field and has no defaults of its own.
@@ -627,7 +742,11 @@ describe("defaults", () => {
     });
     expect(sheet.mcp_server).toEqual([]);
     expect(sheet.egress.allow).toEqual([]);
-    expect(sheet.ambient.enabled).toBe(false);
+    expect(sheet.ambient).toEqual({
+      enabled: false,
+      heartbeat_every_minutes: 15,
+      answer_after_idle_minutes: 60
+    });
     expect(sheet.memory).toEqual({
       enabled: true,
       max_file_chars: 32_768,

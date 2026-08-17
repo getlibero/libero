@@ -353,14 +353,39 @@ max_result_chars = 8000                       # whole messages come back; a chan
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 
-# Proactive posting: the agent starting a task nobody asked for, on a schedule.
+# Proactive posting: the agent starting a task nobody asked for, on a clock of
+# its own. Off by default, always — every other block on this sheet argues its
+# own default by contrast with this one.
 #
-# PARSED BUT NOT YET READ. No code in either service consults these two fields,
-# so `enabled = true` turns nothing on. Ambient work is phase 4; the block is
-# here so a sheet written today keeps its shape when it lands.
+# PARSED BUT NOT YET READ. No code in either service consults these three
+# fields, so `enabled = true` turns nothing on. The block has its real shape as
+# of #316 and its first reader lands later in phase 4, so a sheet written today
+# keeps its shape when the heartbeat arrives.
+#
+# The cadence is an interval, not a cron expression, and there are no quiet
+# hours and no timezone. A tick with nothing new to weigh is silent and spends
+# nothing, so 03:00 already costs you nothing and says nothing — which is the
+# whole thing a schedule with sleeping hours would have bought.
 [ambient]
-enabled  = false                            # off by default, always
-schedule = "0 9 * * 1-5"
+enabled                 = false             # off by default, always
+heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
+
+# How long a question must sit before the heartbeat may answer it — the sibling
+# of [memory] summarize_after_idle_minutes, and the same rule: acting on
+# something before it has gone quiet says what the moment has not earned. A
+# question typed thirty seconds before a tick looks exactly like one your team
+# has ignored for an hour, and answering the first front-runs the people it was
+# addressed to. Want the answer now? Tag the agent; that is the designed path.
+#
+# This and the cadence answer different questions — this one is what counts as
+# unanswered, the cadence is how often anyone looks — so the worst case for a
+# proactive answer is their SUM: 75 minutes as written here.
+answer_after_idle_minutes = 60              # five minutes to a week
+
+# How often the agent may post unbidden is NOT a field. At most one
+# heartbeat-initiated post per channel per rate window, stated in time rather
+# than in ticks, fixed in the architecture and enforced where the post is made —
+# so tightening the cadence above cannot quietly loosen the throttle.
 ```
 
 ## What each block does
@@ -881,15 +906,50 @@ send the proxy to a host no sheet named, so the call fails instead.
 
 ### `[ambient]`
 
-Proactive posting: the agent starting a task nobody asked for, on a schedule.
+Proactive posting: the agent starting a task nobody asked for, on a clock of its own.
 
 :::note[Parsed today, unread]
-Nothing reads this block yet. `enabled` and `schedule` are accepted when the sheet loads and no
-code in either service consults them, so setting `enabled = true` does nothing at all rather than
-turning something on. Ambient work is phase 4 on the [roadmap](/docs/roadmap) — heartbeat,
-`schedule_task`, and rate limits, all behind the same budget as everything else — and the block is
-here so a sheet written today does not have to change shape when it lands.
+Nothing reads this block yet. All three fields are accepted when the sheet loads and no code in
+either service consults them, so setting `enabled = true` does nothing at all rather than turning
+something on. Ambient work is phase 4 on the [roadmap](/docs/roadmap) — heartbeat,
+`schedule_task`, and rate limits, all behind the same budget as everything else — and the block
+has its shape now so a sheet written today does not have to change when the heartbeat lands.
 :::
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `enabled` | no | Whether the heartbeat runs at all. **Defaults to `false`** — the block every other `enabled` on this page argues its own default against. |
+| `heartbeat_every_minutes` | no | How often the agent looks. Defaults to `15`. May not be set below `1` or above `1440` (a day). |
+| `answer_after_idle_minutes` | no | How long a question must sit before the heartbeat may answer it. Defaults to `60`. May not be set below `5` or above `10080` (a week). |
+
+Off by default, always, and it is the one block on this page where that is the whole guard.
+Turning it on is one line, and the figures beside it default like every other figure on this
+sheet — `enabled = true` on its own is a valid sheet, not an error.
+
+**The cadence is an interval, not a cron expression.** There are no quiet hours and no timezone,
+and they are not omissions. A tick with nothing new to weigh is silent by construction and spends
+nothing, so a 03:00 tick already costs you nothing and says nothing — which is everything a
+schedule with sleeping hours would have bought. What it would have cost is a timezone on your
+sheet, because `0 9 * * 1-5` is 09:00 for nobody in particular.
+
+**A question is not unanswered until it has sat.** Sampled at an instant, "unanswered" is
+meaningless: a question typed thirty seconds before a tick looks exactly like one your team has
+ignored for an hour, and answering the first front-runs the people it was addressed to. So
+`answer_after_idle_minutes` is the sibling of [`summarize_after_idle_minutes`](#memory) in name
+and in kind — both say that acting on something before it has gone quiet says what the moment has
+not earned. If you want the answer now, tag the agent; that costs one word and is the designed
+path.
+
+The two figures answer different questions — the threshold is what counts as unanswered, the
+cadence is how often anyone looks — so **the worst case for a proactive answer is their sum**: 75
+minutes at the defaults. That is the number to move if proactive answers feel late, and the
+threshold is usually the half worth moving.
+
+**How often the agent may post unbidden is not a field.** At most one heartbeat-initiated post per
+channel per rate window, stated in time rather than in ticks — one post per tick is no throttle
+once ticks are minutes apart — and it is fixed in the architecture, enforced where the post is
+made rather than asked of the model. So tightening `heartbeat_every_minutes` cannot quietly loosen
+the throttle.
 
 ## How changes are applied
 
