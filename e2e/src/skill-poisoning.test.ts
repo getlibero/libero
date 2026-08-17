@@ -43,9 +43,9 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { CompletionRequest, CompletionResponse } from "@getlibero/agent";
-import { SKILL_AUTHOR_SYSTEM_PROMPT } from "@getlibero/agent";
+import type { CompletionResponse } from "@getlibero/agent";
 import { completeResult } from "@getlibero/proxy";
+import { SKILL_AUTHOR_SYSTEM_PROMPT } from "@getlibero/agent";
 import { SKILL_BODY_MAX_CHARS } from "@getlibero/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -58,6 +58,7 @@ import {
   expectCanaryReachedUpstream,
   expectNoCanary,
   lastAuditId,
+  openingContexts,
   rigOf,
   says,
   spendFor,
@@ -148,31 +149,6 @@ const TOOL_HEAVY_TASK = [
   calls("list_prs", { repo: "getlibero/libero" }),
   says("Two are open.")
 ];
-
-/**
- * The opening context of each task, in order.
- *
- * **Two filters, and the second is the one that is easy to get wrong.** Dropping
- * the author turns is obvious. What is left is still every *turn* of every task,
- * and a tool-heavy task has several — so the "second task" is not the second
- * entry, which is what `memory-curation.test.ts` can get away with only because
- * each of its tasks is a single turn.
- *
- * A task's opening context is its first turn, and a first turn is the one seeded
- * with exactly one message: `assembleContext` returns one `user` message however
- * much it packed into it, and every later turn of the same task carries the
- * transcript that grew from it.
- */
-function openingContexts(model: { seen: readonly CompletionRequest[] }): string[] {
-  return model.seen
-    .filter(request => request.system !== SKILL_AUTHOR_SYSTEM_PROMPT)
-    .filter(request => request.messages.length === 1)
-    .map(request => {
-      const seed = request.messages[0];
-      if (seed === undefined || seed.role !== "user") throw new Error("expected a user message");
-      return seed.content;
-    });
-}
 
 // ---------------------------------------------------------------------------
 

@@ -427,7 +427,7 @@ function turnIdFor(pair: SkillMergePair): string {
   const hash = createHash("sha256");
   // NUL between the fields, so no pair of values can be concatenated into
   // another pair's bytes.
-  hash.update(`${pair.a} ${pair.hashA} ${pair.b} ${pair.hashB}`, "utf8");
+  hash.update(`${pair.a}\u0000${pair.hashA}\u0000${pair.b}\u0000${pair.hashB}`, "utf8");
   return `skills-merge-${hash.digest("hex").slice(0, 16)}`;
 }
 

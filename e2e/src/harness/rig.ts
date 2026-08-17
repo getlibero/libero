@@ -31,6 +31,9 @@ import { CANARY, CANARY_CREDENTIAL, surface } from "./canary.js";
 import type { Surface } from "./canary.js";
 import { createCleanup, guarded } from "./cleanup.js";
 import type { Cleanup } from "./cleanup.js";
+import { constantEmbeddings } from "./embedding.js";
+import type { ConstantEmbeddings } from "./embedding.js";
+import type { BackgroundPass } from "./passes.js";
 import { mintCerts } from "./certs.js";
 import type { Certs } from "./certs.js";
 import { tempChannelsRoot } from "./channels.js";
@@ -167,6 +170,52 @@ export interface RigOptions {
   readonly scheduler?: Scheduler;
   readonly now?: () => number;
   /**
+   * Which background passes this rig composes (#308).
+   *
+   * Absent everywhere else, and that absence is why every other file in this
+   * suite still passes: the four fire from the message ingest on an ordinary
+   * `deliverMessage`, two of them are model turns, and a rig that quietly had
+   * them would consume script entries in four files written before any of them
+   * existed. Turning one on is what a case about that pass does — `dailyUsd`'s
+   * rule, with a louder failure if it is broken.
+   *
+   * **Name only the pass under test.** They queue on one session mutex in the
+   * order `ingest.ts` fires them, so a rig with all four is a rig where a case's
+   * assertion sits behind three other writers to the same directory.
+   */
+  readonly passes?: readonly BackgroundPass[];
+  /**
+   * The clock those passes read, and nothing else reads (#308).
+   *
+   * A third clock beside `now`, which reaches the approval prompter: a pass
+   * clock pinned to a fixed instant would freeze a card's expiry with it.
+   *
+   * **Not a fake timer, and it must not become one.** The loop's deadline is a
+   * real `AbortSignal.timeout` and everything here still runs on real time. What
+   * this moves is the passes' interval maps and the two date comparisons the
+   * lifecycle job makes; nothing is scheduled off it.
+   *
+   * **Start it at `Date.now()` and only ever add.** The store's other writers
+   * are on the real clock — the ingest stamps `at`, retrieval stamps
+   * `last_used_at` — and a pass clock set to a fiction would compare a lifecycle
+   * threshold against a stamp from the future.
+   */
+  readonly passClock?: () => number;
+  /**
+   * How this rig embeds, or absent for the deployment that configured nothing.
+   *
+   * `"constant"` is the one fake there is: the same vector for every text, so it
+   * ranks nothing and cannot be mistaken for a demonstration that retrieval
+   * found the right skill. See harness/embedding.ts for the rule that comes with
+   * it and for the one claim it exists to make.
+   *
+   * A string union rather than a boolean, matching `approvals` and
+   * `spendReports`, because a case wanting a different fake shape should name it
+   * rather than negotiate with a boolean. Absent is today's behaviour and a
+   * deployment the team sheet documents.
+   */
+  readonly embedding?: "constant";
+  /**
    * How the agent reports token spend to the proxy.
    *
    * Both departures from `"sent"` are compromised agents rather than
@@ -262,6 +311,15 @@ export interface Rig {
    */
   readonly storeRoot: string;
   /**
+   * The fake embedding provider, when this rig composed one (#308).
+   *
+   * `null` when `RigOptions.embedding` was absent, which is the deployment that
+   * configured none. `texts()` is a leak surface — what reaches an embedding
+   * provider has left this process — and it is the only place a skill *body*
+   * could appear if the embedding pass ever stopped sending only descriptions.
+   */
+  readonly embeddings: ConstantEmbeddings | null;
+  /**
    * Every surface the canary must not be on, as of now.
    *
    * Called at assertion time rather than held, because three of the five grow
@@ -319,6 +377,21 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
   // Built before anything is acquired, so a failure half-way through leaves
   // nothing running. `guarded` drains it and rethrows the original cause.
   const cleanup: Cleanup = createCleanup();
+
+  // A knob that silently does nothing is worse than one that is missing — the
+  // premise harness-knobs.test.ts exists on. Both of these reach the background
+  // passes and only them, so either without `passes` is a case believing it
+  // configured something.
+  if (options.passClock !== undefined && (options.passes ?? []).length === 0) {
+    throw new Error(
+      "e2e: passClock reaches the background passes and this rig composes none — see RigOptions.passes"
+    );
+  }
+  if (options.embedding !== undefined && (options.passes ?? []).length === 0) {
+    throw new Error(
+      "e2e: embedding reaches the background passes and this rig composes none — see RigOptions.passes"
+    );
+  }
 
   return guarded(cleanup, async () => {
     const channels = options.channels ?? [CHANNEL, OTHER_CHANNEL];
@@ -398,6 +471,12 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     let proxy = await spawnProxy(cleanup, proxyEnv, options.nodeArgs ?? []);
 
     const wrapper = transportWrapper(options);
+    // Built here rather than inside startAgent so a case can read what reached
+    // it, and only when asked for: absent leaves every pass on `embedding: null`,
+    // which is what three of the four are documented to degrade to and what the
+    // fourth returns immediately on.
+    const embeddings = options.embedding === undefined ? null : constantEmbeddings();
+
     const model = scriptedModel(options.script ?? [], options.onModelTurn);
     const agent = await startAgent(cleanup, {
       proxyUrl: proxy.url,
@@ -410,7 +489,10 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       ...(options.approvals === "none" ? { cards: false } : {}),
       ...(options.users !== undefined ? { users: options.users } : {}),
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
-      ...(options.now !== undefined ? { now: options.now } : {})
+      ...(options.now !== undefined ? { now: options.now } : {}),
+      ...(options.passes !== undefined ? { passes: options.passes } : {}),
+      ...(options.passClock !== undefined ? { passClock: options.passClock } : {}),
+      ...(embeddings === null ? {} : { embedding: embeddings.client })
     });
 
     return {
@@ -435,6 +517,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       auditDb,
       budgetDb,
       storeRoot,
+      embeddings,
       surfaces: (): Surface[] => [
         surface("a thread reply", agent.slack.posted),
         // Cards render the model's own tool arguments, so a credential the model

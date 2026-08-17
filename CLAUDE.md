@@ -54,7 +54,7 @@ is open, and its shapes, its storage and its read path have landed. What exists:
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
-| `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model |
+| `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |
 | `site/` | getlibero.com — Astro + Starlight, outside the workspace |
 
@@ -90,8 +90,12 @@ nearest neighbour* pair of playbooks not yet considered, spends one model call
 asking whether they are one, and writes the answer as a **proposal** in
 `proposals/` beside `skills/` — never a rewrite. The review surface is the
 filesystem because it is forced: no path in this process can post to a channel.
-What remains before the phase closes is driving the background passes in the e2e
-rig, which the harness wires none of.
+#308 closed the last of it: the rig wires all four background passes on request
+(`passes`), on a clock that reaches them and nothing else, and the suite now
+attacks the two that write into the team's directory. It also fixed a latent
+hazard — `channels.ts` wrote `[memory] enabled` but not `summarize`, which the
+sweep actually gates on, so every sheet the harness produced already carried
+`summarize = true`.
 
 ## Where the reasoning lives
 
@@ -110,7 +114,7 @@ code is a paragraph the next reader will not find.
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
-| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why | `e2e/README.md` |
+| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |

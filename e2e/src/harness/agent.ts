@@ -22,7 +22,7 @@
 // production.
 
 import { createProxyTransport } from "@getlibero/agent";
-import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
+import type { CompletionClient, EmbeddingClient, ProxyTransport } from "@getlibero/agent";
 import { createGateway, createStubSlack } from "@getlibero/gateway";
 import type {
   LogFields,
@@ -43,6 +43,8 @@ import {
   createSkillRecall
 } from "@getlibero/server";
 import type { Cleanup } from "./cleanup.js";
+import { backgroundPasses } from "./passes.js";
+import type { BackgroundPass } from "./passes.js";
 
 export interface AgentOptions {
   /** The spawned proxy's `https://127.0.0.1:<port>`. */
@@ -89,6 +91,30 @@ export interface AgentOptions {
    * has no name and renders as itself, which is a departed user.
    */
   readonly users?: Record<string, string>;
+  /**
+   * Which background passes this composition includes (#308).
+   *
+   * Absent composes none, which is what every case that is not about a pass
+   * gets and why they all still pass. See ./passes.ts on why they are named one
+   * at a time rather than turned on together.
+   */
+  readonly passes?: readonly BackgroundPass[];
+  /**
+   * The clock those passes read, and nothing else reads.
+   *
+   * A third clock beside `now`, which is the approval prompter's: a pass clock
+   * pinned to a fixed instant would freeze a card's expiry too. Real time plus
+   * an offset, moving forward only — see `RigOptions.passClock`.
+   */
+  readonly passClock?: () => number;
+  /**
+   * How this composition embeds, or absent for the deployment that configured
+   * nothing.
+   *
+   * Reaches the background passes and never the task path: `embed` stays
+   * unwired, so skill retrieval runs on full text whatever this says.
+   */
+  readonly embedding?: EmbeddingClient;
 }
 
 export interface AgentSide {
@@ -177,6 +203,22 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
 
   const tasks = new AbortController();
 
+  // Hoisted out of the dependency object below because two things need each of
+  // them now, which is exactly why index.ts hoists the same two. One resolver
+  // means `[memory] summarize` and `[skills] curate` are as fresh for a
+  // background pass as they are for a reply; one skills opener means the passes
+  // and the router reach the same directory under the same cap.
+  const sheets = createSheetResolver({
+    root: options.channelsRoot,
+    model: options.model ?? "e2e-model",
+    logger
+  });
+  const skills = createSkillFilesOpener({
+    storeRoot: options.storeRoot,
+    channelsRoot: options.channelsRoot,
+    logger
+  });
+
   const { gateway } = createServer({
     slack: ({ handler, onDecision, onMessage, onRevision }) => ({
       gateway: createGateway({
@@ -206,11 +248,7 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     }),
     completion: options.completion,
     transport,
-    sheets: createSheetResolver({
-      root: options.channelsRoot,
-      model: options.model ?? "e2e-model",
-      logger
-    }),
+    sheets,
     // Real, and gated on the sheet the harness wrote: a channel with a
     // certificate but no sheet gets no store here, exactly as in production.
     store: createMessageStoreOpener({
@@ -237,18 +275,38 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     // gets the production path over the same split roots — `skills/` beside
     // `store.db`, and provably not in the channels root.
     //
-    // **No `embed` is wired, so retrieval runs on full text alone.** That is a
-    // real deployment rather than a gap — the team sheet calls it the behaviour
-    // for a process with no embedding provider — and it is the right one here:
-    // an embedding client is a second live provider this suite's ESLint block
-    // exists to keep out, and a fake one would put a hand-built vector space
-    // between an attack and the thing it is attacking.
-    skills: createSkillFilesOpener({
-      storeRoot: options.storeRoot,
-      channelsRoot: options.channelsRoot,
-      logger
-    }),
+    // **No `embed` is wired, so retrieval runs on full text alone**, and that is
+    // unchanged by #308. It is a real deployment rather than a gap — the team
+    // sheet calls it the behaviour for a process with no embedding provider —
+    // and the one embedding client this rig can have is the constant fake in
+    // ./embedding.ts, which reaches the background passes and never this. See
+    // that file for why a fake that ranks nothing is not the thing the original
+    // refusal was about.
+    skills,
     skillRecall: createSkillRecall({ logger }),
+    // The four background passes, when a case asked for them (#308). Absent
+    // otherwise, so `createServer` receives the same four `undefined`s it
+    // received before this option existed and no case that did not ask gains a
+    // model turn, a file, or a row.
+    ...(options.passes === undefined || options.passes.length === 0
+      ? {}
+      : backgroundPasses({
+          passes: options.passes,
+          completion: options.completion,
+          embedding: options.embedding ?? null,
+          transport,
+          sheets,
+          skills,
+          storeRoot: options.storeRoot,
+          channelsRoot: options.channelsRoot,
+          logger,
+          // The same signal the composition gets, and not optional in practice:
+          // `cleanup` aborts before `gateway.stop()`, so a merge turn in flight
+          // at teardown is cancelled rather than left to resolve into a rig
+          // that has gone.
+          signal: tasks.signal,
+          ...(options.passClock !== undefined ? { now: options.passClock } : {})
+        })),
     signal: tasks.signal,
     logger,
     ...(options.now !== undefined ? { now: options.now } : {}),

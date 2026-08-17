@@ -283,6 +283,48 @@ export type {
   TaskSettings
 } from "./session/types.js";
 
+// The four background passes, on the block above's rule and not as an exception
+// to it: a composition root cannot call `createServer` without building them
+// either, and index.ts only avoids needing this because it lives inside the
+// package. The e2e rig is the second composition root and reaches this file
+// through the package's one export path (#308).
+//
+// The three interval constants come with them for `TURN_TOKENS`' reason: a
+// caller stepping a clock over `25 * 60 * 60 * 1000` is asserting a number
+// nobody named, where one stepping over `CURATE_INTERVAL_MS` is asserting the
+// bound itself. `toSlackTs` likewise — a caller that formats its own Slack
+// timestamp is testing the format rather than using it.
+export { SWEEP_INTERVAL_MS, createSummarySweep, toSlackTs } from "./session/summarize.js";
+export type {
+  SummarySweep,
+  SummarySweepOptions,
+  SummarizeSettings
+} from "./session/summarize.js";
+export { MAX_SKILLS_PER_EMBED_PASS, createSkillEmbedSweep } from "./session/skill-embed.js";
+export type {
+  SkillEmbedSettings,
+  SkillEmbedSweep,
+  SkillEmbedSweepOptions
+} from "./session/skill-embed.js";
+export { LIFECYCLE_INTERVAL_MS, createSkillLifecyclePass } from "./session/skill-lifecycle.js";
+export type {
+  SkillLifecycleOptions,
+  SkillLifecyclePass,
+  SkillLifecycleSettings
+} from "./session/skill-lifecycle.js";
+export {
+  CURATE_INTERVAL_MS,
+  MAX_OPEN_PROPOSALS,
+  createSkillCuratePass
+} from "./session/skill-curate.js";
+export type {
+  SkillCuratePass,
+  SkillCuratePassOptions,
+  SkillCurateSettings
+} from "./session/skill-curate.js";
+export { createSkillProposalsOpener } from "./session/proposals.js";
+export type { SkillProposalsOpener, SkillProposalsOpenerOptions } from "./session/proposals.js";
+
 export interface Server {
   readonly gateway: SlackGateway;
   /**

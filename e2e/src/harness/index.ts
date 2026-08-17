@@ -37,7 +37,17 @@ export type { GrantSpec } from "./grant.js";
 export { rawClient } from "./client.js";
 export type { RawClient, RawRequest, RawResponse } from "./client.js";
 
-export { SERVED_MODEL, TURN_TOKENS, calls, relays, says, scriptedModel, servedBy, withUsage } from "./model.js";
+export {
+  SERVED_MODEL,
+  TURN_TOKENS,
+  calls,
+  openingContexts,
+  relays,
+  says,
+  scriptedModel,
+  servedBy,
+  withUsage
+} from "./model.js";
 export type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
 
 export { runAuditCli } from "./audit-cli.js";
@@ -60,6 +70,12 @@ export type { AuditRow } from "./records.js";
 
 export { mutatingResubmission, recording, replayingSpendReports, withoutSpendReports } from "./transport.js";
 export type { RecordingTransport } from "./transport.js";
+
+export { EMBED_TOKENS, constantEmbeddings } from "./embedding.js";
+export type { ConstantEmbeddings } from "./embedding.js";
+
+export { backgroundPasses } from "./passes.js";
+export type { BackgroundPass, BackgroundPassDeps, BackgroundPassOptions } from "./passes.js";
 
 export { writeVault } from "./vault.js";
 export type { PlantedVault } from "./vault.js";

@@ -11,6 +11,12 @@
 // `tool` message on the very next turn — so it is one of the surfaces the
 // canary scan reads, and the most important one.
 
+import {
+  CURATION_SYSTEM_PROMPT,
+  SKILL_AUTHOR_SYSTEM_PROMPT,
+  SKILL_MERGE_SYSTEM_PROMPT,
+  SUMMARIZATION_SYSTEM_PROMPT
+} from "@getlibero/agent";
 import type {
   CompletionClient,
   CompletionRequest,
@@ -173,4 +179,51 @@ export function scriptedModel(script: readonly ScriptTurn[], onTurn?: ModelTurnH
       }
     }
   };
+}
+
+/**
+ * The system prompts of the turns nobody asked for.
+ *
+ * Every one of these is a post-reply job or a background pass, and every one of
+ * them is seeded with a single message — which is the same shape a task's
+ * opening turn has. So the filter below cannot be "one message"; it has to name
+ * them, and **it has to gain a member whenever the composition grows a turn
+ * nobody asked for**, or `openingContexts` starts quietly counting one of them
+ * as a task and every index after it is off by one.
+ *
+ * It lives here rather than in the case that needed it first (#293's) because
+ * #308 made a second file need it, and because a filter whose correctness
+ * depends on being complete should be in one place.
+ */
+const BACKGROUND_SYSTEM_PROMPTS: ReadonlySet<string> = new Set([
+  SKILL_AUTHOR_SYSTEM_PROMPT,
+  SKILL_MERGE_SYSTEM_PROMPT,
+  SUMMARIZATION_SYSTEM_PROMPT,
+  CURATION_SYSTEM_PROMPT
+]);
+
+/**
+ * The opening context of each task, in order.
+ *
+ * **Two filters, and the second is the one that is easy to get wrong.** Dropping
+ * the turns nobody asked for is obvious once the set above is complete. What is
+ * left is still every *turn* of every task, and a tool-heavy task has several —
+ * so the "second task" is not the second entry, which is what
+ * `memory-curation.test.ts` can get away with only because each of its tasks is
+ * a single turn.
+ *
+ * A task's opening context is its first turn, and a first turn is the one seeded
+ * with exactly one message: `assembleContext` returns one `user` message however
+ * much it packed into it, and every later turn of the same task carries the
+ * transcript that grew from it.
+ */
+export function openingContexts(model: { seen: readonly CompletionRequest[] }): string[] {
+  return model.seen
+    .filter(request => request.system === undefined || !BACKGROUND_SYSTEM_PROMPTS.has(request.system))
+    .filter(request => request.messages.length === 1)
+    .map(request => {
+      const seed = request.messages[0];
+      if (seed === undefined || seed.role !== "user") throw new Error("expected a user message");
+      return seed.content;
+    });
 }
