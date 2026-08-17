@@ -255,8 +255,8 @@ meter is what makes it land on the running proxy's next call.
 
 **Driving a human's click needs three things, and the rig has all of them.**
 `agent.slack.deliverMention` does not resolve while a call is held, so a case
-holds the promise, waits for `approvalCardOf(agent)` to appear, and then delivers
-a decision. The ticket id is the proxy's — read it off the `held` audit row it
+holds the promise, `await waitForApprovalCard(agent)` for the card, and then
+delivers a decision. The ticket id is the proxy's — read it off the `held` audit row it
 wrote before it answered, which is also how a case can assert the button
 carries that same id rather than one the agent invented. `agent.slack.cardAt`
 is the card showing now, which is the assertion most cases want ("it is green,
@@ -268,6 +268,14 @@ and which one is first is a race — the checklist is posted from the loop and t
 approval card from the tool client. `approvalCardOf` picks by the actions block,
 which is exact rather than a heuristic: only the amber card draws buttons, and a
 checklist has no interactive element in any state.
+
+**And `waitForApprovalCard` to reach it the first time**, because the card is not
+there when the mention is delivered — the model has to call, the proxy has to
+mint a ticket and write its `held` row, and the tool client has to post. It
+returns the card, so a case binds it rather than reading it twice, and it throws
+with what the thread actually held rather than leaving a bare
+`expected undefined to be defined`. `approvalCardOf` on its own is for reading
+the card *again* after a decision, where nothing is being waited for.
 
 **Green now means the call ran** (#143). An approve repaints the card to an
 uncoloured `running` face and it goes green only when the re-submission answers,
@@ -374,10 +382,18 @@ nothing.
 
 **Everything runs on real time.** The loop's wall clock is `AbortSignal.timeout`,
 which no fake timer can drive, so there is no `vi.useFakeTimers()` anywhere here.
-Vitest's defaults (5 s per test, 10 s per hook) are too short for certificate
-minting plus a spawn, so pass timeouts explicitly — `beforeAll(fn, 60_000)`,
-`it(name, fn, 30_000)`. Use the sheet's `max_task_seconds` to bound a hang, so it
-fails as a cap with a stop reason rather than as a bare vitest timeout.
+Vitest's defaults are too short for certificate minting plus a spawn, and there
+are **three** of them, not two: 5 s per test, 10 s per hook, and **1 s for
+`vi.waitFor`**. Pass the first two explicitly — `beforeAll(fn, 60_000)`,
+`it(name, fn, 30_000)`. The third does not arise, because nothing here calls
+`vi.waitFor`: waiting is the harness's, through `proxy.waitForLog`,
+`agent.waitForLog` and `waitForApprovalCard`, which all default to ten seconds
+and all say what they were waiting for when they give up. **Nothing in `e2e/`
+imports `vi` at all**, and `src/harness-shape.test.ts` asserts it — that is the
+enforcement, because the failure being prevented is a wait written with no
+timeout in mind, which reads as ordinary code (#329). Use the sheet's
+`max_task_seconds` to bound a hang, so it fails as a cap with a stop reason
+rather than as a bare vitest timeout.
 
 **The model's transcript now carries channel history, and that is a canary
 surface.** Since #67 a task is seeded with the channel's recent messages rather

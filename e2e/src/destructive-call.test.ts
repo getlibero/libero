@@ -30,9 +30,18 @@
 // reads as a refusal and nothing runs — is `harness-knobs.test.ts`. It is not
 // repeated here; the assertion there is the one this file would have written.
 
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import type { Scheduler } from "@getlibero/gateway";
-import { CHANNEL, approvalCardOf, auditRows, calls, rigOf, says, startRig } from "./harness/index.js";
+import {
+  CHANNEL,
+  approvalCardOf,
+  auditRows,
+  calls,
+  rigOf,
+  says,
+  startRig,
+  waitForApprovalCard
+} from "./harness/index.js";
 import type { AuditRow, Rig } from "./harness/index.js";
 
 const SETUP_MS = 60_000;
@@ -138,13 +147,10 @@ function describeClickRunsIt(): void {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
       const pending = agent.slack.deliverMention(mention("Ev00000060"));
-      await vi.waitFor(() => {
-        expect(approvalCardOf(agent)).toBeDefined();
-      });
+      const card = await waitForApprovalCard(agent);
 
       // Amber, in the thread, while nothing has happened: no reply yet, and —
       // the assertion this whole file exists for — no request at the upstream.
-      const card = approvalCardOf(agent);
       expect(card?.card.color).toBe(AMBER);
       expect(card?.threadTs).toBe("1758000000.000100");
       expect(agent.slack.posted).toHaveLength(0);
@@ -217,10 +223,7 @@ function describeDenyStopsIt(): void {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
       const pending = agent.slack.deliverMention(mention("Ev00000061"));
-      await vi.waitFor(() => {
-        expect(approvalCardOf(agent)).toBeDefined();
-      });
-      const card = approvalCardOf(agent);
+      const card = await waitForApprovalCard(agent);
 
       await agent.slack.deliverDecision({
         teamId: "T024BE7LD",
@@ -274,9 +277,7 @@ function describeAbandonedWait(): void {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
       const pending = agent.slack.deliverMention(mention("Ev00000062"));
-      await vi.waitFor(() => {
-        expect(approvalCardOf(agent)).toBeDefined();
-      });
+      await waitForApprovalCard(agent);
 
       // Nobody clicks, and the wait ends anyway. The client re-submits with the
       // ticket on every outcome — that is the design, and this is the outcome
@@ -325,9 +326,7 @@ function describeApproveThenMutate(): void {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
       const pending = agent.slack.deliverMention(mention("Ev00000063"));
-      await vi.waitFor(() => {
-        expect(approvalCardOf(agent)).toBeDefined();
-      });
+      await waitForApprovalCard(agent);
 
       // What the human was shown is the call the model actually made. The
       // mutation lands after this, on the one submission where the ticket's
@@ -397,9 +396,7 @@ function describeModelWritesItsOwnApproval(): void {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
       const pending = agent.slack.deliverMention(mention("Ev00000064"));
-      await vi.waitFor(() => {
-        expect(approvalCardOf(agent)).toBeDefined();
-      });
+      await waitForApprovalCard(agent);
       clock.fire();
       await pending;
 

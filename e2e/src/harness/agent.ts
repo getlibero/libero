@@ -182,6 +182,47 @@ export function approvalCardOf(
 }
 
 /**
+ * The approval card, once it is there.
+ *
+ * A hold is not something `deliverMention` resolves on: the mention is still in
+ * flight while the model calls, the proxy mints a ticket and writes its `held`
+ * row, and the tool client posts the card. Reading `approvalCardOf` before that
+ * lands is a race, so every case that needs the card waits here first.
+ *
+ * **The bound is the harness's, and it is not vitest's.** This replaced six
+ * `vi.waitFor` calls that all took vitest's 1000 ms default, in files whose
+ * `SETUP_MS` is a minute because the same rig mints certificates and spawns a
+ * process — two numbers three orders of magnitude apart, and only one of them
+ * chosen. One of the six failed a CI run on nothing but a loaded runner (#329).
+ * Ten seconds is `waitForLog`'s default above, for the same reason: a wait that
+ * resolves the moment its condition holds costs nothing when things are quick,
+ * so the number only has to be larger than the worst honest case.
+ *
+ * It throws rather than returning undefined, and says what the thread held.
+ * `expected undefined to be defined` was the whole of what the CI failure
+ * reported, and it does not distinguish a hold that was slow from a hold that
+ * never happened — which is the first question worth answering.
+ */
+export async function waitForApprovalCard(
+  agent: AgentSide,
+  timeoutMs = 10_000
+): Promise<PostedCard & { threadTs: string; card: SlackCard }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const card = approvalCardOf(agent);
+    if (card !== undefined) return card;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `e2e: no approval card within ${timeoutMs}ms. The thread holds ` +
+          `${agent.slack.cards.length} card(s) and ${agent.slack.posted.length} reply/replies; ` +
+          "a checklist with no approval card means the call was never held."
+      );
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+/**
  * Composes the agent side and connects the stub socket.
  *
  * Returns once `start()` has resolved, so a caller can deliver a mention
