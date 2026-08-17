@@ -1,6 +1,6 @@
 {
   "name": "@getlibero/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Libero CLI — the host-authored half of a deployment: init, channel add, doctor.",
   "keywords": ["libero", "slack", "ai-agent", "self-hosted", "mcp", "devops"],
   "license": "MIT",
