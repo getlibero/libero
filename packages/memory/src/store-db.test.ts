@@ -1237,7 +1237,12 @@ describe("storing embeddings", () => {
   // A vector produced by `subarray` shares its neighbour's backing store, which
   // is why `toVectorBlob` passes byteOffset and byteLength. Without them this
   // hands vec0 the whole allocation and the insert fails on a width nobody asked
-  // for.
+  // for — still true on 24.0.0, 24.19.0 and 26.7.0, so this case discriminates.
+  //
+  // What it does not discriminate, and #309 is where that was measured: deleting
+  // `toVectorBlob` outright and binding the `Float32Array` itself passes on all
+  // three, because `node:sqlite` honours a view's offset and length. The case is
+  // a guard on how the conversion is written, not on there being one.
   it("stores a vector that is a view into a larger buffer", () => {
     const backing = Float32Array.from([9, 9, 1, 0, 0, 9]);
     const view = backing.subarray(2, 5);
