@@ -479,8 +479,8 @@ export const TeamSheet = z.object({
       // characters and tokens are different units at a model-dependent ratio, so
       // the rule would refuse sheets an operator meant. Refusing a cap set beside
       // `enabled = false` was rejected because `[ambient]` already permits
-      // `schedule` beside its own `enabled = false`, and a channel keeping its
-      // figures through a temporary opt-out is the ordinary case.
+      // `heartbeat_every_minutes` beside its own `enabled = false`, and a channel
+      // keeping its figures through a temporary opt-out is the ordinary case.
 
       // Thread summaries (#231): the second corpus semantic recall reads, and
       // the first thing on this sheet that spends model tokens **without anyone
@@ -760,10 +760,82 @@ export const TeamSheet = z.object({
       allow: z.array(EgressPattern).default([]),
     })
     .prefault({}),
+  // Proactive posting: the agent starting a task nobody asked for, on a clock of
+  // its own. Off by default, and the block every other `enabled` on this sheet
+  // argues by contrast with — see `[memory]` above.
+  //
+  // **STILL PARSED AND UNREAD.** #316 gave this block its shape; #317 is the
+  // first reader. Nothing in either service consults these three fields today,
+  // so `enabled = true` turns nothing on. The shape lands first so a sheet
+  // written now does not change when the heartbeat does.
   ambient: z
     .object({
       enabled: z.boolean().default(false),
-      schedule: z.string().optional(),
+      // How often anyone looks. **An interval rather than a cron expression,
+      // and therefore a number rather than a grammar.**
+      //
+      // Cron would buy quiet hours and workday alignment, and the design gives
+      // the first away for free: a tick with nothing new since the last
+      // evaluated position is silent by construction and spends nothing, so an
+      // 03:00 tick already costs nothing and says nothing. There is nothing left
+      // for the expression to protect. What it would cost is a `timezone` field
+      // — `"0 9 * * 1-5"` is 09:00 for nobody, and this tree refuses zoneless
+      // instants everywhere else it parses one (see ./skill.ts on `created`, and
+      // the audit log's read path) — plus DST-correct next-after-instant
+      // arithmetic, hand-written, because the CLI inlines this package and
+      // publishes no dependencies.
+      //
+      // Which leaves an interval, and this sheet already spells those: an
+      // integer with the unit in the field name, like
+      // `summarize_after_idle_minutes` and `stale_after_days`. The conversion to
+      // milliseconds happens once, where the settings are resolved.
+      //
+      // **`min(1)` rather than `min(0)`**, which is `stale_after_days`' argument
+      // above: zero would be a second spelling of `enabled = false`, and one
+      // switch with two spellings is one of them going untested. The roof is a
+      // day, past which the heartbeat is not noticing anything. Fifteen minutes
+      // because a brisk cadence is affordable here — a quiet channel's ticks are
+      // free, so the figure trades against latency rather than against spend.
+      heartbeat_every_minutes: z.number().int().min(1).max(1_440).default(15),
+      // How long a question sits before the heartbeat may answer it.
+      //
+      // **The sibling of `[memory] summarize_after_idle_minutes`, in name and in
+      // kind**, and it states the same rule: acting on content before it has
+      // gone quiet says something the moment hasn't earned. Sampled at an
+      // instant, "unanswered" is meaningless — a question typed thirty seconds
+      // before a tick looks exactly like one the team has ignored for an hour,
+      // and answering the first front-runs the teammates it was addressed to. A
+      // team that wants the answer now tags the agent, which costs one word.
+      //
+      // This is the one number in this block an operator genuinely holds an
+      // opinion about, by the test `summarize_after_idle_minutes` states for
+      // itself: it is a fact about how a team talks rather than a resource
+      // bound. The cadence above is the other kind, which is why that one is
+      // free to default and this one is worth writing down.
+      //
+      // The two answer different questions — this is what counts as unanswered,
+      // the cadence is how often anyone looks — so **the worst case for a
+      // proactive answer is their sum**: seventy-five minutes at the defaults.
+      // Bounds are that sibling's, for the same reasons it gives.
+      answer_after_idle_minutes: z.number().int().min(5).max(10_080).default(60),
+      // **The rate limit on unbidden posts is deliberately not a field**, and
+      // the first implementer should not add one. At most one heartbeat-initiated
+      // post per channel per rate window — stated in time rather than in ticks,
+      // because one post per tick is no throttle once ticks are minutes apart —
+      // and it is an architecture constant enforced in the posting surface, so
+      // that tightening the cadence here cannot quietly loosen the throttle. It
+      // belongs beside its mechanism, the way `APPROVAL_TTL_MS` does. Nothing
+      // named `posts_per_hour` goes on this block.
+      //
+      // **Quiet hours and a timezone are not fields either**, for the reason
+      // `heartbeat_every_minutes` gives: a tick with nothing to weigh is already
+      // silent, so the hours a channel sleeps cost it nothing to leave open.
+      //
+      // No `.check()` on this block. `enabled = true` with no cadence written is
+      // not an error: the switch is `enabled` and the figures beside it default,
+      // as they do on `[memory]` and `[skills]`. Requiring a cadence would add
+      // no consent — the sheet has already said "speak unbidden" — and would add
+      // a way for a mistake here to reject the whole sheet.
     })
     .prefault({}),
 });

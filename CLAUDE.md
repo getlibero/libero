@@ -41,8 +41,10 @@ them; `node_modules` stays excluded (#107).
 
 ## Current state
 
-Phases 1, 1.5, 2 and 3 are shipped and their milestones closed; phase 4
-(ambient) has not started, so `[ambient]` is still parsed and unread. What
+Phases 1, 1.5, 2 and 3 are shipped and their milestones closed. Phase 4
+(ambient) has opened at the schema end: #316 gave `[ambient]` its real shape —
+`heartbeat_every_minutes` and `answer_after_idle_minutes` beside `enabled` — but
+the block is **still parsed and unread**, because #317 is its first reader. What
 exists:
 
 | Package | What it is |
