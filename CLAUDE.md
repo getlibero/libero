@@ -41,8 +41,9 @@ them; `node_modules` stays excluded (#107).
 
 ## Current state
 
-Phases 1, 1.5 and 2 are shipped and their milestones closed; phase 3 (skills)
-is open, and its shapes, its storage and its read path have landed. What exists:
+Phases 1, 1.5, 2 and 3 are shipped and their milestones closed; phase 4
+(ambient) has not started, so `[ambient]` is still parsed and unread. What
+exists:
 
 | Package | What it is |
 | --- | --- |
@@ -90,12 +91,21 @@ nearest neighbour* pair of playbooks not yet considered, spends one model call
 asking whether they are one, and writes the answer as a **proposal** in
 `proposals/` beside `skills/` — never a rewrite. The review surface is the
 filesystem because it is forced: no path in this process can post to a channel.
-#308 closed the last of it: the rig wires all four background passes on request
+#308 closed the phase: the rig wires all four background passes on request
 (`passes`), on a clock that reaches them and nothing else, and the suite now
 attacks the two that write into the team's directory. It also fixed a latent
 hazard — `channels.ts` wrote `[memory] enabled` but not `summarize`, which the
 sweep actually gates on, so every sheet the harness produced already carried
 `summarize = true`.
+
+Three things in phase 3 landed differently from the roadmap's own wording, and
+the roadmap records them rather than ticking a definition of done that says
+something untrue. **The curator produces no diff** — a merged playbook is a
+rewrite rather than an edit, so a proposal shows three whole documents instead of
+hunks. **Where a proposal goes was forced rather than chosen**, because
+`postThreadReply` is withheld from this process and a card needs a thread from an
+inbound event. And **the lifecycle job runs on channel activity rather than
+weekly**, which its absolute-date clocks make equivalent.
 
 ## Where the reasoning lives
 

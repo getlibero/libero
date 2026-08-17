@@ -24,7 +24,8 @@ What is not finished: certificate rotation and revocation are manual — possibl
 and driven by a shell script and an edit to a team sheet rather than by anything automated. There
 is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowhere. Memory is whole — the message
 store and its full-text index, a curated `MEMORY.md`, and semantic recall over thread summaries —
-but skills and ambient mode are later phases. Point this at a
+and so are skills, though a deployment with no embedding provider retrieves them on full text alone
+and proposes no merges. Ambient mode is a later phase. Point this at a
 scratch workspace before a real one.
 :::
 

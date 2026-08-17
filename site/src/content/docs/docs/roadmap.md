@@ -21,11 +21,19 @@ Phases are gated: later phases do not start until the governed core is solid.
 
 Two things landed differently from how this phase was first written down, and both are decisions rather than shortfalls. **The writes are not locked** — a lock file outliving a killed process is a worse failure than the one it prevents, so what replaces it is an atomic rename and a synchronous interface with no point at which a second operation could interleave. And **recall answers over thread summaries and not over curated facts**: `MEMORY.md` is already injected whole into every task's opening context, so retrieving over it would replace all of the corpus with some of it. Summaries are the corpus too large to inject, which is what makes them the one worth searching.
 
-**Phase 3 — skills. Next.** Author turn, retrieval-based loading, lifecycle job, curator-as-diff.
+**Phase 3 — skills. Shipped.** Author turn, retrieval-based loading, lifecycle job, curator-as-diff.
 
 *Definition of done: a qualifying task leaves a skill that a later task on the same subject retrieves and loads, and an unrelated task does not; retrieval records use, so the lifecycle clocks run on real signal; the files are the source of truth — a skill the team hand-edits is re-indexed and one the team deletes is gone; and the skill layer survives the e2e suite's attacks: authoring cannot escape the channel's skills directory or its size caps, and a poisoned skill loaded into a later task widens nothing — every call it induces still meets the proxy's gates.*
 
-**Phase 4 — ambient.** Heartbeat, `schedule_task`, rate limits — all behind budgets.
+Three things landed differently from how this phase was first written down, and all three are decisions rather than shortfalls.
+
+**The curator does not produce a diff**, which is this phase's own name for the item. A merged playbook is a rewrite rather than an edit, so hunks over two rewritten documents are unreadable — and a diff format would imply a patch tool that does not exist here. What a proposal shows instead is three whole documents: the merged file as it should read, and both originals beside it. Applying one is a paste over one file and a delete of another, which is one unambiguous act rather than a surgical edit.
+
+**Where a proposal goes was forced rather than chosen.** The obvious surface is the channel, and this process cannot reach it: `postThreadReply` is deliberately withheld from the composing app so that a handler cannot post out of band, and an approval card needs a thread from an inbound event that a background pass does not have. A proactive post is ambient mode's mechanic, which ships in the next phase. So a proposal is a markdown file in the channel's own state root, and declining one is deleting it.
+
+**The lifecycle job runs on channel activity rather than weekly.** The clocks are absolute dates, so the job is idempotent: running it more often moves nothing sooner than its threshold and running it less often only delays. "Weekly" is a statement about how often a status needs revisiting, and any interval at or below it satisfies that — where a cron would mean this process growing a timer and an enumerator over every channel, neither of which anything else here needs.
+
+**Phase 4 — ambient. Next.** Heartbeat, `schedule_task`, rate limits — all behind budgets.
 
 **Phase 5 — breadth.** Second platform adapter (Discord), durable multi-day orchestration option (Temporal), hardening pass on the proxy, audit hash-chaining for tamper evidence.
 
