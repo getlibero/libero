@@ -51,7 +51,7 @@ re-reads the sheet per call, which makes that a compromised agent widening its
 own permissions. The channels root stays read-only to both services and
 everything the agent writes goes to a root only it writes. `store.db` is the
 first thing on that side, `MEMORY.md` joined it in phase 2 for the same reason,
-and `skills/` joins them in phase 3 — with `proposals/` beside it, which is the
+`skills/` joined them in phase 3 — with `proposals/` beside it, which is the
 curator's only output and the one directory here the agent writes and never
 reads back.
 

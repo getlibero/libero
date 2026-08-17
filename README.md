@@ -22,7 +22,7 @@
 <p align="center">
   <a href="https://getlibero.com"><img alt="Site: getlibero.com" src="https://img.shields.io/badge/site-getlibero.com-1BA85A?style=flat-square&labelColor=131A18"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1BA85A?style=flat-square&labelColor=131A18">
-  <img alt="Status: Phase 3, pre-release" src="https://img.shields.io/badge/status-phase_3-8FA39D?style=flat-square&labelColor=131A18">
+  <img alt="Status: Phase 4, pre-release" src="https://img.shields.io/badge/status-phase_4-8FA39D?style=flat-square&labelColor=131A18">
   <a href="https://getlibero.com/discord"><img alt="Discord: join the server" src="https://img.shields.io/badge/discord-join-1BA85A?style=flat-square&labelColor=131A18"></a>
 </p>
 
@@ -34,15 +34,15 @@ Governance first, features second: tool credentials never enter the agent proces
 
 ## Status
 
-Pre-release. Phases 1 and 1.5 are done, so the quick start below is the whole of it: three CLI commands and `docker compose up` stand a deployment up from a clean checkout. It is still not something to point at a workspace you care about.
+Pre-release. Phases 1 through 3 are done, so the quick start below is the whole of it: three CLI commands and `docker compose up` stand a deployment up from a clean checkout. It is still not something to point at a workspace you care about.
 
 What exists is the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, a redaction pass that scrubs echoed secrets out of results, the MCP client and its pool with a per-upstream concurrency limit, OAuth against upstreams that need it — the proxy discovers, mints, stores and rotates the token, and the agent never sees it (#157) — the budget meter in calls and in dollars, failing closed on an unpriced model (#62), the append-only audit log, and the approval broker. The Slack gateway and the agent loop reach tools through the proxy and nowhere else, report what each model turn cost, and drain in-flight work on SIGTERM so the last turn's spend is not lost (#118).
 
-The end-to-end security suite is written (#41). It runs the proxy as its real built entrypoint and the agent side in process, fakes exactly two things — the Slack socket and the model — and attacks all four of phase 1's definition-of-done properties, one file each: a prompt-injected agent cannot exfiltrate a secret, call an unlisted tool, exceed its budget, or act destructively without a human click. A scripted authorization server attacks the OAuth token path beside them (#258).
+The end-to-end security suite is written (#41). It runs the proxy as its real built entrypoint and the agent side in process, fakes exactly two things — the Slack socket and the model — and attacks all four of phase 1's definition-of-done properties, one file each: a prompt-injected agent cannot exfiltrate a secret, call an unlisted tool, exceed its budget, or act destructively without a human click. A scripted authorization server attacks the OAuth token path beside them (#258), and the skill layer is attacked in both halves: a playbook authored and retrieved (#293), and the four background passes that maintain one — the two that write into a team's own directory included (#308).
 
 GitHub is behind the dispatcher and the governed path completes against it for real (#130) — allowlist, approval, budget, call, redaction, audit — so the served-call path is no longer proven only against a fake. Approvals are joined end to end (#126, #127): a held call raises an amber card in the channel, and an approver's click re-submits the identical call with the ticket. Both images build from `deploy/docker-compose.yml` and CI builds them on every change (#86). The soft in-thread budget warning reaches the channel before a hard limit refuses anything, and `search_channel_history` is a proxied built-in the model can call on demand (#64).
 
-The gaps that matter. Certificate revocation is an edit to a team sheet, and there is no CRL by design — rotation is two commands with that edit between them, without downtime. `[egress]` is validated when a sheet loads and enforced nowhere, because the surface it governs — a code-execution sandbox — is later work (#219); `[ambient]` is parsed and unread until phase 4. Memory is whole as of phase 2 — the per-channel store and its index, a curated `MEMORY.md` read back into a task's context, and semantic recall over thread summaries. Two limits there are stated rather than hidden: recall applies no distance cutoff (#283), so a small corpus contributes all of itself, and a long thread becomes one summary and therefore one vector (#284). Skills are phase 3, which is where the work now is.
+The gaps that matter. Certificate revocation is an edit to a team sheet, and there is no CRL by design — rotation is two commands with that edit between them, without downtime. `[egress]` is validated when a sheet loads and enforced nowhere, because the surface it governs — a code-execution sandbox — is later work (#219); `[ambient]` is parsed and unread until phase 4. Memory is whole as of phase 2 — the per-channel store and its index, a curated `MEMORY.md` read back into a task's context, and semantic recall over thread summaries. Two limits there are stated rather than hidden: recall applies no distance cutoff (#283), so a small corpus contributes all of itself, and a long thread becomes one summary and therefore one vector (#284). Skills are whole as of phase 3 — a playbook written after a tool-heavy task, retrieved into a later one, aged by a job that spends nothing, and proposed for merging as a document a person applies by hand. Two limits there are stated too: a deployment with no embedding provider retrieves skills on full text alone and proposes no merges at all, because overlap is a question about two vectors; and a skill the index has truncated past `[skills] max_skills` is one no clock ages. Ambient mode is phase 4, which is where the work now is.
 
 See the [roadmap](https://getlibero.com/docs/roadmap) and [architecture](https://getlibero.com/docs/architecture) — the documentation now lives on the site, sourced from [`site/src/content/docs/`](site/src/content/docs/docs).
 
@@ -71,7 +71,7 @@ packages/schema    zod schemas — single source of truth for team sheets, audit
 packages/gateway   Slack adapter — Socket Mode, mention intake, approval-card rendering
 packages/agent     provider-agnostic agent loop + the proxy client
 packages/proxy     credential vault, team-sheet enforcement, HITL broker, budgets, audit
-packages/memory    per-channel SQLite store: messages with FTS5, thread summaries, sqlite-vec
+packages/memory    per-channel SQLite store: messages with FTS5, thread summaries, skills, sqlite-vec
 packages/cli       @getlibero/cli — the operator's host-side commands; the only npm-published package
 apps/server        composes gateway + agent + the channel router (service 1)
 apps/proxy-server  composes proxy (service 2)
