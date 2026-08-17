@@ -10,11 +10,13 @@ the `MEMORY.md` the agent curates. See
 
 `src/store-db.ts` is the whole message store — opening the file, its schema, and
 every statement run against it. `src/memory-file.ts` is `MEMORY.md` and every
-rule about what may be written to it. `src/atomic-write.ts` is the
-durable-replace recipe the second of those uses, and it is a copy of
-`packages/proxy/src/atomic-write.ts` because a leaf may not import one; #272
-unifies them. `src/log.ts` is a duplicated `Logger` interface, and that
-duplication is argued in the file too.
+rule about what may be written to it. The durable-replace recipe the second of
+those uses is `@getlibero/atomic-write` — a leaf under this leaf, `node:`
+builtins and no dependencies at all, which is what makes it importable from a
+package that may depend on neither service. It lived here as a hand-kept copy
+until #272 unified the three that existed. `src/log.ts` is a duplicated `Logger`
+interface, and that duplication is argued in the file too — it stayed duplicated
+because an interface the gateway also declares has no third home to move to.
 
 ## Three reads, and they are not each other
 
@@ -221,7 +223,7 @@ would prevent — the vault and the token store both reject one on that ground,
 and nothing about this file argues differently. Two properties cover what a lock
 would have:
 
-- **Every write lands by rename.** `src/atomic-write.ts` writes a whole
+- **Every write lands by rename.** `@getlibero/atomic-write` writes a whole
   temporary file and renames it over the target, so a reader holds the old file
   or the new one and no writer's bytes ever land inside another's.
 - **Nothing here interleaves.** `apply` is synchronous from the read to the

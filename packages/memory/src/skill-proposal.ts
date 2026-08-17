@@ -43,7 +43,7 @@ import { existsSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelId, SkillName, serializeSkillFile } from "@getlibero/schema";
 import type { SkillFile, SkillMergeDraft } from "@getlibero/schema";
-import { replaceFileAtomically } from "./atomic-write.js";
+import { replaceFileAtomically } from "@getlibero/atomic-write";
 import type { SkillPairKey } from "./store-db.js";
 import type { Logger } from "./log.js";
 

@@ -38,6 +38,20 @@ const MCP_SDK_BAN = {
     "Only packages/proxy/src/mcp-client.ts may import the MCP SDK. It is the module that installs the guarded fetch and maps the SDK's errors onto the closed McpFailure set; reaching an upstream anywhere else would bypass both."
 };
 
+// The durable-replace recipe, which four groups below ban and which stopped
+// being a file in this repository's proxy at #272 — it is `@getlibero/atomic-write`
+// now, a leaf every service and the published CLI import. The bans stay: the
+// primitive holds no credential value, but a module with no file to replace
+// should not be able to name the thing that replaces files, which is the same
+// claim those groups make about the vault. Three spellings and not one — the two
+// specifiers catch the package, and the glob still catches a copy inlined back
+// into a source file, which is how the recipe came to exist three times.
+const ATOMIC_WRITE_BAN = [
+  "**/atomic-write*",
+  "@getlibero/atomic-write",
+  "@getlibero/atomic-write/*"
+];
+
 const SLACK_SDK_BAN = {
   group: ["@slack/*"],
   message:
@@ -196,7 +210,7 @@ export default tseslint.config(
                 "**/token-engine*",
                 "**/grant-flow*",
                 "**/envelope*",
-                "**/atomic-write*",
+                ...ATOMIC_WRITE_BAN,
                 "**/mcp-pool*",
                 "**/mcp-client*",
                 "**/mcp-catalog*",
@@ -234,7 +248,15 @@ export default tseslint.config(
           patterns: [
             MCP_SDK_BAN,
             {
-              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/grant-flow*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
+              group: [
+                "**/vault*",
+                "**/token-store*",
+                "**/token-engine*",
+                "**/grant-flow*",
+                "**/envelope*",
+                ...ATOMIC_WRITE_BAN,
+                "@getlibero/proxy"
+              ],
               message:
                 "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault — or the token store beside it — would be a column that must not exist."
             }
@@ -261,7 +283,15 @@ export default tseslint.config(
           patterns: [
             MCP_SDK_BAN,
             {
-              group: ["**/vault*", "**/token-store*", "**/token-engine*", "**/grant-flow*", "**/envelope*", "**/atomic-write*", "@getlibero/proxy"],
+              group: [
+                "**/vault*",
+                "**/token-store*",
+                "**/token-engine*",
+                "**/grant-flow*",
+                "**/envelope*",
+                ...ATOMIC_WRITE_BAN,
+                "@getlibero/proxy"
+              ],
               message:
                 "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean. The token store is a second credential store, banned for the vault's reason."
             },
@@ -346,7 +376,7 @@ export default tseslint.config(
                 "**/token-engine*",
                 "**/grant-flow*",
                 "**/envelope*",
-                "**/atomic-write*",
+                ...ATOMIC_WRITE_BAN,
                 "@getlibero/proxy"
               ],
               message:
@@ -426,6 +456,16 @@ export default tseslint.config(
     // @getlibero/schema is deliberately not banned. ChannelId is the one rule
     // about channel ids, stated once, and a store that re-implemented it would
     // be the hole that file exists to close.
+    //
+    // @getlibero/atomic-write is not banned either, and for the same shape of
+    // reason. It is a leaf under this leaf — `node:` builtins and nothing else,
+    // no dependencies at all — so the edge adds no code to either service's
+    // image, which is the property this block exists to protect. What it cost to
+    // do without is on the record: until #272 this package carried a hand-kept
+    // copy of the proxy's durable-replace recipe, because the ban is real and
+    // the alternative was importing across it. A guarantee implemented twice is
+    // one that eventually holds once, and `src/log.ts` is the duplication that
+    // remains because a `Logger` genuinely has no third home.
     files: ["packages/memory/**/*.{ts,mts,cts,js,mjs,cjs}"],
     rules: {
       "no-restricted-imports": [

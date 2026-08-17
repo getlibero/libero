@@ -1,0 +1,19 @@
+{
+  "name": "@getlibero/atomic-write",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The durable-replace recipe, once. Write a whole temporary file, fsync it, rename it over the target, fsync the directory — so a power loss leaves either the old file or the new one. No dependencies, deliberately: both services and the published CLI import it.",
+  "license": "MIT",
+  "files": ["dist"],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --exclude '**/dist/**'"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3"
+  }
+}

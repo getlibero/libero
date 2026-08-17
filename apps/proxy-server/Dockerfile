@@ -66,15 +66,16 @@ WORKDIR /repo
 # `--frozen-lockfile` reconciles the lockfile against all of them; a new
 # package missing from this list fails the install rather than being skipped.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
-COPY packages/schema/package.json   packages/schema/
-COPY packages/proxy/package.json    packages/proxy/
-COPY packages/agent/package.json    packages/agent/
-COPY packages/gateway/package.json  packages/gateway/
-COPY packages/memory/package.json   packages/memory/
-COPY packages/cli/package.json      packages/cli/
-COPY apps/server/package.json       apps/server/
-COPY apps/proxy-server/package.json apps/proxy-server/
-COPY e2e/package.json               e2e/
+COPY packages/atomic-write/package.json packages/atomic-write/
+COPY packages/schema/package.json       packages/schema/
+COPY packages/proxy/package.json        packages/proxy/
+COPY packages/agent/package.json        packages/agent/
+COPY packages/gateway/package.json      packages/gateway/
+COPY packages/memory/package.json       packages/memory/
+COPY packages/cli/package.json          packages/cli/
+COPY apps/server/package.json           apps/server/
+COPY apps/proxy-server/package.json     apps/proxy-server/
+COPY e2e/package.json                   e2e/
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
     pnpm config set store-dir /pnpm-store --global \

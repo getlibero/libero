@@ -11,7 +11,7 @@
 
 import { readFileSync } from "node:fs";
 import { CredentialName } from "@getlibero/schema";
-import { replaceFileAtomically } from "./atomic-write.js";
+import { replaceFileAtomically } from "@getlibero/atomic-write";
 import { sealEnvelope } from "./envelope.js";
 import {
   MAX_SECRET_BYTES,
@@ -102,8 +102,10 @@ export function removeEntry(entries: VaultEntries, name: string): VaultEntries |
  * structurally impossible — is `sealEnvelope` in ./envelope.ts, and the
  * write sequence worth reviewing (exclusive-create temp, mode at open, fsync
  * before rename and the directory after) is `replaceFileAtomically` in
- * ./atomic-write.ts. Both are shared with the token store, which is the point:
- * a recipe implemented twice is one that eventually holds once.
+ * `@getlibero/atomic-write`. The envelope is shared with the token store and the
+ * recipe with every writer in the deployment, which is the point: a recipe
+ * implemented twice is one that eventually holds once, and #272 is the issue
+ * that found out how right that was.
  *
  * Two operators writing at once is last-writer-wins. There is no lock: the
  * documented path is one admin running one command in one container, and a

@@ -49,6 +49,13 @@ from where it came from except `PROXY_VAULT_KEY`, which the vault is encrypted u
 no escrow and no recovery, so a flag that regenerated it would discard every credential an
 operator has loaded. Delete the line by hand if you mean it.
 
+**The file is written durably, for the same reason.** Both paths — creating the file and
+rewriting it — go through `@getlibero/atomic-write`, the recipe the credential vault uses:
+the bytes are fsynced before the name is claimed and the directory is fsynced after, so a
+power loss leaves either the old file or the new one. A half-written `PROXY_VAULT_KEY` would
+be a non-empty assignment, which means a re-run would neither fill it nor warn about it, and
+the failure would surface four steps later as a vault that will not open.
+
 **No command here writes, reads back, or prints a tool credential**, and none has a flag that
 takes one. Service credentials go into the vault from inside the proxy container, over stdin,
 so the master key and the secrets it encrypts never sit on the host together. The master key

@@ -17,6 +17,7 @@
     "test": "vitest run --exclude '**/dist/**'"
   },
   "devDependencies": {
+    "@getlibero/atomic-write": "workspace:*",
     "@getlibero/schema": "workspace:*",
     "@types/node": "^24.13.3",
     "esbuild": "^0.28.1"

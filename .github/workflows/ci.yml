@@ -48,9 +48,10 @@ jobs:
         run: pnpm -r build
       - name: The CLI publishes one file and no dependency
         # `@getlibero/cli` is the only package anyone installs from npm, and it
-        # depends on `@getlibero/schema`, which is private and never published.
-        # esbuild inlines the schema into dist/index.js, so the published
-        # manifest declares nothing to resolve — and release-cli.yml deletes
+        # depends on `@getlibero/schema` and `@getlibero/atomic-write`, both
+        # private and never published. esbuild inlines them into dist/index.js,
+        # so the published manifest declares nothing to resolve — and
+        # release-cli.yml deletes
         # devDependencies before publishing, because npm (unlike pnpm) does not
         # rewrite `workspace:*` and would ship a specifier no client can install.
         #

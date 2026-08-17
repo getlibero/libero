@@ -27,9 +27,10 @@
 //   - **Not everything in the directory is a skill.** The filter is a `SkillName`
 //     round-trip on the filename stem, not a `.md` suffix check.
 //     `Deploy-Runbook.md`, `deploy_runbook.md`, `.hidden.md`, `deploy.md.md` and
-//     the temporary files `./atomic-write.ts` plants mid-write are all the same
-//     refusal, and a suffix check would admit the last one during the window it
-//     exists.
+//     the temporary files `@getlibero/atomic-write` plants mid-write are all the
+//     same refusal, and a suffix check would admit the last one during the
+//     window it exists. That package's `temporaryNameFor` is where the shape
+//     comes from, and its test and this one pin the same spelling.
 //
 // ## The filename is the identity, and the frontmatter is not
 //
@@ -85,7 +86,7 @@ import {
   serializeSkillFile
 } from "@getlibero/schema";
 import type { SkillFile, SkillOp, SkillOpResult, SkillStatus } from "@getlibero/schema";
-import { replaceFileAtomically } from "./atomic-write.js";
+import { replaceFileAtomically } from "@getlibero/atomic-write";
 import type { SkillFingerprint } from "./store-db.js";
 import type { Logger } from "./log.js";
 

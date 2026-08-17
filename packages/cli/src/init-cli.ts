@@ -33,11 +33,11 @@
 // stdin, so the master key and the secrets it encrypts never sit on this host
 // together.
 
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ModelId } from "@getlibero/schema";
+import { createFileExclusively, replaceFileAtomically } from "@getlibero/atomic-write";
 import { NO_COMPOSE_FILE, findCompose } from "./compose.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
@@ -193,11 +193,15 @@ function write(io: CliIo, file: string, options: InitOptions): number {
 
   if (!existsSync(file)) {
     const text = renderEnvFile(HEADER, blocks());
-    // `wx` rather than a bare write: two `init`s racing on one path should end
-    // with one of them saying the file already exists, not with a key written
-    // over a key. 0600 because this is the only thing in the repository that
-    // puts a master key on an operator's disk.
-    writeFileSync(file, text, { mode: 0o600, flag: "wx" });
+    // `wx` on the real path, which `createFileExclusively` keeps: two `init`s
+    // racing on one path should end with one of them saying the file already
+    // exists, not with a key written over a key — a temporary and a rename would
+    // hand the second writer a clean win. 0600 because this is the only thing in
+    // the repository that puts a master key on an operator's disk, and the two
+    // fsyncs because a half-written key is worse than no key: the truncated
+    // assignment is non-empty, so a re-run neither fills it nor warns, and the
+    // failure surfaces four steps later as a vault that will not open.
+    createFileExclusively(file, Buffer.from(text, "utf8"));
     io.out(`libero: wrote ${shown}`);
     io.out(`libero: generated ${VAULT_KEY}`);
     report(io, shown, options);
@@ -214,15 +218,12 @@ function write(io: CliIo, file: string, options: InitOptions): number {
 
   // Written beside and renamed over, so a crash mid-write cannot leave the
   // operator with a truncated file — and at 0600 before the rename rather than
-  // after, so the key is never briefly world-readable.
-  const temporary = `${file}.tmp-${randomBytes(6).toString("hex")}`;
-  try {
-    writeFileSync(temporary, merged.text, { mode: 0o600, flag: "wx" });
-    renameSync(temporary, file);
-  } catch (error) {
-    if (existsSync(temporary)) unlinkSync(temporary);
-    throw error;
-  }
+  // after, so the key is never briefly world-readable. This used to be written
+  // out here, and it had drifted: it renamed without fsyncing either the file or
+  // the directory, so the guarantee this comment claims was not one the code
+  // gave. #272 gave the recipe one home, and this is the caller it was unified
+  // for.
+  replaceFileAtomically(file, Buffer.from(merged.text, "utf8"));
 
   io.out(`libero: updated ${shown}`);
   for (const name of merged.appended) io.out(`libero:   added ${name}`);

@@ -99,13 +99,32 @@ copyFileSync(new URL("../../LICENSE", import.meta.url), new URL("./LICENSE", imp
 // zod's code without zod's MIT notice, which that licence requires of any
 // substantial portion — and inlining the whole library is not a small one.
 //
-// Generated rather than written by hand, from what `@getlibero/schema` actually
-// depends on, so a dependency added there cannot be one whose notice quietly
-// stops shipping. A dependency with no discoverable licence text fails the
-// build: that is a question for a human, not something to skip.
+// Generated rather than written by hand, from what the inlined workspace
+// packages actually depend on, so a dependency added to one of them cannot be
+// one whose notice quietly stops shipping. A dependency with no discoverable
+// licence text fails the build: that is a question for a human, not something to
+// skip.
+//
+// Read off the workspace edges rather than off one hardcoded path. It named
+// `../schema/` while the schema was the only package inlined here, and #272
+// added a second — `@getlibero/atomic-write`, which declares no dependencies, so
+// this file's output does not change. That is the point: the generator's claim
+// was about to become true only by coincidence, and a package added later would
+// have gone unnoticed exactly the way the fourth copy of the durable replace
+// would have.
 const LICENCE_FILENAMES = ["LICENSE", "LICENSE.md", "LICENCE", "LICENCE.md", "license", "license.md"];
-const schema = new URL("../schema/", import.meta.url);
-const bundled = Object.keys(JSON.parse(readFileSync(new URL("./package.json", schema), "utf8")).dependencies);
+const inlined = Object.keys(manifest.devDependencies)
+  .filter(name => name.startsWith("@getlibero/"))
+  .map(name => new URL(`../${name.slice("@getlibero/".length)}/`, import.meta.url));
+
+// Union rather than concatenate: two workspace packages depending on zod should
+// reproduce its licence once. Each name is resolved under the package that
+// declares it, because pnpm's node_modules is not flat.
+const bundled = new Map();
+for (const root of inlined) {
+  const { dependencies } = JSON.parse(readFileSync(new URL("./package.json", root), "utf8"));
+  for (const name of Object.keys(dependencies ?? {})) bundled.set(name, root);
+}
 
 const notices = [
   "# Third-party notices",
@@ -115,8 +134,8 @@ const notices = [
   "below. Libero's own licence is in LICENSE beside this file.",
   ""
 ];
-for (const name of bundled.sort()) {
-  const root = new URL(`node_modules/${name}/`, schema);
+for (const name of [...bundled.keys()].sort()) {
+  const root = new URL(`node_modules/${name}/`, bundled.get(name));
   const filename = LICENCE_FILENAMES.find(candidate => existsSync(new URL(candidate, root)));
   if (filename === undefined) {
     throw new Error(
