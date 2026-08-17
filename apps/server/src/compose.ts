@@ -41,6 +41,7 @@ import { createMessageIngest, createRevisionIngest } from "./ingest.js";
 import type { QueryEmbedder } from "./session/embed.js";
 import type { Recall } from "./session/recall.js";
 import type { SkillEmbedSweep } from "./session/skill-embed.js";
+import type { SkillCuratePass } from "./session/skill-curate.js";
 import type { SkillLifecyclePass } from "./session/skill-lifecycle.js";
 import type { SkillRecall } from "./session/skill-recall.js";
 import type { SkillFilesOpener } from "./session/skills.js";
@@ -214,6 +215,17 @@ export interface ServerDeps {
    * Its absence is a deployment whose skill statuses only ever move by hand.
    */
   readonly lifecycleSkills?: SkillLifecyclePass;
+  /**
+   * The merge curator (#295), run on channel activity beside the other three.
+   *
+   * Built by the process for `summarize`'s reason and not the lifecycle job's: it
+   * needs a completion client and the spend reporter, neither of which this file
+   * holds. It takes the `skills` opener this file already has plus a `proposals`
+   * one, so wiring it without either is a pass that proposes nothing.
+   *
+   * Its absence is a deployment whose playbooks are never proposed for merging.
+   */
+  readonly curateSkills?: SkillCuratePass;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -369,6 +381,7 @@ export function createServer(deps: ServerDeps): Server {
     ...(deps.summarize !== undefined ? { summarize: deps.summarize } : {}),
     ...(deps.embedSkills !== undefined ? { embedSkills: deps.embedSkills } : {}),
     ...(deps.lifecycleSkills !== undefined ? { lifecycleSkills: deps.lifecycleSkills } : {}),
+    ...(deps.curateSkills !== undefined ? { curateSkills: deps.curateSkills } : {}),
     logger,
     ...clock
   });

@@ -46,6 +46,7 @@ const CHANNEL = "C024BE91L";
 /** Skills on at the schema's own figures: author above five served calls. */
 const AUTHORING: SkillSettings = {
   enabled: true,
+  curate: false,
   authorAfterToolCalls: 5,
   topK: 3,
   maxSkillChars: 8_192,

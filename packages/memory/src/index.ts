@@ -31,6 +31,8 @@ export type {
   EmbeddingHit,
   EmbeddingSource,
   SkillClock,
+  SkillMergePair,
+  SkillPairKey,
   SkillEntry,
   SkillFingerprint,
   SkillReconcileResult,
@@ -51,6 +53,8 @@ export { openMemoryFile } from "./memory-file.js";
 export type { MemoryFile, MemoryFileOptions } from "./memory-file.js";
 
 export { openSkillFiles } from "./skill-file.js";
+export { openSkillProposals } from "./skill-proposal.js";
+export type { SkillMergeProposal, SkillProposals, SkillProposalsOptions } from "./skill-proposal.js";
 export type { SkillFiles, SkillFilesOptions, SkillStatusResult } from "./skill-file.js";
 
 export { reconcileSkillIndex } from "./skill-store.js";

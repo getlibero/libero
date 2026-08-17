@@ -82,7 +82,7 @@ rule. Two things make that structural rather than a convention:
   and `openMemoryFile` each close over one file, so reaching a second channel is
   not something `MessageStore`, `MessageReader` or `MemoryFile` can express.
 
-## Four openers, and what each one may touch
+## Five openers, and what each one may touch
 
 `openMessageStore` is the gateway's: it creates the schema, stamps the version,
 and holds the six statements that write and read a channel's messages.
@@ -167,6 +167,31 @@ A revision carries `created` and `status` forward from the file it replaces.
 Neither is the model's — the operation shapes have no field for either — so
 restamping them would reset a date the team can see and un-archive a skill the
 lifecycle job had retired.
+
+`openSkillProposals` is the fifth opener and the merge curator's (#295), over
+`proposals/` beside `skills/`. **A sibling and never a child**, which is
+load-bearing rather than tidy: `openSkillFiles` lists its directory by
+round-tripping each filename stem through `SkillName`, so a proposal dropped in
+there whose stem happened to parse would be indexed as a skill — a third playbook
+quoting two others, retrievable into a later task's context. The `--` in a
+proposal's filename is a sequence `SKILL_NAME_PATTERN` cannot produce.
+
+**It has no `read`, and that is the module's central decision.** Nothing in the
+process ever reads a proposal back: what stops a pair being raised twice is
+`skill_merge_proposal` in the index, what finds a proposal whose skill is gone is
+`orphanedSkillMergeProposals`, and what applies one is a person with an editor.
+Three things follow, and the middle one is the reason. There is **no path by
+which model-authored text in that directory re-enters a model's context** — a
+`read` would create one, and "a file the agent wrote, quoting two skills, that
+the agent later reads" is exactly the shape the e2e suite's skill attacks exist
+to keep closed. The format therefore needs no parser, no version and no
+`proposal_unusable` word. And a team can annotate or rewrite a proposal before
+applying it with nothing noticing, which is the right relationship with a file
+that is a suggestion.
+
+It also has no method that names a skill file, which is the structural half of
+"the curator writes no skill file" — the other half being that the merge turn in
+`packages/agent` takes no handler at all.
 
 `setStatus` is the fifth operation and the lifecycle job's only write (#294). It
 is a method rather than a third `SkillOp` precisely so the model cannot reach it:
@@ -467,6 +492,42 @@ costs one full stale window** of no-ops rather than one cycle. That is the bette
 failure, and it is the same mechanism that makes a hand-set status survive, so
 the two cannot be had separately.
 
+### The pair table, and why no trigger takes its rows away
+
+`skill_merge_proposal` is the curator's whole bound (#295): one row per pair it
+has **considered**, drafted or declined, carrying the two `description_hash`
+values it considered them at. `skillMergeCandidate` excludes a pair whose row
+still matches, so a pair is raised once and not again until one of the two
+descriptions moves. Not a timestamp — a clock would re-propose a merge somebody
+declined every N days, which is the behaviour the table exists to prevent — and
+not a body hash, because the description is what retrieval matches on and what
+the overlap question is about.
+
+A row is written for a declined pair too, and that is the load-bearing half: a
+decline with no row is a pair paid for again on every later run, which is the
+failure `thread_summary` writes a `nothing` row to avoid.
+
+**No trigger drops these rows when a skill is deleted**, and that is the design.
+The surviving row is the only record of which proposal file names a skill that no
+longer exists, so `orphanedSkillMergeProposals` can find the file and the caller
+can remove it; a trigger would destroy the evidence and orphan the file
+permanently, consuming one of the caller's open-proposal slots forever.
+
+It also turned up a hazard worth having written down, because it is the trigger
+form of one this schema already records for columns. **`CREATE TRIGGER IF NOT
+EXISTS` no-ops against a trigger of that name that already exists**, exactly as
+`CREATE TABLE IF NOT EXISTS` does — so *editing the body of an existing trigger
+reaches new files only*, and every store on disk keeps the old body with nothing
+raising. Extending `skill_delete` here would have looked like it worked. The rule
+that leaves: **a change to what a trigger does needs a new trigger name.**
+
+The nomination query itself is the one place this package computes a distance
+outside `nearest`. It uses `vec_distance_l2` as a scalar function over the vec0
+column rather than a MATCH, so an all-pairs comparison is one statement and no
+vector crosses into JS, and it picks the closest **mutual nearest neighbour**
+pair — B is A's nearest and A is B's. The argument for that rule, and against the
+two alternatives, is on the SQL.
+
 ### `nearest` grew a kind, and it was not optional
 
 All three corpora share one `vec_embedding`. `k` is spent *inside* the vec0
@@ -539,11 +600,11 @@ task collects. Nothing here changed for it: the LEFT JOIN was always the answer
 to "what has no vector", and `description_hash` was always what decides whether
 one still stands.
 
-What is not here is the curator that proposes merges of overlapping skills
-(#295). The lifecycle job landed in #294 and its two halves are described below —
-the file writer it needed and the clock read it decides on. The job itself is
-`apps/server/src/session/skill-lifecycle.ts`, because the thresholds are a team
-sheet's and this package holds no sheet.
+Skills are whole as of #295. Both remaining halves landed in this package as
+storage the passes above them use: the lifecycle job's file writer and clock read
+(#294), and the curator's proposals directory, its nomination query and its
+considered-pair table (#295). Both *jobs* live in `apps/server`, because their
+thresholds and intervals are a team sheet's and this package holds no sheet.
 
 `reconcileSkillIndex` has two callers, both in `apps/server` and both inside the
 session's lock. `session/skill-recall.ts` runs it at the head of a task, which is

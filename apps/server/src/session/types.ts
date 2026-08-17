@@ -207,6 +207,17 @@ export interface SkillSettings {
    * author threshold, which is a number rather than a second switch.
    */
   readonly enabled: boolean;
+  /**
+   * `[skills] curate`. False proposes no merges, and changes nothing else.
+   *
+   * A second switch on a block whose others are numbers, and the asymmetry with
+   * `enabled` is the one `[memory]` already draws: both halves of authoring
+   * follow a task somebody asked for, and this does not — it is the one skill
+   * pass that spends a model call on the channel's own clock rather than on a
+   * mention. A channel that wants its playbooks written and retrieved but never
+   * second-guessed says so here without giving up either.
+   */
+  readonly curate: boolean;
   /** `[skills] top_k`. How many skills a task may open with. */
   readonly topK: number;
   /**

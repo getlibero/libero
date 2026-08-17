@@ -34,6 +34,7 @@ import type { ChecklistReporter, ChecklistTarget } from "./checklist/checklist.j
 import type { DisplayNameLookup } from "./session/names.js";
 import type { SessionRegistry } from "./session/registry.js";
 import type { SkillEmbedSweep } from "./session/skill-embed.js";
+import type { SkillCuratePass } from "./session/skill-curate.js";
 import type { SkillLifecyclePass } from "./session/skill-lifecycle.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { ChannelRouter } from "./session/router.js";
@@ -117,6 +118,22 @@ export interface MessageIngestOptions {
    */
   lifecycleSkills?: SkillLifecyclePass;
   /**
+   * The merge curator (#295), run beside the other three and for their reason: a
+   * library grows a near-duplicate through nothing happening, which fires no
+   * event this process can see.
+   *
+   * A fourth option rather than a leg of the lifecycle job, though both gate on
+   * `[skills]`. That pass is the one that holds no model client and spends
+   * nothing, structurally; this one is a model call. Folding them together would
+   * give up the property that makes the first one checkable by reading its
+   * options.
+   *
+   * Optional, and its absence is a deployment whose playbooks are never proposed
+   * for merging — which is also what a deployment with no embedding provider
+   * gets, since overlap is a question about two vectors.
+   */
+  curateSkills?: SkillCuratePass;
+  /**
    * Where a follow-up's checklist goes. Optional per call for `onHeld`'s
    * reason and answered by the same knot in compose.ts — the card poster is
    * built after this handler is.
@@ -172,6 +189,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
   const summarize = options.summarize;
   const embedSkills = options.embedSkills;
   const lifecycleSkills = options.lifecycleSkills;
+  const curateSkills = options.curateSkills;
 
   return async (message: SlackMessage): Promise<SlackReply | undefined> => {
     const session = options.sessions.open({
@@ -278,6 +296,21 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
       if (lifecycleSkills !== undefined) {
         const store = session.store;
         void session.mutex.run(() => lifecycleSkills(message.channelId, store)).catch(() => {});
+      }
+
+      // The merge curator (#295), on every clause above: the mutex, because it
+      // reconciles the skill index and reads the directory a task's context read
+      // goes through; not awaited, because a reply must not sit behind a model
+      // call about two playbooks; after the append, so the four passes queue in a
+      // stated order.
+      //
+      // Its own `mutex.run`, and last of the four. It is the only one of them a
+      // person is waiting on the *output* of rather than the effect, and it is
+      // the most expensive — so it goes behind the three that are cheaper or
+      // free rather than in front of them.
+      if (curateSkills !== undefined) {
+        const store = session.store;
+        void session.mutex.run(() => curateSkills(message.channelId, store)).catch(() => {});
       }
     }
 

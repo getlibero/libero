@@ -71,6 +71,7 @@ describe("the example team sheet", () => {
   it("authors skills by default, with the figures the block documents", () => {
     expect(sheet.skills).toEqual({
       enabled: true,
+      curate: true,
       author_after_tool_calls: 5,
       top_k: 3,
       max_skill_chars: 8_192,
@@ -426,6 +427,7 @@ describe("the skills block", () => {
     const sheet = TeamSheet.parse(skillsSheet({ enabled: false, top_k: 5 }));
     expect(sheet.skills).toEqual({
       enabled: false,
+      curate: true,
       author_after_tool_calls: 5,
       top_k: 5,
       max_skill_chars: 8_192,
@@ -437,6 +439,22 @@ describe("the skills block", () => {
 
   it("refuses a non-boolean switch", () => {
     expect(paths(skillsSheet({ enabled: "yes" }))).toEqual(["skills.enabled: invalid_type"]);
+  });
+
+  // The second thing on the sheet that spends with nobody waiting, and the
+  // second switch on a block whose others are numbers. On by default for
+  // `summarize`'s reason; independent of `enabled` so a channel can keep its
+  // playbooks and decline to be asked about them.
+  it("curates by default, and takes an opt-out that leaves the rest alone", () => {
+    expect(TeamSheet.parse({ channel: minimalChannel() }).skills.curate).toBe(true);
+
+    const sheet = TeamSheet.parse(skillsSheet({ curate: false }));
+    expect(sheet.skills.curate).toBe(false);
+    expect(sheet.skills.enabled).toBe(true);
+  });
+
+  it("refuses a non-boolean curate switch", () => {
+    expect(paths(skillsSheet({ curate: "yes" }))).toEqual(["skills.curate: invalid_type"]);
   });
 
   // The relationship to `SKILL_BODY_MAX_CHARS` is a floor, not a roof, and it is
@@ -618,6 +636,7 @@ describe("defaults", () => {
     });
     expect(sheet.skills).toEqual({
       enabled: true,
+      curate: true,
       author_after_tool_calls: 5,
       top_k: 3,
       max_skill_chars: 8_192,

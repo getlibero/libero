@@ -594,3 +594,236 @@ describe("the lifecycle clocks", () => {
     expect(store.skillsNeedingEmbedding(10)).toEqual(["rotate-a-cert"]);
   });
 });
+
+describe("nominating a pair to merge", () => {
+  const DAY = 86_400_000;
+
+  /** Three skills in a hand-built space: a and b are each other's nearest. */
+  const nominatable = (): void => {
+    handWrite("a-deploy", skillText("a-deploy", { description: "How we ship a release." }));
+    handWrite("b-deploys", skillText("b-deploys", { description: "How we ship releases." }));
+    handWrite("c-oncall", skillText("c-oncall", { description: "Who to wake at 3am." }));
+    reconcile();
+    embed("a-deploy", [1, 0, 0]);
+    embed("b-deploys", [1, 0.1, 0]);
+    embed("c-oncall", [1, 0.6, 0]);
+  };
+
+  // The guard `nearest` has, for its reason: a store with no embedding provider
+  // behind it has no `vec_embedding` table at all, and preparing a statement
+  // that names one throws. This is the case that would otherwise fire in every
+  // deployment that configured no embeddings.
+  it("answers nothing, without throwing, on a store that has embedded nothing", () => {
+    create("rotate-a-cert");
+    reconcile();
+
+    expect(store.skillMergeCandidate()).toBeNull();
+  });
+
+  it("answers nothing for a library of one", () => {
+    create("rotate-a-cert");
+    reconcile();
+    embed("rotate-a-cert", [1, 0, 0]);
+
+    expect(store.skillMergeCandidate()).toBeNull();
+  });
+
+  // The case a directed "each skill's nearest" rule would get wrong: c's nearest
+  // is b, but b's nearest is a, so only (a, b) is mutual.
+  it("nominates the mutual pair and not the one-sided one", () => {
+    nominatable();
+
+    expect(store.skillMergeCandidate()).toMatchObject({ a: "a-deploy", b: "b-deploys" });
+  });
+
+  it("answers the pair in name order, with the texts it nominated them as", () => {
+    nominatable();
+    const pair = store.skillMergeCandidate();
+
+    expect(pair?.a).toBe("a-deploy");
+    expect(pair?.b).toBe("b-deploys");
+    // The hashes are the index's own, so a caller never computes one.
+    expect(pair?.hashA).toMatch(/^[0-9a-f]{64}$/);
+    expect(pair?.hashB).toMatch(/^[0-9a-f]{64}$/);
+    expect(pair?.hashA).not.toBe(pair?.hashB);
+  });
+
+  // The bound: considered once, at these texts, and not raised again. Deleting
+  // the proposal file is the decline and this table never hears about it, so
+  // ignoring and declining come to the same thing.
+  it("does not nominate a pair it has already been asked about", () => {
+    nominatable();
+    const pair = store.skillMergeCandidate();
+    if (pair === null) throw new Error("the fixture nominated nothing");
+
+    store.recordSkillMergeConsidered(pair, NOW);
+
+    expect(store.skillMergeCandidate()).toBeNull();
+  });
+
+  // And what un-bounds it: an edit to one of the two descriptions, which is new
+  // evidence. A body edit is not — see the DDL.
+  it("nominates it again once a description moves", () => {
+    nominatable();
+    const pair = store.skillMergeCandidate();
+    if (pair === null) throw new Error("the fixture nominated nothing");
+    store.recordSkillMergeConsidered(pair, NOW);
+
+    handWrite("a-deploy", skillText("a-deploy", { description: "How we ship a release, revised." }));
+    reconcile(MAX_SKILLS, NOW + DAY);
+    embed("a-deploy", [1, 0, 0]);
+
+    expect(store.skillMergeCandidate()).toMatchObject({ a: "a-deploy", b: "b-deploys" });
+  });
+
+  it("does not nominate it again when only a body moved", () => {
+    nominatable();
+    const pair = store.skillMergeCandidate();
+    if (pair === null) throw new Error("the fixture nominated nothing");
+    store.recordSkillMergeConsidered(pair, NOW);
+
+    handWrite(
+      "a-deploy",
+      skillText("a-deploy", { description: "How we ship a release." }, "A longer body now.")
+    );
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    expect(store.skillMergeCandidate()).toBeNull();
+  });
+
+  // Archiving the nearer of the two takes it out of the running entirely: what
+  // is left is the pair among the live skills, not a pair naming the archived
+  // one. (Reconciliation also drops an archived skill's vector, so the status
+  // join is belt to that braces — but a rule applied by its callers is a rule
+  // one of them forgets.)
+  it("never nominates an archived skill", () => {
+    nominatable();
+    handWrite(
+      "b-deploys",
+      skillText("b-deploys", { description: "How we ship releases.", status: "archived" })
+    );
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    const pair = store.skillMergeCandidate();
+    expect(pair?.a).not.toBe("b-deploys");
+    expect(pair?.b).not.toBe("b-deploys");
+  });
+
+  it("answers nothing when archiving leaves nothing to pair", () => {
+    nominatable();
+    for (const name of ["b-deploys", "c-oncall"]) {
+      handWrite(name, skillText(name, { description: `About ${name}.`, status: "archived" }));
+    }
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    expect(store.skillMergeCandidate()).toBeNull();
+  });
+
+  // `ROW_NUMBER` over a partial order picks arbitrarily, so the window's
+  // tiebreak on the neighbour's name is what keeps this from depending on the
+  // query plan.
+  it("answers the same pair every time when two are equally near", () => {
+    for (const name of ["a-one", "b-two", "c-three"]) {
+      handWrite(name, skillText(name, { description: `About ${name}.` }));
+    }
+    reconcile();
+    embed("a-one", [1, 0, 0]);
+    embed("b-two", [0, 1, 0]);
+    embed("c-three", [0, 1, 0]);
+
+    const answers = [0, 1, 2, 3, 4].map(() => JSON.stringify(store.skillMergeCandidate()));
+    expect(new Set(answers).size).toBe(1);
+  });
+
+  it("forgets a pair on request, so a later pair of the same names is fresh", () => {
+    nominatable();
+    const pair = store.skillMergeCandidate();
+    if (pair === null) throw new Error("the fixture nominated nothing");
+    store.recordSkillMergeConsidered(pair, NOW);
+    expect(store.skillMergeCandidate()).toBeNull();
+
+    store.forgetSkillMergeProposal({ a: pair.a, b: pair.b });
+
+    expect(store.skillMergeCandidate()).toMatchObject({ a: "a-deploy", b: "b-deploys" });
+  });
+});
+
+describe("a merge somebody applied by hand", () => {
+  const DAY = 86_400_000;
+
+  // The acceptance this issue turns on, and there is no product code in step
+  // four: a person replaces one file and deletes the other, and reconciliation
+  // is the whole of how that takes effect.
+  it("takes effect through reconciliation, and the kept skill keeps its observations", () => {
+    handWrite("deploy-rollback", skillText("deploy-rollback", { description: "How we undo a ship." }));
+    handWrite("deploy-runbook", skillText("deploy-runbook", { description: "How we ship." }));
+    reconcile();
+    store.recordSkillUse(["deploy-runbook"], NOW);
+    embed("deploy-runbook", [1, 0, 0]);
+    embed("deploy-rollback", [1, 0.1, 0]);
+    const before = uses("deploy-runbook");
+
+    // The human act. Nothing this package exports is involved.
+    handWrite(
+      "deploy-runbook",
+      skillText(
+        "deploy-runbook",
+        { description: "How to ship, and how to roll back when it goes wrong." },
+        "Deploy, then rollback if the smoke test fails."
+      )
+    );
+    unlinkSync(join(directory, "deploy-rollback.md"));
+
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    expect(store.listSkills().map(skill => skill.name)).toEqual(["deploy-runbook"]);
+    // The merged text is what a later task now matches against, and the dropped
+    // name reaches nothing.
+    expect(store.searchSkills("rollback smoke test", 5)).toEqual(["deploy-runbook"]);
+    expect(store.listSkills()[0]?.name).not.toBe("deploy-rollback");
+    // The dropped skill took its observations and its vector with it.
+    expect(uses("deploy-rollback")).toBeUndefined();
+    expect(sources()).toEqual([]);
+    // And the kept skill did not: that is why a merge keeps one of the two names
+    // rather than inventing a third.
+    expect(uses("deploy-runbook")).toEqual(before);
+    // Its description moved, so its vector was invalidated and it is offered for
+    // embedding again.
+    expect(store.skillsNeedingEmbedding(5)).toEqual(["deploy-runbook"]);
+  });
+
+  // Half-applied: one file deleted, the other left alone. The row outliving its
+  // skill is what lets a caller find the proposal file and clean it up — which
+  // is why no trigger takes these rows away.
+  it("leaves the considered pair findable when only one file went", () => {
+    handWrite("deploy-rollback", skillText("deploy-rollback", { description: "How we undo a ship." }));
+    handWrite("deploy-runbook", skillText("deploy-runbook", { description: "How we ship." }));
+    reconcile();
+    store.recordSkillMergeConsidered(
+      { a: "deploy-rollback", b: "deploy-runbook", hashA: "h", hashB: "h" },
+      NOW
+    );
+    expect(store.orphanedSkillMergeProposals(10)).toEqual([]);
+
+    unlinkSync(join(directory, "deploy-rollback.md"));
+    reconcile(MAX_SKILLS, NOW + DAY);
+
+    expect(store.orphanedSkillMergeProposals(10)).toEqual([
+      { a: "deploy-rollback", b: "deploy-runbook" }
+    ]);
+
+    store.forgetSkillMergeProposal({ a: "deploy-rollback", b: "deploy-runbook" });
+    expect(store.orphanedSkillMergeProposals(10)).toEqual([]);
+  });
+
+  it("bounds how many orphans it answers at once", () => {
+    for (const index of [0, 1, 2]) {
+      store.recordSkillMergeConsidered(
+        { a: `gone-${String(index)}`, b: "also-gone", hashA: "h", hashB: "h" },
+        NOW
+      );
+    }
+
+    expect(store.orphanedSkillMergeProposals(2)).toHaveLength(2);
+  });
+});

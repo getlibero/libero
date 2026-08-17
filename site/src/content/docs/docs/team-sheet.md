@@ -153,7 +153,8 @@ max_file_chars = 32768                      # the whole file; one operation may 
 # Thread summaries. A thread that has been quiet for this long is summarized
 # into the channel's searchable memory, whether or not anyone addressed the
 # agent in it — which makes this the one setting here that spends model tokens
-# with nobody waiting on the answer. Two switches rather than one, because a
+# with nobody waiting on the answer — the first of two, [skills] curate below
+# being the other. Two switches rather than one, because a
 # channel may reasonably want the agent to remember what it was asked and not to
 # read conversations it was never part of.
 #
@@ -194,6 +195,20 @@ summarize_after_idle_minutes = 60
 # because it bounds what the MODEL may write; max_skill_chars below bounds what a
 # skill may BE, which is why it may not be set below the model's own ceiling.
 #
+# curate is the merge curator, and it is the SECOND setting in this file that
+# spends model tokens with nobody waiting on the answer — [memory] summarize
+# being the first. Once a day at most, it looks for two playbooks that are one
+# playbook written twice, drafts the merge, and writes it as a PROPOSAL into
+# proposals/ beside skills/. It rewrites nothing. You apply a proposal by
+# replacing one skill file with the block it shows you and deleting the other;
+# you decline it by deleting the proposal, and nothing needs telling.
+#
+# A pair is raised once and not again until one of the two descriptions changes,
+# so ignoring a proposal and declining it are the same act. Three unread
+# proposals stop it making more. And a deployment with NO EMBEDDING PROVIDER
+# proposes nothing at all — overlap is a question about two vectors, and unlike
+# retrieval there is no lexical answer to fall back on.
+#
 # The last two fields are the lifecycle clocks. A playbook nothing has loaded for
 # stale_after_days is marked `stale` in its own frontmatter — still retrieved,
 # just visibly ageing in your git history — and one nothing has loaded for
@@ -209,6 +224,7 @@ summarize_after_idle_minutes = 60
 # task last loaded it, never the `created:` line in the file.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
+curate                  = true              # propose merges of overlapping playbooks
 author_after_tool_calls = 5                 # strictly more than this many served calls
 top_k                   = 3                 # how many skills a task may open with
 max_skill_chars         = 8192              # a skill's body; one operation may write 4096
@@ -555,8 +571,8 @@ spend report as every other turn. Opting out is one line.
 **`summarize` is two switches rather than one, and it is worth understanding before you leave it
 on.** Curation follows a reply, so somebody had already asked the agent for something.
 Summarization follows a thread going quiet — including threads nobody addressed the agent in — so
-it is the one setting on this page that spends your model tokens with nobody waiting on the
-answer. It is on by default because the corpus it builds is what makes "what did we decide about
+it is one of two settings on this page that spend your model tokens with nobody waiting on the
+answer — [`[skills] curate`](#skills) is the other. It is on by default because the corpus it builds is what makes "what did we decide about
 X" work at all: a team's decisions are overwhelmingly reached without the bot in the room, and a
 memory that only covers threads the agent joined is a memory of the agent rather than of the team.
 Turn it off with one line if you would rather it did not.
@@ -612,6 +628,7 @@ loaded into the opening context. Never the whole library.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `enabled` | no | Whether the author turn runs and skills are loaded at all. **Defaults to `true`.** `false` writes nothing and loads nothing. |
+| `curate` | no | Whether the merge curator proposes merges of overlapping playbooks. **Defaults to `true`.** `false` stops only that pass. |
 | `author_after_tool_calls` | no | How many tool calls a task must exceed before the author turn runs. Defaults to `5`. Strictly more than this, and it counts calls the proxy served rather than calls the model attempted. |
 | `top_k` | no | How many skills a task may open with. Defaults to `3`. May not be set below `1` or above `10`. |
 | `max_skill_chars` | no | The longest a skill's body may be, in characters. Defaults to `8192`. May not be set below `4096`, the most one operation may write, or above `65536`. |
@@ -673,6 +690,25 @@ archived is ever loaded.
 
 What ages a skill is when a task last loaded it, or, for one no task ever has, when the agent first
 saw the file. Never the `created:` line — that is documentation you may edit, and no clock reads it.
+
+**`curate` is the merge curator, and it is the second setting on this page that spends your model
+tokens with nobody waiting.** Once a day at most, it looks for two playbooks that are one playbook
+written twice, drafts the merge, and writes it as a **proposal** — a markdown file in `proposals/`,
+beside `skills/` in the agent's state root. It rewrites nothing.
+
+Applying a proposal is replacing one skill file with the block it shows you and deleting the other,
+then deleting the proposal. Declining it is deleting the proposal, and nothing else — the agent
+never hears about it either way, and a pair is not raised again until one of the two descriptions
+changes. So ignoring a proposal and declining it are the same act, and there is no state you can get
+wrong. Three unread proposals stop it making more, which means clearing the directory is also how
+you unblock it.
+
+The merged playbook keeps one of the two existing names, so its use counts and the date it first
+appeared survive the merge. That is why applying one is two file operations rather than three.
+
+A deployment with **no embedding provider proposes nothing at all**. Unlike retrieval, which falls
+back to full text, there is no lexical answer to "are these two playbooks near each other" — so this
+is off in practice wherever `AGENT_EMBEDDING_PROVIDER` is unset, without a setting saying so.
 
 ### `[[mcp_server]]`
 
