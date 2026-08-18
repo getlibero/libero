@@ -15,6 +15,7 @@ import type { ApprovalVerdict } from "@getlibero/schema";
 import { actionIdForVerdict } from "./approval-ids.js";
 import type {
   AppIdentity,
+  AppSelf,
   PostedCard,
   SlackCard,
   SlackEnvelope,
@@ -34,6 +35,17 @@ import type {
  * arrives-on-two-subscriptions case testable without a workspace.
  */
 export const STUB_APP_USER_ID = "U0BOTBOTB";
+
+/**
+ * The workspace a stubbed app is installed in (#317).
+ *
+ * `STUB_APP_USER_ID`'s counterpart and the same rule: it is the `teamId` every
+ * default event below carries, so a test that delivers a mention and a test that
+ * asks the stub identity where it is are talking about one workspace. A session
+ * keyed from an event and a session keyed from the identity must be the same
+ * session, or the ambient scheduler would hold a second mutex over one channel.
+ */
+export const STUB_WORKSPACE_ID = "T00000000";
 
 export interface StubMentionFields {
   teamId: string;
@@ -97,7 +109,7 @@ export interface StubDecisionFields {
 }
 
 const DEFAULT_MENTION: StubMentionFields = {
-  teamId: "T00000000",
+  teamId: STUB_WORKSPACE_ID,
   channelId: "C00000000",
   userId: "U00000000",
   text: `<@${STUB_APP_USER_ID}> hello`,
@@ -130,7 +142,7 @@ export function appMentionEnvelope(
 }
 
 const DEFAULT_MESSAGE: StubMessageFields = {
-  teamId: "T00000000",
+  teamId: STUB_WORKSPACE_ID,
   channelId: "C00000000",
   userId: "U00000000",
   text: "the deploy went out at four",
@@ -168,7 +180,7 @@ export function messageEnvelope(
 }
 
 const DEFAULT_REVISION: StubRevisionFields = {
-  teamId: "T00000000",
+  teamId: STUB_WORKSPACE_ID,
   channelId: "C00000000",
   kind: "deleted",
   // DEFAULT_MESSAGE's ts, so a test that stores a message and then revises it
@@ -240,7 +252,7 @@ export function revisionEnvelope(
 }
 
 const DEFAULT_DECISION: StubDecisionFields = {
-  teamId: "T00000000",
+  teamId: STUB_WORKSPACE_ID,
   channelId: "C00000000",
   userId: "U0HUMAN00",
   ticketId: "ticket-00000001",
@@ -372,7 +384,7 @@ export interface StubSlackOptions {
   /** Thrown by every `displayName`, so a test can drive a failed lookup. */
   userLookupFailure?: unknown;
   /**
-   * Thrown by every `userId()`, so a test can drive a bot token Slack refuses.
+   * Thrown by every `identify()`, so a test can drive a bot token Slack refuses.
    *
    * Every call and not just the first: the gateway asks once and caches, so a
    * stub that failed once and then succeeded would be testing the cache rather
@@ -481,11 +493,11 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
   };
 
   const identity: AppIdentity = {
-    userId(): Promise<string> {
+    identify(): Promise<AppSelf> {
       if (options.identityFailure !== undefined) {
         return Promise.reject(options.identityFailure);
       }
-      return Promise.resolve(STUB_APP_USER_ID);
+      return Promise.resolve({ userId: STUB_APP_USER_ID, workspace: STUB_WORKSPACE_ID });
     }
   };
 

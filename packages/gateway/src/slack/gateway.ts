@@ -148,6 +148,15 @@ export function createGateway(options: GatewayOptions): SlackGateway {
    * would spend a bot-token call on a socket recycle.
    */
   let appUserId: string | undefined;
+  /**
+   * The workspace this app is installed in, from the same answer (#317).
+   *
+   * Kept beside the id rather than folded into it because the two are read by
+   * different things at different times — the id decides whether a message is a
+   * mention arriving twice, and the workspace is what the ambient scheduler
+   * needs to key a session it built from a directory listing.
+   */
+  let appWorkspace: string | undefined;
   /** True while a connect ladder is running, so only ever one is. */
   let connecting = false;
   let cancelPending: (() => void) | undefined;
@@ -284,12 +293,16 @@ export function createGateway(options: GatewayOptions): SlackGateway {
       logger.log("info", { event: "connecting", attempt });
       try {
         if (identity !== undefined && appUserId === undefined) {
-          appUserId = await identity.userId();
+          const self = await identity.identify();
+          appUserId = self.userId;
+          appWorkspace = self.workspace;
           // The id, once, at startup. It is what decides whether a message is a
           // mention arriving on its second subscription, and an operator
           // debugging "the agent answered twice" needs to see which id it
-          // matched on.
-          logger.log("info", { event: "identified", user: appUserId });
+          // matched on. The workspace rides the same line because it came out of
+          // the same call and an operator staring at a silent ambient scheduler
+          // wants to see that this process knows where it is installed.
+          logger.log("info", { event: "identified", user: appUserId, team: appWorkspace });
         }
         await source.connect();
         connectedAt = now();
@@ -666,6 +679,10 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   }
 
   return {
+    get workspace(): string | undefined {
+      return appWorkspace;
+    },
+
     async start(): Promise<void> {
       if (state !== "idle") throw new GatewayError("connect_failed", false);
       state = "running";

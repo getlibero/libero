@@ -20,7 +20,14 @@ import { WebAPIPlatformError, WebClient } from "@slack/web-api";
 import type { Logger } from "../log.js";
 import { createSdkLogger } from "./sdk-logger.js";
 import { GatewayError } from "./types.js";
-import type { AppIdentity, PostedCard, SlackCard, SlackPoster, UserDirectory } from "./types.js";
+import type {
+  AppIdentity,
+  AppSelf,
+  PostedCard,
+  SlackCard,
+  SlackPoster,
+  UserDirectory
+} from "./types.js";
 
 /**
  * The three call shapes this adapter makes, spelled out separately.
@@ -117,6 +124,16 @@ function readUserId(response: unknown): string | undefined {
   // is the bot's *user* id; `bot_id` is a different identifier that never does.
   const userId = (response as { user_id?: unknown }).user_id;
   return typeof userId === "string" && userId.length > 0 ? userId : undefined;
+}
+
+/** The workspace from the same `auth.test` response, if it said (#317). */
+function readTeamId(response: unknown): string | undefined {
+  if (typeof response !== "object" || response === null) return undefined;
+  // Slack's word here is `team_id`; the name it is carried under from this
+  // function outward is `workspace`, which is the agent side's word for the
+  // same thing. The translation happens once, here, rather than at every reader.
+  const teamId = (response as { team_id?: unknown }).team_id;
+  return typeof teamId === "string" && teamId.length > 0 ? teamId : undefined;
 }
 
 /**
@@ -301,7 +318,7 @@ export function createWebApiSurface(options: WebApiOptions): WebApiSurface {
   };
 
   const identity: AppIdentity = {
-    async userId(): Promise<string> {
+    async identify(): Promise<AppSelf> {
       let response: unknown;
       try {
         response = await client.auth.test();
@@ -329,7 +346,18 @@ export function createWebApiSurface(options: WebApiOptions): WebApiSurface {
         // and it should not be silent.
         throw new GatewayError("auth_rejected", false, { slackError: "no_user_id" });
       }
-      return userId;
+
+      const workspace = readTeamId(response);
+      if (workspace === undefined) {
+        // The same treatment, and deliberately so rather than a degradation
+        // this one could have got away with. A successful `auth.test` always
+        // says `team_id`, so an answer without one is a response shape nobody
+        // here understands — and the alternative, carrying on with half an
+        // identity, would leave the ambient scheduler silent in every channel
+        // with nothing to say why.
+        throw new GatewayError("auth_rejected", false, { slackError: "no_team_id" });
+      }
+      return { userId, workspace };
     }
   };
 

@@ -31,6 +31,9 @@ import type {
   UserDirectory
 } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
+import { createAmbientScheduler } from "./session/ambient.js";
+import type { AmbientHeartbeat, AmbientScheduler } from "./session/ambient.js";
+import type { ChannelLister } from "./session/channels.js";
 import { createDecisionHandler } from "./approvals/decisions.js";
 import { createHeldCallPrompter } from "./approvals/prompter.js";
 import { createChecklistReporter } from "./checklist/checklist.js";
@@ -226,6 +229,25 @@ export interface ServerDeps {
    * Its absence is a deployment whose playbooks are never proposed for merging.
    */
   readonly curateSkills?: SkillCuratePass;
+  /**
+   * Which channels exist, for the ambient scheduler's enumerator (#317).
+   *
+   * Built by the process for the openers' reason — it closes over
+   * `AGENT_CHANNELS_ROOT`, and this file holds no environment. Its absence is a
+   * deployment with no clock: `Server.ambient` is not built, and `[ambient]` is
+   * parsed and unread exactly as it was before this issue.
+   */
+  readonly channels?: ChannelLister;
+  /**
+   * What runs when a channel's cadence comes due (#319).
+   *
+   * Optional beside `channels` rather than folded into it, because the two are
+   * separable in the direction that matters: a deployment can have the clock
+   * without the turn — which is what ships here — and a due channel then logs
+   * `ambient_due` and runs nothing. The other direction is not a deployment: a
+   * heartbeat with no enumerator is never invoked.
+   */
+  readonly heartbeat?: AmbientHeartbeat;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -255,6 +277,7 @@ export interface ServerDeps {
 // the task runner, and the handler are wired below and are nobody else's to
 // build.
 export {
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
@@ -273,7 +296,7 @@ export { SKILLS_MAX_CHARS, createSkillRecall } from "./session/skill-recall.js";
 export type { LoadedSkill, SkillRecall } from "./session/skill-recall.js";
 export { createQueryEmbedder } from "./session/embed.js";
 export type { QueryEmbedder } from "./session/embed.js";
-export type { MemorySettings, SkillSettings } from "./session/types.js";
+export type { AmbientSettings, MemorySettings, SkillSettings } from "./session/types.js";
 export type {
   ChannelSettings,
   HistoryBounds,
@@ -325,8 +348,39 @@ export type {
 export { createSkillProposalsOpener } from "./session/proposals.js";
 export type { SkillProposalsOpener, SkillProposalsOpenerOptions } from "./session/proposals.js";
 
+// The clock, on the same rule as the four passes above: a composition root
+// cannot build one without this file's export path. The two constants come with
+// it for their reason — a test stepping a clock over `60 * 1000` is asserting a
+// number nobody named, where one stepping over `AMBIENT_RESCAN_MS` is asserting
+// the bound itself.
+export {
+  AMBIENT_RESCAN_MS,
+  MAX_CONCURRENT_HEARTBEATS,
+  createAmbientScheduler,
+  earliestDue
+} from "./session/ambient.js";
+export type {
+  AmbientHeartbeat,
+  AmbientScan,
+  AmbientScheduler,
+  AmbientSchedulerOptions,
+  AmbientSchedulerSettings,
+  AmbientTimer,
+  DueEntry
+} from "./session/ambient.js";
+export { createChannelLister } from "./session/channels.js";
+export type { ChannelLister, ChannelListerOptions } from "./session/channels.js";
+
 export interface Server {
   readonly gateway: SlackGateway;
+  /**
+   * The ambient clock (#317), when this composition was given an enumerator.
+   *
+   * Returned rather than started, which is this function's whole rule: the
+   * caller decides when, and for this one the answer is "after the gateway has
+   * connected", because that is when there is a workspace to key a session with.
+   */
+  readonly ambient?: AmbientScheduler;
   /**
    * The process-scoped registry of open approval waits.
    *
@@ -487,5 +541,33 @@ export function createServer(deps: ServerDeps): Server {
   // two closures.
   const handleMention = createMentionHandler(route, prompter, checklists);
 
-  return { gateway: surface.gateway, registry };
+  // The ambient clock (#317). Built here rather than by the process because the
+  // session registry is here, and a scheduler with its own would hold a second
+  // mutex over every channel it ticked.
+  //
+  // The workspace is read off the gateway per scan rather than captured now: it
+  // arrives during `start()`, from `auth.test`, and a scheduler that had read it
+  // at composition time would hold `undefined` forever. This is the same
+  // late-binding the `names` lookup above does with the user directory, and for
+  // the same reason.
+  const ambient =
+    deps.channels === undefined
+      ? undefined
+      : createAmbientScheduler({
+          channels: deps.channels,
+          sessions,
+          workspace: () => surface.gateway.workspace,
+          settings: async channel => {
+            const settings = await deps.sheets(channel);
+            return {
+              enabled: settings.ambient.enabled,
+              heartbeatEveryMs: settings.ambient.heartbeatEveryMs
+            };
+          },
+          ...(deps.heartbeat !== undefined ? { heartbeat: deps.heartbeat } : {}),
+          ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+          logger
+        });
+
+  return { gateway: surface.gateway, registry, ...(ambient === undefined ? {} : { ambient }) };
 }

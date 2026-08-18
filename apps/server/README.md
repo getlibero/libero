@@ -1005,6 +1005,101 @@ its vector is skipped. That is the honest degradation: the row is the record tha
 a thread was assessed, so a deployment that configures a provider later has a
 corpus to embed rather than a channel's history to re-summarize.
 
+## The ambient clock: the one timer, and the one enumerator
+
+`src/session/ambient.ts` is the scheduler (#317), and it is the first thing in
+this process that runs on a clock rather than on something a person did. The four
+background passes above fire from the message ingest, and the lifecycle job's own
+docs give that as a feature: a cron would mean growing a timer and an enumerator
+over every channel, neither of which anything else here needs. Ambient needs
+both, so they land here once — and the four passes stay on channel activity.
+
+What it decides is **when to look, and where**. What a heartbeat then weighs, and
+whether anything is posted, is the evaluation turn's and the posting surface's,
+neither of which exists yet: with no `heartbeat` wired the scheduler logs
+`ambient_due` for a due channel and runs nothing.
+
+### Wake at the next due instant, not on a tick
+
+The loop sleeps until the earliest thing that is due. Today the only kind of due
+thing is a channel's heartbeat, and `schedule_task` will add a second — a task
+due at a particular instant, which must fire *then* rather than at the next
+cadence boundary. That is an event source rather than a second clock: it
+contributes entries to the same plan, and `earliestDue` answers over all of them,
+which is what `DueEntry.kind` is for.
+
+`AMBIENT_RESCAN_MS` caps the sleep at a minute, and that is the discovery bound
+rather than a tick in disguise. Nothing notifies this process that a sheet was
+edited, so a loop that only ever woke at a known deadline would never learn that
+a channel had turned `[ambient] enabled` on, and a deployment with nothing
+enabled would sleep forever. A minute is the shortest cadence a sheet can
+express, and a scan is a `readdir` plus one small file read per channel — no
+network, no model call.
+
+### Missed windows are skipped, not replayed
+
+A heartbeat asks whether anything merits a post *now*, so catching up on a week of
+downtime by firing seven hundred of them would be seven hundred answers to one
+question. Two rules make that structural:
+
+- **First sight never fires.** A channel newly seen enabled is scheduled at
+  `now + cadence`. Every restart is a fresh scheduler, so this is also why a
+  restart replays nothing — the in-memory schedule starting empty *is* the rule,
+  which is what makes persistence unnecessary rather than missing.
+- **A fire reschedules from the instant it fired**, with the cadence just read,
+  so a channel six windows overdue fires once and an edited cadence takes effect
+  there rather than a cycle later.
+
+The cost is stated rather than discovered: an enabled channel waits one full
+cadence after a restart, and a newly enabled one waits a cadence after the scan
+that noticed it.
+
+### Why the enumerator is the filesystem, and where the workspace comes from
+
+A session exists because a channel has had traffic. Ambient exists for the
+channel that has *not* — the question sitting unanswered since Friday — so an
+enumerator over live sessions would systematically miss the case the feature is
+for, and would miss every channel again after each restart. `src/session/channels.ts`
+therefore lists `AGENT_CHANNELS_ROOT`, read-only, keeping only directories whose
+name is a `ChannelId`; whether a channel has a *sheet* is not checked there,
+because one without resolves to the built-in defaults, where ambient is off.
+
+That listing gives channel ids, and a `SessionKey` is `(workspace, channel)`. A
+workspace this process made up would key a second session — and therefore a
+second mutex — over a live channel, which is the one thing the session registry
+exists to prevent. So it is asked for: `SlackGateway.workspace` answers what
+`auth.test` said inside `start()`, and the composition hands the scheduler a
+`() => string | undefined`. Until there is one, a scan enumerates nothing, logs
+`ambient_unidentified`, and schedules nothing — so the first scan that can act is
+also the first that sees each channel, and the first-sight rule stays true.
+
+This is why `index.ts` starts the clock *after* `gateway.start()` resolves.
+
+### What bounds it
+
+- **The sheet.** `[ambient] enabled` is off unless a channel wrote otherwise —
+  the one block on the sheet whose default is off — and an unreadable sheet falls
+  back to off too. That fallback is sharper than `[memory]`'s and `[skills]`':
+  those govern what a task does once somebody asked for one, and a heartbeat
+  contains no tool call for the proxy to decide, so what `src/session/sheet.ts`
+  resolves here *is* the decision.
+- **`AMBIENT_RESCAN_MS`**, the ceiling on the sleep.
+- **`MAX_CONCURRENT_HEARTBEATS`**, four. The on-activity passes are rate-limited
+  by traffic and run one channel at a time; this enumerator can start work in
+  every channel at one instant, and after a restart it will try to, since every
+  enabled channel takes the same first-sight instant. The bound is against that
+  herd rather than against the steady state, and no channel is starved — a scan
+  runs every due channel before it answers, so being fifth in line costs a wait.
+- **The overrun rule.** A channel whose previous heartbeat has not finished is
+  skipped (`ambient_overrun`) rather than queued: turns stacking on the mutex
+  make a channel that is already behind get further behind.
+- **The meter**, once there is a turn to spend — the backstop, not the mechanism.
+
+A heartbeat runs on the channel's session mutex, like every background pass, and
+is **awaited**, unlike them: nothing is waiting on a scan, and awaiting is what
+gives the concurrency bound teeth. One channel throwing is `ambient_failed` for
+that channel and a scan that carries on.
+
 ## What a turn costs
 
 After **each model turn** — not each task — the process reports the provider's
@@ -1138,6 +1233,13 @@ brings it back once the environment is fixed.
   `session/` has to name a Slack type.
 - `src/session/context.ts` — the context assembler: a channel's recent messages
   become the transcript a task starts from, attributed.
+- `src/session/channels.ts` — which channels this deployment has, as a listing of
+  the channels root. Names only, read-only, and never rejecting: the one caller
+  runs on a clock with nobody waiting on it.
+- `src/session/ambient.ts` — the ambient clock (#317): the timer, the enumerator
+  over those channels, and the schedule that makes a missed window a skip rather
+  than a replay. `scan(at)` is the whole of the behaviour; `start()` is a sleep
+  wrapped around it.
 - `src/session/router.ts` — request in, reply out: which session, what it waits
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend

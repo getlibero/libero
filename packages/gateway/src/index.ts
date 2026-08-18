@@ -4,6 +4,7 @@ export type { LogFields, Logger, LogLevel } from "./log.js";
 export { GatewayError } from "./slack/types.js";
 export type {
   AppIdentity,
+  AppSelf,
   CardPoster,
   DecisionHandler,
   GatewayErrorReason,
@@ -80,6 +81,7 @@ export type { WebApiOptions, WebApiSurface, WebClientLike } from "./slack/web-ap
 
 export {
   STUB_APP_USER_ID,
+  STUB_WORKSPACE_ID,
   appMentionEnvelope,
   blockActionsEnvelope,
   createStubSlack,

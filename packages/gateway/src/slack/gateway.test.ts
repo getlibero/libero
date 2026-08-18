@@ -14,6 +14,7 @@ import { createGateway } from "./gateway.js";
 import type { Scheduler } from "./gateway.js";
 import {
   STUB_APP_USER_ID,
+  STUB_WORKSPACE_ID,
   appMentionEnvelope,
   blockActionsEnvelope,
   createStubSlack
@@ -1248,9 +1249,9 @@ describe("createGateway", () => {
         poster: forbiddenPoster(),
         handler: () => Promise.resolve(undefined),
         identity: {
-          userId: () => {
+          identify: () => {
             order.push("identity");
-            return slack.identity.userId();
+            return slack.identity.identify();
           }
         }
       });
@@ -1274,7 +1275,8 @@ describe("createGateway", () => {
       await gateway.start();
 
       expect(lines.find(line => line.event === "identified")).toMatchObject({
-        user: STUB_APP_USER_ID
+        user: STUB_APP_USER_ID,
+        team: STUB_WORKSPACE_ID
       });
     });
 
@@ -1305,11 +1307,11 @@ describe("createGateway", () => {
         poster: forbiddenPoster(),
         handler: () => Promise.resolve(undefined),
         identity: {
-          userId: () => {
+          identify: () => {
             attempts += 1;
             return attempts === 1
               ? Promise.reject(new GatewayError("connect_failed", true, { slackError: "ratelimited" }))
-              : slack.identity.userId();
+              : slack.identity.identify();
           }
         },
         backoff: BACKOFF,
@@ -1335,9 +1337,9 @@ describe("createGateway", () => {
         poster: forbiddenPoster(),
         handler: () => Promise.resolve(undefined),
         identity: {
-          userId: () => {
+          identify: () => {
             attempts += 1;
-            return slack.identity.userId();
+            return slack.identity.identify();
           }
         },
         backoff: BACKOFF,
@@ -1351,6 +1353,39 @@ describe("createGateway", () => {
       await clock.fire();
 
       expect(attempts).toBe(1);
+    });
+
+    it("answers the workspace it is installed in, once it has asked", async () => {
+      // The ambient scheduler's one input from this side (#317): it enumerates
+      // channels off the filesystem, where the channel id is and the workspace
+      // is not.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: slack.identity
+      });
+
+      expect(gateway.workspace).toBeUndefined();
+      await gateway.start();
+      expect(gateway.workspace).toBe(STUB_WORKSPACE_ID);
+    });
+
+    it("answers no workspace when nothing was ever asked", async () => {
+      // A gateway composed with no identity never makes the call, so it never
+      // learns either answer. `undefined` and not a guess: a scheduler that
+      // invented a workspace would key a second session over a live channel.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined)
+      });
+
+      await gateway.start();
+
+      expect(gateway.workspace).toBeUndefined();
     });
 
     it("marks a message that mentions the app, and only that message", async () => {

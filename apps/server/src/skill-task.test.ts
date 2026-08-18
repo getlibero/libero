@@ -34,6 +34,7 @@ import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   createMessageStoreOpener,
   createServer,
@@ -133,7 +134,8 @@ function rig(options: RigOptions = {}) {
         // Curation off throughout: what this file is about is the read half, and
         // a curation turn would put a second completion request in `asked`.
         memory: { ...DEFAULT_MEMORY_SETTINGS },
-        skills: options.skills ?? LOADING
+        skills: options.skills ?? LOADING,
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     ...(options.withoutSkills === true

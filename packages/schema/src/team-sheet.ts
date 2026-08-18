@@ -764,10 +764,19 @@ export const TeamSheet = z.object({
   // its own. Off by default, and the block every other `enabled` on this sheet
   // argues by contrast with — see `[memory]` above.
   //
-  // **STILL PARSED AND UNREAD.** #316 gave this block its shape; #317 is the
-  // first reader. Nothing in either service consults these three fields today,
-  // so `enabled = true` turns nothing on. The shape lands first so a sheet
-  // written now does not change when the heartbeat does.
+  // **Two of the three fields are read as of #317**, which is the ambient
+  // scheduler: `enabled` decides whether a channel is enumerated into work at
+  // all, and `heartbeat_every_minutes` is the cadence it is enumerated on. The
+  // agent process re-reads this block per scan, so an edit lands on the next
+  // tick with no restart — the freshness the proxy's per-call read gives
+  // enforcement. `answer_after_idle_minutes` is still parsed and unread: what
+  // counts as unanswered is the evaluation turn's question, and that turn is
+  // what decides whether a due channel has anything worth saying.
+  //
+  // Nothing in the tool proxy service reads any of it, and nothing will. A
+  // heartbeat contains no tool call for that service to decide, so this block
+  // is honoured by the agent alone — which is `[memory]`'s standing and, since
+  // this one governs speech nobody asked for, the sharpest case of it.
   ambient: z
     .object({
       enabled: z.boolean().default(false),

@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   DEFAULT_HISTORY_BOUNDS,
   createMessageStoreOpener,
@@ -91,7 +92,8 @@ function rig(options: { users?: Record<string, string>; history?: Partial<Histor
         history: { ...DEFAULT_HISTORY_BOUNDS, ...options.history },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
         memory: { ...DEFAULT_MEMORY_SETTINGS },
-        skills: { ...DEFAULT_SKILL_SETTINGS }
+        skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     logger

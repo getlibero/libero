@@ -138,6 +138,35 @@ export const DEFAULT_SKILL_SETTINGS = {
   archiveAfterMs: 90 * 86_400_000
 } as const;
 
+/**
+ * What a channel gets when no sheet resolved: **ambient off**, and this is the
+ * page's third departure from the schema's default and the least arguable of
+ * them.
+ *
+ * The two above make the case that a fallback here cannot loosen an
+ * authorization decision, because the proxy enforces the same file from its own
+ * copy — and then name `[memory]` and `[skills]` as the blocks with no second
+ * copy, where the fallback *is* the decision. `[ambient]` is that, and worse:
+ * the other two govern what a task does once somebody has asked for one, and
+ * this one governs whether the agent speaks in a channel that asked for nothing
+ * at all. There is no tool call in a heartbeat for the proxy to decide, so
+ * nothing downstream would catch a mistake made here.
+ *
+ * So an unreadable sheet is silence. A channel that wrote `enabled = true` and
+ * then broke its own file loses its heartbeats until the file parses, which an
+ * operator notices; the opposite failure is this process speaking, unbidden, in
+ * a channel whose sheet nobody could read.
+ *
+ * The two figures are still the schema's, for the reason the blocks above give:
+ * they only matter once something is enabled, and a second set of numbers for a
+ * disabled feature is how two copies of a number drift.
+ */
+export const DEFAULT_AMBIENT_SETTINGS = {
+  enabled: false,
+  heartbeatEveryMs: 15 * 60_000,
+  answerAfterIdleMs: 60 * 60_000
+} as const;
+
 export type SheetResolver = (channel: string) => Promise<ChannelSettings>;
 
 export interface SheetResolverOptions {
@@ -208,6 +237,16 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
       // made once, where the sheet stops and this process starts.
       staleAfterMs: sheet.skills.stale_after_days * 86_400_000,
       archiveAfterMs: sheet.skills.archive_after_days * 86_400_000
+    },
+    // Renames and the minutes-to-milliseconds conversion again, and the same
+    // standing as the two blocks above — see `DEFAULT_AMBIENT_SETTINGS` for why
+    // its fallback is not the schema's default either. `answer_after_idle_ms`
+    // is carried and unread until the evaluation turn lands (#319); the
+    // scheduler reads the other two.
+    ambient: {
+      enabled: sheet.ambient.enabled,
+      heartbeatEveryMs: sheet.ambient.heartbeat_every_minutes * 60_000,
+      answerAfterIdleMs: sheet.ambient.answer_after_idle_minutes * 60_000
     }
   };
 }
@@ -240,7 +279,8 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
     history: { ...DEFAULT_HISTORY_BOUNDS },
     followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
     memory: { ...DEFAULT_MEMORY_SETTINGS },
-    skills: { ...DEFAULT_SKILL_SETTINGS }
+    skills: { ...DEFAULT_SKILL_SETTINGS },
+    ambient: { ...DEFAULT_AMBIENT_SETTINGS }
   });
 
   return async (channel: string): Promise<ChannelSettings> => {

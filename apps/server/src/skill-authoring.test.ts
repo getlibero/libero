@@ -31,6 +31,7 @@ import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   createMemoryFileOpener,
   createMessageStoreOpener,
@@ -220,7 +221,8 @@ function rig(perTurn: string[], options: RigOptions = {}) {
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
         memory: options.memory ?? { ...DEFAULT_MEMORY_SETTINGS },
-        skills: options.skills ?? AUTHORING
+        skills: options.skills ?? AUTHORING,
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
