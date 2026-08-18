@@ -14,6 +14,7 @@ export * from "./skill-merge.js";
 export * from "./refusal.js";
 export * from "./budget-warning.js";
 export * from "./budget-status.js";
+export * from "./ambient-finding.js";
 export * from "./spend-report.js";
 export * from "./price-table.js";
 export * from "./parse-price-table.js";

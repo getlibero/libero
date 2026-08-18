@@ -1100,6 +1100,84 @@ is **awaited**, unlike them: nothing is waiting on a scan, and awaiting is what
 gives the concurrency bound teeth. One channel throwing is `ambient_failed` for
 that channel and a scan that carries on.
 
+## The heartbeat evaluation: what a due channel actually does
+
+`src/session/heartbeat.ts` answers #319, and it is the reader the ambient clock
+shipped without. It is **not** one of the four background passes: those fire from
+the message ingest on channel activity, and this runs on the clock — which is the
+whole difference ambient mode exists for, since the channel that has *not* had
+traffic is the one with the question sitting unanswered since Friday.
+
+### The pregate, and why its order is the design
+
+Most heartbeats must cost nothing, or a brisk cadence is unaffordable and the
+feature ships turned off. Four questions run before any model call, cheapest and
+most decisive first:
+
+| | Question | Cost |
+| --- | --- | --- |
+| 1 | Is `[ambient] enabled`? | a sheet read the resolver caches |
+| 2 | Is the rate window open? (`post.mayPost`) | a map lookup |
+| 3 | Is there anything new that has gone quiet? (`store.idleThreads`) | one indexed query |
+| 4 | Can the channel afford it? (`maySpend`) | a network round trip |
+
+A tick that stops at any of the first three is silent and spends **nothing at
+all**. The budget question is last because everything above it is free: a channel
+that was never going to evaluate must not pay for a question about its budget.
+
+Step 3 is where `[ambient] answer_after_idle_minutes` finally gets its first
+reader. It needed a store read of its own — `staleThreads` is joined against the
+summary corpus, so a channel with `[memory] summarize` on would have its quiet
+threads summarized away and become permanently invisible to the heartbeat, which
+is exactly the case this feature is for.
+
+### The watermark, and why a shut window loses nothing
+
+One Slack `ts` per channel, in this factory's closure, advanced to the channel's
+newest message **when an evaluation runs** — including when the answer was
+silence. Two properties fall out and both are load-bearing.
+
+**A finding is offered at most once per silence.** This matters because *the
+agent's own replies are not in the store*: nothing records that it already spoke
+about a thread, so without the watermark a question it had raised would look
+unanswered forever and be raised again every window. A thread that says something
+more rises back above the watermark, goes quiet again, and is eligible again —
+say-once is per silence, not forever.
+
+**A shut window defers rather than loses.** This is the decision
+[#318 left open](#the-proactive-post-the-one-way-this-process-starts-a-message).
+Because the window is checked *before* the evaluation, a heartbeat that cannot
+post does not evaluate, does not advance its watermark, and finds the same
+material again next time. The alternative — evaluate, then be refused — forced a
+choice between losing the finding and paying for the same turn on every tick
+until the window opened.
+
+The state is in memory on the clock's own argument: a process that starts empty
+weighs the channel once more, which is the cheap direction to be wrong in.
+
+### Silence is calling no tool
+
+There is no `SILENT` sentinel, and the divergence from the architecture's wording
+is deliberate. All four other background turns express declining as an empty tool
+list, and under that idiom the issue's requirement — that an answer which is
+neither a sentinel nor a finding is treated as silent — holds *by construction*:
+a malformed call, an invented tool name and a paragraph of prose all produce no
+finding, with no branch anyone has to write correctly. A sentinel would need
+recognizing, and "when unsure, post" is the wrong default for an agent speaking
+to a channel that did not ask.
+
+An unusable answer is still logged apart from silence (`heartbeat_unusable`), so
+a broken prompt cannot hide inside the outcome that is expected almost every
+time.
+
+### What the model is shown, and what it is not
+
+The channel's recent activity, capped at `MAX_HEARTBEAT_MESSAGES` and attributed
+by the name captured when each message was stored. It is **not** told which
+threads the pregate found idle: handing it the answer would make the finding a
+formality, and the cases the design actually wants — a deadline nobody picked up,
+a thread stalled on something answerable — are the ones it would stop looking for.
+
 ## The proactive post: the one way this process starts a message
 
 `src/proactive/proactive.ts` answers #318. Everything else this app says is a
@@ -1416,6 +1494,10 @@ brings it back once the environment is fixed.
 - `src/checklist/checklist.ts` — the live checklist's coalescer. Same shape and
   the same reason: the Slack facts are captured on the adapter's side, and the
   router carries a reporter that names none of them.
+- `src/session/heartbeat.ts` — the heartbeat evaluation: the pregate, the
+  watermark, and the one turn a due channel may pay for. Under `session/` rather
+  than beside `proactive/` because it names no Slack anything — what it holds is
+  a `ProactivePoster`, which is a channel id and a string.
 - `src/proactive/proactive.ts` — the proactive post surface and its rate window.
   Out here for `approvals/` and `checklist/`'s reason and a sharper one: it holds
   the gateway's channel-post verb and its renderer, which is exactly the pair the

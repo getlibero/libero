@@ -42,6 +42,7 @@ export type {
   SkillReconcileResult,
   SkillReconciliation,
   SkillStatusStamp,
+  IdleThread,
   StaleThread,
   StoredSkill,
   MessageReader,

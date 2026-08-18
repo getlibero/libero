@@ -139,6 +139,32 @@ what the re-submission became. That is the *opposite* direction and carries no
 authority either — it tells, it does not ask — and it exists so a card can go
 green only once the call has actually run.
 
+## The heartbeat evaluation
+
+`src/ambient/turn.ts` is the fifth turn here that is not the ReAct loop, and the
+first whose output is addressed to **people who did not ask**. It is shown a
+channel's recent activity and asked one question: is anything here worth
+interrupting these people about?
+
+**Silence is calling no tool**, and there is no sentinel. That is the idiom the
+other four already use, and here it is load-bearing rather than conventional: a
+malformed call, an invented tool name and a paragraph of prose all come back as
+no finding, by construction. A sentinel would have to be *recognized*, so every
+answer that was neither it nor a finding would need a rule — and "when unsure,
+post" is the wrong default for an agent speaking unprompted.
+
+**It takes no handler**, which is `runSkillMergeTurn`'s guarantee in its
+strongest form. Nothing in this package can post to a channel, so "the model
+cannot make itself heard by calling something" is a shape rather than a promise.
+What posts is `apps/server`'s rate-limited surface.
+
+`onTurn` is required, on `runSummarizationTurn`'s rule and at its sharpest here:
+this is spend that follows no mention *and* produces no artefact anyone would
+notice missing, so a caller that forgot to meter it would spend a channel's
+budget on a clock with nothing to show for it. A silent turn reports too —
+almost every heartbeat is silent, so a turn metered only when it spoke would
+under-count ambient by roughly everything.
+
 ## What a turn costs
 
 `src/proxy/spend.ts` reports four raw token counts to `POST /v1/spend`, fired

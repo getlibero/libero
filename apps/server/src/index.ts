@@ -31,7 +31,8 @@ import {
 } from "@getlibero/agent";
 import type { CompletedTurn } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
-import { createServer } from "./compose.js";
+import { createAmbientHeartbeat, createServer } from "./compose.js";
+import type { AmbientHeartbeat, ProactivePoster } from "./compose.js";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
@@ -320,6 +321,38 @@ const curateSkills = createSkillCuratePass({
   logger
 });
 
+/**
+ * The heartbeat evaluation (#319), as a factory over the one thing this process
+ * can speak with.
+ *
+ * A factory rather than a built pass, unlike the four above, and the reason is
+ * `ServerDeps.heartbeat`'s: the poster does not exist until `createServer` calls
+ * the `slack` factory, so building it out here would mean handing the capability
+ * back out to this file — where everything else this process constructs could
+ * reach it. This closure is the only thing that ever sees one.
+ *
+ * It takes the same `reportTurn` and `maySpend` the on-activity passes take,
+ * because a heartbeat is spend on a clock exactly as they are spend on traffic.
+ */
+const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
+  createAmbientHeartbeat({
+    completion,
+    post,
+    settings: async channel => {
+      const settings = await sheets(channel);
+      return {
+        enabled: settings.ambient.enabled,
+        answerAfterIdleMs: settings.ambient.answerAfterIdleMs,
+        model: settings.model,
+        maxTokens: settings.caps.maxOutputTokensPerTurn
+      };
+    },
+    reportTurn,
+    maySpend,
+    signal: tasks.signal,
+    logger
+  });
+
 const { gateway, ambient } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
@@ -354,6 +387,7 @@ const { gateway, ambient } = createServer({
   // provisioned, read out of the same root the sheets come from. A listing and
   // nothing more — this process must never write there.
   channels: createChannelLister({ channelsRoot, logger }),
+  heartbeat,
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
   skills,
   summarize,

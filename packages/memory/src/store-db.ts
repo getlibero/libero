@@ -881,6 +881,27 @@ export interface StaleThread {
   readonly messageCount: number;
 }
 
+/**
+ * A thread that has gone quiet since the heartbeat last weighed this channel.
+ *
+ * `StaleThread`'s shape minus the count, and a separate type rather than a reuse
+ * because the two mean different things: that one is quiet *and unsummarized*,
+ * which is a fact about the summary corpus, and this one is quiet *and new to
+ * the caller*, which is a fact about what has been looked at. A caller that
+ * confused them would summarize on the heartbeat's schedule or answer questions
+ * on the sweep's.
+ *
+ * No `messageCount`, because nothing decides on it here: `staleThreads`' caller
+ * summarizes a thread and wants to know how much it is summarizing, where this
+ * one only needs to know that something is there.
+ */
+export interface IdleThread {
+  /** The thread's root `ts`. */
+  readonly thread: string;
+  /** Its newest message's `ts` — how long it has been quiet, and how new it is. */
+  readonly newestTs: string;
+}
+
 export interface MessageStoreOptions {
   /**
    * The channel this store belongs to. Validated as a `ChannelId`, which is
@@ -1069,6 +1090,23 @@ export interface MessageStore {
    * up behind it. `limit` is clamped to `READ_MAX_LIMIT`.
    */
   staleThreads(idleBefore: string, limit: number): readonly StaleThread[];
+  /**
+   * Threads quiet since `idleBefore` whose newest message is after `after`.
+   *
+   * The heartbeat's pregate (#319), and deliberately not `staleThreads` with a
+   * second argument: that one is joined against the summary corpus, so a channel
+   * that summarizes its quiet threads would answer nothing here — permanently
+   * blinding the one feature that exists for the question nobody replied to.
+   *
+   * Both bounds are Slack timestamps compared as strings, which is correct for
+   * the reason the sweep's is: a Slack `ts` is fixed width, so lexicographic and
+   * numeric order agree. `after` is the caller's watermark and is what makes a
+   * finding say-once — a thread below it has already been weighed.
+   *
+   * Newest first, and `limit` is clamped like every other read here. A caller
+   * asking only whether anything is there passes 1.
+   */
+  idleThreads(idleBefore: string, after: string, limit: number): readonly IdleThread[];
   /**
    * One thread's summary, or `null` if it has none.
    *
@@ -1891,6 +1929,41 @@ const STALE_THREADS_SQL = `SELECT t.thread, t.newest, t.n
     LIMIT ?`;
 
 /**
+ * The heartbeat: quiet threads this channel has not been looked at since (#319).
+ *
+ * `STALE_THREADS_SQL`'s subquery, and the differences are the whole of it.
+ *
+ * **No summary join.** That one asks "quiet and nothing current stands for it",
+ * because its caller writes summaries. This one asks "quiet and new since the
+ * last time anyone weighed this channel", and the two must not be confused: a
+ * channel with `[memory] summarize` on would have its quiet threads summarized
+ * away and become permanently invisible to the heartbeat, which is exactly the
+ * case ambient mode exists for.
+ *
+ * **A second bound on the same aggregate.** `MAX(ts) < ?` is idleness — a thread
+ * whose newest message has sat — and `MAX(ts) > ?` is the caller's watermark.
+ * Both on `HAVING` for `STALE_THREADS_SQL`'s reason: the question is about the
+ * thread's newest message and not about any one row, and a `WHERE` would answer
+ * it about a thread that looked idle only because its recent messages were
+ * filtered out first.
+ *
+ * The watermark is what makes a finding say-once. A thread that was idle when
+ * the channel was last weighed falls below it and never triggers again; one that
+ * says something more rises above it, goes quiet again, and does.
+ *
+ * Same `message_root` index as the sweep, and no new table — so this adds a read
+ * and moves no schema version.
+ */
+const IDLE_THREADS_SQL = `SELECT t.thread, t.newest
+     FROM (SELECT COALESCE(thread_ts, ts) AS thread,
+                  MAX(ts) AS newest
+             FROM message
+            GROUP BY COALESCE(thread_ts, ts)
+           HAVING MAX(ts) < ? AND MAX(ts) > ?) AS t
+    ORDER BY t.newest DESC
+    LIMIT ?`;
+
+/**
  * A `Float32Array` as the blob `vec0` reads.
  *
  * `byteOffset` and `byteLength` are passed rather than left to default, and that
@@ -2101,6 +2174,12 @@ type StaleThreadRow = {
   readonly n: number | bigint;
 };
 
+/** An `IDLE_THREADS_SQL` row. `MessageRow`'s reasons apply. */
+type IdleThreadRow = {
+  readonly thread: string;
+  readonly newest: string;
+};
+
 /** A `NEAREST_SQL` row, as SQLite hands it back. `MessageRow`'s reasons apply. */
 type HitRow = {
   readonly source_kind: string;
@@ -2288,6 +2367,7 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
            at                = excluded.at`
     ),
     staleThreads: db.prepare(STALE_THREADS_SQL),
+    idleThreads: db.prepare(IDLE_THREADS_SQL),
     readThreadSummary: db.prepare(
       `SELECT thread_ts, shape, text, covers_through_ts, message_count, at
          FROM thread_summary
@@ -2496,6 +2576,15 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         summary.messageCount,
         summary.at
       );
+    },
+
+    idleThreads(idleBefore, after, limit) {
+      const rows = statements.idleThreads.all(
+        idleBefore,
+        after,
+        clampLimit(limit)
+      ) as IdleThreadRow[];
+      return rows.map(row => ({ thread: row.thread, newestTs: row.newest }));
     },
 
     staleThreads(idleBefore, limit) {
