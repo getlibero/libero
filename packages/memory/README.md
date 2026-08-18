@@ -312,6 +312,16 @@ than a given `ts` and which have no summary covering it. It takes a `ts` rather
 than a duration, so the decision about how quiet is quiet stays with the caller
 that reads the channel's sheet and this module holds no clock.
 
+`idleThreads` is its sibling and answers a different question (#319): threads
+quiet since a given `ts` **whose newest message is after a second one**, the
+caller's watermark. It exists rather than being a third argument to
+`staleThreads` because that read is joined against the summary corpus — a channel
+with `[memory] summarize` on would have its quiet threads summarized away and
+answer nothing, which would blind the one feature that exists for the question
+nobody replied to. Both bounds sit on the aggregate for `staleThreads`' reason,
+and both use the same `message_root` index; it adds a read and moves no schema
+version.
+
 **The ceiling this leaves.** One vector stands for one summary, so a very long
 thread becomes a centroid averaged over several topics and retrieves none of
 them well. `SUMMARY_MAX_TEXT_CHARS` bounds the text and `MAX_THREAD_MESSAGES` in

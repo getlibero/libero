@@ -67,14 +67,17 @@
 // identically every time, so a refund buys a second attempt at the same failure
 // and a third, at whatever rate the clock is running.
 //
-// **A refusal is legible to the caller.** `post` answers whether it posted.
-// This is for #319 rather than for tidiness: there is no queue here, so an
-// evaluation that finds something real while the window is shut produces
-// nothing, and whether that is a *deferral* or a *loss* depends on whether the
-// refused evaluation still advances its last-evaluated position. That is the
-// evaluation turn's decision to make, and it only has one to make if this
-// surface says what happened. Swallowing the refusal would decide it by
-// accident, in the lossy direction.
+// **A refusal is legible to the caller.** `post` answers whether it posted, and
+// `mayPost` answers the same question before anything is spent.
+//
+// The second one is what #319 did with the decision this file left it. There is
+// no queue here, so an evaluation that finds something real while the window is
+// shut produces nothing — and whether that is a *deferral* or a *loss* depended
+// on whether the refused evaluation still advanced its last-evaluated position.
+// The heartbeat answers by not evaluating at all when the window is shut: its
+// watermark therefore never moves on a refusal, the material is weighed again
+// when the window opens, and nothing is lost. `post`'s refusal stays as the
+// backstop for a race that the ambient clock's overrun rule already prevents.
 //
 // ## Where the state lives
 //
@@ -157,6 +160,30 @@ export interface ProactivePost {
  */
 export interface ProactivePoster {
   /**
+   * Whether a heartbeat post would be permitted right now (#319).
+   *
+   * Synchronous, because it is a map lookup — there is nothing to await and an
+   * async answer would suggest otherwise.
+   *
+   * **This exists so that a turn is not paid for when its result could not be
+   * used.** The only output of a heartbeat evaluation is a post, so evaluating
+   * with the window shut is spend with a guaranteed-refused result. Asking first
+   * also settles the question this surface deliberately left open: because the
+   * evaluation does not run, it does not advance its watermark either, so the
+   * material stays where it is and is weighed again once the window opens. A
+   * shut window defers a finding rather than losing one, by construction.
+   *
+   * **It is a check, not a claim**, and `post` remains the enforcement. Two
+   * evaluations that both read `true` and then both post would be a race this
+   * answer cannot prevent — the ambient clock's overrun rule means one heartbeat
+   * per channel at a time, so it does not arise, and if it did the loser is
+   * refused at `post` and has wasted a turn rather than spoken twice.
+   *
+   * Always `true` for `source: "task"`, which is why it takes no source: a fired
+   * task does not draw on this window, so there is nothing for it to ask.
+   */
+  mayPost(channel: string): boolean;
+  /**
    * Posts, or refuses. Answers whether it posted.
    *
    * Never rejects. A Slack failure is a log line and `false`, because the only
@@ -190,13 +217,23 @@ export function createProactivePoster(options: ProactivePosterOptions): Proactiv
   /** When each channel last had a heartbeat post attempted. Task posts never appear. */
   const lastHeartbeatPost = new Map<string, number>();
 
+  /** Whether `at` is outside the channel's window. The one comparison, once. */
+  function windowOpen(channel: string, at: number): boolean {
+    const last = lastHeartbeatPost.get(channel);
+    return last === undefined || at - last >= HEARTBEAT_POST_WINDOW_MS;
+  }
+
   return {
+    mayPost(channel): boolean {
+      return windowOpen(channel, now());
+    },
+
     async post(request): Promise<boolean> {
       const at = now();
 
       if (request.source === "heartbeat") {
-        const last = lastHeartbeatPost.get(request.channel);
-        if (last !== undefined && at - last < HEARTBEAT_POST_WINDOW_MS) {
+        if (!windowOpen(request.channel, at)) {
+          const last = lastHeartbeatPost.get(request.channel) ?? at;
           logger.log("info", {
             event: "proactive_throttled",
             channel: request.channel,

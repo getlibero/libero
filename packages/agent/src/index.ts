@@ -98,6 +98,17 @@ export type {
 } from "./skill/merge.js";
 
 export {
+  AMBIENT_HEARTBEAT_SYSTEM_PROMPT,
+  ambientFindingToolDefinition,
+  runHeartbeatTurn
+} from "./ambient/turn.js";
+export type {
+  HeartbeatMessage,
+  HeartbeatTurnOptions,
+  HeartbeatTurnResult
+} from "./ambient/turn.js";
+
+export {
   SUMMARIZATION_SYSTEM_PROMPT,
   runSummarizationTurn
 } from "./summarize/turn.js";

@@ -68,7 +68,18 @@ export interface LogFields {
    * on. Four words rather than one with a field, because the three failures
    * want different answers from whoever is reading: a throwing heartbeat is a
    * channel, a run of overruns is a cadence set too tight, and the last is this
-   * process not having got through `auth.test` yet. Proactive posts (#318):
+   * process not having got through `auth.test` yet. The heartbeat evaluation
+   * (#319): "heartbeat_deferred", "heartbeat_silent", "heartbeat_posted",
+   * "heartbeat_unposted", "heartbeat_unusable", "heartbeat_failed" — the rate
+   * window was shut so nothing was evaluated, the model weighed the channel and
+   * said nothing, it said something and the channel heard it, it said something
+   * the surface then refused, it answered something that did not parse, and a
+   * sheet or a store or a provider that could not be reached. Six words rather
+   * than one with a field, because silence is the *expected* outcome here and
+   * the four that are not silence must be greppable without wading through it —
+   * "heartbeat_unusable" in particular is how a broken prompt shows up, and it
+   * would otherwise be indistinguishable from the channel being quiet.
+   * Proactive posts (#318):
    * "proactive_posted", "proactive_throttled", "proactive_failed" — the agent
    * started a message in a channel, the rate window refused one, and one Slack
    * would not take. `proactive_throttled` is deliberately its own word rather

@@ -185,3 +185,57 @@ describe("createProactivePoster", () => {
     ).resolves.toBe(false);
   });
 });
+
+describe("asking before spending", () => {
+  it("says a fresh channel may post, and says so without posting", () => {
+    const slack = fakePoster();
+    const surface = createProactivePoster({ poster: slack.poster });
+
+    expect(surface.mayPost("C0OPS")).toBe(true);
+    // The question is free and changes nothing — a check that claimed the
+    // window would make asking twice a way to silence a channel.
+    expect(surface.mayPost("C0OPS")).toBe(true);
+    expect(slack.sent).toEqual([]);
+  });
+
+  it("agrees with post, on both sides of the window", async () => {
+    // Two spellings of one comparison, so they are asserted against each other
+    // rather than each against a number.
+    const time = clock();
+    const slack = fakePoster();
+    const surface = createProactivePoster({ poster: slack.poster, now: time.now });
+
+    await surface.post({ channel: "C0OPS", text: "one", source: "heartbeat" });
+
+    expect(surface.mayPost("C0OPS")).toBe(false);
+    expect(await surface.post({ channel: "C0OPS", text: "two", source: "heartbeat" })).toBe(false);
+
+    time.advance(HEARTBEAT_POST_WINDOW_MS);
+
+    expect(surface.mayPost("C0OPS")).toBe(true);
+    expect(await surface.post({ channel: "C0OPS", text: "three", source: "heartbeat" })).toBe(true);
+  });
+
+  it("is per channel, like the window it reports on", async () => {
+    const time = clock();
+    const slack = fakePoster();
+    const surface = createProactivePoster({ poster: slack.poster, now: time.now });
+
+    await surface.post({ channel: "C0OPS", text: "one", source: "heartbeat" });
+
+    expect(surface.mayPost("C0OPS")).toBe(false);
+    expect(surface.mayPost("C0DEV")).toBe(true);
+  });
+
+  it("is unmoved by a fired task's post", async () => {
+    // A task does not draw on the window, so it cannot close one — which is why
+    // this takes no source to ask about.
+    const time = clock();
+    const slack = fakePoster();
+    const surface = createProactivePoster({ poster: slack.poster, now: time.now });
+
+    await surface.post({ channel: "C0OPS", text: "standup in ten", source: "task" });
+
+    expect(surface.mayPost("C0OPS")).toBe(true);
+  });
+});

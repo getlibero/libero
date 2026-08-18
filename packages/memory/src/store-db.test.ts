@@ -180,6 +180,7 @@ describe("the interface", () => {
       "append",
       "close",
       "forgetSkillMergeProposal",
+      "idleThreads",
       "listSkills",
       "nearest",
       "orphanedSkillMergeProposals",
@@ -1510,6 +1511,89 @@ describe("thread summaries", () => {
     expect(store.nearest(Float32Array.from([0, 1, 0]), 5).map(hit => hit.source)).toEqual([
       { kind: "fact", ref: "f1" }
     ]);
+  });
+});
+
+// #319's pregate. The sweep's read answers "quiet and unsummarized"; this one
+// answers "quiet and new since the caller last looked", and the difference is
+// what these cases are about.
+describe("idle threads, for a caller with a watermark", () => {
+  const summary = (thread: string, through: string) => ({
+    thread,
+    shape: "decision" as const,
+    text: "Chose slim over alpine.",
+    coversThroughTs: through,
+    messageCount: 2,
+    at: 1_700_000_000_000
+  });
+
+  it("finds a thread that has gone quiet", () => {
+    store.append(message("1.1", "how do we rotate a cert?"));
+    store.append(message("1.2", "--rotate then --promote", { threadTs: "1.1" }));
+
+    expect(store.idleThreads("9.9", "0.0", 10)).toEqual([{ thread: "1.1", newestTs: "1.2" }]);
+  });
+
+  // The load-bearing difference from `staleThreads`. A channel that summarizes
+  // its quiet threads would answer nothing there, which would blind the one
+  // feature that exists for the question nobody replied to.
+  it("still finds a thread that has already been summarized", () => {
+    store.append(message("1.1", "how do we rotate a cert?"));
+    store.append(message("1.2", "--rotate then --promote", { threadTs: "1.1" }));
+    store.putThreadSummary(summary("1.1", "1.2"));
+
+    expect(store.staleThreads("9.9", 10)).toEqual([]);
+    expect(store.idleThreads("9.9", "0.0", 10)).toEqual([{ thread: "1.1", newestTs: "1.2" }]);
+  });
+
+  it("excludes a thread that has not gone quiet yet", () => {
+    store.append(message("1.1", "started long ago"));
+    store.append(message("5.5", "said something just now", { threadTs: "1.1" }));
+
+    expect(store.idleThreads("3.0", "0.0", 10)).toEqual([]);
+  });
+
+  // The watermark, which is what makes a finding say-once: a thread the caller
+  // has already weighed sits below it and never comes back.
+  it("excludes a thread the caller has already looked past", () => {
+    store.append(message("1.1", "asked on Friday"));
+    store.append(message("1.2", "still nothing", { threadTs: "1.1" }));
+
+    expect(store.idleThreads("9.9", "1.2", 10)).toEqual([]);
+    expect(store.idleThreads("9.9", "1.1", 10)).toEqual([{ thread: "1.1", newestTs: "1.2" }]);
+  });
+
+  // And a thread that says something more rises back above the watermark, goes
+  // quiet again, and is offered again. Say-once is per silence, not forever.
+  it("offers a thread again once it has said something new", () => {
+    store.append(message("1.1", "asked on Friday"));
+    store.append(message("1.2", "still nothing", { threadTs: "1.1" }));
+    expect(store.idleThreads("9.9", "1.2", 10)).toEqual([]);
+
+    store.append(message("3.0", "any update?", { threadTs: "1.1" }));
+
+    expect(store.idleThreads("9.9", "1.2", 10)).toEqual([{ thread: "1.1", newestTs: "3.0" }]);
+  });
+
+  // Both bounds are on the aggregate, for the sweep's reason: the question is
+  // about the thread's newest message, so a filter on rows would answer it about
+  // a thread that only looked idle because its recent messages were dropped.
+  it("bounds on the thread's newest message and not on any one row", () => {
+    store.append(message("1.1", "root, long ago"));
+    store.append(message("8.8", "and a reply just now", { threadTs: "1.1" }));
+
+    // A row-level filter would see "1.1" alone, call the thread idle, and offer
+    // it. The aggregate sees "8.8" and does not.
+    expect(store.idleThreads("5.0", "0.0", 10)).toEqual([]);
+  });
+
+  it("groups a root with its replies, newest first, and clamps the limit", () => {
+    store.append(message("1.1", "root"));
+    store.append(message("1.2", "reply", { threadTs: "1.1" }));
+    store.append(message("2.1", "unrelated"));
+
+    expect(store.idleThreads("9.9", "0.0", 10).map(thread => thread.thread)).toEqual(["2.1", "1.1"]);
+    expect(store.idleThreads("9.9", "0.0", 1)).toHaveLength(1);
   });
 });
 
