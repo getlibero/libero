@@ -58,6 +58,10 @@
 // - **The hash rule**, which makes the steady state one SELECT and no call at all.
 // - **The meter.** The turn reports through the same `SpendReport` path the sweep
 //   and recall use. The backstop, not the mechanism.
+// - **`maySpend`** (#335). A channel over its caps proposes nothing — asked
+//   where the turn is about to run, so reconciliation and pruning still happen.
+//   `./summarize.ts`'s header carries the argument for why declining is this
+//   process's own and why it fails closed.
 //
 // ## And what it deliberately does not do
 //
@@ -148,6 +152,15 @@ export interface SkillCuratePassOptions {
   settings: (channel: string) => Promise<SkillCurateSettings | null>;
   /** Reports the turn's spend to the proxy's meter. Must not throw. */
   reportTurn: (channel: string, turn: CompletedTurn & { id: string }) => Promise<void>;
+  /**
+   * Whether this channel may be spent for at all (#335). Must not throw.
+   *
+   * Required for `reportTurn`'s reason, and asked at the point the turn is about
+   * to run rather than at the head of the pass: reconciliation and proposal
+   * pruning above it are bookkeeping the next task reads, and a channel over its
+   * caps should still get them.
+   */
+  maySpend: (channel: string) => Promise<boolean>;
   logger?: Logger;
   now?: () => number;
   /** Cancels in-flight work when the process is stopping. */
@@ -334,6 +347,13 @@ export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCur
     readonly startedAt: number;
   }): Promise<number> {
     const { channel, store, proposals, settings, pair, keepFile, dropFile, startedAt } = work;
+
+    // Here rather than at the head of the pass (#335), for `./skill-embed.ts`'s
+    // reason and one of its own: everything above this — reconciliation, pruning
+    // an applied proposal, the backlog check — is bookkeeping the next task
+    // reads, and a channel over its token cap should still get all of it. This
+    // is the line where the pass starts costing money.
+    if (!(await options.maySpend(channel))) return 0;
 
     let result;
     try {

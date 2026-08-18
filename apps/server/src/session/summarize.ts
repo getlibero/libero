@@ -34,14 +34,38 @@
 //   - **The meter.** Every turn reports through the same `SpendReport` path as
 //     every other turn, so `daily_tokens` and `daily_usd` bound it the way they
 //     bound a task. That is the backstop and not the mechanism.
+//   - **`maySpend`** (#335). Before the first model call of a sweep, this pass
+//     asks whether the channel is over its caps at all, and does nothing if it
+//     is. That is new, and it is the first time this process declines to spend
+//     rather than merely reporting what it spent — see below.
 //
-// ## And what does not bound it
+// ## Declining is this process's own, and it fails closed
 //
-// Nothing here refuses a call — the proxy's meter does that, and this process
-// only reports. That is the same standing `[memory] enabled` has, stated in
-// `packages/schema/src/team-sheet.ts`: this block is honoured by the agent and
-// by nothing else, so it holds against a model that has been talked into
-// something and not against a compromised agent process.
+// Until #335 the rule here was that nothing refused a call: the tool proxy
+// service does that, and this process only reports. That was true enough while
+// the meter's only job was refusing tool calls, and it is not true of a
+// summarization turn — a completion never reaches that service, so a turn that
+// calls no tool met no gate at all, however far over its caps a channel was.
+// `maySpend` is the question that closes it.
+//
+// **It is this process's decision, and therefore it fails closed.**
+// `./sheet.ts` falls back *open* when it cannot read a sheet, and states why: a
+// fallback cannot loosen an authorization decision, because the authorization
+// decision is not made there. Run that sentence backwards and you have this one.
+// The decision *is* made here — nothing downstream will catch a completion — so
+// a question that cannot be answered means the turn does not run.
+//
+// The sharper argument for that direction: during an outage this pass's spend
+// would be not merely unbounded but **unrecorded**, because `reportTurn` fails
+// the same way and for the same reason. Failing open would make an outage the
+// one condition under which background work spends freely and invisibly.
+//
+// **It is not a boundary**, and the caller's own documentation says so: a
+// compromised agent process does not ask. This is the same standing
+// `[memory] enabled` has, stated in `packages/schema/src/team-sheet.ts` — the
+// block is honoured by the agent and by nothing else, so it holds against a
+// model that has been talked into something and not against a compromised
+// process.
 
 import type {
   EmbeddingClient,
@@ -118,6 +142,20 @@ export interface SummarySweepOptions {
   settings: (channel: string) => Promise<SummarizeSettings | null>;
   /** Reports one turn's spend to the proxy's meter. Must not throw. */
   reportTurn: (channel: string, turn: CompletedTurn & { id: string }) => Promise<void>;
+  /**
+   * Whether this channel may be spent for at all (#335). Must not throw.
+   *
+   * Required rather than optional, which is `reportTurn`'s standing and the same
+   * argument: an option that defaulted would default to *unbounded*, and a
+   * deployment that forgot to wire it would look exactly like one whose channels
+   * are all under their caps. `./skill-lifecycle.ts` is the pass that holds
+   * neither of these, and it holds neither because it spends nothing — the
+   * pairing is what makes that legible.
+   *
+   * The policy behind the boolean lives with the caller, where the logger is:
+   * this pass is told yes or no and does not learn why.
+   */
+  maySpend: (channel: string) => Promise<boolean>;
   logger?: Logger;
   now?: () => number;
   /** Cancels in-flight work when the process is stopping. */
@@ -174,6 +212,20 @@ export function createSummarySweep(options: SummarySweepOptions): SummarySweep {
       logger.log("warn", { event: "summary_failed", channel, reason: reasonOf(error) });
       return 0;
     }
+
+    // Nothing quiet to summarize. An early return rather than a loop that does
+    // not run, because the budget question below must not be asked by a channel
+    // that was never going to spend.
+    if (stale.length === 0) return 0;
+
+    // Here rather than at the head of the sweep, and after the sheet check and
+    // the read above for a sharper reason than tidiness: this is a network round
+    // trip, and asking it on a channel that has turned summarization off — or
+    // has no quiet thread to summarize — would spend one per message on a
+    // deployment that was never going to spend anything. A non-empty `stale` is
+    // what makes the question worth asking, because it is the point at which the
+    // next thing this pass does costs money (#335).
+    if (!(await options.maySpend(channel))) return 0;
 
     let summarized = 0;
     for (const thread of stale) {

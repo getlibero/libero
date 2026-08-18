@@ -527,10 +527,11 @@ describe("certificate pinning", () => {
         })
       ),
       call("/v1/approvals", leaked(), "POST", port, JSON.stringify({ ticket: "t", decision: "approve" })),
+      call("/v1/budget", leaked()),
       // Not even which paths exist: the pin check runs ahead of the route table.
       call("/v1/nope", leaked())
     ]);
-    expect(responses.map(r => r.status)).toEqual([401, 401, 401, 401, 401, 401, 401]);
+    expect(responses.map(r => r.status)).toEqual([401, 401, 401, 401, 401, 401, 401, 401]);
   });
 
   it("leaves no audit row and reaches no upstream", async () => {
@@ -1581,6 +1582,7 @@ describe("no route can lower a counter", () => {
     await post("/v1/spend", { turn: "turn_floor", usage: { inputTokens: 0, outputTokens: 0 } });
     await post("/v1/spend", { turn: "t2", usage: { inputTokens: 1, outputTokens: 0 }, reset: true });
     await post("/v1/spend", { turn: "t3", usage: { inputTokens: 1, outputTokens: 0 }, day: "1999-01-01" });
+    await call("/v1/budget", clientCert(certs, CHANNEL));
 
     const after = await meter.read(CHANNEL);
     expect(after.toolCalls).toBeGreaterThanOrEqual(before.toolCalls);
@@ -1588,6 +1590,146 @@ describe("no route can lower a counter", () => {
     expect(after.outputTokens).toBeGreaterThanOrEqual(before.outputTokens);
     expect(after.cacheReadTokens).toBeGreaterThanOrEqual(before.cacheReadTokens);
     expect(after.cacheWriteTokens).toBeGreaterThanOrEqual(before.cacheWriteTokens);
+  });
+
+  // A counter the assertions above cannot see, because it is not a count: a
+  // channel gets one budget warning a day, and claiming it is a read with a side
+  // effect. `/v1/budget` reads the same meter, so the hazard is real rather than
+  // theoretical — a handler holding `WarningClaimer` instead of `SpendReader`
+  // would spend the channel's warning on an answer given to a background pass
+  // and to nobody in the channel, and every assertion above would still pass.
+  it("does not spend the channel's one warning by being asked", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50"));
+
+    await call("/v1/budget", clientCert(certs, CHANNEL));
+    await call("/v1/budget", clientCert(certs, CHANNEL));
+
+    expect(await meter.claimWarning(CHANNEL, "daily_tool_calls")).toBe(true);
+  });
+});
+
+// The read half of the meter (#335): what the gate would say about spending
+// now, asked by a background turn the gate will never see.
+describe("reading the budget", () => {
+  const budgetOf = async (channel = CHANNEL): Promise<Response> =>
+    call("/v1/budget", clientCert(certs, channel));
+
+  it("says a channel under its caps may spend", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50"));
+
+    const response = await budgetOf();
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ spendable: true });
+  });
+
+  it("names the limit that is spent", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 2"));
+    await callN(2);
+
+    expect((await budgetOf()).body).toEqual({
+      spendable: false,
+      refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" }
+    });
+  });
+
+  // The whole reason this route calls `exhaustedLimit` rather than comparing for
+  // itself. Two answers to "is this channel over" would drift the first time a
+  // cache weight or the ordering between limits changed, and nothing would
+  // notice until a channel was told to raise a cap that was not the problem.
+  it("agrees with the gate, on the same channel at the same moment", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 2"));
+    await callN(2);
+
+    const refused = await post("/v1/tools/call", listPrs("after-cap"));
+    const status = await budgetOf();
+
+    expect((refused.body as { refusal?: unknown }).refusal).toEqual({
+      reason: "budget_exhausted",
+      limit: "daily_tool_calls"
+    });
+    expect(status.body).toEqual({
+      spendable: false,
+      refusal: (refused.body as { refusal: unknown }).refusal
+    });
+  });
+
+  // Pricing faults come first in `exhaustedLimit`'s ordering, and this proves
+  // the route inherited that rather than reimplementing the comparison. No price
+  // table is wired into this server, so a sheet that caps in dollars cannot be
+  // priced at all — which is a different answer from "over budget" and sends an
+  // operator to a different file.
+  it("reports a pricing fault ahead of any limit", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_usd = 5.0\ndaily_tool_calls = 1"));
+    await post("/v1/spend", {
+      turn: "priced-turn",
+      model: "some-vendor/some-model",
+      usage: { inputTokens: 100, outputTokens: 10 }
+    });
+
+    const body = (await budgetOf()).body as { spendable: boolean; refusal?: { reason: string } };
+
+    expect(body.spendable).toBe(false);
+    expect(body.refusal?.reason).toBe("model_not_priced");
+  });
+
+  it("refuses a channel with no team sheet, as the gate does", async () => {
+    // Reachable only if the two processes disagree about the same file — the
+    // agent side already declines to run a background pass for a channel whose
+    // sheet it could not read. Answering "spendable" would be the wrong default
+    // and would put this route out of step with `decideFromState`.
+    rmSync(join(channelsRoot, OTHER_CHANNEL), { recursive: true, force: true });
+
+    expect((await budgetOf(OTHER_CHANNEL)).body).toEqual({
+      spendable: false,
+      refusal: { reason: "no_team_sheet" }
+    });
+  });
+
+  it("reads the channel from the certificate and nothing else", async () => {
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 2"));
+    writeSheet(OTHER_CHANNEL, budgetSheet("daily_tool_calls = 50"));
+    await callN(2, CHANNEL);
+
+    // One channel is over and the other is not. The route takes no body and no
+    // parameter, so there is nothing to say but which certificate was presented.
+    expect((await budgetOf(CHANNEL)).body).toEqual({
+      spendable: false,
+      refusal: { reason: "budget_exhausted", limit: "daily_tool_calls" }
+    });
+    expect((await budgetOf(OTHER_CHANNEL)).body).toEqual({ spendable: true });
+  });
+
+  it("answers 405 to a write", async () => {
+    // The read half and the write half are two paths on purpose. See the note
+    // on the route table.
+    expect((await call("/v1/budget", clientCert(certs, CHANNEL), "POST")).status).toBe(405);
+  });
+
+  it("resolves a team sheet of its own, unlike the spend route", async () => {
+    // The inverse of `/v1/spend`'s "adds no team-sheet read of its own". This
+    // route needs the caps, so it reads — and the assertion is that it reads
+    // rather than that it does not.
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50"));
+
+    const before = serverSheetReads;
+    await call("/v1/whoami", clientCert(certs, CHANNEL));
+    const gateOnly = serverSheetReads - before;
+
+    const beforeBudget = serverSheetReads;
+    await budgetOf();
+
+    expect(serverSheetReads - beforeBudget).toBeGreaterThan(gateOnly);
+  });
+
+  it("writes no audit row", async () => {
+    // The audit log records decided calls, and there is no call here.
+    writeSheet(CHANNEL, budgetSheet("daily_tool_calls = 50"));
+    const before = lastAuditId();
+
+    await budgetOf();
+
+    expect(lastAuditId()).toBe(before);
   });
 
   // The other half: one channel's agent cannot reach across to another's row,
@@ -1784,6 +1926,7 @@ describe("no route returns a credential", () => {
       await call("/health", cert),
       await call("/v1/whoami", cert),
       await call("/v1/tools", cert),
+      await call("/v1/budget", cert),
       // Ran, refused, held — the three ways a call is answered.
       await post("/v1/tools/call", asked({ id: "toolu_01", server: "github", tool: "list_prs" })),
       await post("/v1/tools/call", asked({ id: "toolu_02", server: "github", tool: "not_listed" })),
@@ -1818,7 +1961,7 @@ describe("no route returns a credential", () => {
 
     // Every request was answered — a walk that silently failed to reach a route
     // would assert nothing.
-    expect(responses).toHaveLength(13);
+    expect(responses).toHaveLength(14);
     for (const response of responses) {
       expect(response.status).toBeGreaterThan(0);
       expect(JSON.stringify(response.body)).not.toContain("ghp_");

@@ -229,6 +229,51 @@ export default tseslint.config(
     }
   },
   {
+    // `GET /v1/budget` (#335). `team-sheet-store` and `enforce` are what this
+    // route is for, as they are for listing-route.ts above and as they are not
+    // for spend-route.ts: answering "may this channel be spent for" *is*
+    // resolving a sheet and applying the same comparison the gate applies.
+    //
+    // What it must not reach is anything that could turn a question into a
+    // change. `budget-admin*` clears counters and belongs to the operator's
+    // second process; `approvals*` mints and spends tickets. Neither has any
+    // business behind a read, and the meter's own write half is already kept out
+    // by the `SpendReader` the handler closes over rather than by this list.
+    files: ["packages/proxy/src/budget-route.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            MCP_SDK_BAN,
+            {
+              group: [
+                "**/vault*",
+                "**/token-store*",
+                "**/token-engine*",
+                "**/grant-flow*",
+                "**/envelope*",
+                ...ATOMIC_WRITE_BAN,
+                "**/budget-admin*",
+                "**/approvals*",
+                "**/mcp-pool*",
+                "**/mcp-client*",
+                "**/mcp-catalog*",
+                "**/http-dispatcher*",
+                "**/builtin-dispatcher*",
+                "**/outbound*",
+                "@getlibero/memory",
+                "@getlibero/proxy"
+              ],
+              message:
+                "The budget route answers a question and changes nothing. It resolves a sheet and reads the meter; it may not reach the operator's reset path, the approval store, a vault, a pool, a client, or any dispatcher. The meter's write half is kept out by the SpendReader it closes over."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     // The third, and the same mechanism again. The audit writer records what the
     // route observed, and what the route observed never included a credential
     // value — that is why the record can hold a hash of the model's arguments

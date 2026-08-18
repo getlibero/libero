@@ -186,6 +186,8 @@ function passWith(overrides: Partial<SkillCuratePassOptions> = {}) {
       reported.push(turn);
       return Promise.resolve();
     },
+    // The channel is under its caps unless a case says otherwise (#335).
+    maySpend: () => Promise.resolve(true),
     now: clock,
     ...overrides
   };
@@ -286,6 +288,47 @@ describe("createSkillCuratePass", () => {
 });
 
 describe("what bounds it", () => {
+  // #335, and the placement is the assertion, as it is in ./skill-embed.test.ts:
+  // reconciliation and proposal pruning run above the gate because the next task
+  // reads what they leave behind. What stops is the model call.
+  it("still reconciles for a channel over its caps, and proposes nothing", async () => {
+    library();
+    const answering = model({ ...DRAFT });
+    const { pass, reported } = passWith({
+      completion: answering.client,
+      maySpend: () => Promise.resolve(false)
+    });
+
+    expect(await runPast(pass)).toBe(0);
+
+    expect(answering.calls()).toBe(0);
+    expect(reported).toEqual([]);
+    expect(proposals.count()).toBe(0);
+    // The library is still indexed, which is what a task at the head of the next
+    // mention will read.
+    expect(store.listSkills().length).toBeGreaterThan(0);
+  });
+
+  // And it does not record the pair as considered, so the question comes back
+  // once the channel can afford it. A gate that stamped on the way past would
+  // lose a merge to a day the channel happened to be over.
+  it("leaves the pair to be asked again once the channel can afford it", async () => {
+    library();
+    const answering = model({ ...DRAFT });
+    const { pass } = passWith({
+      completion: answering.client,
+      maySpend: () => Promise.resolve(false)
+    });
+    await runPast(pass);
+
+    expect(considered()).toEqual([]);
+
+    const affording = model({ ...DRAFT });
+    const second = passWith({ completion: affording.client });
+    expect(await runPast(second.pass)).toBe(1);
+    expect(affording.calls()).toBe(1);
+  });
+
   it("does not run twice inside one interval", async () => {
     library();
     const answering = model(null);

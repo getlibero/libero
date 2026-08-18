@@ -112,6 +112,8 @@ function sweepWith(overrides: Partial<SummarySweepOptions> = {}) {
       reported.push(turn);
       return Promise.resolve();
     },
+    // The channel is under its caps unless a case says otherwise (#335).
+    maySpend: () => Promise.resolve(true),
     now: () => NOW,
     ...overrides
   };
@@ -184,6 +186,47 @@ describe("createSummarySweep", () => {
 
     expect(await sweep(CHANNEL, store)).toBe(0);
     expect(summarizer.calls()).toBe(0);
+  });
+
+  // #335. The gate is asked once a sweep, after the sheet check and after the
+  // channel is known to have a quiet thread — so a channel over its caps costs
+  // one round trip and nothing else.
+  it("summarizes nothing, and spends nothing, for a channel over its caps", async () => {
+    store.append(at(90 * MINUTE, "quiet thread"));
+    const summarizer = summarizing({ shape: "decision", text: "x" });
+    const { sweep, reported } = sweepWith({
+      completion: summarizer.completion,
+      maySpend: () => Promise.resolve(false)
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(0);
+    expect(summarizer.calls()).toBe(0);
+    expect(reported).toEqual([]);
+    expect(summaries()).toEqual([]);
+  });
+
+  it("does not ask about a budget for a channel that summarizes nothing anyway", async () => {
+    // After the sheet check and after `staleThreads`, deliberately. Asking at
+    // the head of the sweep would be one round trip per message on a deployment
+    // that had turned summarization off.
+    let asked = 0;
+    const gate = (): Promise<boolean> => {
+      asked += 1;
+      return Promise.resolve(true);
+    };
+
+    const off = sweepWith({
+      settings: () => Promise.resolve({ ...SETTINGS, summarize: false }),
+      maySpend: gate
+    });
+    await off.sweep(CHANNEL, store);
+
+    // Nothing quiet to summarize: the sheet says yes, but there is no spend
+    // coming, so there is nothing to ask about.
+    const quiet = sweepWith({ maySpend: gate });
+    await quiet.sweep(CHANNEL, store);
+
+    expect(asked).toBe(0);
   });
 
   it("skips a channel with no sheet at all", async () => {

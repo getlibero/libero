@@ -78,6 +78,9 @@ reveals a credential and the one that scrubs the reply.
   what makes "no statement omits `WHERE channel = ?`" checkable in one place.
 - `spend-route.ts` — `POST /v1/spend`. The one route with no authorization
   decision on it, and the header says why and what keeps it that way.
+- `budget-route.ts` — `GET /v1/budget`. Its mirror: that one writes a counter and
+  cannot read one, this one reads and cannot write. **Advisory, not
+  enforcement** — see below.
 - `outbound.ts` — the outbound call, and the **one place in the tree that calls
   `Secret.reveal()`**. `Authorization: Bearer` for every upstream; a fixed
   timeout so a silent upstream cannot pin a request; and errors built from a
@@ -562,7 +565,31 @@ anonymous surface.
 | `GET /v1/tools` | what this channel may call | `{ tools: [{ server, tool, approval }] }` |
 | `POST /v1/tools/call` | one tool call | `ToolCall` in, `ToolCallResponse` out |
 | `POST /v1/spend` | what a turn cost | `SpendReport` in, `{ outcome }` out; no decision is made on it |
+| `GET /v1/budget` | what the gate would say about spending now | `BudgetStatus` out; advisory, and nothing runs on it |
 | `POST /v1/approvals` | a human's decision on a held call | `ApprovalDecision` in, `ApprovalDecisionResponse` out; the ticket id is in the body |
+
+**The budget read is advisory, and that is not a hedge** (#335). The proxy
+enforces `[budget]` on a tool call, which is the only spend it ever sees — a
+model completion goes straight from the agent process to the provider and
+arrives here afterwards as a count on `/v1/spend`. So a background turn that
+calls no tool met no bound at all, however far over its caps a channel was, and
+`GET /v1/budget` is how such a turn asks before it starts.
+
+It is **not** a second enforcement point and must not be described as one. This
+process cannot refuse a completion it never sees, so a compromised agent simply
+does not ask. What the read buys is cost control for an agent that is working
+correctly — the same standing `[ambient]` has on the sheet, honoured by that
+process and by nothing else. The property that survives agent compromise is
+unchanged and belongs to `/v1/tools/call`: `daily_tool_calls` and `daily_tokens`
+still refuse *tool calls*, counted from this process's own observation.
+
+Two things keep the route honest. It closes over `SpendReader` rather than the
+meter, so it can neither record a call nor claim the channel's one daily
+warning — the mirror of the `TokenRecorder` argument on the spend route. And it
+answers through **`exhaustedLimit`, the same function `/v1/tools/call` reaches
+through `decide`**, so "the read and the gate agree" is a property of one
+function rather than of two that happen to match; `server.test.ts` asserts it by
+spending a channel to its cap and comparing the two answers.
 
 **Approvals.** A tool marked `approval = "required"` is held rather than refused:
 the proxy mints a ticket, and the `held` response carries its id and its

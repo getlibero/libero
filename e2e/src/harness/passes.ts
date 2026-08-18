@@ -26,18 +26,20 @@
 // deployment. See ./embedding.ts for what the fake is and what rule comes with
 // it.
 //
-// **`reportTurn` is built here rather than passed in**, mirroring `index.ts`'s
-// closure over the same transport — the *wrapped* one, so a case that
-// compromised the agent's wire compromises a pass's spend report too. This is
-// what makes a background turn's tokens land on the proxy's own meter in another
-// process, which is the claim only this suite can make and the reason these
-// cases are worth running here rather than in `apps/server`.
+// **`reportTurn` and `maySpend` are built here rather than passed in**,
+// mirroring `index.ts`'s closures over the same transport — the *wrapped* one,
+// so a case that compromised the agent's wire compromises both a pass's spend
+// report and the question it asks before spending. That is what makes a
+// background turn's tokens land on the proxy's own meter in another process, and
+// what makes "a pass over its caps spends nothing" a claim about two processes
+// rather than about a stub — which is the claim only this suite can make and the
+// reason these cases are worth running here rather than in `apps/server`.
 //
 // **Only the requested passes are constructed.** A pass that was not asked for
 // builds no settings closure and holds no reference to the store.
 
 import type { CompletedTurn, CompletionClient, EmbeddingClient, ProxyTransport } from "@getlibero/agent";
-import { createProxySpendClient, totalTokens } from "@getlibero/agent";
+import { createProxyBudgetClient, createProxySpendClient, totalTokens } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import {
   createSkillCuratePass,
@@ -124,6 +126,34 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
     }
   };
 
+  /**
+   * The gate the three spending passes ask before they spend (#335).
+   *
+   * `reportTurn`'s counterpart and built here for its reason: over the *wrapped*
+   * transport, so a case that compromises the agent's wire reaches the question
+   * as well as the report. That is what makes "a background pass over its caps
+   * spends nothing" a claim about two processes rather than about a stub.
+   *
+   * Fail-closed and never throws, mirroring `index.ts` — a rig whose proxy is
+   * unreachable declines rather than spending freely.
+   */
+  const maySpend = async (channel: string): Promise<boolean> => {
+    let refusal;
+    try {
+      refusal = await createProxyBudgetClient({ transport: options.transport, channel }).status(signal);
+    } catch (error) {
+      logger.log("warn", {
+        event: "budget_unreadable",
+        channel,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+      return false;
+    }
+    if (refusal === null) return true;
+    logger.log("info", { event: "budget_declined", channel, reason: refusal.reason });
+    return false;
+  };
+
   const embeddingModel =
     options.embedding === null ? {} : { embeddingModel: EMBEDDING_MODEL };
 
@@ -144,6 +174,7 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
               };
             },
             reportTurn,
+            maySpend,
             signal,
             logger,
             ...clock
@@ -162,6 +193,7 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
               return { enabled: settings.skills.enabled, maxSkills: settings.skills.maxSkills };
             },
             reportTurn,
+            maySpend,
             signal,
             logger,
             ...clock
@@ -210,6 +242,7 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
               };
             },
             reportTurn,
+            maySpend,
             signal,
             logger,
             ...clock
