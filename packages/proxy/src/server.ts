@@ -42,6 +42,14 @@
 // sheet; see ./spend-route.ts and ./approvals-route.ts, where each states the
 // asymmetry and what keeps it.
 //
+// `/v1/budget` (#335) is the counterpart to `/v1/spend` and takes no body: it
+// reads the meter where that one writes it, and answers what the gate *would*
+// say about spending now. It decides nothing that runs, and it is **advisory
+// rather than a second enforcement point** — the spend it exists to bound is a
+// model completion, which never reaches this process at all. See
+// ./budget-route.ts, which states what it holds and what it deliberately
+// cannot.
+//
 // The MCP client pool sits behind the dispatcher seam, past the point where
 // enforcement has already answered. Credential injection is built —
 // ./http-dispatcher.ts resolves a credential and ./outbound.ts attaches it —
@@ -86,6 +94,7 @@ import { decideFromState, priceDaySpendFromState } from "./enforce.js";
 import { matchesPin, resolveChannel } from "./identity.js";
 import { createListingRoute } from "./listing-route.js";
 import { createJsonLogger, type Logger } from "./log.js";
+import { createBudgetRoute } from "./budget-route.js";
 import { createSpendRoute } from "./spend-route.js";
 import { NO_PRICES } from "./price-table-store.js";
 import type { PriceTableStore } from "./price-table-store.js";
@@ -846,6 +855,16 @@ export function createProxyServer(options: ProxyServerOptions): Server {
   // closure holds the write path and not the read one. See ./spend-route.ts.
   const recordSpend = createSpendRoute({ meter: options.spend, logger });
 
+  // Narrowed to `SpendReader` — the same move as the line above and the exact
+  // mirror of it: that handler can write a counter and cannot read one, this
+  // one can read and cannot write. See ./budget-route.ts.
+  const readBudget = createBudgetRoute({
+    sheets: options.sheets,
+    spend: options.spend,
+    ...(options.prices !== undefined ? { prices: options.prices } : {}),
+    logger
+  });
+
   // Narrowed to `ApprovalDecider`, so the handler can record a click and can
   // neither mint a ticket nor spend one. Same move, and a sharper reason: see
   // ./approvals-route.ts.
@@ -891,6 +910,22 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       // above. That is the one thing the two routes must share.
       "/v1/spend",
       new Map<string, Route>([["POST", { handler: recordSpend, body: "json" }]])
+    ],
+    [
+      // What the gate would say about spending in this channel right now (#335).
+      //
+      // A separate path from `/v1/spend` rather than a `GET` beside its `POST`,
+      // and the reason is the ESLint block: that one is keyed on the *file*
+      // `spend-route.ts` and bans the sheet and enforcement imports this handler
+      // needs, so one path with two methods would invite a later reader to merge
+      // the modules — which is how "the one route on this listener with no
+      // authorization decision on it" stops being true. Two paths, two modules,
+      // two blocks.
+      //
+      // No `body`, so the dispatcher drains the request for us and `ctx.body` is
+      // `undefined`. The channel comes from the certificate here as everywhere.
+      "/v1/budget",
+      new Map<string, Route>([["GET", { handler: readBudget }]])
     ],
     [
       // A human's answer to a hold.

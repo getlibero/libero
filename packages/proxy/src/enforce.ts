@@ -471,6 +471,23 @@ function pricedSpend(spend: BudgetSpend, prices: PriceLookup): PricedSpend {
 /**
  * Which daily limit, if any, is spent — or which pricing fault stops the call.
  *
+ * **Three callers now**: `decide` and `decideBuiltin` below, which refuse a tool
+ * call, and `./budget-route.ts`, which answers `GET /v1/budget` for an agent
+ * deciding whether to start a turn the proxy will never see (#335). The third
+ * one is why this is exported at all — the alternative was a second computation
+ * of the same comparison, which is exactly what `priceDaySpend` exists to avoid,
+ * and two answers to "is this channel over" that drift the first time a cache
+ * weight or the ordering below changes. It is exported from this module and
+ * **not from ./index.ts**, for `priceDaySpend`'s reason: the rule stays in here.
+ *
+ * **The warning half must not follow it out.** `crossedThreshold` below is the
+ * soft counterpart, and it is reachable only through `WarningClaimer`, which
+ * `./dispatch.ts` argues a `SpendReader` must never be widened to hold: claiming
+ * is a read with a side effect, and a budget *read* that claimed one would spend
+ * a channel's single daily warning on an answer it gave to a background pass and
+ * to nobody in the channel. If a future reader wants `GET /v1/budget` to report
+ * the warning too, that is the sentence to re-read first.
+ *
  * **Order is load-bearing, and it is not the order the limits are declared in.**
  *
  * Pricing faults come first, because a channel whose spend cannot be priced has
@@ -493,7 +510,7 @@ function pricedSpend(spend: BudgetSpend, prices: PriceLookup): PricedSpend {
  * "this deployment is misconfigured", they are "this channel cannot be capped as
  * its sheet asks".
  */
-function exhaustedLimit(
+export function exhaustedLimit(
   sheet: TeamSheet,
   spend: BudgetSpend,
   prices: PriceLookup
@@ -514,6 +531,36 @@ function exhaustedLimit(
     return { reason: "budget_exhausted", limit: "daily_tool_calls" };
   }
   return null;
+}
+
+/**
+ * The same, for a caller holding the store's state rather than a sheet.
+ *
+ * `priceDaySpendFromState`'s shape, with `decideFromState`'s answers for the two
+ * states that are not a sheet: a channel with no sheet, or one whose sheet could
+ * not be read, is refused rather than allowed. The gate answers those two the
+ * same way, and this being the fourth `…FromState` is the cost of the
+ * convention — the alternative is a three-line `switch` in a route, which is the
+ * second copy of "what a missing sheet means" that drifts.
+ *
+ * A caller reaching either of them in practice is worth a look rather than a
+ * shrug: the agent side already declines to run a background pass for a channel
+ * whose sheet it could not read, so a `no_team_sheet` answered here means the
+ * two processes disagree about the same file.
+ */
+export function exhaustedLimitFromState(
+  state: SheetState,
+  spend: BudgetSpend,
+  prices: PriceLookup
+): ToolRefusal | null {
+  switch (state.status) {
+    case "absent":
+      return { reason: "no_team_sheet" };
+    case "unusable":
+      return { reason: "team_sheet_unreadable" };
+    case "active":
+      return exhaustedLimit(state.sheet, spend, prices);
+  }
 }
 
 /**

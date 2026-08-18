@@ -67,6 +67,11 @@
 // - **The meter.** The call reports through the same `SpendReport` path recall
 //   and the quiescence sweep use, so `daily_tokens` and `daily_usd` bound it the
 //   way they bound a task. The backstop, not the mechanism.
+// - **`maySpend`** (#335). A channel over its caps embeds nothing — asked in
+//   `embed()` rather than at the head, because the index must go on matching the
+//   directory whatever the budget is doing. `./summarize.ts`'s header carries
+//   the argument for why declining is this process's own and why it fails
+//   closed; it is the same one here.
 //
 // ## And what it deliberately does not do
 //
@@ -135,6 +140,15 @@ export interface SkillEmbedSweepOptions {
   settings: (channel: string) => Promise<SkillEmbedSettings | null>;
   /** Reports one call's spend to the proxy's meter. Must not throw. */
   reportTurn: (channel: string, turn: CompletedTurn & { id: string }) => Promise<void>;
+  /**
+   * Whether this channel may be spent for at all (#335). Must not throw.
+   *
+   * Required for `reportTurn`'s reason — an option that defaulted would default
+   * to unbounded — and asked **after** reconciliation rather than before it. See
+   * the call site: the index has to keep matching the directory whatever the
+   * channel's budget is doing, because the next task reads it.
+   */
+  maySpend: (channel: string) => Promise<boolean>;
   logger?: Logger;
   now?: () => number;
   /** Cancels in-flight work when the process is stopping. */
@@ -272,6 +286,15 @@ export function createSkillEmbedSweep(options: SkillEmbedSweepOptions): SkillEmb
     const client = options.embedding;
     const model = options.embeddingModel;
     if (client === null || model === undefined) return 0;
+
+    // Here, and not at the head of the pass (#335). Reconciliation runs above
+    // and is correctness-required: the index is what `./skill-recall.ts` reads
+    // at the head of the next task, and a channel that stopped reconciling
+    // because it was over its token cap would answer that task with a stale
+    // library — degrading a reply somebody *is* waiting on, to save a provider
+    // call that the branch above may already have skipped. The gate belongs
+    // where the spending starts, which is one line below this.
+    if (!(await options.maySpend(channel))) return 0;
 
     try {
       const response = await client.embed({

@@ -1244,6 +1244,38 @@ A meter that refuses the report or cannot be reached is logged as
 `spend_report_failed` with the count it did not learn, and the thread still gets
 its answer — an operator's counter is not worth a user's reply.
 
+### A turn nobody asked for checks first
+
+The reports above are after the fact, and for a *task* that is enough — a person
+asked, and the tool calls that task makes meet the proxy's gate. It is not enough
+for a background pass. A completion never traverses the proxy at all, so a turn
+that calls no tool met no bound whatever a channel had spent, and three of the
+four passes here spend exactly that way.
+
+Since #335 each of those three asks first, over `GET /v1/budget`, and a channel
+over its caps runs nothing. Two things about it are worth knowing before editing
+one of those files.
+
+**Where the question goes is load-bearing.** It sits immediately before the
+provider call, never at the head of the pass. The skill passes reconcile their
+index and prune applied proposals *first*, because that is bookkeeping the next
+task reads: a channel that stopped reconciling because it was over a token cap
+would answer the next mention from a stale library, degrading a reply somebody
+*is* waiting on in order to save a call that pass was about to skip anyway. The
+quiescence sweep asks only once it knows it has a quiet thread, so a channel with
+`[memory] summarize = false` — or nothing to summarize — costs no round trip at
+all.
+
+**The lifecycle job asks nothing, and holds nothing to ask with.** It has no
+completion client, no embedding client, no spend reporter and no budget client.
+That pairing is what makes "deterministic, no model call" a fact about what was
+wired rather than a promise the module makes.
+
+It is not enforcement, and `packages/proxy/README.md` says so where the route is
+introduced: this process cannot be stopped by a service that never sees its
+completions. What it is, is this process declining to spend a channel's budget on
+work nobody asked for.
+
 ## When the proxy cannot be reached
 
 The channel is told, in one line, and the task ends there. This is a departure
@@ -1259,9 +1291,19 @@ from being ignored, by the people who cannot see the log.
 | Proxy down, or it refused this certificate | Says the proxy could not be reached | `tools_unavailable`, `reason: connection_reset` or `unreachable` |
 | Shutting down mid-listing | Nothing | none |
 | It refused the spend report, or could not be reached for it | The answer, unchanged | `spend_report_failed`, with `reason` and the count the meter did not learn |
+| It could not be asked whether a background pass may spend | Nothing — no person is waiting | `budget_unreadable`, with `reason` |
 
 Neither message answers what was asked. A synthesized answer to the question is
 the thing this process will not do when something is broken.
+
+**The last row goes the other way from the one above it, and the difference is
+who is waiting** (#335). An unreported turn costs an operator a counter and must
+not cost a user their reply, so a failed spend report is swallowed and the answer
+still goes out. A background pass has nobody waiting on it, so the same outage
+gets the opposite treatment: the pass declines and spends nothing. The sharper
+reason is that the two failures arrive together — during an outage `reportTurn`
+fails at the same moment, so spending anyway would be spending that is both
+unbounded *and* unrecorded.
 
 A failed tool *call* is different and never ends a task: a refusal, a hold, or
 an upstream error comes back to the model as tool-result content and the task

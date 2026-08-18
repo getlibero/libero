@@ -69,6 +69,14 @@ the schema's `[ambient]` block already refused to make a field — and it govern
 it neither draws on the window nor is blocked by it. That discriminant is
 `DueEntry.kind`'s word list, deliberately, so the phase has one vocabulary.
 
+#335 came out of #319 rather than out of the roadmap, and it is the reason that
+issue is not next: the evaluation turn promises that a channel at its cap spends
+nothing, and the agent side had no way to find out. `GET /v1/budget` is the read
+that closes it — advisory rather than enforcement, because a completion never
+reaches the proxy — and the three background passes that spend now ask before
+they do. The gate sits immediately before each provider call rather than at the
+head of a pass, so a channel over its caps still reconciles its skill index.
+
 What phase 4 does *not* have yet is the turn: the evaluation is #319, so a due
 channel logs `ambient_due`, nothing is built without a heartbeat factory, and
 `answer_after_idle_minutes` is still unread. What exists:
@@ -147,7 +155,7 @@ code is a paragraph the next reader will not find.
 | Question | Read |
 | --- | --- |
 | What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes, what the skill-author turn sees of a task that curation deliberately does not, and why the merge turn takes no handler | `packages/agent/README.md` |
-| Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, approvals, the audit log's write discipline | `packages/proxy/README.md` |
+| Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, why the budget read is advisory rather than a second enforcement point, approvals, the audit log's write discipline | `packages/proxy/README.md` |
 | Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for, and why the proactive post surface is minted in the composition, why its window is four hours, and why its two sources are named for the wake reason | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, why the channel-post verb is a second exception to the `CardPoster` narrowing and a different kind of one, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |

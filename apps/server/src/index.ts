@@ -24,6 +24,7 @@
 import {
   createCompletionClient,
   createEmbeddingClient,
+  createProxyBudgetClient,
   createProxySpendClient,
   createProxyTransport,
   totalTokens
@@ -135,6 +136,51 @@ const reportTurn = async (
   }
 };
 
+/**
+ * Whether a channel may be spent for at all, asked before a background turn runs
+ * (#335).
+ *
+ * `reportTurn`'s counterpart and its exact mirror: that one says what a turn
+ * cost after the fact, this one asks whether the turn should happen. The pairing
+ * exists because the two halves of the meter are only both reachable from here —
+ * a completion never goes near the tool proxy service, so a turn that calls no
+ * tool would otherwise meet no bound at all however far over its caps a channel
+ * was.
+ *
+ * A client per call, exactly as `reportTurn` builds a spend client per call: it
+ * is a transport and a channel id, and the channel comes from the client
+ * certificate at the other end.
+ *
+ * **Never throws, and answers `false` when it cannot ask.** The three passes
+ * that take this are the three nobody is waiting on, and the failure it refuses
+ * is the sharp one: during an outage their spend would be not merely unbounded
+ * but *unrecorded*, because `reportTurn` fails at the same moment and for the
+ * same reason. The argument for that direction is written out in
+ * `session/summarize.ts`, beside the gate it governs.
+ *
+ * The two failures are logged apart on purpose. A refusal is the steady state
+ * for a channel that is over its caps or has no sheet, and a `warn` per message
+ * would be noise; a question that could not be asked at all is what an operator
+ * needs when they come looking for why summarization stopped.
+ */
+const maySpend = async (channel: string): Promise<boolean> => {
+  let refusal;
+  try {
+    refusal = await createProxyBudgetClient({ transport, channel }).status(tasks.signal);
+  } catch (error) {
+    logger.log("warn", {
+      event: "budget_unreadable",
+      channel,
+      reason: error instanceof Error ? error.name : "unknown"
+    });
+    return false;
+  }
+
+  if (refusal === null) return true;
+  logger.log("info", { event: "budget_declined", channel, reason: refusal.reason });
+  return false;
+};
+
 // The quiescence sweep (#231). Built here rather than in compose.ts because it
 // needs the completion client, the embedding client and the spend sender, none
 // of which that file holds.
@@ -156,6 +202,7 @@ const summarize = createSummarySweep({
     };
   },
   reportTurn,
+  maySpend,
   signal: tasks.signal,
   logger
 });
@@ -206,6 +253,7 @@ const embedSkills = createSkillEmbedSweep({
     return { enabled: settings.skills.enabled, maxSkills: settings.skills.maxSkills };
   },
   reportTurn,
+  maySpend,
   signal: tasks.signal,
   logger
 });
@@ -213,11 +261,14 @@ const embedSkills = createSkillEmbedSweep({
 // The skill lifecycle job (#294): the stale and archive clocks, on channel
 // activity beside the two passes above.
 //
-// **No `reportTurn`, and that is the point rather than an omission.** This is the
-// first background pass in the process that holds nothing it could spend with —
-// no completion client, no embedding client, no meter — so "deterministic, no
-// model call" is a fact about what was wired rather than a promise the module
-// makes. Anyone adding one of those here should treat that as the question.
+// **No `reportTurn` and no `maySpend`, and that is the point rather than an
+// omission.** This is the first background pass in the process that holds
+// nothing it could spend with — no completion client, no embedding client, no
+// meter, and since #335 no way to ask about a budget either — so "deterministic,
+// no model call" is a fact about what was wired rather than a promise the module
+// makes. The two absences are one fact from both sides: a pass with nothing to
+// spend has nothing to ask about. Anyone adding either here should treat that as
+// the question.
 //
 // Same resolver and same opener as the pass above, so `[skills] enabled` is as
 // fresh for a clock as it is for a reply, and a channel with no sheet ages
@@ -264,6 +315,7 @@ const curateSkills = createSkillCuratePass({
     };
   },
   reportTurn,
+  maySpend,
   signal: tasks.signal,
   logger
 });

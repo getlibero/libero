@@ -188,6 +188,8 @@ function sweepWith(overrides: Partial<SkillEmbedSweepOptions> = {}) {
       reported.push(turn);
       return Promise.resolve();
     },
+    // The channel is under its caps unless a case says otherwise (#335).
+    maySpend: () => Promise.resolve(true),
     now: () => AT,
     ...overrides
   };
@@ -384,6 +386,46 @@ describe("createSkillEmbedSweep", () => {
     tick(1);
     expect(await sweep(CHANNEL, store)).toBe(1);
     expect(calls()).toBe(2);
+  });
+
+  // #335, and the placement is the assertion. The gate sits inside `embed()`,
+  // after reconciliation, because the index is what the *next task* reads —
+  // stopping it because the channel is over a token cap would degrade a reply
+  // somebody is waiting on in order to save a call this pass was going to skip
+  // anyway.
+  it("still reconciles the index for a channel over its caps, and embeds nothing", async () => {
+    skill("base-images", CONTAINERS);
+    const { sweep, reported } = sweepWith({ maySpend: () => Promise.resolve(false) });
+
+    expect(await sweep(CHANNEL, store)).toBe(0);
+
+    // The vector was not bought…
+    expect(embedded()).toEqual([]);
+    expect(reported).toEqual([]);
+    // …and the library is still indexed, which is the half that must survive.
+    expect(store.listSkills().map(entry => entry.name)).toEqual(["base-images"]);
+  });
+
+  it("does not ask about a budget when there is nothing to embed", async () => {
+    // Everything above `embed()` is free, and a channel whose skills all carry
+    // a current vector reaches no provider call — so there is nothing to ask
+    // about and no round trip to pay for.
+    skill("base-images", CONTAINERS);
+    let asked = 0;
+    const gate = (): Promise<boolean> => {
+      asked += 1;
+      return Promise.resolve(true);
+    };
+
+    const first = sweepWith({ maySpend: gate });
+    expect(await first.sweep(CHANNEL, store)).toBe(1);
+    expect(asked).toBe(1);
+
+    // Second pass: reconciliation runs, nothing needs a vector, no question.
+    tick(SWEEP_INTERVAL_MS);
+    const second = sweepWith({ maySpend: gate });
+    expect(await second.sweep(CHANNEL, store)).toBe(0);
+    expect(asked).toBe(1);
   });
 
   it("does nothing at all, and asks nothing, with no embedding provider", async () => {

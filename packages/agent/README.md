@@ -153,6 +153,34 @@ and everything counted so far goes with the rejection.
 The turn id is `<task>.<n>`, so each turn is its own idempotency key and a retry
 is a `duplicate` rather than a double charge.
 
+### And whether to spend it at all
+
+`src/proxy/budget.ts` is that client's mirror (#335): `GET /v1/budget`, answering
+what the tool gate would say about spending in this channel right now. The
+asymmetry between the two is deliberate on both ends — the spend client writes a
+counter and can read nothing, this one reads and can write nothing.
+
+It exists because a completion does not go through the tool proxy service at all.
+That service enforces `[budget]` on a tool call, which is the only spend it
+observes, so a turn that calls no tool met no bound however far over its caps a
+channel was. The four background passes in `apps/server` are the callers; three
+of them spend, and each asks before it does.
+
+**It is advisory rather than a boundary**, and the header says so: a compromised
+agent process does not ask. What it buys is a correctly-functioning deployment
+not spending a channel's budget on work nobody requested.
+
+Two shapes differ from the spend client, and both invert its stated reasoning.
+It **takes the caller's `AbortSignal`** — that one refuses a signal because a
+cancelled task still spent tokens, and this one is asked *before* anything is
+spent, so cancelling is exactly right. And it carries a short deadline of its
+own as well, because a background pass holds only the shutdown signal and runs on
+its channel's session mutex: a question left hanging would stall the next task's
+context read behind it.
+
+A failure throws. What an unanswerable question *means* is the composer's, and
+`apps/server` answers "do not spend".
+
 **Four numbers, never a total.** Weighting is the proxy's, from `[budget]
 cache_read_weight` and `cache_write_weight` — cache reads run about a tenth of
 input price, so a meter that collapsed the tiers would be wrong by an order of

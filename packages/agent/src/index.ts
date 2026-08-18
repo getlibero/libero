@@ -130,5 +130,8 @@ export type {
 export { createProxySpendClient } from "./proxy/spend.js";
 export type { ProxySpendClient, ProxySpendClientOptions, SpendOutcome } from "./proxy/spend.js";
 
+export { DEFAULT_BUDGET_TIMEOUT_MS, createProxyBudgetClient } from "./proxy/budget.js";
+export type { ProxyBudgetClient, ProxyBudgetClientOptions } from "./proxy/budget.js";
+
 export { createProxyApprovalsClient } from "./proxy/approvals.js";
 export type { ProxyApprovalsClient, ProxyApprovalsClientOptions } from "./proxy/approvals.js";

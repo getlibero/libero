@@ -17,6 +17,8 @@ import {
   DESTRUCTIVE_VERBS,
   decide as decideWithPrices,
   decideFromState as decideFromStateWithPrices,
+  exhaustedLimit,
+  exhaustedLimitFromState,
   isDestructiveName,
   permittedToolSources,
   permittedToolSourcesFromState,
@@ -1631,5 +1633,104 @@ describe("a built-in tool", () => {
 
   it("is absent from the listing when the sheet grants none", () => {
     expect(permittedTools(sheetOf(BASE)).some(tool => tool.server === "libero")).toBe(false);
+  });
+});
+
+// The budget comparison on its own (#335). It was private until `GET /v1/budget`
+// needed the same answer the gate gives, and these cases pin the rule directly
+// rather than through `decide` — which is what makes "the read and the gate
+// agree" a property of one function rather than of two that happen to match
+// today.
+describe("the budget comparison, asked directly", () => {
+  const capped = sheetOf({ ...BASE, budget: { daily_tokens: 1_000, daily_tool_calls: 10 } });
+
+  it("answers null for a channel under every limit", () => {
+    expect(exhaustedLimit(capped, spending(999, 9), NO_PRICES)).toBeNull();
+  });
+
+  it("is >= rather than >, because spending exactly the limit leaves nothing", () => {
+    expect(exhaustedLimit(capped, spending(999, 0), NO_PRICES)).toBeNull();
+    expect(exhaustedLimit(capped, spending(1_000, 0), NO_PRICES)).toEqual({
+      reason: "budget_exhausted",
+      limit: "daily_tokens"
+    });
+
+    expect(exhaustedLimit(capped, spending(0, 9), NO_PRICES)).toBeNull();
+    expect(exhaustedLimit(capped, spending(0, 10), NO_PRICES)).toEqual({
+      reason: "budget_exhausted",
+      limit: "daily_tool_calls"
+    });
+  });
+
+  it("names tokens before tool calls when both are spent", () => {
+    // The stated order, so a channel over several gets the same answer every
+    // time rather than one that depends on which comparison ran first.
+    expect(exhaustedLimit(capped, spending(1_000, 10), NO_PRICES)).toEqual({
+      reason: "budget_exhausted",
+      limit: "daily_tokens"
+    });
+  });
+
+  it("reports a pricing fault ahead of any limit that is also spent", () => {
+    // The load-bearing half of the ordering. A channel whose spend cannot be
+    // priced has an unknown position against its dollar cap, so answering
+    // `daily_tokens` would send an operator to raise a number that is not the
+    // problem.
+    const dollarCapped = sheetOf({
+      ...BASE,
+      budget: { daily_tokens: 1_000, daily_tool_calls: 10, daily_usd: 5 }
+    });
+    const unpriced: BudgetSpend = {
+      ...spending(5_000, 50),
+      byModel: [
+        { model: "some-vendor/some-model", inputTokens: 5_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+      ]
+    };
+
+    expect(exhaustedLimit(dollarCapped, unpriced, NO_PRICES)).toEqual({
+      reason: "model_not_priced",
+      model: "some-vendor/some-model"
+    });
+  });
+
+  it("never consults the price table for a sheet with no dollar cap", () => {
+    // What keeps a self-hosted channel on an unpriced model working. The lookup
+    // would throw if it ran.
+    const exploding: PriceLookup = {
+      priceFor: () => {
+        throw new Error("the price table was consulted");
+      },
+      version: "test"
+    };
+
+    expect(exhaustedLimit(capped, spending(10, 1), exploding)).toBeNull();
+  });
+
+  describe("over a store's state rather than a sheet", () => {
+    it("passes an active sheet through to the comparison above", () => {
+      expect(
+        exhaustedLimitFromState({ status: "active", sheet: capped, stale: false }, spending(1_000, 0), NO_PRICES)
+      ).toEqual({ reason: "budget_exhausted", limit: "daily_tokens" });
+    });
+
+    it("refuses the two states that are not a sheet, as the gate does", () => {
+      // Not "spendable". A channel this process cannot read a sheet for is one
+      // it cannot say anything about, and answering yes would put the read out
+      // of step with `decideFromState`.
+      expect(exhaustedLimitFromState({ status: "absent" }, NO_SPEND, NO_PRICES)).toEqual({
+        reason: "no_team_sheet"
+      });
+      expect(exhaustedLimitFromState({ status: "unusable" }, NO_SPEND, NO_PRICES)).toEqual({
+        reason: "team_sheet_unreadable"
+      });
+    });
+
+    it("answers a stale sheet rather than refusing it", () => {
+      // A stale sheet is enforced, not refused — `decideFromState`'s rule, and
+      // the read must not invent a stricter one.
+      expect(
+        exhaustedLimitFromState({ status: "active", sheet: capped, stale: true }, spending(1, 0), NO_PRICES)
+      ).toBeNull();
+    });
   });
 });

@@ -16,6 +16,14 @@
 // is deliberately not wired, and anyone adding one of those options here should
 // take that as the question rather than the answer.
 //
+// **It holds no `maySpend` either, and that is the same fact from the other
+// side** (#335). The other three passes must ask the tool proxy service whether
+// their channel is over its caps before they spend; this one has nothing to ask
+// about. The pairing is what makes the claim above legible rather than merely
+// stated — a pass with no reporter and no gate is a pass that cannot spend, and
+// anyone wiring one of the two here should notice they are also wiring the
+// other.
+//
 // ## What the job may move, and what it must not
 //
 // The arbitration is `planSkillLifecycle` below and its rules are three:
