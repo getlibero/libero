@@ -21,6 +21,7 @@ import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import { createProxyApprovalsClient } from "@getlibero/agent";
 import type {
   CardPoster,
+  ChannelPoster,
   DecisionHandler,
   Logger,
   MentionHandler,
@@ -31,6 +32,8 @@ import type {
   UserDirectory
 } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
+import { createProactivePoster } from "./proactive/proactive.js";
+import type { ProactivePoster } from "./proactive/proactive.js";
 import { createAmbientScheduler } from "./session/ambient.js";
 import type { AmbientHeartbeat, AmbientScheduler } from "./session/ambient.js";
 import type { ChannelLister } from "./session/channels.js";
@@ -81,6 +84,18 @@ export interface SlackSurfaceLike {
    */
   readonly cards?: CardPoster;
   /**
+   * Where a proactive post goes — when there is anywhere (#318).
+   *
+   * Optional on `cards`' terms and with a sharper degradation: without it the
+   * ambient heartbeat is not built at all, because everything a heartbeat
+   * produces is a post. A turn that spent model calls and could say nothing
+   * would be worse than the clock this composition already ships with no reader
+   * — a due channel logs `ambient_due` and runs nothing, which is honest.
+   *
+   * Slack always has one. `createSlackSurface` returns it.
+   */
+  readonly channel?: ChannelPoster;
+  /**
    * Who a user id is, for the transcript the router assembles.
    *
    * Optional on the same terms as `cards`: a front-end with no directory to ask
@@ -123,6 +138,15 @@ export type SlackSurfaceFactory = (wiring: {
    */
   readonly onRevision: RevisionHandler;
 }) => SlackSurfaceLike;
+
+/**
+ * Builds the heartbeat over the capability that lets it speak (#318).
+ *
+ * The argument is the whole reason this is a factory. See `ServerDeps.heartbeat`
+ * — a `ProactivePoster` is minted inside `createServer` and this is the only
+ * hand it is dealt into.
+ */
+export type AmbientHeartbeatFactory = (post: ProactivePoster) => AmbientHeartbeat;
 
 export interface ServerDeps {
   readonly slack: SlackSurfaceFactory;
@@ -239,15 +263,32 @@ export interface ServerDeps {
    */
   readonly channels?: ChannelLister;
   /**
-   * What runs when a channel's cadence comes due (#319).
+   * What runs when a channel's cadence comes due (#319), as a factory over the
+   * one thing this process can speak with.
    *
    * Optional beside `channels` rather than folded into it, because the two are
    * separable in the direction that matters: a deployment can have the clock
    * without the turn — which is what ships here — and a due channel then logs
    * `ambient_due` and runs nothing. The other direction is not a deployment: a
    * heartbeat with no enumerator is never invoked.
+   *
+   * **A factory rather than a built pass, and that is the withholding
+   * discipline rather than a style (#318).** Every other background pass —
+   * `summarize`, `embedSkills`, `lifecycleSkills`, `curateSkills` — arrives
+   * already built, because everything it needs is something the process holds.
+   * This one needs a capability that does not exist until `createServer` calls
+   * the `slack` factory, so an already-built heartbeat would force this function
+   * to hand the poster back out to index.ts, and from there it is reachable by
+   * everything the process constructs. As a factory the capability is minted and
+   * consumed inside this file and reaches exactly one consumer.
+   *
+   * What that buys is checkable rather than asserted: the four passes above are
+   * constructed with no `ProactivePoster` and cannot name the type, so the
+   * quiescence sweep, the skill-embed pass, the lifecycle job and the merge
+   * curator still cannot post — which is what `session/skill-curate.ts` says
+   * about why a proposal is a file, and it stays true after this.
    */
-  readonly heartbeat?: AmbientHeartbeat;
+  readonly heartbeat?: AmbientHeartbeatFactory;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -267,6 +308,21 @@ export interface ServerDeps {
    * three, or a thread activated on one clock would be read on another.
    */
   readonly sessionClock?: () => number;
+  /**
+   * Injected for tests: the proactive post window's clock. Omitted in production.
+   *
+   * A fourth clock, and separate from the other three for the reason
+   * `sessionClock` gives about being separate from `now`: they measure different
+   * things and a test that pinned one would silently be pinning another. `now`
+   * is the approval deadline's. `sessionClock` reaches exactly three readers —
+   * eviction, `queuedMs`, and the follow-up window — and its own comment says
+   * all three or none, because a thread activated on one clock must not be read
+   * on a different one. This one measures how long it has been since the agent
+   * last spoke in a channel, which is none of those, and folding it into either
+   * would make a test about a four-hour window also a test about session
+   * eviction.
+   */
+  readonly proactiveClock?: () => number;
   /** Injected for tests: the approval deadline's timer. Omitted in production. */
   readonly scheduler?: Scheduler;
 }
@@ -276,6 +332,17 @@ export interface ServerDeps {
 // exactly this. Kept to the dependencies a caller must construct: the router,
 // the task runner, and the handler are wired below and are nobody else's to
 // build.
+// The proactive post surface (#318). Exported for the composition roots' reason
+// above and for one more: `HEARTBEAT_POST_WINDOW_MS` is the bound a test asserts
+// against, and a caller stepping a clock over `4 * 60 * 60 * 1000` would be
+// asserting a number nobody named.
+export { HEARTBEAT_POST_WINDOW_MS, createProactivePoster } from "./proactive/proactive.js";
+export type {
+  ProactivePost,
+  ProactivePoster,
+  ProactivePosterOptions
+} from "./proactive/proactive.js";
+
 export {
   DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -550,6 +617,32 @@ export function createServer(deps: ServerDeps): Server {
   // at composition time would hold `undefined` forever. This is the same
   // late-binding the `names` lookup above does with the user directory, and for
   // the same reason.
+  // The one posting capability in this process (#318), and the only place it is
+  // minted. Nothing below is handed it except the heartbeat factory.
+  //
+  // Built from `surface.channel` rather than from `surface.cards`, which is the
+  // distinction the gateway draws: a card answers a held tool call and needs a
+  // thread from an inbound event; this is a message with no event behind it. The
+  // window that governs how often it may be used lives in the poster, not here
+  // — see `HEARTBEAT_POST_WINDOW_MS`.
+  const proactive: ProactivePoster | undefined =
+    surface.channel === undefined
+      ? undefined
+      : createProactivePoster({
+          poster: surface.channel,
+          logger,
+          ...(deps.proactiveClock !== undefined ? { now: deps.proactiveClock } : {})
+        });
+
+  // No poster, no heartbeat. Everything a heartbeat produces is a post, so a
+  // turn built without one would spend model calls to reach a surface it does
+  // not have — worse than the clock with no reader this composition already
+  // supports, where a due channel logs `ambient_due` and runs nothing.
+  const heartbeat =
+    deps.heartbeat !== undefined && proactive !== undefined
+      ? deps.heartbeat(proactive)
+      : undefined;
+
   const ambient =
     deps.channels === undefined
       ? undefined
@@ -564,7 +657,7 @@ export function createServer(deps: ServerDeps): Server {
               heartbeatEveryMs: settings.ambient.heartbeatEveryMs
             };
           },
-          ...(deps.heartbeat !== undefined ? { heartbeat: deps.heartbeat } : {}),
+          ...(heartbeat !== undefined ? { heartbeat } : {}),
           ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
           logger
         });

@@ -1,16 +1,19 @@
-// The Web API adapter: @slack/web-api behind a MessagePoster, a CardPoster, and
-// a UserDirectory.
+// The Web API adapter: @slack/web-api behind a MessagePoster, a CardPoster, a
+// ChannelPoster, and a UserDirectory.
 //
 // Separate from the inbound adapter because it holds the other token. The bot
 // token (`xoxb-`) posts and reads history and the directory; the app token
 // (`xapp-`) opens the socket and can do none of it. Keeping them on two objects
 // means neither adapter is a place both are reachable from.
 //
-// **One `WebClient` for all three verbs.** The client handles rate limits per
+// **One `WebClient` for all four verbs.** The client handles rate limits per
 // instance, so a second one built on the same bot token would give the process
 // two independent queues over Slack's API and neither would know what the other
 // had spent. That argument already governed `chat.postMessage` and
-// `chat.update`; `users.info` joins them for the same reason, and it is why the
+// `chat.update`; `users.info` joins them for the same reason, and the proactive
+// post (#318) is a fourth call on the same queue rather than a client of its
+// own — an unprompted message that raced a reply for the same rate limit would
+// be the one failure it is least acceptable to have. It is also why the
 // directory is built here rather than in a module of its own — which would also
 // have needed a fourth entry in eslint.config.mjs's deliberately enumerated
 // list of files allowed to import a Slack SDK.
@@ -30,18 +33,29 @@ import type {
 } from "./types.js";
 
 /**
- * The three call shapes this adapter makes, spelled out separately.
+ * The four call shapes this adapter makes, spelled out separately.
  *
  * Not one shape with optional `text` and `attachments`:
  * `ChatPostMessageArguments` is a union requiring exactly one of
  * text/blocks/attachments, and a shape where both are optional satisfies no
  * member of it. The same reason the calls below are written as literals rather
  * than spreads — this is that constraint moved up into the type.
+ *
+ * `ChannelMessage` is the proactive post (#318), and adding it costs one thing
+ * worth naming: because it is `TextMessage` without `thread_ts`, the union no
+ * longer makes a reply that forgot its thread a compile error. Nothing replaces
+ * that — the shapes are structural and a supertype in a union accepts its
+ * subtypes' omissions. What stands in its place is that all four calls are
+ * literals in this one file, each named for the verb it serves, and
+ * `web-api.test.ts` asserts the argument each one sends.
  */
-interface TextMessage {
+interface ChannelMessage {
   channel: string;
-  thread_ts: string;
   text: string;
+}
+
+interface TextMessage extends ChannelMessage {
+  thread_ts: string;
 }
 
 interface CardMessage extends TextMessage {
@@ -58,7 +72,7 @@ interface CardUpdate {
 /** The slice of WebClient this adapter uses. Method syntax — see socket-mode.ts. */
 export interface WebClientLike {
   chat: {
-    postMessage(args: TextMessage | CardMessage): Promise<unknown>;
+    postMessage(args: ChannelMessage | TextMessage | CardMessage): Promise<unknown>;
     update(args: CardUpdate): Promise<unknown>;
   };
   users: {
@@ -216,9 +230,9 @@ function defaultCreateClient(botToken: string, logger: Logger): WebClientLike {
  * Two named members rather than one object implementing everything, because the
  * consumers are genuinely different: the gateway takes a `MessagePoster` and
  * must not be able to reach a card or a directory, and the composing app takes
- * the other two and must not be able to post a reply out of band. One returned
- * object with every method on it would make each of those a habit rather than a
- * type.
+ * the others and must not be able to post a *reply* out of band — since #318 it
+ * may start a message, and it still may not answer one. One returned object with
+ * every method on it would make each of those a habit rather than a type.
  */
 export function createWebApiSurface(options: WebApiOptions): WebApiSurface {
   const create = options.createClient ?? defaultCreateClient;
@@ -242,6 +256,28 @@ export function createWebApiSurface(options: WebApiOptions): WebApiSurface {
         // internally, so anything that reaches us is a decision Slack made —
         // `not_in_channel`, `channel_not_found`, `msg_too_long` — and posting
         // again would either fail identically or post twice.
+        throw chatError("post_failed", cause);
+      }
+    },
+
+    async postToChannel(target): Promise<void> {
+      try {
+        // The same call as a reply with `thread_ts` left off, which is what
+        // makes it a top-level message rather than a thread one. Nothing else
+        // differs, deliberately: a proactive post is a message like any other
+        // once it has been decided on, and the deciding happened well above
+        // here.
+        await client.chat.postMessage({
+          channel: target.channelId,
+          text: target.text
+        });
+      } catch (cause) {
+        // `postThreadReply`'s reasoning, and one addition. The WebClient has
+        // already retried what is retryable, so this is a decision Slack made.
+        // The addition is that the caller must not retry either even where it
+        // could: the window above was already spent on this attempt, and a
+        // surface that retried an unprompted post would be one channel's
+        // failure turning into repeated speech in it.
         throw chatError("post_failed", cause);
       }
     },

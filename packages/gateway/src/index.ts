@@ -6,6 +6,7 @@ export type {
   AppIdentity,
   AppSelf,
   CardPoster,
+  ChannelPoster,
   DecisionHandler,
   GatewayErrorReason,
   MentionHandler,
@@ -63,6 +64,9 @@ export type {
   ChecklistCardStatus,
   ChecklistStep
 } from "./slack/checklist-card.js";
+
+export { renderProactivePost } from "./slack/proactive-post.js";
+export type { ProactivePostInput, ProactiveSource } from "./slack/proactive-post.js";
 
 export { DEFAULT_BACKOFF, nextDelayMs } from "./slack/backoff.js";
 export type { BackoffPolicy } from "./slack/backoff.js";

@@ -155,6 +155,73 @@ describe("createWebApiSurface", () => {
     expect(attempts).toBe(1);
   });
 
+  describe("the proactive post", () => {
+    it("posts to the channel with no thread_ts at all", async () => {
+      // The whole difference from a reply, and the reason it is a separate
+      // verb: an absent `thread_ts` is what makes Slack render a top-level
+      // message. A blank one would be a thread whose id is the empty string.
+      const fake = fakeClient();
+
+      await poster(fake).postToChannel({ channelId: "C0OPS", text: "three questions have sat since Friday" });
+
+      expect(fake.calls).toEqual([{ channel: "C0OPS", text: "three questions have sat since Friday" }]);
+      expect(fake.calls[0]).not.toHaveProperty("thread_ts");
+    });
+
+    it("says a failed post failed, with Slack's own code", async () => {
+      const fake = fakeClient(() =>
+        Promise.reject(new WebAPIPlatformError({ ok: false, error: "not_in_channel" }))
+      );
+
+      const error = await poster(fake)
+        .postToChannel({ channelId: "C0OPS", text: "hi" })
+        .catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(GatewayError);
+      expect(error).toMatchObject({
+        reason: "post_failed",
+        retryable: false,
+        slackError: "not_in_channel"
+      });
+    });
+
+    it("carries no SDK error detail out of the adapter", async () => {
+      const fake = fakeClient(() =>
+        Promise.reject(
+          new WebAPIHTTPError(429, "Too Many Requests", { authorization: "Bearer xoxb-secret" })
+        )
+      );
+
+      const error = (await poster(fake)
+        .postToChannel({ channelId: "C0OPS", text: "hi" })
+        .catch((cause: unknown) => cause)) as GatewayError;
+
+      expect(error.message).toBe("post_failed");
+      expect(error.slackError).toBeUndefined();
+      expect(JSON.stringify({ message: error.message, slackError: error.slackError })).not.toContain(
+        "xoxb-"
+      );
+    });
+
+    it("attempts once, however it fails", async () => {
+      // Sharper here than for a reply. The window above was spent on this
+      // attempt and is not refunded, so a retry inside the adapter would be the
+      // one thing the rate limit exists to prevent — repeated unprompted speech
+      // in a channel that is failing for a reason retrying cannot fix.
+      let attempts = 0;
+      const fake = fakeClient(() => {
+        attempts += 1;
+        return Promise.reject(new WebAPIPlatformError({ ok: false, error: "channel_not_found" }));
+      });
+
+      await poster(fake)
+        .postToChannel({ channelId: "C0GONE", text: "hi" })
+        .catch(() => undefined);
+
+      expect(attempts).toBe(1);
+    });
+  });
+
   describe("cards", () => {
     it("posts one attachment carrying the colour, the fallback, and the blocks", async () => {
       const fake = fakeClient(() => Promise.resolve({ ok: true, ts: "1717171717.000200" }));

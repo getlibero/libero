@@ -64,6 +64,32 @@ cards.
 stopped does not get to post" stays a property of the dispatcher rather than a
 habit of every caller.
 
+### The one other thing a composing app may say
+
+Since #318 the surface returns a third poster, `channel`, narrowed to
+`ChannelPoster`: one verb, `postToChannel`, which posts a message into a channel
+in **no thread at all**.
+
+It is a second named exception to the narrowing above and a different kind of
+one. A card's exemption is about lifetime — a card outlives the handler that
+raised it. This one is about there being no handler: ambient mode speaks with no
+inbound event behind it, so there is no `threadTs` to reply into and nothing for
+the dispatcher's rule to be about. The rule itself is untouched: `postThreadReply`
+still reaches no composing app, so this app can *start* a message and still
+cannot *answer* one out of band.
+
+All three posters come off the one `WebClient` for the reason the two did. A
+proactive post racing a reply for the same rate limit would be the worst of the
+failures available.
+
+**No rate limit lives in this package**, and none should. How often the agent may
+speak unprompted is a fact about a channel's team rather than about Slack's API;
+it is enforced where the decision is made — `HEARTBEAT_POST_WINDOW_MS` in
+`apps/server/src/proactive/proactive.ts`. What lives here is the call, and
+`renderProactivePost` beside the two card renderers, which answers a **string**
+rather than a `SlackCard`: nothing repaints a proactive post, there is no status
+to colour, and `postToChannel` deliberately returns no handle to edit it with.
+
 ### Who this app is, and where it is installed
 
 One `auth.test`, asked inside the connect ladder before the socket opens, and it
