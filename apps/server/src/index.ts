@@ -40,6 +40,7 @@ import {
   slackTokensFromEnv,
   storeRootFromEnv
 } from "./env.js";
+import { createChannelLister } from "./session/channels.js";
 import { createMemoryFileOpener } from "./session/memory.js";
 import { createQueryEmbedder } from "./session/embed.js";
 import { createRecall } from "./session/recall.js";
@@ -267,7 +268,7 @@ const curateSkills = createSkillCuratePass({
   logger
 });
 
-const { gateway } = createServer({
+const { gateway, ambient } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
   // here with them, because what it does is exit.
@@ -297,6 +298,10 @@ const { gateway } = createServer({
   transport,
   sheets: sheets,
   store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
+  // What the ambient clock enumerates (#317): the channels an operator
+  // provisioned, read out of the same root the sheets come from. A listing and
+  // nothing more — this process must never write there.
+  channels: createChannelLister({ channelsRoot, logger }),
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
   skills,
   summarize,
@@ -328,6 +333,16 @@ try {
   });
   process.exit(1);
 }
+
+// The ambient clock (#317), started only now — after the socket is up, because
+// what it needs from the gateway is the workspace, and that arrives with
+// `auth.test` inside `start()`. Starting it earlier would cost every enabled
+// channel a scan or two saying it does not know where it is installed.
+//
+// `undefined` only for a composition given no channel lister; this one always
+// supplies one. Nothing awaits it and a failing scan costs nothing here — it is
+// a clock, and this process answers mentions with or without one.
+ambient?.start();
 
 /**
  * How long shutdown waits for cancelled tasks to finish unwinding (#118).
@@ -384,6 +399,11 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     // to post anyway. What drains is the accounting, and a task that was
     // mid-turn loses its answer exactly as it did before.
     tasks.abort();
+    // And stop the clock, so nothing new is enumerated into a process that is
+    // going away. In-flight heartbeats unwind on the signal above with every
+    // other task; this only cancels the pending sleep, which is what would
+    // otherwise start a scan during the drain.
+    ambient?.stop();
     void gateway.stop({ drainMs: SHUTDOWN_DRAIN_MS }).then(() => {
       process.exit(0);
     });

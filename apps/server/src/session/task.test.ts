@@ -25,6 +25,7 @@ import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS
 } from "./sheet.js";
 import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor } from "./task.js";
@@ -48,6 +49,7 @@ const SETTINGS: TaskSettings = {
   followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
   memory: { ...DEFAULT_MEMORY_SETTINGS },
   skills: { ...DEFAULT_SKILL_SETTINGS },
+  ambient: { ...DEFAULT_AMBIENT_SETTINGS },
   messages: [{ role: "user", content: "@U024BE7LH asks: <@U0BOT> what is the deploy window?" }]
 };
 

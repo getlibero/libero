@@ -412,6 +412,32 @@ export interface UserDirectory {
 }
 
 /**
+ * Who this app is and where it is installed, as Slack's own answer.
+ *
+ * Two fields from one `auth.test`, which is why this is a shape rather than two
+ * methods: the second method would be a second call for a field the first
+ * response already carried.
+ */
+export interface AppSelf {
+  /**
+   * The app's own Slack user id — the `U…` that appears inside a `<@…>` token
+   * when someone mentions it.
+   */
+  readonly userId: string;
+  /**
+   * The workspace this bot token is installed in — Slack's `team_id`, under the
+   * name the agent side already uses for it (see `SessionKey`).
+   *
+   * Read for the ambient scheduler (#317), which enumerates channels off the
+   * filesystem and needs a session key for each: the channel id is on disk and
+   * the workspace is not. Discovered rather than configured, for the reason
+   * this whole interface exists — an operator-set workspace would be a required
+   * variable holding a value the process can ask for.
+   */
+  readonly workspace: string;
+}
+
+/**
  * Who this app is, as Slack's own answer rather than as configuration.
  *
  * One question, asked once, on the bot token — so it lives here with the other
@@ -426,14 +452,13 @@ export interface UserDirectory {
  */
 export interface AppIdentity {
   /**
-   * The app's own Slack user id — the `U…` that appears inside a `<@…>` token
-   * when someone mentions it.
+   * Both answers, from the one `auth.test` this app makes.
    *
    * Rejects with a `GatewayError` whose `retryable` splits the two ways this
    * fails: a revoked or invalid token is `auth_rejected` and final, and
    * anything else is `connect_failed` and worth another attempt.
    */
-  userId(): Promise<string>;
+  identify(): Promise<AppSelf>;
 }
 
 /** How long `stop()` waits for handlers that were already running. */
@@ -459,6 +484,21 @@ export interface StopOptions {
 
 /** The adapter's lifecycle, and all of it. */
 export interface SlackGateway {
+  /**
+   * The workspace this app is installed in, once it has asked (#317).
+   *
+   * `undefined` before `start()` has got as far as `auth.test`, and for a
+   * gateway composed with no `AppIdentity` at all — so a reader must handle
+   * not knowing rather than assume a connected process. It is a getter rather
+   * than a promise because the one caller, the ambient scheduler, runs on a
+   * clock and asks again on the next scan: a channel whose first tick was
+   * skipped for want of a workspace loses a scan, not a heartbeat.
+   *
+   * On the gateway rather than beside the poster because this is what resolves
+   * it — the identity call is inside the connect ladder, and the answer has no
+   * other owner.
+   */
+  readonly workspace: string | undefined;
   /**
    * Connects and begins dispatching. Resolves once connected; rejects if Slack
    * refused the credentials, which no amount of retrying changes.

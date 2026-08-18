@@ -22,6 +22,7 @@ import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   createServer
 } from "./compose.js";
@@ -180,7 +181,8 @@ function rig(redeemed: () => ProxyResponse) {
           history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
         memory: { ...DEFAULT_MEMORY_SETTINGS },
-        skills: { ...DEFAULT_SKILL_SETTINGS }
+        skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
         }),
     logger,
     now: () => NOW,

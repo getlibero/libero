@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   createMemoryFileOpener,
   createMessageStoreOpener,
@@ -139,7 +140,8 @@ function rig(options: RigOptions = {}) {
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
         memory: options.memory ?? CURATING,
-        skills: { ...DEFAULT_SKILL_SETTINGS }
+        skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     ...(options.withoutOpener === true
@@ -401,7 +403,8 @@ describe("what the curation turn is metered as", () => {
           history: { ...DEFAULT_HISTORY_BOUNDS },
           followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
           memory: CURATING,
-          skills: { ...DEFAULT_SKILL_SETTINGS }
+          skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
         }),
       store: createMessageStoreOpener({ storeRoot, channelsRoot }),
       memory: createMemoryFileOpener({ storeRoot, channelsRoot })

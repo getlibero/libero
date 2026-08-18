@@ -335,10 +335,18 @@ allow = ["api.github.com", "*.internal.example.com"]
 # its own. Off by default, always — every other block on this sheet argues its
 # own default by contrast with this one.
 #
-# PARSED BUT NOT YET READ. No code in either service consults these three
-# fields, so `enabled = true` turns nothing on. The block has its real shape as
-# of #316 and its first reader lands later in phase 4, so a sheet written today
-# keeps its shape when the heartbeat arrives.
+# `enabled` and the cadence have a reader as of #317: the agent process wakes on
+# a clock, enumerates the channels that opted in, and runs a heartbeat for each
+# one that is due. What a heartbeat then weighs — and whether anything is ever
+# posted — lands with the evaluation turn, so `answer_after_idle_minutes` is
+# still parsed and not yet read, and a channel that turns this on today gets the
+# clock and no posts.
+#
+# Two things follow from how the clock is built. A newly enabled channel waits
+# one full cadence before its first heartbeat, and so does every enabled channel
+# after a restart: windows the process was down for are skipped rather than
+# replayed, because a heartbeat asks what merits a post *now*. And an edit here
+# lands on the next tick — nothing caches this file, and nothing restarts.
 #
 # The cadence is an interval, not a cron expression, and there are no quiet
 # hours and no timezone. A tick with nothing new to weigh is silent and spends

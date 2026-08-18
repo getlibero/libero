@@ -261,6 +261,43 @@ export interface SkillSettings {
   readonly archiveAfterMs: number;
 }
 
+/**
+ * The `[ambient]` block: whether this channel is spoken to unbidden, and on what
+ * clock (#316, first read by #317).
+ *
+ * Not like the rest for `MemorySettings`' reason and more sharply. The proxy
+ * holds no second copy of this block — it governs a post this process makes on
+ * its own initiative, and there is no tool call in it for the proxy to decide —
+ * so what is resolved here *is* the decision rather than defence in depth.
+ */
+export interface AmbientSettings {
+  /**
+   * `[ambient] enabled`. Off unless the sheet says otherwise, and the one switch
+   * on this sheet whose default is off: everything else here is a bound on work
+   * somebody asked for, and this is work nobody did.
+   */
+  readonly enabled: boolean;
+  /**
+   * `[ambient] heartbeat_every_minutes`, in milliseconds. How often anyone
+   * looks.
+   *
+   * Minutes on the sheet because that is the unit an operator writes;
+   * milliseconds from here in, `summarizeAfterIdleMs`' conversion and its
+   * reason. It is a cadence rather than a schedule — see the schema on why this
+   * is an interval and not a cron expression.
+   */
+  readonly heartbeatEveryMs: number;
+  /**
+   * `[ambient] answer_after_idle_minutes`, in milliseconds. How long a question
+   * sits before a heartbeat may answer it.
+   *
+   * **Carried and not yet read**, the standing `authorAfterToolCalls` had ahead
+   * of #291: the scheduler decides *when to look*, and what counts as
+   * unanswered is the evaluation turn's question (#319).
+   */
+  readonly answerAfterIdleMs: number;
+}
+
 /** What a channel's team sheet resolved to. Everything here came out of the file. */
 export interface ChannelSettings {
   /** The sheet's `[llm] model`, or `AGENT_MODEL`. Passed to the provider verbatim. */
@@ -284,6 +321,8 @@ export interface ChannelSettings {
   readonly memory: MemorySettings;
   /** The `[skills]` block, which is not like the rest for the same reason. */
   readonly skills: SkillSettings;
+  /** The `[ambient]` block, which is not like the rest for a sharper one. */
+  readonly ambient: AmbientSettings;
 }
 
 /**

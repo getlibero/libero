@@ -32,7 +32,9 @@ export interface LogFields {
    * "tool_not_permitted". Spend: "spend_reported", "spend_report_failed",
    * "budget_warning".
    * Sessions: "queued", "session_evicted", "team_sheet_invalid",
-   * "team_sheet_unreadable". Message store: "store_opened",
+   * "team_sheet_unreadable", "channels_unreadable" — the last being the
+   * directory the other two read one file out of, which fails as a mount rather
+   * than as a sheet. Message store: "store_opened",
    * "store_unavailable", "store_write_failed". Memory: "memory_file_opened",
    * "memory_unavailable", "curated", "curation_failed". Embeddings:
    * "embeddings_ready", "embeddings_unconfigured". Thread summaries:
@@ -59,7 +61,14 @@ export interface LogFields {
    * reason, since a directory this process cannot read is a mount or a
    * permission where a store that cannot answer is a database, and
    * "query_embedding_failed" is separate from "recall_failed" because one of
-   * those now costs a task its summaries *and* its playbooks. Attribution:
+   * those now costs a task its summaries *and* its playbooks. Ambient (#317): "ambient_due",
+   * "ambient_failed", "ambient_overrun", "ambient_unidentified" — a heartbeat
+   * fired for a channel, one threw, one was still running when its next came
+   * due, and a scan that found due channels with no workspace to key a session
+   * on. Four words rather than one with a field, because the three failures
+   * want different answers from whoever is reading: a throwing heartbeat is a
+   * channel, a run of overruns is a cadence set too tight, and the last is this
+   * process not having got through `auth.test` yet. Attribution:
    * "user_lookup_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".

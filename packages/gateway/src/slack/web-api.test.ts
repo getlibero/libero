@@ -367,14 +367,19 @@ describe("createWebApiSurface", () => {
   });
 
   describe("identity", () => {
-    it("answers the app's own user id", () => {
+    it("answers the app's own user id and its workspace, from one call", () => {
       const fake = fakeClient(undefined, undefined, () =>
-        Promise.resolve({ ok: true, user_id: "U0LIBERO", bot_id: "B0LIBERO" })
+        Promise.resolve({ ok: true, user_id: "U0LIBERO", bot_id: "B0LIBERO", team_id: "T0LIBERO" })
       );
 
       // `user_id` and not `bot_id`: what appears inside a `<@…>` token is the
-      // bot's user id, and the two are different identifiers.
-      return expect(surface(fake).identity.userId()).resolves.toBe("U0LIBERO");
+      // bot's user id, and the two are different identifiers. `team_id` comes
+      // back under the agent side's name for it (#317) — one call, two answers,
+      // because a second method would be a second `auth.test`.
+      return expect(surface(fake).identity.identify()).resolves.toEqual({
+        userId: "U0LIBERO",
+        workspace: "T0LIBERO"
+      });
     });
 
     it.each(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"])(
@@ -385,7 +390,7 @@ describe("createWebApiSurface", () => {
         );
 
         const error = await surface(fake)
-          .identity.userId()
+          .identity.identify()
           .catch((cause: unknown) => cause);
 
         expect(error).toBeInstanceOf(GatewayError);
@@ -401,7 +406,7 @@ describe("createWebApiSurface", () => {
       );
 
       const error = await surface(fake)
-        .identity.userId()
+        .identity.identify()
         .catch((cause: unknown) => cause);
 
       expect(error).toMatchObject({
@@ -415,7 +420,7 @@ describe("createWebApiSurface", () => {
       const fake = fakeClient(undefined, undefined, () => Promise.reject(new Error("socket hang up")));
 
       const error = await surface(fake)
-        .identity.userId()
+        .identity.identify()
         .catch((cause: unknown) => cause);
 
       expect(error).toMatchObject({ reason: "connect_failed", retryable: true });
@@ -428,13 +433,34 @@ describe("createWebApiSurface", () => {
       const fake = fakeClient(undefined, undefined, () => Promise.resolve({ ok: true }));
 
       const error = await surface(fake)
-        .identity.userId()
+        .identity.identify()
         .catch((cause: unknown) => cause);
 
       expect(error).toMatchObject({
         reason: "auth_rejected",
         retryable: false,
         slackError: "no_user_id"
+      });
+    });
+
+    it("refuses an answer that does not say where we are installed", async () => {
+      // The same treatment as a missing user id, and its own word. A successful
+      // `auth.test` always says `team_id`, so an answer without one is a shape
+      // nobody here understands — and carrying on with half an identity would
+      // leave the ambient scheduler silent in every channel with nothing saying
+      // why (#317).
+      const fake = fakeClient(undefined, undefined, () =>
+        Promise.resolve({ ok: true, user_id: "U0LIBERO" })
+      );
+
+      const error = await surface(fake)
+        .identity.identify()
+        .catch((cause: unknown) => cause);
+
+      expect(error).toMatchObject({
+        reason: "auth_rejected",
+        retryable: false,
+        slackError: "no_team_id"
       });
     });
 
@@ -446,7 +472,7 @@ describe("createWebApiSurface", () => {
       );
 
       const error = await surface(fake)
-        .identity.userId()
+        .identity.identify()
         .catch((cause: unknown) => cause);
 
       expect(JSON.stringify({ ...(error as GatewayError), message: (error as Error).message })).not.toContain(

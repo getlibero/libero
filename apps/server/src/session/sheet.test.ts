@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   DEFAULT_HISTORY_BOUNDS,
   SHEET_FILENAME,
@@ -118,6 +119,14 @@ describe("settingsFrom", () => {
         maxSkills: 100,
         staleAfterMs: 30 * 86_400_000,
         archiveAfterMs: 90 * 86_400_000
+      },
+      // The schema's defaults once more — and this is the one block whose
+      // default is *off*, which is what makes it the only sheet-parsed feature
+      // that stays quiet until somebody opts in.
+      ambient: {
+        enabled: false,
+        heartbeatEveryMs: 15 * 60_000,
+        answerAfterIdleMs: 60 * 60_000
       }
     });
   });
@@ -153,6 +162,14 @@ describe("settingsFrom", () => {
         maxSkills: 100,
         staleAfterMs: 30 * 86_400_000,
         archiveAfterMs: 90 * 86_400_000
+      },
+      // The schema's defaults once more — and this is the one block whose
+      // default is *off*, which is what makes it the only sheet-parsed feature
+      // that stays quiet until somebody opts in.
+      ambient: {
+        enabled: false,
+        heartbeatEveryMs: 15 * 60_000,
+        answerAfterIdleMs: 60 * 60_000
       }
     });
   });
@@ -249,6 +266,14 @@ describe("createSheetResolver", () => {
         maxSkills: 100,
         staleAfterMs: 30 * 86_400_000,
         archiveAfterMs: 90 * 86_400_000
+      },
+      // The schema's defaults once more — and this is the one block whose
+      // default is *off*, which is what makes it the only sheet-parsed feature
+      // that stays quiet until somebody opts in.
+      ambient: {
+        enabled: false,
+        heartbeatEveryMs: 15 * 60_000,
+        answerAfterIdleMs: 60 * 60_000
       }
     });
   });
@@ -279,7 +304,8 @@ describe("createSheetResolver", () => {
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
       memory: { ...DEFAULT_MEMORY_SETTINGS },
-      skills: { ...DEFAULT_SKILL_SETTINGS }
+      skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
     });
     expect(captured.lines).toEqual([]);
   });
@@ -293,7 +319,8 @@ describe("createSheetResolver", () => {
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
       memory: { ...DEFAULT_MEMORY_SETTINGS },
-      skills: { ...DEFAULT_SKILL_SETTINGS }
+      skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
     });
   });
 
@@ -311,7 +338,8 @@ describe("createSheetResolver", () => {
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
       memory: { ...DEFAULT_MEMORY_SETTINGS },
-      skills: { ...DEFAULT_SKILL_SETTINGS }
+      skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({
@@ -348,7 +376,8 @@ describe("createSheetResolver", () => {
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
       memory: { ...DEFAULT_MEMORY_SETTINGS },
-      skills: { ...DEFAULT_SKILL_SETTINGS }
+      skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
     });
     expect(captured.lines).toContainEqual(
       expect.objectContaining({ event: "team_sheet_unreadable", channel: CHANNEL })
@@ -374,7 +403,8 @@ describe("createSheetResolver", () => {
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
       memory: { ...DEFAULT_MEMORY_SETTINGS },
-      skills: { ...DEFAULT_SKILL_SETTINGS }
+      skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
       });
       expect(captured.lines).toContainEqual(
         expect.objectContaining({ event: "team_sheet_invalid", reason: "channel_id" })
@@ -472,5 +502,79 @@ describe("the skills fallback", () => {
     const resolve = createSheetResolver({ root, model: MODEL });
 
     expect((await resolve(CHANNEL)).skills.enabled).toBe(true);
+  });
+});
+
+// The third block whose fallback is the decision, and the sharpest of them: the
+// other two govern what a task does once somebody asked for one, and this
+// governs whether the agent speaks in a channel that asked for nothing. There is
+// no tool call in a heartbeat for the tool proxy service to decide, so nothing
+// downstream catches a mistake made here.
+describe("the ambient block", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "libero-agent-ambient-sheets-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const write = async (channel: string, text: string): Promise<void> => {
+    await mkdir(join(root, channel), { recursive: true });
+    await writeFile(join(root, channel, SHEET_FILENAME), text, "utf8");
+  };
+
+  it("converts both figures from minutes to milliseconds", () => {
+    // Minutes on the sheet because that is what an operator writes; the
+    // conversion happens once, here, for `summarizeAfterIdleMs`' reason.
+    const settings = settingsFrom(
+      sheetOf(
+        `[channel]\nname = "ops"\n${PIN}\n\n[ambient]\nenabled = true\nheartbeat_every_minutes = 5\nanswer_after_idle_minutes = 45\n`
+      ),
+      MODEL
+    );
+
+    expect(settings.ambient).toEqual({
+      enabled: true,
+      heartbeatEveryMs: 5 * 60_000,
+      answerAfterIdleMs: 45 * 60_000
+    });
+  });
+
+  it("is off for a sheet that says nothing, unlike memory and skills", async () => {
+    // The asymmetry the schema names: `[memory]` and `[skills]` are on when the
+    // block is absent, and this one is not. A sheet that parsed has said — and
+    // what an omitted `[ambient]` says is "do not speak unbidden".
+    await write(CHANNEL, NO_LLM_BLOCK);
+    const resolve = createSheetResolver({ root, model: MODEL });
+
+    expect((await resolve(CHANNEL)).ambient.enabled).toBe(false);
+  });
+
+  it("is off, with the schema's own numbers, when no sheet could be read", async () => {
+    await write(CHANNEL, "this is not toml");
+    const resolve = createSheetResolver({ root, model: MODEL });
+
+    expect((await resolve(CHANNEL)).ambient).toEqual({
+      enabled: false,
+      heartbeatEveryMs: 15 * 60_000,
+      answerAfterIdleMs: 60 * 60_000
+    });
+  });
+
+  it("honours a sheet that turned it on", async () => {
+    await write(
+      CHANNEL,
+      `[channel]\nname = "ops"\n${PIN}\n\n[ambient]\nenabled = true\n`
+    );
+    const resolve = createSheetResolver({ root, model: MODEL });
+
+    expect((await resolve(CHANNEL)).ambient).toEqual({
+      enabled: true,
+      heartbeatEveryMs: 15 * 60_000,
+      answerAfterIdleMs: 60 * 60_000
+    });
   });
 });

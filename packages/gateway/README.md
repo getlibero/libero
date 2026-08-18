@@ -64,6 +64,24 @@ cards.
 stopped does not get to post" stays a property of the dispatcher rather than a
 habit of every caller.
 
+### Who this app is, and where it is installed
+
+One `auth.test`, asked inside the connect ladder before the socket opens, and it
+answers two things. The user id is what tells a mention arriving on its second
+subscription from an ordinary message (`SlackMessage.mentionsApp`). The workspace
+— Slack's `team_id`, under the name the agent side already uses for it — is read
+off `gateway.workspace` afterwards, and is `undefined` before `start()` has asked
+and for a gateway composed with no `AppIdentity` at all.
+
+The workspace is here because #317's ambient scheduler enumerates channels from
+the filesystem, where the channel id is and the workspace is not, and it needs
+both to key a session. It is *discovered* rather than configured, which is this
+interface's existing rule: an operator-set value would be a required variable
+holding something the process can ask for, and a wrong one fails in a way that
+reads as a model problem rather than a configuration one. An `auth.test` that
+succeeds without either field is `auth_rejected` — the call worked and this is
+the shape it returned, so asking again gets the same answer.
+
 ### Stopping, and how long it waits
 
 `stop()` closes the socket and resolves. `stop({ drainMs })` also waits up to

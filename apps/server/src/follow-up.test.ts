@@ -31,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS,
   createMessageStoreOpener,
   createServer
@@ -110,7 +111,8 @@ function rig(followUpWindowMs = WINDOW_MS): {
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs,
         memory: { ...DEFAULT_MEMORY_SETTINGS },
-        skills: { ...DEFAULT_SKILL_SETTINGS }
+        skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
       }),
     store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
     sessionClock: () => clock,
@@ -421,7 +423,8 @@ describe("a follow-up arriving mid-task", () => {
           history: { ...DEFAULT_HISTORY_BOUNDS },
           followUpWindowMs: WINDOW_MS,
           memory: { ...DEFAULT_MEMORY_SETTINGS },
-          skills: { ...DEFAULT_SKILL_SETTINGS }
+          skills: { ...DEFAULT_SKILL_SETTINGS },
+        ambient: { ...DEFAULT_AMBIENT_SETTINGS }
         }),
       store: createMessageStoreOpener({ storeRoot, channelsRoot, logger }),
       sessionClock: () => clock,
