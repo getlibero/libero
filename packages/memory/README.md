@@ -593,6 +593,30 @@ for having no distance cutoff, reached independently and pointing the same way:
 something weak and visible beats a channel that looks like it has no playbooks.
 What bounds it is the caller's — `[skills] top_k` and a character ceiling.
 
+### Telling a channel, once (#320)
+
+`skill_merge_notice` is a second table beside `skill_merge_proposal`, and the
+reason it is a table rather than a column is mechanical: this schema is applied
+with `CREATE TABLE IF NOT EXISTS` and there is no migration path, so a new table
+appears on a store already on disk and moves no version, where a new column would
+need an `ALTER` nothing here runs.
+
+It also says something true that a column would blur. The row beside it records
+that a pair was *considered*, which is a fact about spend; this records that
+people were *told*, which is a fact about a channel — and the two are independent
+in both directions. `recordSkillMergeNotice` is idempotent and written by the
+caller only after its post has landed. `forgetSkillMergeProposal` deliberately
+does **not** clear it: a team that deleted a proposal without applying it has
+declined, and re-announcing the pair if it came back would make deletion a way to
+be asked again.
+
+`SkillProposals` gained `list()` with it, and that is not the `read` this module
+refuses. What it answers is the two skill names the curator was given — the same
+strings `count()` already round-trips through `SkillName` and throws away — so no
+model-authored text leaves the directory, which is the claim the header actually
+makes. `skillProposalFilename` is exported beside it, because the heartbeat has to
+name the file in a channel and two spellings of the separator would drift.
+
 ## What is not here
 
 **Skills are whole as of #291**, storage and both directions. `apps/server`

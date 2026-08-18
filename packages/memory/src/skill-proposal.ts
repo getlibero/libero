@@ -54,7 +54,13 @@ import type { Logger } from "./log.js";
  * that computes the path itself is asserting the layout, and one that called our
  * own helper would assert nothing.
  */
-const PROPOSALS_DIRNAME = "proposals";
+/**
+ * The directory, beside `skills/` and never inside it.
+ *
+ * Exported with `skillProposalFilename` and for its reason: the heartbeat names
+ * the path a person should open, and one spelling of it is better than two.
+ */
+export const PROPOSALS_DIRNAME = "proposals";
 
 const PROPOSAL_SUFFIX = ".md";
 
@@ -66,6 +72,23 @@ const PROPOSAL_SUFFIX = ".md";
  * however many dashes either name carries.
  */
 const PAIR_SEPARATOR = "--";
+
+/**
+ * What one pair's proposal is called, without a path (#320).
+ *
+ * Exported because the ambient heartbeat has to name the file in a channel, and
+ * a second spelling of the separator and the suffix — in a different package,
+ * beside a message people are told to act on — is the one place they would
+ * silently drift apart. `fileFor` below is this plus a directory.
+ *
+ * The pair is put in name order here rather than trusted from the caller, which
+ * is `fileFor`'s rule: the file is named the same way whichever of the two the
+ * merge keeps.
+ */
+export function skillProposalFilename(pair: SkillPairKey): string {
+  const [first, second] = pair.a <= pair.b ? [pair.a, pair.b] : [pair.b, pair.a];
+  return `${first}${PAIR_SEPARATOR}${second}${PROPOSAL_SUFFIX}`;
+}
 
 export interface SkillProposalsOptions {
   /** The channel these proposals belong to. Validated as a `ChannelId`. */
@@ -118,6 +141,20 @@ export interface SkillProposals {
    */
   count(): number;
   /**
+   * Which pairs have a proposal waiting, in filename order (#320).
+   *
+   * **This is not the `read` the header rules out.** What that decision keeps
+   * closed is a path by which model-authored text in this directory re-enters a
+   * model's context, and a filename is not that text: these are the two skill
+   * names the *curator* was given, round-tripped through `SkillName` on the way
+   * back out. `count()` already computes exactly this list and throws the names
+   * away; the ambient heartbeat needs them to say which file is waiting.
+   *
+   * The same `readdir` and the same filter, so a half-written file and anything
+   * a person dropped here are excluded from both answers identically.
+   */
+  list(): readonly SkillPairKey[];
+  /**
    * Write one pair's proposal, replacing any proposal for the same pair.
    *
    * The filename is built from the pair, in name order, and **never from
@@ -166,10 +203,7 @@ export function openSkillProposals(options: SkillProposalsOptions): SkillProposa
     }
   };
 
-  const fileFor = (pair: SkillPairKey): string => {
-    const [first, second] = pair.a <= pair.b ? [pair.a, pair.b] : [pair.b, pair.a];
-    return join(directory, `${first}${PAIR_SEPARATOR}${second}${PROPOSAL_SUFFIX}`);
-  };
+  const fileFor = (pair: SkillPairKey): string => join(directory, skillProposalFilename(pair));
 
   /**
    * The proposals in the directory, as filename stems.
@@ -210,6 +244,18 @@ export function openSkillProposals(options: SkillProposalsOptions): SkillProposa
   return {
     count() {
       return names().length;
+    },
+
+    list() {
+      const pairs: SkillPairKey[] = [];
+      for (const stem of names()) {
+        // `names()` has already established that the stem splits into two halves
+        // that parse, so this cannot fail — it is destructuring rather than
+        // parsing, and the guard is `names()`'.
+        const [a, b] = stem.split(PAIR_SEPARATOR);
+        if (a !== undefined && b !== undefined) pairs.push({ a, b });
+      }
+      return pairs;
     },
 
     write(proposal) {

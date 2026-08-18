@@ -191,6 +191,7 @@ describe("the interface", () => {
       "recentInThread",
       "reconcileSkills",
       "recordSkillMergeConsidered",
+      "recordSkillMergeNotice",
       "recordSkillStatus",
       "recordSkillUse",
       "remove",
@@ -200,6 +201,7 @@ describe("the interface", () => {
       "searchSkills",
       "skillClocks",
       "skillMergeCandidate",
+      "skillMergeNoticed",
       "skillsNeedingEmbedding",
       "staleThreads"
     ]);
@@ -1640,5 +1642,56 @@ describe("reading one thread's summary", () => {
     expect(store.readThreadSummary("1.1")).not.toBeNull();
     store.replaceText("1.1", "actually, something else");
     expect(store.readThreadSummary("1.1")).toBeNull();
+  });
+});
+
+// #320's say-once ledger. The row beside it records that a pair was considered,
+// which is a fact about spend; this records that people were told, which is a
+// fact about a channel.
+describe("telling a channel about a proposal, once", () => {
+  const pair = { a: "deploy-runbook", b: "deploy-rollback" };
+
+  it("answers no before anything was said, and yes after", () => {
+    expect(store.skillMergeNoticed(pair)).toBe(false);
+
+    store.recordSkillMergeNotice(pair, 1_700_000_000_000);
+
+    expect(store.skillMergeNoticed(pair)).toBe(true);
+  });
+
+  it("is idempotent, so a retried notice is not a second row", () => {
+    store.recordSkillMergeNotice(pair, 1_700_000_000_000);
+    store.recordSkillMergeNotice(pair, 1_700_000_009_999);
+
+    expect(store.skillMergeNoticed(pair)).toBe(true);
+  });
+
+  it("is per pair, and the two names are ordered by the caller", () => {
+    store.recordSkillMergeNotice(pair, 1_700_000_000_000);
+
+    expect(store.skillMergeNoticed({ a: "deploy-runbook", b: "cert-rotation" })).toBe(false);
+    // The caller names the pair in the order the filename does, so this is the
+    // other pair rather than the same one backwards.
+    expect(store.skillMergeNoticed({ a: pair.b, b: pair.a })).toBe(false);
+  });
+
+  // Declining a proposal is deleting the file. If forgetting the considered row
+  // also forgot the notice, deletion would become a way to be asked again — the
+  // one thing declining must not mean.
+  it("survives the considered row being forgotten", () => {
+    store.recordSkillMergeConsidered({ ...pair, hashA: "h1", hashB: "h2" }, 1_700_000_000_000);
+    store.recordSkillMergeNotice(pair, 1_700_000_000_000);
+
+    store.forgetSkillMergeProposal(pair);
+
+    expect(store.skillMergeNoticed(pair)).toBe(true);
+  });
+
+  it("is independent of whether the pair was ever considered", () => {
+    // Both directions: a considered pair that produced no draft is never
+    // announced, and this table knows nothing about that one.
+    store.recordSkillMergeConsidered({ ...pair, hashA: "h1", hashB: "h2" }, 1_700_000_000_000);
+
+    expect(store.skillMergeNoticed(pair)).toBe(false);
   });
 });

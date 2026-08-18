@@ -698,6 +698,32 @@ CREATE TABLE IF NOT EXISTS skill_merge_proposal (
   at      INTEGER NOT NULL,
   PRIMARY KEY (skill_a, skill_b)
 );
+
+-- Which proposals the channel has already been told about (#320).
+--
+-- A second table rather than a \`notified_at\` column on \`skill_merge_proposal\`,
+-- and the reason is mechanical rather than aesthetic: this schema is applied
+-- with CREATE TABLE IF NOT EXISTS and there is no migration path — a version
+-- mismatch refuses to open the file. A new table therefore appears on an
+-- existing store and moves no version; a new column would need an ALTER that
+-- nothing here runs.
+--
+-- It also says something true. The row beside it records that a pair was
+-- *considered*, which is a fact about spend; this records that people were
+-- *told*, which is a fact about a channel. One row can be present without the
+-- other in both directions: a considered pair that produced no draft is never
+-- announced, and a proposal a team deleted before anyone looked keeps its notice
+-- so it is not announced twice if it comes back.
+CREATE TABLE IF NOT EXISTS skill_merge_notice (
+  skill_a TEXT NOT NULL,
+  skill_b TEXT NOT NULL,
+  -- When the channel was told, in milliseconds. Never read for a decision: the
+  -- row existing is the whole of the answer. It is here so an operator can see
+  -- when a notice went out without reading a channel's history.
+  at      INTEGER NOT NULL,
+  PRIMARY KEY (skill_a, skill_b)
+);
+
 `;
 
 /**
@@ -1283,6 +1309,28 @@ export interface MessageStore {
   orphanedSkillMergeProposals(limit: number): readonly SkillPairKey[];
   /** Forget one considered pair, so a later pair of the same names is fresh. */
   forgetSkillMergeProposal(pair: SkillPairKey): void;
+  /**
+   * Whether this channel has already been told about this proposal (#320).
+   *
+   * Its own table rather than a column beside the considered row, for the
+   * mechanical reason the DDL gives and one it also states: *considered* is a
+   * fact about spend and *told* is a fact about a channel, and the two are
+   * independent in both directions.
+   *
+   * **Deliberately not cleared by `forgetSkillMergeProposal`.** A team that
+   * deleted a proposal without applying it has declined; re-announcing the same
+   * pair if it comes back would make deletion a way to be asked again, which is
+   * the one thing declining must not mean.
+   */
+  skillMergeNoticed(pair: SkillPairKey): boolean;
+  /**
+   * Record that this channel has been told. Idempotent.
+   *
+   * Written by the caller **after** the post has landed, never before: a notice
+   * nobody saw must not count as one, and this is the row that makes "at most
+   * once, ever" true.
+   */
+  recordSkillMergeNotice(pair: SkillPairKey, at: number): void;
   close(): void;
 }
 
@@ -2300,6 +2348,14 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     recordSkillMerge: db.prepare(RECORD_SKILL_MERGE_SQL),
     orphanedSkillMerges: db.prepare(ORPHANED_SKILL_MERGE_SQL),
     forgetSkillMerge: db.prepare(FORGET_SKILL_MERGE_SQL),
+    skillMergeNoticed: db.prepare(
+      `SELECT 1 AS found FROM skill_merge_notice WHERE skill_a = ? AND skill_b = ?`
+    ),
+    noticeSkillMerge: db.prepare(
+      `INSERT INTO skill_merge_notice (skill_a, skill_b, at)
+            VALUES (?, ?, ?)
+       ON CONFLICT (skill_a, skill_b) DO NOTHING`
+    ),
     // DESC because the only way to ask SQLite for a tail is to sort backwards
     // and take the head; `recent` reverses the rows before returning them.
     //
@@ -2764,6 +2820,14 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
 
     forgetSkillMergeProposal(pair) {
       statements.forgetSkillMerge.run(pair.a, pair.b);
+    },
+
+    skillMergeNoticed(pair) {
+      return statements.skillMergeNoticed.get(pair.a, pair.b) !== undefined;
+    },
+
+    recordSkillMergeNotice(pair, at) {
+      statements.noticeSkillMerge.run(pair.a, pair.b, at);
     },
 
     close() {

@@ -289,6 +289,16 @@ const lifecycleSkills = createSkillLifecyclePass({
   logger
 });
 
+/**
+ * How a channel's `proposals/` directory is opened.
+ *
+ * One opener rather than two, because two consumers now reach this directory and
+ * they are the two halves of one loop: the curator writes a proposal here
+ * (#295), and the heartbeat is what finally tells the channel it is waiting
+ * (#320). A second opener would be a second answer to where a proposal lives.
+ */
+const proposals = createSkillProposalsOpener({ storeRoot, channelsRoot, logger });
+
 // The merge curator (#295): one model call a day, per channel, about the two
 // playbooks the index says are closest to each other — and a file in
 // `proposals/` that a person reads and applies, or deletes.
@@ -304,7 +314,7 @@ const lifecycleSkills = createSkillLifecyclePass({
 const curateSkills = createSkillCuratePass({
   completion,
   files: skills,
-  proposals: createSkillProposalsOpener({ storeRoot, channelsRoot, logger }),
+  proposals,
   settings: async channel => {
     const settings = await sheets(channel);
     return {
@@ -349,6 +359,11 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
     },
     reportTurn,
     maySpend,
+    // The deferred half of phase 3 (#320): the curator writes a proposal to this
+    // directory because nothing could reach a channel, and the heartbeat is what
+    // finally can. The same opener the curator writes through, so the file a
+    // person is pointed at is the file that was written.
+    proposals,
     signal: tasks.signal,
     logger
   });

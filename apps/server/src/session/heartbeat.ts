@@ -84,10 +84,12 @@ import { runHeartbeatTurn } from "@getlibero/agent";
 import type { CompletedTurn, CompletionClient, HeartbeatMessage } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
-import type { MessageStore } from "@getlibero/memory";
+import { PROPOSALS_DIRNAME, skillProposalFilename } from "@getlibero/memory";
+import type { MessageStore, SkillPairKey } from "@getlibero/memory";
 import type { AmbientHeartbeat } from "./ambient.js";
 import { toSlackTs } from "./summarize.js";
 import type { ProactivePoster } from "../proactive/proactive.js";
+import type { SkillProposalsOpener } from "./proposals.js";
 
 /**
  * How much of a channel's recent conversation one evaluation reads.
@@ -140,9 +142,48 @@ export interface HeartbeatOptions {
    * visible spend of any of them.
    */
   maySpend: (channel: string) => Promise<boolean>;
+  /**
+   * How a channel's `proposals/` directory is opened (#320).
+   *
+   * Optional, and its absence is a deployment whose merge proposals stay a file
+   * nobody is told about — which is exactly how phase 3 shipped, and still a
+   * real deployment rather than a misconfiguration.
+   *
+   * It is the *directory* that is consulted and not the index, which is what
+   * makes deleting a proposal both the decline and the thing that stops it being
+   * announced.
+   */
+  proposals?: SkillProposalsOpener;
   logger?: Logger;
   now?: () => number;
   signal?: AbortSignal;
+}
+
+/**
+ * What a channel is told about a waiting merge proposal (#320).
+ *
+ * **Composed here and never by the model**, and that is the load-bearing part.
+ * `packages/memory`'s proposal module states as its central decision that no
+ * model-authored text in that directory re-enters a model's context — and a
+ * notice the model wrote would need the proposal in front of it to write. So
+ * this is a template over two skill names, and the heartbeat turn is never shown
+ * that a proposal exists at all.
+ *
+ * It **names the file and the two acts** and reproduces none of the document,
+ * which is the review surface staying where it is: the file is what a person
+ * reads, and this is a pointer to it. Not a card either — a card is the tool
+ * proxy service's mechanic for a held call, and this is not a call.
+ *
+ * The filename comes from the module that owns the layout rather than being
+ * spelled again here.
+ */
+export function renderProposalNotice(pair: SkillPairKey): string {
+  return [
+    `A merge proposal is waiting: \`${PROPOSALS_DIRNAME}/${skillProposalFilename(pair)}\``,
+    `It suggests folding \`${pair.a}\` and \`${pair.b}\` into one playbook. To apply it, follow`,
+    "the steps in the file. To decline, delete the file — nothing else happens either way, and",
+    "this is the only time it will be mentioned."
+  ].join("\n");
 }
 
 /** A reason code from an error, and never its message. The passes' rule. */
@@ -188,26 +229,104 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
     const idleBefore = toSlackTs(at - settings.answerAfterIdleMs);
     const since = watermark.get(channel) ?? "";
 
+    // A proposal nobody has been told about is material in its own right (#320):
+    // a tick with no new messages still has something to say. Free — a readdir
+    // and one indexed lookup per waiting file, of which there are at most a
+    // handful.
+    const waiting = firstUnnoticed(channel, store);
+
     let material;
     let recent;
     try {
       // One row is all the pregate needs: whether anything is there.
       material = store.idleThreads(idleBefore, since, 1);
-      if (material.length === 0) return;
-      recent = store.recent(MAX_HEARTBEAT_MESSAGES);
+      recent = material.length === 0 ? [] : store.recent(MAX_HEARTBEAT_MESSAGES);
     } catch (error) {
       logger.log("warn", { event: "heartbeat_failed", channel, reason: reasonOf(error) });
       return;
     }
-    if (recent.length === 0) return;
 
-    // Last of the four, because it is the only one that costs a round trip and
-    // everything above it is free. A capped channel evaluates nothing — and does
-    // not advance its watermark either, so it weighs the same material once it
-    // can afford to.
-    if (!(await options.maySpend(channel))) return;
+    const weighable = material.length > 0 && recent.length > 0;
+    if (!weighable && waiting === null) return;
+
+    let finding: string | null = null;
+    if (weighable) {
+      // Last of the four, because it is the only one that costs a round trip and
+      // everything above it is free. A capped channel evaluates nothing — and
+      // does not advance its watermark either, so it weighs the same material
+      // once it can afford to.
+      //
+      // A waiting proposal is *not* gated on this: telling a channel about a
+      // file costs nothing, so a channel over its caps still hears about one.
+      if (await options.maySpend(channel)) {
+        finding = await evaluate(channel, settings, recent);
+      }
+    }
     if (options.signal?.aborted === true) return;
 
+    // One post, whatever it carries. The window permits one, so a finding and a
+    // notice in the same evaluation must not be two — folded, finding first,
+    // because that is the timely half and the notice is housekeeping.
+    const text = [finding, waiting === null ? null : renderProposalNotice(waiting)]
+      .filter((part): part is string => part !== null)
+      .join("\n\n");
+    // Nothing to say. Whichever branch produced that has already said so — the
+    // evaluation logs its own outcome, and a tick that never reached one had no
+    // material to reach it with.
+    if (text === "") return;
+
+    const posted = await options.post.post({ channel, text, source: "heartbeat" });
+    if (posted && waiting !== null) {
+      // After the post landed and never before: a notice nobody saw must not
+      // count as one. A refused or failed post leaves the row absent, so the
+      // proposal is offered again next time the window is open.
+      try {
+        store.recordSkillMergeNotice(waiting, at);
+      } catch (error) {
+        logger.log("warn", { event: "heartbeat_failed", channel, reason: reasonOf(error) });
+      }
+    }
+    logger.log("info", { event: posted ? "heartbeat_posted" : "heartbeat_unposted", channel });
+  };
+
+  /**
+   * The first waiting proposal this channel has not been told about, or `null`.
+   *
+   * The **directory** is what is listed, not the index — which is what makes
+   * deleting a proposal both the decline and the thing that stops it being
+   * announced. A proposal deleted before the notice fires surfaces nothing,
+   * because it is not in the listing to be found.
+   *
+   * Never throws: a directory this process cannot read is a deployment with no
+   * proposals to announce, which is the quiet direction.
+   */
+  function firstUnnoticed(channel: string, store: MessageStore): SkillPairKey | null {
+    const open = options.proposals?.(channel);
+    if (open === undefined || open === null) return null;
+
+    try {
+      for (const pair of open.list()) {
+        if (!store.skillMergeNoticed(pair)) return pair;
+      }
+    } catch (error) {
+      logger.log("warn", { event: "heartbeat_failed", channel, reason: reasonOf(error) });
+    }
+    return null;
+  }
+
+  /**
+   * One evaluation: the model call, the meter, and the watermark.
+   *
+   * Answers the finding's text, or `null` for silence and for an answer that
+   * could not be used — the caller does the same thing with both, which is
+   * nothing, and the two are told apart in the log rather than in the type.
+   */
+  async function evaluate(
+    channel: string,
+    settings: HeartbeatSettings,
+    recent: ReturnType<MessageStore["recent"]>
+  ): Promise<string | null> {
+    const at = now();
     const newest = recent[recent.length - 1]?.ts;
     const messages: HeartbeatMessage[] = recent.map(row => ({
       // The name captured when the message was stored, falling back to the id.
@@ -238,7 +357,7 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
       // The turn was attempted and the watermark stays put, so the same material
       // is weighed again rather than skipped because a provider was down.
       logger.log("warn", { event: "heartbeat_failed", channel, reason: reasonOf(error) });
-      return;
+      return null;
     }
 
     // Advanced whatever the answer was, including silence: the question "has
@@ -248,22 +367,20 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
     if (newest !== undefined) watermark.set(channel, newest);
 
     if (result.unusable !== undefined) {
+      // Said apart from silence, which is the split `runHeartbeatTurn` keeps: a
+      // broken prompt must not hide inside the outcome that is expected almost
+      // every time.
       logger.log("warn", { event: "heartbeat_unusable", channel, reason: result.unusable });
-      return;
+      return null;
     }
     if (result.finding === null) {
+      // The ordinary outcome, and the one most heartbeats produce. Logged here
+      // rather than by the caller so that a tick has one word for what the turn
+      // did — a failed turn that also reported silence would be two claims about
+      // one evaluation.
       logger.log("info", { event: "heartbeat_silent", channel });
-      return;
+      return null;
     }
-
-    const posted = await options.post.post({
-      channel,
-      text: result.finding.text,
-      source: "heartbeat"
-    });
-    // `false` here is a race the overrun rule already prevents, or a Slack
-    // failure the surface has logged. Either way the finding is gone: the
-    // watermark moved, because the turn ran and was paid for.
-    logger.log("info", { event: posted ? "heartbeat_posted" : "heartbeat_unposted", channel });
-  };
+    return result.finding.text;
+  }
 }
