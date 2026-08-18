@@ -68,7 +68,13 @@ export interface LogFields {
    * on. Four words rather than one with a field, because the three failures
    * want different answers from whoever is reading: a throwing heartbeat is a
    * channel, a run of overruns is a cadence set too tight, and the last is this
-   * process not having got through `auth.test` yet. Attribution:
+   * process not having got through `auth.test` yet. Proactive posts (#318):
+   * "proactive_posted", "proactive_throttled", "proactive_failed" — the agent
+   * started a message in a channel, the rate window refused one, and one Slack
+   * would not take. `proactive_throttled` is deliberately its own word rather
+   * than a `reason` on the failure line, because a refusal is the surface
+   * working and a failure is not: an operator grepping for a channel the app
+   * cannot post in must not have to read past the throttle. Attribution:
    * "user_lookup_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".
@@ -159,6 +165,26 @@ export interface LogFields {
    * and the field that answers "why did my reply not appear" on a first run.
    */
   slackError?: string;
+  /**
+   * What authorized a proactive post: `heartbeat` or `task` (#318).
+   *
+   * A code from a two-member closed set, `revision`'s kind of field and never
+   * prose. It is a field rather than two event words because the two are one
+   * act governed in two places — the heartbeat's bound is the rate window, the
+   * task's was its governed create — and an operator asking "is this thing
+   * talking too much" wants both lines with one grep. Never content: it says
+   * why a message existed, never what it said.
+   */
+  source?: string;
+  /**
+   * How much longer a refused proactive post would have had to wait.
+   *
+   * On `proactive_throttled` alone. The remaining window rather than when the
+   * last post went out, because the question being asked is whether the window
+   * is nearly open or just shut, and the second spelling makes a reader do the
+   * subtraction against a clock they do not have.
+   */
+  waitMs?: number;
   /** Which consecutive reconnect attempt this is. Resets when a connection holds. */
   attempt?: number;
   /** How long the reconnect loop waited before this attempt. */

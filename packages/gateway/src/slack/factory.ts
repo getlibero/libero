@@ -13,6 +13,7 @@ import type { Scheduler } from "./gateway.js";
 import { createSocketModeSource } from "./socket-mode.js";
 import type {
   CardPoster,
+  ChannelPoster,
   DecisionHandler,
   GatewayError,
   MentionHandler,
@@ -49,9 +50,9 @@ export interface SlackGatewayConfig {
 }
 
 /**
- * Everything a composing app needs from Slack: the lifecycle, and the cards.
+ * Everything a composing app needs from Slack: the lifecycle, and what may speak.
  *
- * The two come from one call because they must share one `WebClient`. The
+ * They come from one call because they must share one `WebClient`. The
  * client handles rate limits per instance, so a second one built on the same
  * bot token would give the process two independent queues over `chat.*` and
  * neither would know what the other had spent.
@@ -69,7 +70,29 @@ export interface SlackSurface {
    */
   cards: CardPoster;
   /**
-   * Who a user id is, on the same client as the two posters.
+   * Where a proactive post goes: a message in the channel, in no thread (#318).
+   *
+   * The second named exception to the narrowing above, and it is a different
+   * kind of exception. A card's exemption is about *lifetime* — a card outlives
+   * the handler that raised it. This one is about there being no handler at
+   * all: ambient mode speaks with no inbound event behind it, so there is no
+   * `threadTs` to reply into and nothing for the dispatcher's "a handler still
+   * running when the gateway stopped does not get to post" rule to be about.
+   *
+   * Handing it out here does not make it ambiently available, and the discipline
+   * that keeps it narrow is one layer up: `apps/server/src/compose.ts` mints the
+   * governed capability from this and passes it to the ambient clock's heartbeat
+   * factory alone. Nothing else in that process is given one, which is why the
+   * quiescence sweep, the skill-embed pass, the lifecycle job and the merge
+   * curator still cannot post — checkable from what each is constructed with.
+   *
+   * **No rate limit lives here.** How often the agent may speak unprompted is a
+   * fact about a channel's team rather than about Slack's API; it is enforced
+   * where the decision is made. See `ChannelPoster`.
+   */
+  channel: ChannelPoster;
+  /**
+   * Who a user id is, on the same client as the three posters.
    *
    * Here rather than reachable from the gateway because nothing in the dispatch
    * path needs a name — the adapter answers a mention and posts a reply, and
@@ -102,7 +125,7 @@ export function createSlackSurface(config: SlackGatewayConfig): SlackSurface {
     ...(config.onFatal !== undefined ? { onFatal: config.onFatal } : {}),
     ...(config.scheduler !== undefined ? { scheduler: config.scheduler } : {})
   });
-  return { gateway, cards: poster, users };
+  return { gateway, cards: poster, channel: poster, users };
 }
 
 /** The gateway alone, for a process that renders no cards. */

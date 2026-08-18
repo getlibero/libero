@@ -379,8 +379,42 @@ export interface CardPoster {
   updateCard(target: { channelId: string; messageTs: string; card: SlackCard }): Promise<void>;
 }
 
+/**
+ * The channel half of the outbound seam: a message in no thread at all (#318).
+ *
+ * The third poster rather than a widened `MessagePoster`, and the reason is the
+ * same one that split the first two: a different consumer holds it. Everything
+ * else this app says is a *response* — a reply answers a mention, a card answers
+ * a held tool call — and each of those has a `threadTs` because an inbound event
+ * supplied one. This one has no inbound event behind it. It is the agent
+ * starting a message, which is ambient mode's mechanic and nothing else's.
+ *
+ * So the narrowness is the point. A pass that holds this can speak into a
+ * channel unprompted; a pass that does not, cannot, and that is checkable from
+ * what was handed to it rather than from a rule somebody remembered. The
+ * composing app reaches it through exactly one path — see `SlackSurface.channel`
+ * and the factory in `apps/server/src/compose.ts`, which mints the governed
+ * capability and hands it to the ambient clock alone.
+ *
+ * **This interface carries no rate limit and should never grow one.** How often
+ * the agent may speak unprompted is a decision about a channel's team, not about
+ * Slack's API, and it is enforced above — `HEARTBEAT_POST_WINDOW_MS` in
+ * `apps/server/src/session/proactive.ts`. What lives here is the call.
+ */
+export interface ChannelPoster {
+  /**
+   * Posts a message to a channel, in no thread.
+   *
+   * Returns nothing, on `postThreadReply`'s reasoning: no `ts` comes back, so
+   * nothing above this can hold one. A proactive post is not a card — it has no
+   * status to repaint and nothing edits it — and the absent handle is what keeps
+   * that true rather than conventional.
+   */
+  postToChannel(target: { channelId: string; text: string }): Promise<void>;
+}
+
 /** What the Web API adapter and the stub both post with. Consumers take a narrower view. */
-export type SlackPoster = MessagePoster & CardPoster;
+export type SlackPoster = MessagePoster & CardPoster & ChannelPoster;
 
 /**
  * Who a Slack user id belongs to, as a name a person would recognize.

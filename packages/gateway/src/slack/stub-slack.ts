@@ -336,6 +336,15 @@ export interface StubSlack {
   connected(): boolean;
   /** Every reply posted, in order. */
   readonly posted: Array<{ channelId: string; threadTs: string; text: string }>;
+  /**
+   * Every proactive post, in order — the ones with no thread (#318).
+   *
+   * Its own array rather than a `threadTs`-less entry in `posted`, because the
+   * assertion this exists for is that the two are different acts. A test that
+   * had to filter one list to tell an unprompted post from a reply would pass
+   * just as happily against a surface that posted a reply into the channel.
+   */
+  readonly channelPosts: Array<{ channelId: string; text: string }>;
   /** Every card posted, in order, with the ts the stub gave it. */
   readonly cards: Array<PostedCard & { threadTs: string; card: SlackCard }>;
   /** Every card edit, in order. */
@@ -368,6 +377,8 @@ export interface StubSlackOptions {
   connectFailures?: Array<unknown>;
   /** Thrown by every `postThreadReply`. */
   postFailure?: unknown;
+  /** Thrown by every `postToChannel`. */
+  channelPostFailure?: unknown;
   /** Thrown by every `postCard`. */
   cardPostFailure?: unknown;
   /** Thrown by every `updateCard`. */
@@ -395,6 +406,7 @@ export interface StubSlackOptions {
 
 export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
   const posted: Array<{ channelId: string; threadTs: string; text: string }> = [];
+  const channelPosts: Array<{ channelId: string; text: string }> = [];
   const cards: Array<PostedCard & { threadTs: string; card: SlackCard }> = [];
   const edits: Array<{ channelId: string; messageTs: string; card: SlackCard }> = [];
   const acked: Array<SlackEnvelope | SlackInteractionEnvelope> = [];
@@ -445,6 +457,14 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
     postThreadReply(target): Promise<void> {
       if (options.postFailure !== undefined) return Promise.reject(options.postFailure);
       posted.push({ ...target });
+      return Promise.resolve();
+    },
+
+    postToChannel(target): Promise<void> {
+      if (options.channelPostFailure !== undefined) {
+        return Promise.reject(options.channelPostFailure);
+      }
+      channelPosts.push({ ...target });
       return Promise.resolve();
     },
 
@@ -508,6 +528,7 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
     identity,
     lookups,
     posted,
+    channelPosts,
     cards,
     edits,
     acked,

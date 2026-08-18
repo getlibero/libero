@@ -1100,6 +1100,125 @@ is **awaited**, unlike them: nothing is waiting on a scan, and awaiting is what
 gives the concurrency bound teeth. One channel throwing is `ambient_failed` for
 that channel and a scan that carries on.
 
+## The proactive post: the one way this process starts a message
+
+`src/proactive/proactive.ts` answers #318. Everything else this app says is a
+response — a reply answers a mention, a card answers a held tool call, and both
+carry a `threadTs` because an inbound event supplied one. Ambient mode has no
+inbound event, so it needed a verb that does not: `ChannelPoster.postToChannel`
+in the gateway posts a message into a channel with no thread at all.
+
+### The capability is minted once, and reaches one consumer
+
+The withholding discipline the section above and [the curator's](#the-curator-pass-a-proposal-and-who-applies-it)
+both rest on is that `MessagePoster.postThreadReply` never reaches the composing
+app. That stays true. What changes is that there is now a *second* narrow verb,
+and the way it is kept narrow is composition rather than a rule anybody applies:
+
+- `createSlackSurface` returns `channel` beside `cards`, both over the one
+  `WebClient`, so the process keeps one rate-limit queue over `chat.*`.
+- `createServer` mints exactly one `ProactivePoster` from it and hands that to
+  **`ServerDeps.heartbeat`, which is a factory** — `(post) => AmbientHeartbeat` —
+  rather than an already-built pass like the other four.
+- The four background passes are constructed with no poster and cannot name the
+  type. The quiescence sweep, the skill-embedding pass, the lifecycle job and the
+  merge curator still cannot post, and that is checkable by reading what each is
+  given.
+
+The factory is the load-bearing part, and it exists because of *when* the
+capability exists. The poster is built inside `createServer` from the surface the
+`slack` factory returns, so an already-built heartbeat would force `createServer`
+to hand the capability back out to `index.ts` — and from there it is reachable by
+everything the process constructs. `proactive-compose.test.ts` drives the
+production composition and asserts both halves: one poster reaches the factory,
+and a surface with no `channel` verb builds no heartbeat at all.
+
+That last one is a deliberate degradation rather than a fallback. Everything a
+heartbeat produces is a post, so a turn wired without a poster would spend model
+calls to reach a surface it does not have — worse than the clock with no reader
+[#317 shipped](#the-ambient-clock-the-one-timer-and-the-one-enumerator), where a
+due channel logs `ambient_due` and runs nothing.
+
+### Two sources, and no adjective
+
+A post arrives for one of two reasons, and they are governed in different places:
+
+| `source` | What authorized it | What bounds it |
+| --- | --- | --- |
+| `heartbeat` | A clock, and nothing else | `HEARTBEAT_POST_WINDOW_MS`, here |
+| `task` | A served `schedule_task` create — allowlisted, held for approval by default, capped, audited | Its governed create. One post per firing |
+
+The discriminant is the wake reason, spelled with the word list `session/ambient.ts`
+already has: `DueEntry.kind` is `"heartbeat"` today, and a due task adds a
+*member* rather than a second clock. One vocabulary for the phase — what wakes
+the loop, what governs the post, and what the channel is told are three views of
+the same two cases. A `task` post neither draws on the window nor is blocked by
+it: a reminder is not late because a heartbeat spoke first.
+
+Earlier drafts said "bidden" and "unbidden". Those are gone deliberately: an
+adjective names how a post feels, where the wake reason names what authorized it,
+and only the second is a fact the code has.
+
+### The window is four hours, and it is not a sheet field
+
+`packages/schema`'s `[ambient]` block says so at the point where somebody would
+add one — stated in time rather than in ticks, because one post per tick is no
+throttle once ticks are minutes apart, and enforced in the posting surface so
+that tightening `heartbeat_every_minutes` cannot quietly loosen the throttle. It
+lives beside its mechanism the way `APPROVAL_TTL_MS` does.
+
+The window is **not** the primary volume control — the evaluation turn's pregate
+is, and most ticks post nothing whatever this number is. What it bounds is the
+channel where there genuinely *is* material every time anyone looks. At the
+sheet's defaults the cadence is fifteen minutes, so an eight-hour working day
+holds 32 ticks, and the window converts that to posts per working day: one hour
+gives eight, two gives four, **four gives two**, eight gives one, and twelve or
+more straddles the night, where a 17:00 post blocks the next morning.
+
+What decides between the survivors is an asymmetry: **too short kills the feature
+and too long only costs a finding.** A chatty agent gets `[ambient] enabled`
+flipped back to false and then nothing here works; the recovery path for an agent
+that is too quiet is that somebody tags it, which the sheet already calls the
+designed path. It holds at both ends of the cadence range — a channel at
+`heartbeat_every_minutes = 1` gets 240 ticks per permitted post, and one at the
+1440 ceiling never has the window bind at all.
+
+Three rules ride with it:
+
+- **Per channel, never per workspace.** Otherwise one busy channel silences every
+  other, which is a channel's ambient setting being decided by a channel nobody
+  there can see.
+- **The permit is claimed at the attempt, not on success,** and is not refunded
+  when Slack refuses. Claiming first is what makes the limit hold when
+  evaluations overlap; refunding would turn a channel the app was removed from
+  into repeated attempts at the same failure.
+- **A refusal is legible.** `post` answers whether it posted. There is no queue,
+  so an evaluation that finds something real while the window is shut produces
+  nothing — and whether that is a deferral or a loss depends on whether the
+  refused evaluation still advances its last-evaluated position. That is the
+  evaluation turn's decision (#319), and it only has one to make because this
+  surface says what happened.
+
+The state is in memory, per channel, on the clock's argument for its own
+schedule. An empty map at startup means "allowed", which is fail-open — and what
+makes that safe is the clock above it: first sight never fires, so no heartbeat
+runs until a full cadence after a restart, and a crash-looping process never
+posts at all.
+
+### What the channel sees
+
+`renderProactivePost` in the gateway, beside the two card renderers. Not a card:
+a card is the proxy's mechanic for a held tool call, it carries a status colour,
+and something holds its `ts` to edit it. A proactive post is none of that, so the
+renderer answers a string and `postToChannel` returns no handle.
+
+The label says what authorized the message — `NOTICED` or `SCHEDULED CHECK` — in
+the mono-uppercase style the cards use. Only a `NOTICED` post carries a closing
+line naming `[ambient]`, and the asymmetry is not an oversight: a scheduled check
+was asked for, and its off switch is the governed create rather than that block.
+The body is caller-authored and is escaped and capped like every other string
+this app did not write.
+
 ## What a turn costs
 
 After **each model turn** — not each task — the process reports the provider's
@@ -1255,6 +1374,11 @@ brings it back once the environment is fixed.
 - `src/checklist/checklist.ts` — the live checklist's coalescer. Same shape and
   the same reason: the Slack facts are captured on the adapter's side, and the
   router carries a reporter that names none of them.
+- `src/proactive/proactive.ts` — the proactive post surface and its rate window.
+  Out here for `approvals/` and `checklist/`'s reason and a sharper one: it holds
+  the gateway's channel-post verb and its renderer, which is exactly the pair the
+  ESLint rule on `session/**` forbids. What crosses into the composition is
+  `ProactivePoster`, which names no Slack anything.
 - `src/compose.ts` — the wiring, as a function of its dependencies:
   `createServer(deps)` returns a gateway that has not connected. It holds no
   environment, no token, and no default that could stand in for one. This is the

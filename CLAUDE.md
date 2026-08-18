@@ -50,12 +50,28 @@ four background passes stay on channel activity and this does not. It wakes at
 the next due instant rather than on a tick (so `schedule_task`'s due task joins
 as an event source rather than a second clock), skips windows it was down for
 rather than replaying them, and reaches a channel through the same session — and
-therefore the same mutex — a task does. What it does *not* have yet is anything
-to run: the evaluation turn is #319 and the posting surface #318, so a due
-channel logs `ambient_due` and `answer_after_idle_minutes` is still unread. One
-thing rides with it: the gateway now answers `workspace` off the same `auth.test`
-it already made, because a filesystem listing gives channel ids and a session key
-needs both. What exists:
+therefore the same mutex — a task does. One thing rides with it: the gateway now
+answers `workspace` off the same `auth.test` it already made, because a
+filesystem listing gives channel ids and a session key needs both.
+
+#318 gave that clock somewhere to speak. `apps/server/src/proactive/proactive.ts`
+is **the one path in this process that starts a message** — the gateway's
+`ChannelPoster` posts with no thread, because a proactive post has no inbound
+event to reply into. What keeps it from becoming a general capability is
+composition rather than a rule: `createServer` mints one `ProactivePoster` and
+`ServerDeps.heartbeat` is a **factory** over it, so the capability never reaches
+`index.ts` and the four background passes cannot name the type. The curator's
+"a proposal is a file because this process cannot post" is therefore still true
+after this, and #320 is what changes it. The rate limit is
+`HEARTBEAT_POST_WINDOW_MS` — four hours, per channel, an architecture constant
+the schema's `[ambient]` block already refused to make a field — and it governs
+`source: "heartbeat"` alone: a fired task's post was governed at its create, so
+it neither draws on the window nor is blocked by it. That discriminant is
+`DueEntry.kind`'s word list, deliberately, so the phase has one vocabulary.
+
+What phase 4 does *not* have yet is the turn: the evaluation is #319, so a due
+channel logs `ambient_due`, nothing is built without a heartbeat factory, and
+`answer_after_idle_minutes` is still unread. What exists:
 
 | Package | What it is |
 | --- | --- |
@@ -63,10 +79,10 @@ needs both. What exists:
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization turn, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
-| `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, the app's own identity and workspace off one `auth.test`, and a reconnect ladder it owns rather than the SDK |
+| `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, the proactive post's verb and renderer, the app's own identity and workspace off one `auth.test`, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, the `proposals/` directory beside it, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
-| `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, approvals and checklist clients, lifecycle |
+| `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, the proactive post surface and its rate window, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |
@@ -132,8 +148,8 @@ code is a paragraph the next reader will not find.
 | --- | --- |
 | What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes, what the skill-author turn sees of a task that curation deliberately does not, and why the merge turn takes no handler | `packages/agent/README.md` |
 | Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, approvals, the audit log's write discipline | `packages/proxy/README.md` |
-| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, and why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for | `apps/server/README.md` |
-| Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, the three rules that package keeps | `packages/gateway/README.md` |
+| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for, and why the proactive post surface is minted in the composition, why its window is four hours, and why its two sources are named for the wake reason | `apps/server/README.md` |
+| Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, why the channel-post verb is a second exception to the `CardPoster` narrowing and a different kind of one, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
