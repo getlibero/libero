@@ -1,4 +1,4 @@
-// The two knobs that make the agent misbehave, proven to misbehave.
+// The knobs that change what the rig composes, proven to change it.
 //
 // Neither is an attack case — #134 and #135 are. What this file pins is that
 // the knobs do what their names say, so a case built on one is testing the
@@ -30,6 +30,7 @@ const mention = (eventId: string) => ({
 
 describeSpendDropped();
 describeNoCards();
+describeAmbient();
 
 function describeSpendDropped(): void {
   let rig: Rig | undefined;
@@ -105,6 +106,55 @@ function describeNoCards(): void {
       const rows = auditRows(auditDb);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ channel: CHANNEL, tool: "merge_pr", outcome: "held" });
+    },
+    CASE_MS
+  );
+}
+
+/**
+ * `RigOptions.ambient` (#321).
+ *
+ * The other two knobs above make the agent misbehave; this one decides whether a
+ * whole capability exists. Both directions are worth pinning, and the second is
+ * the one that matters: a rig that composed a clock it was never asked for would
+ * be a suite whose cases post messages into channels nobody addressed.
+ */
+function describeAmbient(): void {
+  let off: Rig | undefined;
+  let on: Rig | undefined;
+
+  beforeAll(async () => {
+    off = await startRig({ script: [] });
+    on = await startRig({
+      ambient: true,
+      script: [],
+      sheets: { [CHANNEL]: { tools: [], ambient: { enabled: true } } }
+    });
+  }, SETUP_MS);
+
+  afterAll(async () => {
+    await off?.stop();
+    await on?.stop();
+  });
+
+  it(
+    "composes no clock without it, and says so rather than doing nothing",
+    async () => {
+      // The failure mode this file exists for: a case that forgot the knob must
+      // fail as itself, not pass because a scan silently found no channels.
+      await expect(rigOf(off).heartbeat(Date.now())).rejects.toThrow(/composed no ambient clock/);
+    },
+    CASE_MS
+  );
+
+  it(
+    "composes one with it, and the scan reaches an enabled channel",
+    async () => {
+      // No script entry is consumed: the channel has no material, so the pregate
+      // stops before any model call. What this pins is that the clock ran and
+      // found the channel — `fired` counts channels acted on.
+      expect(await rigOf(on).heartbeat(Date.now())).toBe(1);
+      expect(rigOf(on).model.seen).toEqual([]);
     },
     CASE_MS
   );

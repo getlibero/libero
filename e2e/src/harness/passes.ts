@@ -88,10 +88,37 @@ export interface BackgroundPassOptions {
 /** What the fake provider is stamped as. Only ever compared against itself. */
 const EMBEDDING_MODEL = "e2e-embedding-model";
 
-export function backgroundPasses(options: BackgroundPassOptions): BackgroundPassDeps {
-  const { logger, sheets, skills, signal } = options;
-  const wanted = new Set(options.passes);
-  const clock = options.now === undefined ? {} : { now: options.now };
+/** What every metered turn on this side is built with. See `meteringClosures`. */
+export interface MeteringOptions {
+  /** The wrapped transport, so a compromised wire reaches both halves. */
+  readonly transport: ProxyTransport;
+  readonly logger: Logger;
+  readonly signal: AbortSignal;
+}
+
+export interface Metering {
+  readonly reportTurn: (
+    channel: string,
+    turn: CompletedTurn & { id: string }
+  ) => Promise<void>;
+  readonly maySpend: (channel: string) => Promise<boolean>;
+}
+
+/**
+ * The two halves of the meter, built once and shared.
+ *
+ * `index.ts`'s shape exactly: both are module-level closures there, handed to
+ * every background pass and to the ambient heartbeat alike. Extracted here when
+ * the heartbeat arrived (#321), because it is wired independently of the four —
+ * a rig can ask for ambient and no passes — and two copies of these would be two
+ * chances to meter one and not the other.
+ *
+ * Built over the **wrapped** transport, which is what makes a case that
+ * compromised the agent's wire compromise a background turn's spend report and
+ * the question it asks before spending.
+ */
+export function meteringClosures(options: MeteringOptions): Metering {
+  const { logger, signal } = options;
 
   /**
    * One turn's tokens, on the proxy's meter.
@@ -153,6 +180,15 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
     logger.log("info", { event: "budget_declined", channel, reason: refusal.reason });
     return false;
   };
+
+  return { reportTurn, maySpend };
+}
+
+export function backgroundPasses(options: BackgroundPassOptions): BackgroundPassDeps {
+  const { logger, sheets, skills, signal } = options;
+  const wanted = new Set(options.passes);
+  const clock = options.now === undefined ? {} : { now: options.now };
+  const { reportTurn, maySpend } = meteringClosures(options);
 
   const embeddingModel =
     options.embedding === null ? {} : { embeddingModel: EMBEDDING_MODEL };

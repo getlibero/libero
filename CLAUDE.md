@@ -105,8 +105,22 @@ is never cleared when a proposal is forgotten, or deleting one would become a wa
 to be asked again. The **directory** is what is listed rather than the index,
 which is what keeps deletion both the decline and the way to stop the notice.
 
-What phase 4 does *not* have yet is `schedule_task` (#322–#324) and the e2e
-attacks (#321, #325). What exists:
+#321 closed the heartbeat workstream. The rig composes ambient on request — off
+twice, by a `RigOptions.ambient` switch *and* by the sheet, which is what makes
+"a channel that never opted in sees nothing" assertable rather than asserted —
+and `rig.heartbeat(at)` fires exactly one, scanning twice because first sight
+never fires. The suite states the claim the way #293 states its own: injected
+channel content can steer *what a proactive post says*, and what it must not do
+is widen anything governed — one post per rate window however many ticks fire, a
+question not answered before its threshold and answered after, a tick with
+nothing new spending nothing, a capped channel heartbeating without spending, a
+channel with `[ambient]` off seeing nothing, and a proposal notice that hostile
+content in the proposal itself cannot repeat. Wiring it found two real gaps in
+the rig: the harness gateway had no `AppIdentity`, so `gateway.workspace` was
+`undefined` and the clock would have refused to scan in every deployment the
+suite composed, and the surface had no `channel` verb.
+
+What phase 4 does *not* have yet is `schedule_task` (#322–#325). What exists:
 
 | Package | What it is |
 | --- | --- |
@@ -189,7 +203,7 @@ code is a paragraph the next reader will not find.
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why `idleThreads` is not `staleThreads` with another argument, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
 | Operator commands and the vault CLI | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
-| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
+| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |
