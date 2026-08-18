@@ -72,6 +72,26 @@ function recordingLogger(): { logger: { log: (l: LogLevel, f: LogFields) => void
   return { logger: { log: (level, fields) => void lines.push({ level, fields }) }, lines };
 }
 
+/**
+ * The complaint describing the sheet as the test left it.
+ *
+ * `writeSheet` truncates before it writes and the watcher is live during that
+ * window, so a save can log an earlier `team_sheet_invalid` about a file that
+ * was momentarily empty — `channel: invalid_type`, since `[channel]` is the
+ * only unconditionally-required top level. The store is meant to do that: the
+ * read caches the fingerprint it stat'ed, so the settled file looks different
+ * and is read again, which is the header comment's #137 lesson.
+ *
+ * The last complaint is the one that survives that. A resolve arriving after
+ * the write re-reads, because the fingerprint moved; one that shares the
+ * watcher's in-flight read is answered by a stat taken after the write landed,
+ * because `inFlightStated` will not share a read that has already looked; and a
+ * re-resolve of an unchanged file takes the `sameFile` path and logs nothing.
+ * Taking the first instead is what flaked on CI (#340).
+ */
+const lastComplaint = (lines: Line[]): Line | undefined =>
+  lines.filter(l => l.fields.event === "team_sheet_invalid").at(-1);
+
 let root: string;
 let store: TeamSheetStore | null = null;
 
@@ -246,7 +266,7 @@ describe("an invalid edit", () => {
     expect(after.sheet.mcp_server[0]?.credential).toBe("github_service_account");
     expect(after.stale).toBe(true);
 
-    const complaint = lines.find(l => l.fields.event === "team_sheet_invalid");
+    const complaint = lastComplaint(lines);
     expect(complaint?.level).toBe("error");
     expect(complaint?.fields.file).toBe(sheetPath("engineering"));
     expect(complaint?.fields.reason).toBe("schema_invalid");
@@ -268,7 +288,7 @@ describe("an invalid edit", () => {
     await writeSheet("engineering", TOML_INVALID);
     await store.resolve("engineering");
 
-    const complaint = lines.find(l => l.fields.event === "team_sheet_invalid");
+    const complaint = lastComplaint(lines);
     expect(complaint?.fields.reason).toBe("toml_syntax");
     expect(complaint?.fields.line).toBeGreaterThan(0);
     expect(complaint?.fields.column).toBeGreaterThan(0);
@@ -280,9 +300,7 @@ describe("an invalid edit", () => {
     store = new TeamSheetStore({ root, logger });
 
     expect((await store.resolve("engineering")).status).toBe("unusable");
-    expect(lines.find(l => l.fields.event === "team_sheet_invalid")?.fields.effect).toBe(
-      "no_sheet_in_force"
-    );
+    expect(lastComplaint(lines)?.fields.effect).toBe("no_sheet_in_force");
   });
 
   // The sequence the issue calls out by name: good, broken, good again. The
@@ -364,9 +382,7 @@ describe("the watcher", () => {
       "the watcher to report an invalid sheet",
       5000
     );
-    expect(lines.find(l => l.fields.event === "team_sheet_invalid")?.fields.effect).toBe(
-      "previous_sheet_retained"
-    );
+    expect(lastComplaint(lines)?.fields.effect).toBe("previous_sheet_retained");
   });
 
   it("reloads a valid edit without being asked", { timeout: 8000 }, async () => {
