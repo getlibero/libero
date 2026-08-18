@@ -101,8 +101,30 @@ describe("opening", () => {
   // The structural half of "the curator writes no skill file": there is no
   // method that could name one, and no `read` that could put a proposal's text
   // back in front of a model.
-  it("offers three operations, and no way to read one back", () => {
-    expect(Object.keys(proposals).sort()).toEqual(["count", "remove", "write"]);
+  //
+  // `list` joined the surface with #320 and does not weaken that. The claim is
+  // about *content*, and what it answers is the two skill names the curator was
+  // given — the same strings `count` already round-trips through `SkillName` and
+  // throws away. Nothing here returns a body, and the case below says so in the
+  // form that would actually catch a regression.
+  it("offers four operations, and no way to read one back", () => {
+    expect(Object.keys(proposals).sort()).toEqual(["count", "list", "remove", "write"]);
+  });
+
+  it("returns no proposal text from any of them", () => {
+    proposals.write(proposal());
+    const body = proposal().after.body;
+
+    // Every answer this object gives, serialized. A `read` — or a `list` that
+    // grew a `text` field — would put a model-authored body in here, which is
+    // the path `e2e/skill-poisoning.test.ts` exists to keep closed.
+    const answers = JSON.stringify({
+      count: proposals.count(),
+      list: proposals.list()
+    });
+
+    expect(answers).not.toContain(body);
+    expect(answers).not.toContain("Step");
   });
 });
 
@@ -171,6 +193,49 @@ describe("writing a proposal", () => {
     writeFileSync(join(directory, ".hidden--file.md"), "hidden");
 
     expect(proposals.count()).toBe(1);
+  });
+
+  // #320. The heartbeat needs to say *which* proposal is waiting, and the names
+  // are the two the curator was given rather than anything a model wrote — so
+  // this is a listing, not the `read` the header rules out.
+  it("lists the pairs that are waiting, and nothing that is not one", () => {
+    proposals.write(proposal());
+    writeFileSync(join(directory, "notes.md"), "a person's notes");
+    writeFileSync(join(directory, "one--two--three.md"), "three halves");
+
+    expect(proposals.list()).toEqual([{ a: "deploy-rollback", b: "deploy-runbook" }]);
+  });
+
+  it("lists nothing when nothing is waiting, and never throws for a missing directory", () => {
+    expect(proposals.list()).toEqual([]);
+  });
+
+  it("agrees with count, on the same readdir and the same filter", () => {
+    proposals.write(proposal());
+    proposals.write(
+      proposal({
+        draft: {
+          keep: "cert-rotation",
+          drop: "cert-staging",
+          description: "Rotating a certificate.",
+          body: "1. `--rotate`\n2. `--promote`"
+        },
+        keepBefore: skill("cert-rotation", "Rotating.", "Steps."),
+        dropBefore: skill("cert-staging", "Staging.", "Steps."),
+        after: skill("cert-rotation", "Rotating a certificate.", "Steps.")
+      })
+    );
+    writeFileSync(join(directory, "notes.md"), "not a proposal");
+
+    expect(proposals.list()).toHaveLength(proposals.count());
+  });
+
+  it("carries the pair in the order the filename does", () => {
+    // The file is named in name order, so a caller comparing this against the
+    // notice ledger compares the same two strings both times.
+    proposals.write(proposal());
+
+    expect(proposals.list()[0]).toEqual({ a: "deploy-rollback", b: "deploy-runbook" });
   });
 });
 

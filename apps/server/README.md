@@ -840,7 +840,7 @@ sees only the skills retrieval had already loaded, so a playbook gets written
 twice by a turn that could not see the first copy. This is what notices — and
 what it does about it is **propose**, never rewrite.
 
-### The review surface is the filesystem, and that is forced rather than chosen
+### The review surface is the filesystem, and that was forced rather than chosen
 
 The obvious surface is the channel: post the diff where the team is. **This
 process cannot.** `MessagePoster.postThreadReply` is deliberately withheld from
@@ -854,6 +854,15 @@ Approval cards are separately not it, and the reason is worth keeping because it
 is the one somebody will reach for: **a card is the proxy's mechanic for a held
 tool call, and this is not a tool call.** Borrowing the card machinery would put
 a proxy dependency in a pass that has none.
+
+**Since #320 the channel is told, and the file is still the review surface.**
+The heartbeat names a waiting proposal in a proactive post — the file and the two
+acts, and none of the document. What changed is that somebody now knows to open
+the directory; what did not change is that the directory is where the review
+happens. The notice is composed from the two skill names by
+`renderProposalNotice` and never by a model, which is what keeps this package's
+"no model-authored text in `proposals/` re-enters a model's context" true: a
+notice the model wrote would need the proposal in front of it.
 
 So a proposal is `proposals/<a>--<b>.md`, a sibling of `skills/` in the channel's
 own state root. It shows the merged playbook as a **complete file** — frontmatter
@@ -1169,6 +1178,37 @@ to a channel that did not ask.
 An unusable answer is still logged apart from silence (`heartbeat_unusable`), so
 a broken prompt cannot hide inside the outcome that is expected almost every
 time.
+
+### A waiting merge proposal is one more kind of material
+
+`#320`, and the deferred half of phase 3. A proposal nobody has been told about
+is material in the pregate's sense — a tick with no new messages still has
+something to say — and it is **free**: the notice is a template over two skill
+names, so a tick whose only material is a proposal makes no model call at all.
+
+Three consequences, each of which is a decision rather than a fallout:
+
+- **A channel over its caps still hears about one.** Telling somebody a file is
+  waiting costs nothing, and what `maySpend` bounds is spend.
+- **A notice and a finding in one evaluation are one post**, folded finding
+  first — the timely half before the housekeeping. The window permits one post
+  and the rate limit is not negotiable by having two things to say.
+- **The model is never told a proposal exists.** It is not in the turn's input
+  and the notice is not its words, which is what keeps `packages/memory`'s "no
+  model-authored text in `proposals/` re-enters a model's context" true.
+
+Say-once is a row in the channel's index — `skill_merge_notice`, its own table
+beside the considered one, because *considered* is a fact about spend and *told*
+is a fact about a channel. It is written **after** the post lands, so a refused
+or failed post leaves the proposal to be offered again; and it is deliberately
+**not** cleared when the considered row is forgotten, because a team that deleted
+a proposal has declined, and re-announcing it would make deletion a way to be
+asked again.
+
+What is listed is the **directory**, never the index — which is what makes
+deleting a proposal both the decline and the thing that stops it being announced.
+A proposal deleted before the notice fires surfaces nothing, because it is not
+there to be found.
 
 ### What the model is shown, and what it is not
 

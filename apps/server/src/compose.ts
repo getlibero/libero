@@ -338,6 +338,7 @@ export interface ServerDeps {
 // asserting a number nobody named.
 export { HEARTBEAT_POST_WINDOW_MS, createProactivePoster } from "./proactive/proactive.js";
 export { MAX_HEARTBEAT_MESSAGES, createAmbientHeartbeat } from "./session/heartbeat.js";
+export { renderProposalNotice } from "./session/heartbeat.js";
 export type { HeartbeatOptions, HeartbeatSettings } from "./session/heartbeat.js";
 export type {
   ProactivePost,

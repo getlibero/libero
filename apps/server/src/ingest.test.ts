@@ -75,6 +75,8 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       recordSkillMergeConsidered: () => {},
       orphanedSkillMergeProposals: () => [],
       forgetSkillMergeProposal: () => {},
+      skillMergeNoticed: () => false,
+      recordSkillMergeNotice: () => {},
       readThreadSummary: () => null,
       close: () => {
         closed += 1;
@@ -380,6 +382,8 @@ describe("createMessageIngest", () => {
         recordSkillMergeConsidered: () => {},
         orphanedSkillMergeProposals: () => [],
         forgetSkillMergeProposal: () => {},
+        skillMergeNoticed: () => false,
+        recordSkillMergeNotice: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -431,6 +435,8 @@ describe("createMessageIngest", () => {
         recordSkillMergeConsidered: () => {},
         orphanedSkillMergeProposals: () => [],
         forgetSkillMergeProposal: () => {},
+        skillMergeNoticed: () => false,
+        recordSkillMergeNotice: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -857,6 +863,8 @@ describe("createRevisionIngest", () => {
         recordSkillMergeConsidered: () => {},
         orphanedSkillMergeProposals: () => [],
         forgetSkillMergeProposal: () => {},
+        skillMergeNoticed: () => false,
+        recordSkillMergeNotice: () => {},
         readThreadSummary: () => null,
         close: () => {}
       }
@@ -951,6 +959,8 @@ describe("createRevisionIngest", () => {
         recordSkillMergeConsidered: () => {},
         orphanedSkillMergeProposals: () => [],
         forgetSkillMergeProposal: () => {},
+        skillMergeNoticed: () => false,
+        recordSkillMergeNotice: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -1002,6 +1012,8 @@ describe("createRevisionIngest", () => {
         recordSkillMergeConsidered: () => {},
         orphanedSkillMergeProposals: () => [],
         forgetSkillMergeProposal: () => {},
+        skillMergeNoticed: () => false,
+        recordSkillMergeNotice: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })

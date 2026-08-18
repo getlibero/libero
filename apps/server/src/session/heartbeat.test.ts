@@ -17,9 +17,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
 import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
-import type { MessageStore, StoredMessage } from "@getlibero/memory";
+import type { MessageStore, SkillPairKey, SkillProposals, StoredMessage } from "@getlibero/memory";
 import { openMessageStore } from "@getlibero/memory";
-import { MAX_HEARTBEAT_MESSAGES, createAmbientHeartbeat } from "./heartbeat.js";
+import { MAX_HEARTBEAT_MESSAGES, createAmbientHeartbeat, renderProposalNotice } from "./heartbeat.js";
 import type { HeartbeatOptions, HeartbeatSettings } from "./heartbeat.js";
 import { toSlackTs } from "./summarize.js";
 import type { ProactivePost, ProactivePoster } from "../proactive/proactive.js";
@@ -120,6 +120,25 @@ function heartbeatWith(overrides: Partial<HeartbeatOptions> = {}) {
   };
   return { heartbeat: createAmbientHeartbeat(base), reported, surface };
 }
+
+/** A proposals directory a case states as a list, with no filesystem in it. */
+function proposals(...waiting: SkillPairKey[]): { open: () => SkillProposals; listed: () => number } {
+  let reads = 0;
+  return {
+    listed: () => reads,
+    open: () => ({
+      count: () => waiting.length,
+      list: () => {
+        reads += 1;
+        return waiting;
+      },
+      write: () => {},
+      remove: () => false
+    })
+  };
+}
+
+const PAIR: SkillPairKey = { a: "deploy-rollback", b: "deploy-runbook" };
 
 /** A question asked long enough ago to be past the idle threshold. */
 function plantIdleQuestion(text = "why is staging refusing certs?"): void {
@@ -472,5 +491,183 @@ describe("what it costs", () => {
 
     expect(reported).toHaveLength(2);
     expect(reported[0]?.id).not.toBe(reported[1]?.id);
+  });
+});
+
+// #320: the deferred half of phase 3. A proposal is a file because nothing in
+// this process could reach a channel; the surface exists now, and this is the
+// notice that points at it.
+describe("a waiting merge proposal", () => {
+  it("is surfaced with no model call at all when nothing else is due", async () => {
+    // The notice is a template over two names, so a tick whose only material is
+    // a proposal costs nothing. That is what lets it be material in the
+    // pregate's sense.
+    const answering = model("something");
+    const surface = poster();
+    const directory = proposals(PAIR);
+    const { heartbeat, reported } = heartbeatWith({
+      completion: answering.completion,
+      post: surface.post,
+      proposals: directory.open
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(answering.calls()).toBe(0);
+    expect(reported).toEqual([]);
+    expect(surface.sent).toHaveLength(1);
+    expect(surface.sent[0]?.text).toContain("proposals/deploy-rollback--deploy-runbook.md");
+  });
+
+  it("is surfaced at most once, ever", async () => {
+    const surface = poster();
+    const { heartbeat } = heartbeatWith({
+      post: surface.post,
+      proposals: proposals(PAIR).open
+    });
+
+    await heartbeat(CHANNEL, store);
+    await heartbeat(CHANNEL, store);
+    await heartbeat(CHANNEL, store);
+
+    expect(surface.sent).toHaveLength(1);
+  });
+
+  it("surfaces nothing for a proposal deleted before the notice fired", async () => {
+    // The directory is what is listed, not the index — which is what makes
+    // deleting a proposal both the decline and the thing that stops it being
+    // announced.
+    const surface = poster();
+    const { heartbeat } = heartbeatWith({
+      post: surface.post,
+      proposals: proposals().open
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(surface.sent).toEqual([]);
+  });
+
+  it("records nothing when the post did not land, so it is offered again", async () => {
+    // A notice nobody saw must not count as one.
+    const refusing: ProactivePoster = {
+      mayPost: () => true,
+      post: () => Promise.resolve(false)
+    };
+    const first = heartbeatWith({ post: refusing, proposals: proposals(PAIR).open });
+    await first.heartbeat(CHANNEL, store);
+
+    const surface = poster();
+    const second = heartbeatWith({ post: surface.post, proposals: proposals(PAIR).open });
+    await second.heartbeat(CHANNEL, store);
+
+    expect(surface.sent).toHaveLength(1);
+  });
+
+  it("still tells a channel that is over its caps", async () => {
+    // Telling a channel about a file costs nothing, and the budget bounds spend.
+    const surface = poster();
+    const answering = model("something");
+    plantIdleQuestion();
+    const { heartbeat, reported } = heartbeatWith({
+      completion: answering.completion,
+      post: surface.post,
+      proposals: proposals(PAIR).open,
+      maySpend: () => Promise.resolve(false)
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(answering.calls()).toBe(0);
+    expect(reported).toEqual([]);
+    expect(surface.sent).toHaveLength(1);
+    expect(surface.sent[0]?.text).toContain("proposals/");
+  });
+
+  it("says nothing at all when the window is shut", async () => {
+    const shut = poster(false);
+    const { heartbeat } = heartbeatWith({ post: shut.post, proposals: proposals(PAIR).open });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(shut.sent).toEqual([]);
+  });
+
+  // The rate limit's acceptance criterion: one evaluation is one post, whatever
+  // it carries.
+  it("rides along with a merited finding as one post, finding first", async () => {
+    plantIdleQuestion();
+    const surface = poster();
+    const { heartbeat } = heartbeatWith({
+      completion: model("Priya's question has had no reply.").completion,
+      post: surface.post,
+      proposals: proposals(PAIR).open
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(surface.sent).toHaveLength(1);
+    const text = surface.sent[0]?.text ?? "";
+    expect(text).toContain("Priya's question has had no reply.");
+    expect(text).toContain("proposals/deploy-rollback--deploy-runbook.md");
+    expect(text.indexOf("Priya")).toBeLessThan(text.indexOf("proposals/"));
+  });
+
+  it("posts the notice alone when the turn had nothing to say", async () => {
+    plantIdleQuestion();
+    const surface = poster();
+    const { heartbeat } = heartbeatWith({
+      completion: model(null).completion,
+      post: surface.post,
+      proposals: proposals(PAIR).open
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(surface.sent).toHaveLength(1);
+    expect(surface.sent[0]?.text).toContain("proposals/");
+  });
+
+  it("is not offered to a deployment with no proposals opener", async () => {
+    const surface = poster();
+    const { heartbeat } = heartbeatWith({ post: surface.post });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(surface.sent).toEqual([]);
+  });
+
+  it("never shows the model that a proposal exists", async () => {
+    // `packages/memory` keeps closed the path by which model-authored text in
+    // that directory re-enters a model's context. The notice is a template, and
+    // the turn is not told there is one.
+    plantIdleQuestion();
+    const answering = model("something");
+    const { heartbeat } = heartbeatWith({
+      completion: answering.completion,
+      proposals: proposals(PAIR).open
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(JSON.stringify(answering.requests)).not.toContain("proposal");
+    expect(JSON.stringify(answering.requests)).not.toContain("deploy-rollback");
+  });
+});
+
+describe("what a proposal notice says", () => {
+  it("names the file and the two acts, and reproduces no document", () => {
+    const text = renderProposalNotice(PAIR);
+
+    expect(text).toContain("proposals/deploy-rollback--deploy-runbook.md");
+    expect(text).toContain("delete the file");
+    expect(text).toContain("deploy-rollback");
+    expect(text).toContain("deploy-runbook");
+  });
+
+  it("says it will only be mentioned once", () => {
+    // The say-once discipline is a property of the ledger, and a reader who is
+    // going to be told once should know that is what happened.
+    expect(renderProposalNotice(PAIR)).toContain("only time");
   });
 });

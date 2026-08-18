@@ -93,8 +93,20 @@ reader, and `packages/memory` grew `idleThreads` for it: `staleThreads` is joine
 against the summary corpus, so a channel that summarizes its quiet threads would
 be invisible to the heartbeat.
 
-What phase 4 does *not* have yet is the proposal notice (#320), `schedule_task`
-(#322–#324), and the e2e attacks (#321, #325). What exists:
+#320 closed the heartbeat workstream's last feature and the loop phase 3 left
+open: a waiting merge proposal is now named in its channel, once. It is material
+in the pregate's sense and it is *free* — the notice is a template over two skill
+names, so a tick whose only material is a proposal makes no model call, and a
+channel over its caps still hears about one. A notice and a finding in the same
+evaluation are one post. Say-once is `skill_merge_notice` in the channel's index,
+a table of its own beside the considered one because *considered* is a fact about
+spend and *told* is a fact about a channel; it is written after the post lands and
+is never cleared when a proposal is forgotten, or deleting one would become a way
+to be asked again. The **directory** is what is listed rather than the index,
+which is what keeps deletion both the decline and the way to stop the notice.
+
+What phase 4 does *not* have yet is `schedule_task` (#322–#324) and the e2e
+attacks (#321, #325). What exists:
 
 | Package | What it is |
 | --- | --- |
@@ -154,7 +166,8 @@ Three things in phase 3 landed differently from the roadmap's own wording, and
 the roadmap records them rather than ticking a definition of done that says
 something untrue. **The curator produces no diff** — a merged playbook is a
 rewrite rather than an edit, so a proposal shows three whole documents instead of
-hunks. **Where a proposal goes was forced rather than chosen**, because
+hunks. **Where a proposal goes was forced rather than chosen** (until #320 gave
+it a notice in the channel — the file is still the review surface), because
 `postThreadReply` is withheld from this process and a card needs a thread from an
 inbound event. And **the lifecycle job runs on channel activity rather than
 weekly**, which its absolute-date clocks make equivalent.
