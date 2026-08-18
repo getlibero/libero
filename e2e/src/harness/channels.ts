@@ -185,6 +185,31 @@ export interface SheetSpec {
     readonly archiveAfterDays?: number;
   };
   /**
+   * The `[ambient]` block: whether this channel is spoken to unbidden (#321).
+   *
+   * **Off unless a case says otherwise, and here the schema agrees** — unlike
+   * `[memory]` and `[skills]` above, whose prefaults are on and whose sheets
+   * therefore have to say `false` out loud. `[ambient] enabled` is the one
+   * switch on a team sheet that defaults off, so writing it is belt and braces
+   * rather than a correction.
+   *
+   * It is written anyway, for the reason #308 found the hard way: a block left
+   * to its prefault is a block no case can see the value of, and this is the one
+   * whose accidental default would be *the agent speaking to a channel nobody
+   * asked*. A reader of a rig's sheet should be able to tell without knowing the
+   * schema.
+   *
+   * The two figures are here because a case driving the pregate has an opinion
+   * about both: `heartbeatEveryMinutes` is what the scheduler wakes on, and
+   * `answerAfterIdleMinutes` is what counts as unanswered — the knob the
+   * front-running case drives from both sides.
+   */
+  readonly ambient?: {
+    readonly enabled?: boolean;
+    readonly heartbeatEveryMinutes?: number;
+    readonly answerAfterIdleMinutes?: number;
+  };
+  /**
    * The certificates allowed to speak for this channel, as SHA-256 digests
    * (#79).
    *
@@ -308,6 +333,15 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
             : []),
           ...(spec.skills?.archiveAfterDays !== undefined
             ? [`archive_after_days = ${spec.skills.archiveAfterDays}`]
+            : []),
+          ``,
+          `[ambient]`,
+          `enabled = ${spec.ambient?.enabled ?? false}`,
+          ...(spec.ambient?.heartbeatEveryMinutes !== undefined
+            ? [`heartbeat_every_minutes = ${spec.ambient.heartbeatEveryMinutes}`]
+            : []),
+          ...(spec.ambient?.answerAfterIdleMinutes !== undefined
+            ? [`answer_after_idle_minutes = ${spec.ambient.answerAfterIdleMinutes}`]
             : []),
           ``,
           `[[mcp_server]]`,

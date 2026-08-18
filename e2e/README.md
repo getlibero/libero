@@ -482,6 +482,27 @@ can check. A `passClock` or an `embedding` with no `passes` throws at
 `startRig`, because a knob that silently does nothing is worse than one that is
 missing.
 
+**Ambient is a separate switch, and it is off twice** (#321).
+`startRig({ ambient: true, passClock })` composes the clock, the channel
+enumerator and the heartbeat — and a channel still gets nothing until its sheet
+says `[ambient] enabled = true`. The two are not redundant: the first keeps every
+case written before this composing what it composed before, and the second is
+what makes "a channel that never opted in sees nothing" assertable, since only a
+rig with the wiring present can show that the *sheet* is what withheld it.
+`passClock` reaches the heartbeat and the rate window alike when `ambient` is
+set, so a case stepping past `HEARTBEAT_POST_WINDOW_MS` is stepping past a window
+that can see it.
+
+**Fire one with `rig.heartbeat(at)`, which scans twice.** Nothing starts a
+timer — `AmbientScheduler.scan` is documented as the whole of the scheduler's
+behaviour so a test drives it — and the first scan of a channel **never fires**,
+because a channel newly seen enabled is scheduled at `now + cadence`. So the
+helper does the sighting scan for you and then the real one at `at`, and answers
+how many channels fired. The event words are `heartbeat_posted`,
+`heartbeat_silent`, `heartbeat_deferred`, `heartbeat_unusable` and
+`heartbeat_failed`; a post lands in `agent.slack.channelPosts`, which is its own
+array precisely so a case cannot mistake one for a reply.
+
 **The lifecycle job's first run on a file writes nothing.** It adopts what the
 file says as its baseline, which is what makes a hand-set status survive — so a
 case that wants a status moved needs two runs, and the second has to clear
@@ -618,6 +639,10 @@ outlive the run.
   `openingContexts`.
 - `src/harness/embedding.ts` — the constant fake embedder, and the rule it
   carries.
+- `src/harness/ambient.ts` — the clock, the enumerator and the heartbeat, when a
+  case asks. `passes.ts`'s shape, and it shares that file's `meteringClosures` so
+  a background turn and a heartbeat are metered by one pair of closures over the
+  wrapped transport, exactly as `index.ts` shares them.
 - `src/harness/passes.ts` — the four background passes, mirroring
   `apps/server/src/index.ts` rather than restating it.
 - `src/harness/client.ts` — the attacker's own mutual-TLS client.

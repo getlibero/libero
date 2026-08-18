@@ -43,6 +43,7 @@ import {
   createSkillRecall
 } from "@getlibero/server";
 import type { Cleanup } from "./cleanup.js";
+import { ambientDeps } from "./ambient.js";
 import { backgroundPasses } from "./passes.js";
 import type { BackgroundPass } from "./passes.js";
 
@@ -115,11 +116,35 @@ export interface AgentOptions {
    * unwired, so skill retrieval runs on full text whatever this says.
    */
   readonly embedding?: EmbeddingClient;
+  /**
+   * Whether this side composes the ambient clock and the heartbeat (#321).
+   *
+   * Absent leaves `createServer` with the same two `undefined`s it received
+   * before this existed, so no case that did not ask gains a clock, an
+   * enumerator, or a `Server.ambient` to drive. See ./ambient.ts.
+   */
+  readonly ambient?: boolean;
 }
 
 export interface AgentSide {
   readonly slack: StubSlack;
   readonly gateway: SlackGateway;
+  /**
+   * Runs one ambient scan at `at`, and answers how many channels it fired.
+   *
+   * `AmbientScheduler.scan` is documented as the whole of the scheduler's
+   * behaviour so that a test drives it rather than waiting on a timer, and this
+   * is that seam. Nothing here starts a clock.
+   *
+   * **The first scan of a channel never fires**, which is the scheduler's
+   * first-sight rule rather than a wrinkle of this rig: a channel newly seen
+   * enabled is scheduled at `now + cadence`, so a case wanting a heartbeat scans
+   * once to be seen and again past the cadence. `Rig.heartbeat` does both.
+   *
+   * Throws on a rig that composed no clock, so a case that forgot
+   * `RigOptions.ambient` fails as itself rather than as a silent no-op.
+   */
+  heartbeat(at: number): Promise<number>;
   /** Every structured log line this side emitted — one of the canary surfaces. */
   log(): Array<{ level: LogLevel; fields: LogFields }>;
   /**
@@ -260,7 +285,7 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     logger
   });
 
-  const { gateway } = createServer({
+  const { gateway, ambient } = createServer({
     slack: ({ handler, onDecision, onMessage, onRevision }) => ({
       gateway: createGateway({
         source: slack.source,
@@ -275,6 +300,13 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
         // went nowhere, which is the shape of gap this suite exists to catch in
         // the product and had in itself.
         onRevision,
+        // #321. Omitting this was the same shape of gap `onRevision` was: the
+        // gateway learns the app's own id and its workspace from one
+        // `auth.test`, and without it `gateway.workspace` is `undefined`
+        // forever — so the ambient clock refuses to scan, because a `SessionKey`
+        // it invented would be a second session over a live channel. Nothing
+        // failed before this; there was simply nothing asking.
+        identity: slack.identity,
         logger
       }),
       // Omitted rather than stubbed when a case asks for no card path: the
@@ -282,6 +314,11 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       // which is the shape being tested. A stub that accepted cards and dropped
       // them would test nothing.
       ...(options.cards === false ? {} : { cards: slack.poster }),
+      // The channel-post verb (#318), always present. Unlike cards it has no
+      // degraded mode worth a case: a surface without it builds no heartbeat at
+      // all, which is a composition decision `apps/server` already tests, and
+      // here it would make every ambient case silently unreachable.
+      channel: slack.poster,
       // Always present. Unlike cards, a directory has no degraded mode worth a
       // case: without one every author renders as an id, which is the same
       // transcript with worse names.
@@ -348,6 +385,30 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
           signal: tasks.signal,
           ...(options.passClock !== undefined ? { now: options.passClock } : {})
         })),
+    // The clock and the heartbeat, when a case asked (#321). Absent otherwise,
+    // on the four passes' terms and for their reason: a case that did not ask
+    // composes exactly what it composed before, and `Server.ambient` is not
+    // built at all.
+    // The rate window's clock, when a case is driving one (#318). Without it the
+    // window is measured on `Date.now()` while a case steps a simulated one, so
+    // "four hours later" would be four hours the window never saw. It is the
+    // same figure the heartbeat reads, deliberately: a case advancing past the
+    // window is advancing past the cadence too.
+    ...(options.ambient === true && options.passClock !== undefined
+      ? { proactiveClock: options.passClock }
+      : {}),
+    ...(options.ambient === true
+      ? ambientDeps({
+          completion: options.completion,
+          transport,
+          sheets,
+          storeRoot: options.storeRoot,
+          channelsRoot: options.channelsRoot,
+          logger,
+          signal: tasks.signal,
+          ...(options.passClock !== undefined ? { now: options.passClock } : {})
+        })
+      : {}),
     signal: tasks.signal,
     logger,
     ...(options.now !== undefined ? { now: options.now } : {}),
@@ -382,5 +443,17 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     }
   };
 
-  return { slack, gateway, log: () => [...lines], waitForLog };
+  return {
+    slack,
+    gateway,
+    log: () => [...lines],
+    waitForLog,
+    async heartbeat(at: number): Promise<number> {
+      if (ambient === undefined) {
+        throw new Error("e2e: this rig composed no ambient clock — see RigOptions.ambient");
+      }
+      const { fired } = await ambient.scan(at);
+      return fired;
+    }
+  };
 }

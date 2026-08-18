@@ -202,6 +202,25 @@ export interface RigOptions {
    */
   readonly passClock?: () => number;
   /**
+   * Whether this rig composes the ambient clock and the heartbeat (#321).
+   *
+   * Off by default, on `passes`' terms and for a sharper reason: what ambient
+   * does is *speak in a channel nobody addressed*, so a rig that acquired one by
+   * accident would be a suite whose cases post messages they never asked for and
+   * consume script entries written before ambient existed.
+   *
+   * It is one switch rather than a list because there is one thing to compose.
+   * A channel still needs `[ambient] enabled = true` on its sheet — the two
+   * together are what make "a channel that never opted in sees nothing"
+   * assertable, since only a rig with the wiring present can show the sheet is
+   * what withheld it.
+   *
+   * `passClock` reaches the heartbeat when both are set, which is deliberate:
+   * the heartbeat's idle threshold is a comparison against the same clock the
+   * quiescence sweep's is, and a case driving one is driving the other.
+   */
+  readonly ambient?: boolean;
+  /**
    * How this rig embeds, or absent for the deployment that configured nothing.
    *
    * `"constant"` is the one fake there is: the same vector for every text, so it
@@ -326,6 +345,23 @@ export interface Rig {
    * as the task runs. Pass the result to `expectNoCanary`.
    */
   surfaces(): Surface[];
+  /**
+   * Fires exactly one heartbeat over every enabled channel, at `at`.
+   *
+   * Two scans, not one, and that is the scheduler's rule showing through rather
+   * than this helper being clever: **first sight never fires**, so a channel
+   * newly seen enabled is scheduled at `now + cadence` and the scan that saw it
+   * does nothing. The first call here is that sighting; the second is `at`
+   * itself, which must be past the channel's cadence for the deadline to have
+   * come due.
+   *
+   * Answers how many channels fired, so a case asserting "nothing was due" reads
+   * as that rather than as an absence of log lines.
+   *
+   * A case wanting a *second* heartbeat calls this again at a later instant; the
+   * schedule is already seeded by then, so the extra sighting scan is a no-op.
+   */
+  heartbeat(at: number): Promise<number>;
   stop(): Promise<void>;
 }
 
@@ -382,9 +418,14 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
   // premise harness-knobs.test.ts exists on. Both of these reach the background
   // passes and only them, so either without `passes` is a case believing it
   // configured something.
-  if (options.passClock !== undefined && (options.passes ?? []).length === 0) {
+  if (
+    options.passClock !== undefined &&
+    (options.passes ?? []).length === 0 &&
+    options.ambient !== true
+  ) {
     throw new Error(
-      "e2e: passClock reaches the background passes and this rig composes none — see RigOptions.passes"
+      "e2e: passClock reaches the background passes and the heartbeat, and this rig composes " +
+        "neither — see RigOptions.passes and RigOptions.ambient"
     );
   }
   if (options.embedding !== undefined && (options.passes ?? []).length === 0) {
@@ -491,6 +532,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       ...(options.scheduler !== undefined ? { scheduler: options.scheduler } : {}),
       ...(options.now !== undefined ? { now: options.now } : {}),
       ...(options.passes !== undefined ? { passes: options.passes } : {}),
+      ...(options.ambient !== undefined ? { ambient: options.ambient } : {}),
       ...(options.passClock !== undefined ? { passClock: options.passClock } : {}),
       ...(embeddings === null ? {} : { embedding: embeddings.client })
     });
@@ -518,6 +560,16 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       budgetDb,
       storeRoot,
       embeddings,
+      heartbeat: async (at: number): Promise<number> => {
+        // The sighting scan, whose only job is to put every enabled channel on
+        // the schedule. It fires nothing — that is the point — and its instant
+        // has to be far enough before `at` that the deadline it sets has come
+        // due by then. A day and an hour, because `heartbeat_every_minutes` is
+        // capped at 1440 in the schema, so this is past any cadence a sheet can
+        // ask for rather than past the ones cases happen to use.
+        await agent.heartbeat(at - 25 * 60 * 60 * 1000);
+        return agent.heartbeat(at);
+      },
       surfaces: (): Surface[] => [
         surface("a thread reply", agent.slack.posted),
         // Cards render the model's own tool arguments, so a credential the model
