@@ -49,9 +49,13 @@ Five things landed differently from how this phase was first written down. Four 
 
 **"Every call it induces still meets the proxy's gates" is true because a fired check induces none.** It is one bounded turn over the channel's recent messages with a single tool that posts, and no tool proxy client at all — so it can steer what it says and can reach nothing. That is the conservative shape and it is what makes the containment claim structural rather than enforced, but it is a narrower thing than the sentence implies. Giving a fired check the governed tool path is [#348](https://github.com/getlibero/libero/issues/348), and it is a design question — an approval card with nobody to click it, and a pending cap chosen against a much cheaper unit of work — before it is an implementation one.
 
-**Phase 5 — hardening.** Hardening pass on the proxy, audit hash-chaining for tamper evidence, durable multi-day orchestration option (Temporal).
+**Phase 5 — hardening.** Hardening pass on the proxy, audit hash-chaining for tamper evidence.
 
-This phase was first written down as "breadth" and led with a second platform adapter (Discord). That item is dropped rather than deferred: a second chat surface widens adoption, not the governed core, and every phase 1–4 feature has a Slack-shaped rendering — cards, checklist, proactive posts, the rig's fake gateway — so an adapter is a re-answering of all of it, not a gateway swap. The one thing it would prove, that the gateway seam is real rather than Slack-shaped, is worth proving when a real team asks. Platform adapters are a v1 non-goal in the architecture's scope section.
+This phase was first written down as "breadth" — a second platform adapter (Discord) and a durable multi-day orchestration option (Temporal) beside the two items that remain. Both are dropped rather than deferred.
+
+**Discord:** a second chat surface widens adoption, not the governed core, and every phase 1–4 feature has a Slack-shaped rendering — cards, checklist, proactive posts, the rig's fake gateway — so an adapter is a re-answering of all of it, not a gateway swap. The one thing it would prove, that the gateway seam is real rather than Slack-shaped, is worth proving when a real team asks. Platform adapters are a v1 non-goal in the architecture's scope section.
+
+**Temporal:** the two long-lived things this tree has are already durable rows — an approval ticket waiting for its click, a scheduled check waiting for its instant — and phase 4 deliberately removed the retry-and-continue machinery an orchestrator exists to provide, on the argument that a reminder retried into arriving days late is worse than an honest "it did not happen." A workflow engine would also put every step's arguments and results into one shared history database, which is the wrong shape against the one-file-per-channel boundary. What "multi-day" turned out to gesture at is scheduling rather than orchestration, and that is parked as its own work ([#358](https://github.com/getlibero/libero/issues/358), beside [#348](https://github.com/getlibero/libero/issues/348)) rather than gating this phase.
 
 ## What success looks like
 
