@@ -195,7 +195,7 @@ See the [security model](/docs/security).
 
 ## Scope (v1 non-goals)
 
-Discord/Teams adapters (the gateway supports them in principle; untested until Slack is solid). A web admin UI — manifests are files in a git repo, and that *is* the admin UI for v1. Fine-grained per-user permissions within a channel — channel membership is the permission boundary. Voice or DM personal-assistant modes. Multi-workspace control plane — single-tenant self-host only.
+Discord/Teams adapters (the gateway supports them in principle; none is planned — a second surface is worth building when a real team asks for it). A web admin UI — manifests are files in a git repo, and that *is* the admin UI for v1. Fine-grained per-user permissions within a channel — channel membership is the permission boundary. Voice or DM personal-assistant modes. Multi-workspace control plane — single-tenant self-host only.
 
 ## Acknowledgments
 
