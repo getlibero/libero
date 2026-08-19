@@ -90,9 +90,11 @@ rule. Two things make that structural rather than a convention:
 and holds the six statements that write and read a channel's messages.
 
 `openMessageReader` is the tool proxy's (#64). It opens the same file
-`readOnly`, runs no DDL, stamps nothing, and exposes exactly `search` and
-`close` — so the process holding every tool credential can answer
-`search_channel_history` and can do nothing else to a channel's conversation.
+`readOnly`, runs no DDL, stamps nothing, and exposes `search`, `close`, and —
+since #323, a reviewed widening documented below — `pendingScheduledTasks`,
+which answers an integer. The process holding every tool credential can answer
+`search_channel_history` and count waiting checks, and can do nothing else to a
+channel's conversation.
 It answers `null` for a channel with no store yet, which is the ordinary state
 of a newly provisioned channel rather than a misconfiguration.
 

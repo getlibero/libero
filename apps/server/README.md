@@ -1023,17 +1023,18 @@ docs give that as a feature: a cron would mean growing a timer and an enumerator
 over every channel, neither of which anything else here needs. Ambient needs
 both, so they land here once — and the four passes stay on channel activity.
 
-What it decides is **when to look, and where**. What a heartbeat then weighs, and
-whether anything is posted, is the evaluation turn's and the posting surface's,
-neither of which exists yet: with no `heartbeat` wired the scheduler logs
-`ambient_due` for a due channel and runs nothing.
+What it decides is **when to look, and where**. What a heartbeat then weighs is
+the evaluation turn's (#319, below), and whether anything is posted is the
+posting surface's (#318, below). The `heartbeat` dependency stays optional: a
+scheduler composed without one logs `ambient_due` for a due channel and runs
+nothing, which is what the rig relies on to test the clock alone.
 
 ### Wake at the next due instant, not on a tick
 
-The loop sleeps until the earliest thing that is due. Today the only kind of due
-thing is a channel's heartbeat, and `schedule_task` will add a second — a task
-due at a particular instant, which must fire *then* rather than at the next
-cadence boundary. That is an event source rather than a second clock: it
+The loop sleeps until the earliest thing that is due. There are two kinds of due
+thing: a channel's heartbeat, and — since #324 — a scheduled task, due at a
+particular instant, which must fire *then* rather than at the next
+cadence boundary. The task is an event source rather than a second clock: it
 contributes entries to the same plan, and `earliestDue` answers over all of them,
 which is what `DueEntry.kind` is for.
 
@@ -1102,7 +1103,7 @@ This is why `index.ts` starts the clock *after* `gateway.start()` resolves.
 - **The overrun rule.** A channel whose previous heartbeat has not finished is
   skipped (`ambient_overrun`) rather than queued: turns stacking on the mutex
   make a channel that is already behind get further behind.
-- **The meter**, once there is a turn to spend — the backstop, not the mechanism.
+- **The meter** — the backstop, not the mechanism.
 
 A heartbeat runs on the channel's session mutex, like every background pass, and
 is **awaited**, unlike them: nothing is waiting on a scan, and awaiting is what
@@ -1419,8 +1420,8 @@ A post arrives for one of two reasons, and they are governed in different places
 | `task` | A served `schedule_task` create — allowlisted, held for approval by default, capped, audited | Its governed create. One post per firing |
 
 The discriminant is the wake reason, spelled with the word list `session/ambient.ts`
-already has: `DueEntry.kind` is `"heartbeat"` today, and a due task adds a
-*member* rather than a second clock. One vocabulary for the phase — what wakes
+already has: `DueEntry.kind` is `"heartbeat" | "task"`, the second member joining
+in #324 as a *member* rather than a second clock. One vocabulary for the phase — what wakes
 the loop, what governs the post, and what the channel is told are three views of
 the same two cases. A `task` post neither draws on the window nor is blocked by
 it: a reminder is not late because a heartbeat spoke first.

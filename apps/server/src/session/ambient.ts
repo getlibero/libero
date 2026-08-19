@@ -17,13 +17,12 @@
 // ## Wake at the next due instant, not on a tick
 //
 // The loop sleeps until the earliest thing that is due, rather than ticking at a
-// fixed rate and asking what has piled up. Today the only kind of due thing is a
-// channel's heartbeat, whose instants are cadence multiples; the `schedule_task`
-// workstream adds a second kind — a task due at 14:32, which must fire at 14:32
-// and not at the next cadence boundary. That one adds an **event source**, not a
-// second clock: it contributes entries to the same plan, and `earliestDue`
-// answers over all of them. `DueEntry.kind` exists so that addition is an
-// addition.
+// fixed rate and asking what has piled up. There are two kinds of due thing: a
+// channel's heartbeat, whose instants are cadence multiples, and — since #324 —
+// a scheduled task due at 14:32, which must fire at 14:32 and not at the next
+// cadence boundary. The task is an **event source**, not a second clock: it
+// contributes entries to the same plan, and `earliestDue` answers over all of
+// them. `DueEntry.kind` is that vocabulary.
 //
 // The sleep is capped at `AMBIENT_RESCAN_MS` anyway, and that is not a tick in
 // disguise — it is the discovery bound. Nothing notifies this process that a
@@ -64,8 +63,8 @@
 //   - **`MAX_CONCURRENT_HEARTBEATS`**, the fan-out. See the constant.
 //   - **The overrun rule.** A channel whose previous heartbeat has not finished
 //     is skipped rather than queued.
-//   - **The meter**, once #319 gives a heartbeat something to spend — through
-//     the same `SpendReport` path every other turn takes. The backstop, not the
+//   - **The meter** — a heartbeat's evaluation (#319) spends through the same
+//     `SpendReport` path every other turn takes. The backstop, not the
 //     mechanism.
 //
 // ## Why the enumerator is the filesystem rather than the live sessions

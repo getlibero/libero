@@ -318,6 +318,11 @@ credential = "notion_grant"                 # name only; keys the stored grant
 # written to the audit log, exactly as an [[mcp_server.tool]] is. Delete the
 # block and the channel does not get the tool.
 #
+# Omitting `approval` does not mean here what it means on an [[mcp_server.tool]].
+# There the destructive-verb heuristic decides, because those names were chosen
+# by somebody else. These were chosen in this repository, so each built-in
+# declares its own default: search is "none", scheduling is "required".
+#
 # "libero" is the server name these travel under, and it is reserved: an
 # [[mcp_server]] claiming it is a parse error rather than a channel whose
 # search_channel_history quietly left the process.
@@ -331,6 +336,34 @@ max_result_chars = 8000                       # whole messages come back; a chan
                                               # 32k is a lot of other people's
                                               # conversation to put in front of the
                                               # model at once.
+
+# The agent's own future checks. It asks for one now — a question, and how many
+# minutes from now to ask it — and something runs that check at that time and
+# posts if there is anything to say. The exact time is worked out when the create
+# is approved, so nothing has to trust a language model's arithmetic about clocks.
+#
+# NOTE THE MISSING approval LINE, AND THAT IT MEANS THE OPPOSITE OF delete_file's.
+# There, no line means the destructive-verb heuristic decides and happens to hold
+# it. Here, no line IS the hold: a built-in's default is declared rather than
+# guessed, and this one's is "required". Loosening it is writing approval = "none",
+# which is a channel deciding that unbidden future work needs no click. Deleting
+# the block is how a channel does not get this at all.
+#
+# TWO SWITCHES, AND BOTH HAVE TO BE ON. Listing it here is one. The other is
+# [ambient] enabled below, which is false in this file — so as written, a create
+# is refused, because nothing would ever run the check. That is deliberate: the
+# starter sheet does not turn on unbidden speech, and this block is here to be
+# read rather than to work out of the box.
+#
+# The channel is not a field. It comes from the client certificate when the check
+# is created and from the channel's own file when it fires, so there is nothing an
+# argument could name.
+#
+# A check runs once. It posts an answer, or it has nothing to say, or — if this
+# channel is over its budget, or it could not be run — it says so in the channel
+# so you can act on the timer yourself. There is no retry and no queue.
+[[builtin]]
+name = "schedule_task"
 
 # Where traffic may go when this sheet does not already say.
 #
@@ -357,17 +390,28 @@ allow = ["api.github.com", "*.internal.example.com"]
 # its own. Off by default, always — every other block on this sheet argues its
 # own default by contrast with this one.
 #
-# PARSED BUT NOT YET READ. No code in either service consults these three
-# fields, so `enabled = true` turns nothing on. The block has its real shape as
-# of #316 and its first reader lands later in phase 4, so a sheet written today
-# keeps its shape when the heartbeat arrives.
+# Every field here has a reader: the agent process wakes on a clock, enumerates
+# the channels that opted in, and runs a heartbeat for each one that is due. The
+# evaluation weighs what changed since it last spoke, answers a question only
+# once it has sat idle past the threshold below, and its ordinary answer is
+# nothing — a post happens when something merits one, at most once per rate
+# window.
+#
+# Two things follow from how the clock is built. A newly enabled channel waits
+# one full cadence before its first heartbeat, and so does every enabled channel
+# after a restart: windows the process was down for are skipped rather than
+# replayed, because a heartbeat asks what merits a post *now*. And an edit here
+# lands on the next tick — nothing caches this file, and nothing restarts.
 #
 # The cadence is an interval, not a cron expression, and there are no quiet
 # hours and no timezone. A tick with nothing new to weigh is silent and spends
 # nothing, so 03:00 already costs you nothing and says nothing — which is the
 # whole thing a schedule with sleeping hours would have bought.
 [ambient]
-enabled                 = false             # off by default, always
+enabled                 = false             # off by default, always. Also the
+                                            # precondition for [[builtin]]
+                                            # schedule_task above: with this
+                                            # false, a create is refused.
 heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 
 # How long a question must sit before the heartbeat may answer it — the sibling
@@ -908,8 +952,10 @@ channel turns ambient back on.
 be scheduled, how soon, and how long the question may be are architecture constants rather than
 fields on this sheet — the same argument `[ambient]` makes for the rate limit on unbidden posts.
 Each has its own refusal, so a model that asks for more is told which bound it met. There is no
-recurrence: a repeating check is the agent scheduling the next one from the one that fired, which is
-a fresh create through the same gates.
+recurrence, and no path to improvise one: a fired check makes no tool calls at all, so it cannot
+schedule its own successor. Giving a fired check the governed tool path is
+[#348](https://github.com/getlibero/libero/issues/348), and standing schedules at a clock time are
+a parked design of their own ([#358](https://github.com/getlibero/libero/issues/358)).
 
 The channel is not a field, here or anywhere. It comes from the client certificate when the check is
 created and from the channel's own file when it fires.

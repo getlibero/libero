@@ -35,8 +35,8 @@ const attempts = [
   },
   {
     attack: 'Generated code tries to POST your data to an external host.',
-    result: 'No network.',
-    body: 'Code execution runs in an ephemeral container with a read-only rootfs, cpu/memory/time limits, and no network unless the team sheet grants an egress allowlist. The proxy invokes the runner, so the execution is audited and budgeted like any other tool call.',
+    result: 'No surface to run it.',
+    body: 'There is no code-execution tool today, so this attack has nowhere to start. The design of record for when one lands: an ephemeral container with a read-only rootfs, cpu/memory/time limits, and no network unless the team sheet grants an egress allowlist — invoked by the proxy, so it is audited and budgeted like any other tool call.',
     tone: 'blocked',
   },
 ];
@@ -61,8 +61,9 @@ const attempts = [
         <span class="lb-label lb-label--dim">The test</span>
         <h2 class="lb-h2">What an attacker gets</h2>
         <p class="feature__body" style="font-size:15px;">
-          These are the cases the phase-1 e2e suite is written to attack. Until it passes, the
-          governed core is not done.
+          These are the cases the e2e suite is written to attack. It has grown with every phase —
+          memory, skills, and ambient mode are attacked the same way — and it passes against every
+          change. The last card is design rather than code: no execution surface exists yet.
         </p>
       </div>
 
@@ -116,7 +117,8 @@ const attempts = [
           from the client certificate, team-sheet enforcement on both gates, an encrypted vault,
           credential injection, a redaction pass on results, OAuth against upstreams that require
           it, the budget meter in calls and in dollars, the append-only audit log, and the approval
-          broker with its Slack card. The end-to-end suite that attacks all of it runs against
+          broker with its Slack card — and the layers built on it since: curated memory, skills,
+          and ambient mode, each attacked by the same suite. The end-to-end suite runs against
           every change. The sandbox does not exist, so <code>[egress]</code> is validated and
           enforced nowhere, and certificate rotation is two commands with a human edit between
           them. Point it at a scratch workspace before a real one. The

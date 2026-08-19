@@ -22,15 +22,19 @@ the model's cooperation.
    observed by gateway code rather than produced by the model, so the approver's identity holds
    against a prompt-injected model and not against a compromised agent process, which relays it —
    tool credentials survive process compromise; approvals survive prompt injection.
-4. **Budgets.** Token and tool-call metering per channel per day, authoritative in the proxy. The
+4. **Budgets.** Token, tool-call, and dollar metering per channel per day — the dollar cap
+   failing closed on an unpriced model — authoritative in the proxy. The
    tool-call limit is counted by the proxy from calls it serves and holds even under full
    compromise of the agent process; the token limit is counted from what the agent reports, which
    a prompt-injected model cannot forge — the numbers come out of the provider's response envelope
    — but a compromised agent process could. The reset is an operator command against the proxy's
    own file, deliberately not a route, so a compromised agent cannot clear its own hard limit.
 5. **Attribution.** Append-only audit log of every tool call and its requester.
-6. **Sandboxed code execution.** Ephemeral container, no network unless the team sheet grants an
-   egress allowlist, invoked by the proxy so it is audited and budgeted like any other tool.
+6. **Sandboxed code execution — designed, not built.** The design of record: ephemeral container,
+   no network unless the team sheet grants an egress allowlist, invoked by the proxy so it is
+   audited and budgeted like any other tool. No code-execution surface exists today, so
+   `[egress]` is validated when a sheet loads and enforced nowhere
+   ([#219](https://github.com/getlibero/libero/issues/219)).
 7. **Physical channel isolation.** One SQLite file per channel for anything holding channel
    *content* — messages, memory — so no query path can join across channels and the layout
    enforces the storage boundary. The line is whose data it is: content belongs to a channel's
@@ -214,6 +218,50 @@ Two things follow that are easy to assume otherwise. Nothing embeds curated fact
 is no vector of a fact to outlive anything either. And a channel that turns summarization off with
 `[memory] summarize = false` has no summaries to delete, which makes the deletion story simpler
 rather than weaker.
+
+### Ambient mode speaks unbidden, and what bounds it never reads the content
+
+A channel that turns on `[ambient]` gets two things nothing else on this page grants: the agent
+may speak with nobody having asked — a heartbeat evaluation that posts when something merits it —
+and a model may plant a future action, a `schedule_task` check that fires at its own instant. Both
+are model-influenced input in exactly curated memory's sense, and both are bounded the same way:
+by mechanisms that never read what the text says.
+
+What bounds unbidden speech, and holds against a model talked into finding everything post-worthy:
+
+- **The switch.** `[ambient] enabled = false` is the default, and off is the one silence — no
+  heartbeat, no scheduled-check notice, no proposal notice. That switch means *do not speak here*.
+- **The rate window.** One heartbeat post per channel per four hours, an architecture constant no
+  sheet field widens. It is checked *before* the evaluation spends, so a shut window defers a
+  finding rather than paying to rediscover it every tick.
+- **The watermark.** A finding is said once. The agent's own replies are not in the store, so a
+  per-channel watermark is what records that it already spoke.
+- **Spend.** The evaluation draws from the same per-channel meter as everything else, and a capped
+  channel's heartbeat is silent: nobody asked, so nothing is owed.
+
+What bounds a scheduled check:
+
+- **The create is governed.** `schedule_task` is a proxied built-in: allowlisted per sheet, held
+  for a human by default, refused outright in a channel whose `[ambient]` is off, capped in
+  pending count and in horizon by constants a sheet cannot raise, and audited like any call.
+- **The firing reaches nothing.** A fired check is one bounded turn over the channel's recent
+  messages with a single tool that posts — no tool-proxy client at all — so "every call it induces
+  meets the proxy's gates" is true because it induces none. Widening that is
+  [#348](https://github.com/getlibero/libero/issues/348), a design question taken on purpose or
+  not at all.
+- **Model-authored text re-enters fenced.** The check's question was written by a model, so it
+  re-enters a later model's context in a delimited `user` block — the same shape curated memory
+  takes — never as an instruction with authority.
+- **One firing, one outcome.** A due check posts an answer, runs and has nothing to say, or the
+  channel is told in one post that it did not happen — a capped channel's check among them, because
+  somebody approved that check and a reminder that silently slips is worse than one that says it
+  could not run. Either way the ticket is done; there is no retry state an injection can keep
+  alive.
+
+What is **not** bounded is what the text says, for the reason this page has already given twice:
+injected channel content can steer what a heartbeat finding or a scheduled check's post *says*.
+`e2e/` states the claim exactly that way — steer the words, widen nothing governed — with positive
+controls proving a merited post landed and a check fired on time before any silence is asserted.
 
 ## What "not a mitigation" means here
 

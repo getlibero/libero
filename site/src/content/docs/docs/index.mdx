@@ -14,7 +14,7 @@ only as itself, under admin-provisioned service credentials, through an allowlis
 every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
 model self-restraint.
 
-<Aside type="caution" title="Pre-release — phase 2 in progress">
+<Aside type="caution" title="Pre-release — phase 5 in progress">
 The specification is ahead of the implementation on purpose — treat these pages as the design of
 record, not a description of running software.
 
@@ -22,13 +22,15 @@ The governed core is shipped: mutual TLS, per-channel identity taken from the cl
 team-sheet enforcement on both gates, the vault, credential injection, redaction, the MCP client
 and its pool, OAuth for upstreams that want it, daily caps in both calls and dollars, the
 append-only audit log, and the approval broker with its Slack card — plus the gateway, the agent
-loop, and the per-channel message store. An end-to-end suite attacks all of it. `npx
-@getlibero/cli init` through `docker compose up` stands the stack up from a clean checkout.
+loop, and the per-channel message store. The layers on top of it are shipped too: curated memory
+and semantic recall (phase 2), skills and their lifecycle (phase 3), and ambient mode — the
+heartbeat, proactive posts behind a rate window, and `schedule_task` (phase 4). An end-to-end
+suite attacks all of it. `npx @getlibero/cli init` through `docker compose up` stands the stack
+up from a clean checkout.
 
-What is not here: no sandbox, so `[egress]` is validated and enforced nowhere; `[ambient]` is
-parsed and unread until phase 4; memory is the message store and its index, with curation and
-semantic recall the work of phase 2; certificate rotation is two commands and a human edit rather
-than anything automated. Point it at a scratch workspace before a real one. The
+What is not here: no sandbox, so `[egress]` is validated and enforced nowhere; a fired scheduled
+check runs one bounded turn and can look nothing up; certificate rotation is two commands and a
+human edit rather than anything automated. Point it at a scratch workspace before a real one. The
 [roadmap](/docs/roadmap) says what lands when, and [self-hosting](/docs/self-hosting) says what a
 deployment does today.
 </Aside>
@@ -54,7 +56,8 @@ full account.
 
 One TOML file per channel, kept in your own git repo. It declares which MCP servers the channel
 may reach, which tools on them exist as far as that channel is concerned, which of those need a
-human click, what the daily budget is, and where the agent is allowed to send traffic.
+human click, and what the daily budget is. An `[egress]` block is validated today and enforced
+when code execution lands.
 
 Nothing in it is a secret — credentials appear as names, resolved only inside the proxy's vault.
 

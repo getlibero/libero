@@ -328,8 +328,9 @@ export const TeamSheet = z.object({
     .object({
       daily_tokens: z.number().int().positive().default(1_000_000),
       daily_tool_calls: z.number().int().positive().default(200),
-      // The invoice, in US dollars (#62). PARSED BUT NOT YET ENFORCED — a sheet
-      // setting it today is metered exactly as one that does not.
+      // The invoice, in US dollars (#62), enforced since #237/#238: a channel
+      // at its dollar cap is refused, and a model absent from the price table
+      // fails closed rather than metering as free.
       //
       // **Beside `daily_tokens`, never instead of it.** Tokens are the right
       // unit for a runaway brake and must work with no pricing knowledge at all:

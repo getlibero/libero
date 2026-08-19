@@ -11,7 +11,7 @@ const enforced = [
   {
     label: 'Allowlist',
     title: 'Tools not on the sheet do not exist',
-    body: 'Every call resolves against the channel’s team sheet in the proxy: is this server allowed here, is this tool listed, is the destination on the egress allowlist. A refusal is a structured result the agent relays. The model’s cooperation is never part of the enforcement path.',
+    body: 'Every call resolves against the channel’s team sheet in the proxy: is this server allowed here, is this tool listed, does this call need a human first. A refusal is a structured result the agent relays. The model’s cooperation is never part of the enforcement path.',
   },
   {
     label: 'Approvals',
@@ -21,12 +21,12 @@ const enforced = [
   {
     label: 'Budgets',
     title: 'Spend is metered where it cannot be argued with',
-    body: 'Tokens and tool calls, per channel per day. The agent loop caps itself too, but the proxy’s meter is the authoritative one. A hard limit stops the loop until an admin resets it or the day rolls over; a soft warning before it bites is on the roadmap.',
+    body: 'Tokens and tool calls, per channel per day. The agent loop caps itself too, but the proxy’s meter is the authoritative one. A hard limit stops the loop until an admin resets it or the day rolls over, and a soft in-thread warning reaches the channel before it bites.',
   },
   {
     label: 'Audit',
     title: 'Every call, appended and never rewritten',
-    body: 'Timestamp, channel, requesting user, task id, tool, server, argument hash, outcome, result size, and the approver if there was one. Append-only SQLite: triggers abort any UPDATE or DELETE. A query-and-export command is on the roadmap.',
+    body: 'Timestamp, channel, requesting user, task id, tool, server, argument hash, outcome, result size, and the approver if there was one. Append-only SQLite: triggers abort any UPDATE or DELETE, and an operator command queries and exports it.',
   },
   {
     label: 'Isolation',
@@ -39,10 +39,10 @@ const phases = [
   { n: '0', name: 'Skeleton', state: 'done', body: 'Monorepo, schema package, design system, site, CI with the license gate and boundary checks, CLI placeholder on npm.' },
   { n: '1', name: 'The governed core', state: 'done', body: 'Slack gateway, vault, team-sheet enforcement, approval cards, budget meter, audit log — and the e2e suite that attacks all of them.' },
   { n: '1.5', name: 'Consolidation', state: 'done', body: 'Pool discipline against a hostile upstream, a bounded shutdown drain, budget caps in dollars, the CLI operators actually run, OAuth for MCP upstreams, deployment guides.' },
-  { n: '2', name: 'Memory', state: 'current', body: 'Curation inner loop, MEMORY.md tooling, semantic recall over curated facts and thread summaries.' },
-  { n: '3', name: 'Skills', state: 'next', body: 'Author turn, retrieval-based loading, lifecycle job, curator-as-diff.' },
-  { n: '4', name: 'Ambient', state: 'later', body: 'Heartbeat evaluation and scheduled tasks, disabled by default, behind the budget meter.' },
-  { n: '5', name: 'Breadth', state: 'later', body: 'Discord adapter, durable orchestration, proxy hardening, audit hash-chaining.' },
+  { n: '2', name: 'Memory', state: 'done', body: 'Curation inner loop, MEMORY.md tooling, semantic recall over thread summaries.' },
+  { n: '3', name: 'Skills', state: 'done', body: 'Author turn, retrieval-based loading, lifecycle job, merge proposals a person applies.' },
+  { n: '4', name: 'Ambient', state: 'done', body: 'Heartbeat evaluation, proactive posts behind a rate window, scheduled tasks — off by default, behind the budget meter.' },
+  { n: '5', name: 'Hardening', state: 'current', body: 'Proxy hardening pass, audit hash-chaining for tamper evidence.' },
 ];
 ---
 
@@ -68,8 +68,9 @@ const phases = [
     </div>
 
     <p class="hero__note">
-      Pre-release. The governed core is shipped and attacked by its own test suite; memory is
-      being built on top. See <a href="/docs/roadmap">the roadmap</a> for what lands when.
+      Pre-release. The governed core is shipped and attacked by its own test suite; memory,
+      skills, and ambient mode are built on top of it. See <a href="/docs/roadmap">the roadmap</a>
+      for what lands when.
     </p>
   </section>
 
@@ -121,7 +122,7 @@ const phases = [
             <span class="lb-meta">service 2</span>
           </div>
           <div class="lb-row"><span class="lb-row__name">credential vault · encrypted at rest</span></div>
-          <div class="lb-row"><span class="lb-row__name">team sheet · allowlist + egress</span></div>
+          <div class="lb-row"><span class="lb-row__name">team sheet · per-channel allowlist</span></div>
           <div class="lb-row"><span class="lb-row__name">approval broker · budget meter</span></div>
           <div class="lb-row"><span class="lb-row__name">audit writer · append-only</span></div>
         </div>
@@ -210,6 +211,7 @@ credential = <span>"github_service_account"</span>
   approval = <span>"required"</span>
 
 <b>[egress]</b>
+<i># Validated at load; enforced when code execution lands.</i>
 allow = [<span>"api.github.com"</span>]
 
 <b>[ambient]</b>
@@ -294,10 +296,11 @@ enabled = false  <i># off by default, always</i></code></pre>
     <div class="wrap grid grid--split">
       <div>
         <span class="lb-label lb-label--dim">Status</span>
-        <h2 class="lb-h2 u-mt-20">The governed core came before the features. It is done.</h2>
+        <h2 class="lb-h2 u-mt-20">The governed core came before the features. Both are in.</h2>
         <p class="feature__body u-mt-20" style="font-size:15px;">
-          The phases are gated on purpose. Nothing that depends on the proxy ships before the proxy
-          can be attacked and hold — so memory is only starting now.
+          The phases are gated on purpose. Nothing that depends on the proxy shipped before the
+          proxy could be attacked and hold — and memory, skills, and ambient mode each landed with
+          e2e attacks of their own. Phase 5 hardens what exists.
         </p>
         <div class="lb-callout u-mt-32">
           <span class="lb-label lb-label--tight">Definition of done, phase 1 — met</span>

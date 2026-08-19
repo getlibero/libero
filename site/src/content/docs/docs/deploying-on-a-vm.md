@@ -42,8 +42,9 @@ shutdown does not wait for it. A deploy is: stop, pull, start.
 
 Two structural reasons, neither of them about scale.
 
-**Every piece of durable state is SQLite in WAL mode on a local disk.** The vault, the budget meter,
-the audit log, and one message store per channel. The volume options those platforms offer are
+**Every piece of durable state lives on a local disk, and most of it is SQLite in WAL mode.** The
+budget meter, the audit log, and one message store per channel are SQLite; the vault and the token
+store are encrypted files replaced atomically. The volume options those platforms offer are
 network filesystems — GCS FUSE, EFS, Filestore NFS — and SQLite over them is a documented corruption
 path: its locking assumes a filesystem that implements POSIX advisory locks faithfully, and these
 either do not or do so partially. The thing that gets corrupted is the audit log, which is the one

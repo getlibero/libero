@@ -368,12 +368,12 @@ allow = ["api.github.com", "*.internal.example.com"]
 # its own. Off by default, always — every other block on this sheet argues its
 # own default by contrast with this one.
 #
-# `enabled` and the cadence have a reader as of #317: the agent process wakes on
-# a clock, enumerates the channels that opted in, and runs a heartbeat for each
-# one that is due. What a heartbeat then weighs — and whether anything is ever
-# posted — lands with the evaluation turn, so `answer_after_idle_minutes` is
-# still parsed and not yet read, and a channel that turns this on today gets the
-# clock and no posts.
+# Every field here has a reader: the agent process wakes on a clock, enumerates
+# the channels that opted in, and runs a heartbeat for each one that is due. The
+# evaluation weighs what changed since it last spoke, answers a question only
+# once it has sat idle past the threshold below, and its ordinary answer is
+# nothing — a post happens when something merits one, at most once per rate
+# window.
 #
 # Two things follow from how the clock is built. A newly enabled channel waits
 # one full cadence before its first heartbeat, and so does every enabled channel
