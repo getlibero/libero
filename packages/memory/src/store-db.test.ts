@@ -15,7 +15,7 @@ import {
   toAnyMatchQuery,
   toMatchQuery
 } from "./store-db.js";
-import type { MessageStore, StoredMessage } from "./store-db.js";
+import type { MessageStore, StoredMessage, StoredScheduledTask } from "./store-db.js";
 
 const CHANNEL = "C0ENGINEERING";
 const OTHER = "C0DESIGN";
@@ -174,7 +174,7 @@ describe("the interface", () => {
   // A structural regression test on the surface. The isolation claim is that no
   // operation can name a channel, and the cheapest way to keep that true is to
   // notice when a new one appears.
-  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing, ageing and pairing skills, and closing, and nothing else", () => {
+  it("exposes appending, removing, replacing, reading, embedding, summarizing, indexing, ageing and pairing skills, scheduling, and closing, and nothing else", () => {
     expect(Object.keys(store).sort()).toEqual([
       "adoptSkillStatus",
       "append",
@@ -197,6 +197,7 @@ describe("the interface", () => {
       "remove",
       "removeEmbedding",
       "replaceText",
+      "scheduleTask",
       "search",
       "searchSkills",
       "skillClocks",
@@ -314,17 +315,29 @@ describe("reading with openMessageReader", () => {
   });
 
   // A structural regression test, `MessageStore`'s counterpart. The proxy
-  // answers one question and this is the surface that says so: no append, no
+  // answers two questions and this is the surface that says which: no append, no
   // remove, no replaceText, and no `recent` — reading a channel's traffic
   // wholesale is not what search_channel_history is.
   //
-  // #229 gave this opener `allowExtension: true` and it still reads exactly the
-  // same. That is the acceptance criterion in structural form: loading sqlite-vec
-  // did not add a vector query here, because whether the proxy ever runs one is
-  // #232's question.
-  it("exposes searching and closing, and nothing else", () => {
+  // #229 gave this opener `allowExtension: true` and it still read exactly the
+  // same. That was the acceptance criterion in structural form: loading
+  // sqlite-vec did not add a vector query here, because whether the proxy ever
+  // runs one is #232's question.
+  //
+  // #323 is the first thing that did widen it, and this line moving is the review
+  // it was supposed to trigger. What admits `pendingScheduledTasks` and no
+  // successor: it takes no argument, it answers an integer, and the cap it serves
+  // has to be decided by the process that governs the create rather than the one
+  // that writes the row. A method here that returned a *ticket* — its prompt, its
+  // instant — would be model-authored text crossing back into the process holding
+  // every tool credential, and this list is where that gets stopped.
+  it("exposes searching, counting scheduled checks, and closing, and nothing else", () => {
     const reader = openMessageReader({ channel: CHANNEL, root });
-    expect(Object.keys(reader ?? {}).sort()).toEqual(["close", "search"]);
+    expect(Object.keys(reader ?? {}).sort()).toEqual([
+      "close",
+      "pendingScheduledTasks",
+      "search"
+    ]);
     reader?.close();
   });
 
@@ -1693,5 +1706,92 @@ describe("telling a channel about a proposal, once", () => {
     store.recordSkillMergeConsidered({ ...pair, hashA: "h1", hashB: "h2" }, 1_700_000_000_000);
 
     expect(store.skillMergeNoticed(pair)).toBe(false);
+  });
+});
+
+// #323. What the tool proxy service governs and this side records, and the two
+// halves are deliberately tested through two handles on one file: the writer is
+// the agent's and the count is the proxy's, and a test that used one handle for
+// both would prove the module agrees with itself rather than that the two
+// processes agree.
+describe("scheduled checks", () => {
+  const ticket = (id: string, extra: Partial<StoredScheduledTask> = {}): StoredScheduledTask => ({
+    id,
+    task: "task-7",
+    prompt: "check whether the release branch is still red",
+    dueAt: 1_800_000_000_000,
+    createdAt: 1_700_000_000_000,
+    ...extra
+  });
+
+  const pending = (): number => {
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    const count = reader?.pendingScheduledTasks() ?? -1;
+    reader?.close();
+    return count;
+  };
+
+  it("is counted by a reader on the same file", () => {
+    expect(pending()).toBe(0);
+
+    store.scheduleTask(ticket("a"));
+    store.scheduleTask(ticket("b"));
+
+    expect(pending()).toBe(2);
+  });
+
+  // First-write-wins on the proxy's minted id: an approved re-submission carries
+  // the same ticket, and scheduling the check twice would be one click buying
+  // two.
+  it("writes one row for one id, however often it is written", () => {
+    store.scheduleTask(ticket("a"));
+    store.scheduleTask(ticket("a", { prompt: "something else entirely" }));
+
+    expect(pending()).toBe(1);
+    const rows = new DatabaseSync(file, { readOnly: true })
+      .prepare(`SELECT prompt FROM scheduled_task WHERE id = 'a'`)
+      .all() as Array<{ prompt: string }>;
+    expect(rows[0]?.prompt).toContain("release branch");
+  });
+
+  // Pending is the absence of a fire stamp, which is the rule the DDL argues:
+  // there is no status value, so nothing but a fire can consume a ticket.
+  it("stops counting a row once it has fired", () => {
+    store.scheduleTask(ticket("a"));
+    store.scheduleTask(ticket("b"));
+
+    const db = new DatabaseSync(file);
+    db.prepare(`UPDATE scheduled_task SET fired_at = ?, outcome = ? WHERE id = 'a'`).run(1, "posted");
+    db.close();
+
+    expect(pending()).toBe(1);
+  });
+
+  // The guard the reader opens with. A store written before this table existed
+  // is the ordinary state of every channel on the day this deploys, and a
+  // reader that threw would take `search_channel_history` down with it — for a
+  // channel that has no scheduled checks by definition.
+  it("answers zero, and still searches, on a store with no such table", () => {
+    store.append(message("1.1", "the vault is locked"));
+    store.close();
+
+    const db = new DatabaseSync(file);
+    db.exec("DROP TABLE scheduled_task");
+    db.close();
+
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.pendingScheduledTasks()).toBe(0);
+    expect(reader?.search("vault", 10).map(hit => hit.ts)).toEqual(["1.1"]);
+    reader?.close();
+
+    // Reopened so `afterEach` has a live handle to close.
+    store = openMessageStore({ channel: CHANNEL, root });
+  });
+
+  // Additive DDL, and the version is what a reader depends on. #229, #290 and
+  // #295 each added tables without moving it; this is the fourth, measured the
+  // same way.
+  it("did not move the schema version", () => {
+    expect(MESSAGE_STORE_SCHEMA_VERSION).toBe(1);
   });
 });

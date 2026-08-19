@@ -17,6 +17,7 @@
 import type { AgentLoopCaps, CompletionMessage, HeldCallPrompter } from "@getlibero/agent";
 import type { MemoryFile, SkillFiles } from "@getlibero/memory";
 import type { ChecklistReporter } from "../checklist/checklist.js";
+import type { ScheduledTaskSink } from "./scheduled.js";
 import type { LoadedSkill } from "./skill-recall.js";
 
 /**
@@ -369,6 +370,22 @@ export interface TaskSettings extends ChannelSettings {
    * `ChannelSettings.skills`, which is what the *sheet* said.
    */
   readonly skillFiles?: SkillFiles;
+  /**
+   * Where a served `schedule_task` create leaves its ticket (#323).
+   *
+   * `memoryFile`'s shape and its asymmetry, with one difference in what absence
+   * means. There, no file means no curation turn runs, which is a state a
+   * deployment can legitimately be in. Here, no sink means the tool client tells
+   * the model its check was **not recorded** and will not run — because the
+   * degradation a create can afford is not the one a hold can. A hold relayed as
+   * a refusal abandons a call, which is safe; a create with nowhere to land would
+   * report a scheduled check that nothing will ever run.
+   *
+   * Absent when the session has no store, which is the only way it happens: a
+   * channel with no sheet has no store, and a channel with no store has no
+   * `schedule_task` grant either, since the grant is on the sheet.
+   */
+  readonly scheduled?: ScheduledTaskSink;
   /**
    * The skills retrieval loaded into this task's opening context (#292).
    *

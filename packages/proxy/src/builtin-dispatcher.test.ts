@@ -5,6 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MESSAGE_STORE_SCHEMA_VERSION, openMessageStore } from "@getlibero/memory";
 import type { MessageStore } from "@getlibero/memory";
+import {
+  SCHEDULED_TASK_MAX_HORIZON_MINUTES,
+  SCHEDULED_TASK_MAX_PENDING,
+  SCHEDULED_TASK_MIN_LEAD_MINUTES,
+  parseScheduledTask
+} from "@getlibero/schema";
 import type { ResolvedToolCall } from "@getlibero/schema";
 import { createBuiltinDispatcher } from "./builtin-dispatcher.js";
 import type { BuiltinDispatcher, Dispatch } from "./dispatch.js";
@@ -175,6 +181,15 @@ describe("what the model may send", () => {
     // neither. MCP servers answer the same way, so the model sees one shape.
     expect(search(args)).toMatchObject({ outcome: "ran", result: { isError: true } });
   });
+
+  // This asserted only `isError` until #323, which is how ./builtins.ts's claim
+  // that the model "gets an error result naming the key" outlived the behaviour:
+  // zod reports `unrecognized_keys` at an empty path, so every such call said
+  // `at (root)` and named nothing. The claim is the one that was right, so the
+  // message was fixed rather than the comment.
+  it("names the key a strict parser did not recognize", () => {
+    expect(textOf(search({ query: "vault", channel: "C0OTHER" }))).toContain("`channel`");
+  });
 });
 
 // Whole messages, never a cut one. A dropped entry is a short answer that
@@ -274,3 +289,166 @@ function bumpVersion(file: string, version: number): void {
     db.close();
   }
 }
+
+// #323. The governed create's executor: what it mints, what it refuses, and what
+// it deliberately does not do — which is write anything.
+describe("schedule_task", () => {
+  /** A fixed instant, so a due time is an assertion rather than an approximation. */
+  const NOW = Date.UTC(2026, 7, 19, 9, 0, 0);
+
+  let clocked: BuiltinDispatcher;
+
+  beforeEach(() => {
+    clocked = createBuiltinDispatcher({
+      storeRoot: root,
+      logger: createSilentLogger(),
+      now: () => NOW
+    });
+  });
+
+  const create = (args: Record<string, unknown>, channel = CHANNEL): Dispatch =>
+    clocked.run({ ...callWith(args, channel), tool: "schedule_task" }, "schedule_task", LIMITS);
+
+  const ticketOf = (dispatch: Dispatch) => {
+    const parsed = parseScheduledTask(textOf(dispatch));
+    if (!parsed.ok) throw new Error(`expected a ticket, got ${parsed.reason}`);
+    return parsed.task;
+  };
+
+  const pendingRows = (): number => {
+    const db = new DatabaseSync(join(root, CHANNEL, "store.db"), { readOnly: true });
+    const row = db
+      .prepare(`SELECT COUNT(*) AS pending FROM scheduled_task WHERE fired_at IS NULL`)
+      .get() as { pending: number };
+    db.close();
+    return row.pending;
+  };
+
+  const schedule = (id: string, extra: Record<string, unknown> = {}): void => {
+    store.scheduleTask({
+      id,
+      task: "task-1",
+      prompt: "check the release branch",
+      dueAt: NOW + 3_600_000,
+      createdAt: NOW,
+      ...extra
+    });
+  };
+
+  // The offset becomes an instant exactly here, once, from this process's clock —
+  // which is what lets every later reader of the ticket do no arithmetic at all.
+  it("resolves the offset against its own clock", () => {
+    const ticket = ticketOf(create({ prompt: "check the release branch", due_in_minutes: 90 }));
+
+    expect(ticket.dueAt).toBe("2026-08-19T10:30:00Z");
+    expect(ticket.createdAt).toBe("2026-08-19T09:00:00Z");
+    expect(ticket.prompt).toBe("check the release branch");
+  });
+
+  // Provenance: the join from a row in the channel's store into the audit log's
+  // record of the create that made it.
+  it("carries the creating task, and an id the model did not choose", () => {
+    const ticket = ticketOf(create({ prompt: "check", due_in_minutes: 60 }));
+
+    expect(ticket.task).toBe("b9d5a2f0-0000-4000-8000-000000000001");
+    expect(ticket.id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  // The proxy governs and the agent records. A writer here would be a second
+  // writer on one file, from the process that must not be able to repair a
+  // channel's evidence.
+  it("writes nothing", () => {
+    create({ prompt: "check", due_in_minutes: 60 });
+    expect(pendingRows()).toBe(0);
+  });
+
+  it("refuses an offset inside the floor, and takes the floor itself", () => {
+    expect(create({ prompt: "check", due_in_minutes: SCHEDULED_TASK_MIN_LEAD_MINUTES - 1 })).toEqual({
+      outcome: "refused",
+      refusal: { reason: "schedule_too_soon" }
+    });
+    expect(create({ prompt: "check", due_in_minutes: SCHEDULED_TASK_MIN_LEAD_MINUTES }).outcome).toBe(
+      "ran"
+    );
+  });
+
+  it("refuses an offset past the horizon, and takes the horizon itself", () => {
+    expect(
+      create({ prompt: "check", due_in_minutes: SCHEDULED_TASK_MAX_HORIZON_MINUTES + 1 })
+    ).toEqual({ outcome: "refused", refusal: { reason: "schedule_too_far" } });
+    expect(
+      create({ prompt: "check", due_in_minutes: SCHEDULED_TASK_MAX_HORIZON_MINUTES }).outcome
+    ).toBe("ran");
+  });
+
+  // The flood bound, counted through the read-only reader the proxy is allowed.
+  it("refuses once the channel holds as many pending checks as it may", () => {
+    for (let i = 0; i < SCHEDULED_TASK_MAX_PENDING - 1; i++) schedule(`t${i}`);
+    expect(create({ prompt: "check", due_in_minutes: 60 }).outcome).toBe("ran");
+
+    schedule("last");
+    expect(create({ prompt: "check", due_in_minutes: 60 })).toEqual({
+      outcome: "refused",
+      refusal: { reason: "schedule_full" }
+    });
+  });
+
+  // Pending is the absence of a fire stamp, so a channel whose checks have all
+  // run has its slots back — without anything having deleted a row.
+  it("counts only the checks that have not fired", () => {
+    for (let i = 0; i < SCHEDULED_TASK_MAX_PENDING; i++) schedule(`t${i}`);
+    const db = new DatabaseSync(join(root, CHANNEL, "store.db"));
+    db.prepare(`UPDATE scheduled_task SET fired_at = 1, outcome = 'posted' WHERE id = 't0'`).run();
+    db.close();
+
+    expect(create({ prompt: "check", due_in_minutes: 60 }).outcome).toBe("ran");
+  });
+
+  // A channel that has never had a message has no store, which is the ordinary
+  // state of a new one — and no store is no tickets.
+  it("serves a channel with no store at all", () => {
+    mkdirSync(join(root, OTHER));
+    expect(create({ prompt: "check", due_in_minutes: 60 }, OTHER).outcome).toBe("ran");
+  });
+
+  // Bad arguments are an error *result*, not a refusal: the refusal set is
+  // governance decisions, and the model can correct a malformed call itself.
+  it("answers an error result for arguments that do not parse", () => {
+    for (const args of [
+      {},
+      { prompt: "check" },
+      { due_in_minutes: 60 },
+      { prompt: "", due_in_minutes: 60 },
+      { prompt: "check", due_in_minutes: 0 },
+      { prompt: "check", due_in_minutes: 1.5 }
+    ]) {
+      const dispatch = create(args);
+      expect(dispatch.outcome).toBe("ran");
+      expect(dispatch.outcome === "ran" && dispatch.result.isError).toBe(true);
+    }
+  });
+
+  // The model may not choose the terms. `.strict()` is what makes each of these
+  // an error naming the key rather than a field quietly ignored — and `channel`
+  // is the one that matters: it cannot reach the store this call opens, because
+  // that came off the client certificate.
+  it.each(["channel", "id", "dueAt", "task"])("rejects %s as an unknown key", key => {
+    const dispatch = create({ prompt: "check", due_in_minutes: 60, [key]: "C0OTHER" });
+
+    expect(dispatch.outcome).toBe("ran");
+    expect(dispatch.outcome === "ran" && dispatch.result.isError).toBe(true);
+    expect(textOf(dispatch)).toContain(key);
+  });
+
+  // The cheap checks decide first, so a probe that is trivially out of range
+  // never opens a file — asserted through the one observable difference: a
+  // channel at its cap is still refused for the *time* when both are wrong.
+  it("answers the arithmetic caps before it opens the store", () => {
+    for (let i = 0; i < SCHEDULED_TASK_MAX_PENDING; i++) schedule(`t${i}`);
+
+    expect(create({ prompt: "check", due_in_minutes: 1 })).toEqual({
+      outcome: "refused",
+      refusal: { reason: "schedule_too_soon" }
+    });
+  });
+});

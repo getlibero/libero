@@ -769,14 +769,24 @@ export const TeamSheet = z.object({
   // all, and `heartbeat_every_minutes` is the cadence it is enumerated on. The
   // agent process re-reads this block per scan, so an edit lands on the next
   // tick with no restart — the freshness the proxy's per-call read gives
-  // enforcement. `answer_after_idle_minutes` is still parsed and unread: what
-  // counts as unanswered is the evaluation turn's question, and that turn is
-  // what decides whether a due channel has anything worth saying.
+  // enforcement. `answer_after_idle_minutes` is the evaluation turn's, read
+  // before any model call to decide whether a question has sat long enough to
+  // be worth answering.
   //
-  // Nothing in the tool proxy service reads any of it, and nothing will. A
-  // heartbeat contains no tool call for that service to decide, so this block
-  // is honoured by the agent alone — which is `[memory]`'s standing and, since
-  // this one governs speech nobody asked for, the sharpest case of it.
+  // **The tool proxy service reads `enabled`, and nothing else here.** An earlier
+  // draft of this comment said it read none of it and never would, on the
+  // argument that a heartbeat contains no tool call for that service to decide.
+  // That argument is still right about heartbeats and was wrong about the block:
+  // `schedule_task` (#323) *is* a tool call, and a create on a channel with this
+  // switched off would be an approved ticket no clock will ever enumerate — so
+  // the create is refused, in `decideBuiltin`, above the meter.
+  //
+  // The distinction that keeps `[memory]`'s standing intact for the rest of it:
+  // the field is read there **only to refuse, never to permit**. Nothing an agent
+  // process could do to its own copy of this block widens anything, because the
+  // only thing the proxy does with it is say no. The cadence and the idle
+  // threshold are still the agent's alone, and a heartbeat is still a thing that
+  // service never sees.
   ambient: z
     .object({
       enabled: z.boolean().default(false),

@@ -842,3 +842,194 @@ describe("relaying the soft budget warning", () => {
     });
   });
 });
+
+// #323. Where a governed create becomes a durable ticket, and what the model is
+// told when it does not.
+describe("recording a scheduled check", () => {
+  const TICKET = JSON.stringify({
+    id: "e3f1a2b4-0c5d-4e6f-8a90-1b2c3d4e5f60",
+    task: "task-7",
+    prompt: "check the release branch",
+    dueAt: "2026-08-19T10:30:00Z",
+    createdAt: "2026-08-19T09:00:00Z"
+  });
+
+  /** A listing with the built-in on it, beside enough MCP tools to matter. */
+  const withBuiltin = (extra: Array<Record<string, unknown>> = []) => ({
+    tools: [...LISTING.tools, { server: "libero", tool: "schedule_task", approval: "required" }, ...extra]
+  });
+
+  async function sinking(
+    options: {
+      listing?: unknown;
+      answers?: Parameters<typeof fakeTransport>[0];
+      sink?: ((ticket: string) => boolean) | undefined;
+    } = {}
+  ): Promise<{ client: ReturnType<typeof createProxyToolClient>; seen: string[] }> {
+    const seen: string[] = [];
+    const fake = fakeTransport({
+      tools: () => ({ status: 200, body: options.listing ?? withBuiltin() }),
+      ...options.answers
+    });
+    const sink = options.sink;
+    const client = createProxyToolClient({
+      transport: fake.transport,
+      channel: CHANNEL,
+      ...(sink === undefined
+        ? {}
+        : {
+            onScheduledTask: (ticket: string) => {
+              seen.push(ticket);
+              return sink(ticket);
+            }
+          })
+    });
+    await client.list();
+    return { client, seen };
+  }
+
+  const served = () => ({
+    call: () => ({ status: 200, body: { outcome: "ran", id: "call-1", result: { content: TICKET } } })
+  });
+
+  it("hands the ticket to the sink and relays the result unchanged", async () => {
+    const { client, seen } = await sinking({ answers: served(), sink: () => true });
+
+    const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 90 }), ATTRIBUTION);
+
+    expect(seen).toEqual([TICKET]);
+    expect(result).toEqual({ content: TICKET, isError: false });
+  });
+
+  // The create is held by default, so the ordinary path is the *second*
+  // submission — and a hook that only fired on the first would record nothing in
+  // every deployment that leaves the hold in place.
+  it("fires for a create served after approval", async () => {
+    // The create is held by default, so the ordinary path is the *second*
+    // submission — and a hook that only fired on the first would record nothing
+    // in every deployment that leaves the hold in place.
+    let asked = 0;
+    const seen: string[] = [];
+    const fake = fakeTransport({
+      tools: () => ({ status: 200, body: withBuiltin() }),
+      call: () => {
+        asked += 1;
+        return asked === 1
+          ? {
+              status: 200,
+              body: {
+                outcome: "held",
+                id: "call-1",
+                refusal: { reason: "approval_required", server: "libero", tool: "schedule_task" },
+                ticket: { id: "t-1", expiresAt: 1_800_000_000_000 }
+              }
+            }
+          : { status: 200, body: { outcome: "ran", id: "call-1", result: { content: TICKET } } };
+      }
+    });
+    const client = createProxyToolClient({
+      transport: fake.transport,
+      channel: CHANNEL,
+      onHeld: async () => undefined,
+      onScheduledTask: (ticket: string) => {
+        seen.push(ticket);
+        return true;
+      }
+    });
+    await client.list();
+
+    const result = await client.execute(
+      call("schedule_task", { prompt: "x", due_in_minutes: 90 }),
+      ATTRIBUTION
+    );
+
+    expect(asked).toBe(2);
+    expect(seen).toEqual([TICKET]);
+    expect(result).toEqual({ content: TICKET, isError: false });
+  });
+
+  // The three ways a check does not get recorded, and the model is told the same
+  // thing for all of them — its remedy is identical and none of it is its fault.
+  it.each([
+    ["a sink that could not write", { sink: () => false }],
+    ["no sink at all", { sink: undefined }]
+  ])("tells the model the check will not run: %s", async (_label, options) => {
+    const { client } = await sinking({ answers: served(), ...options });
+
+    const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 90 }), ATTRIBUTION);
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("will not run");
+    expect(result.content).not.toBe(TICKET);
+  });
+
+  // The one place the client does not degrade the way `onHeld` does. A hold
+  // relayed as a refusal abandons a call, which is safe; a create with no sink
+  // would report a scheduled check that nothing will ever run.
+  it("does not treat a missing sink as a successful create", async () => {
+    const { client, seen } = await sinking({ answers: served(), sink: undefined });
+    const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 90 }), ATTRIBUTION);
+
+    expect(seen).toEqual([]);
+    expect(result.isError).toBe(true);
+  });
+
+  // An error result from the proxy is a create that did not happen — bad
+  // arguments — so there is no ticket to record and the model keeps the message.
+  it("does not fire for a create the proxy answered with an error", async () => {
+    const { client, seen } = await sinking({
+      answers: {
+        call: () => ({
+          status: 200,
+          body: {
+            outcome: "ran",
+            id: "call-1",
+            result: { content: "schedule_task: invalid arguments.", isError: true }
+          }
+        })
+      },
+      sink: () => true
+    });
+
+    const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 1 }), ATTRIBUTION);
+
+    expect(seen).toEqual([]);
+    expect(result).toEqual({ content: "schedule_task: invalid arguments.", isError: true });
+  });
+
+  it("does not fire for an ordinary tool", async () => {
+    const { client, seen } = await sinking({
+      answers: { call: () => ({ status: 200, body: { outcome: "ran", id: "call-1", result: { content: "ok" } } }) },
+      sink: () => true
+    });
+
+    await client.execute(call("list_prs"), ATTRIBUTION);
+    expect(seen).toEqual([]);
+  });
+
+  // The hook is keyed on the (server, tool) pair and never on the flat name.
+  // With an upstream `schedule_task` in the listing, `chooseName` qualifies both
+  // — so the built-in the model calls is `libero__schedule_task`, and matching
+  // the flat name would have routed the upstream's result into the store.
+  it("follows the pair when an upstream shares the name", async () => {
+    // The upstream is listed first, so it takes the bare `schedule_task` and the
+    // built-in is qualified — which is the arrangement a flat-name match gets
+    // exactly backwards.
+    const { client, seen } = await sinking({
+      listing: {
+        tools: [
+          { server: "github", tool: "schedule_task", approval: "none" },
+          { server: "libero", tool: "schedule_task", approval: "required" }
+        ]
+      },
+      answers: served(),
+      sink: () => true
+    });
+
+    await client.execute(call("schedule_task", { when: "later" }), ATTRIBUTION);
+    expect(seen).toEqual([]);
+
+    await client.execute(call("libero__schedule_task", { prompt: "x", due_in_minutes: 90 }), ATTRIBUTION);
+    expect(seen).toEqual([TICKET]);
+  });
+});

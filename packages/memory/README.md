@@ -617,6 +617,54 @@ model-authored text leaves the directory, which is the claim the header actually
 makes. `skillProposalFilename` is exported beside it, because the heartbeat has to
 name the file in a channel and two spellings of the separator would drift.
 
+
+## Scheduled checks, and the second method the reader has ever had (#323)
+
+`scheduled_task` holds what a governed `schedule_task` create produced and what
+the ambient clock will fire. Two rules make it work and they only compose if both
+are written down, so the DDL says both.
+
+**Pending is the absence of a fire stamp, never a status value.** There is no
+`state` column, because a status enum would need a value meaning "due but not
+run" — and that value is the bug: it is what would let a firing that produced no
+check consume a ticket that never ran. Absence cannot be consumed by anything
+except a fire.
+
+**`outcome` is written only together with `fired_at`.** It says what the one
+firing did and is never read to decide whether a ticket may fire again. It is
+provisioned now rather than added later because nothing in this module runs an
+`ALTER` — which also rules two columns out for whoever writes the firing: no
+`attempts`, since a due check fires exactly once, and no `abandoned_at`, since
+nothing lingers waiting to be given up on.
+
+Additive DDL, so `MESSAGE_STORE_SCHEMA_VERSION` did not move — the fourth time,
+after #229, #290 and #295, and measured the same way: the reader names the table
+only behind a guard.
+
+**`MessageReader.pendingScheduledTasks` is a reviewed widening.** That interface
+had exactly one operation for a reason its own header states, and this is the
+first thing added to it. What admits this one and no successor: it takes no
+argument, it is read-only over one file, and it answers an **integer**. The proxy
+learns how many checks are waiting and never what any of them says — no prompt, no
+instant, no id — so nothing model-authored crosses back into the process holding
+every tool credential. A method here returning a *ticket* would, and this is where
+that gets refused.
+
+It exists because the pending cap has to be decided at the create, in the process
+that governs it, and the process that governs is not the process that writes.
+Counting on the agent side would put the cap in the one place enforcement never
+lives.
+
+**Zero when the table is absent, and that is the truth rather than fail-open.**
+The reader runs no DDL, so a store whose writer has not opened since the deploy
+has no `scheduled_task` table — and preparing a statement against it at open would
+throw and take `search_channel_history` down with it, for a channel that has no
+scheduled checks by definition. The table is looked for once, at open.
+
+Which half writes what is the other half of the story, and it is in
+`apps/server/src/session/scheduled.ts`: the proxy governs the create and this
+side records it, because the proxy opens these files `readOnly`.
+
 ## What is not here
 
 **Skills are whole as of #291**, storage and both directions. `apps/server`

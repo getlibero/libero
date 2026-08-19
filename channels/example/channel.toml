@@ -336,6 +336,12 @@ max_result_chars = 8000                       # whole messages come back; a chan
 # The channel is not a field. It comes from the client certificate when the check
 # is created and from the channel's own file when it fires, so there is nothing an
 # argument could name.
+#
+# NOT YET FIRED. Creating a check is governed end to end today and the ticket is
+# stored, but the clock that wakes at its due instant is #324. A check created now
+# waits until that lands, and then fires late — its time is absolute. Both
+# switches being off by default is what keeps a channel out of that state by
+# accident.
 [[builtin]]
 name = "schedule_task"
 

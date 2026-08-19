@@ -1218,6 +1218,44 @@ threads the pregate found idle: handing it the answer would make the finding a
 formality, and the cases the design actually wants — a deadline nobody picked up,
 a thread stalled on something answerable — are the ones it would stop looking for.
 
+## Where a scheduled check lands (#323)
+
+A `schedule_task` create is governed by the tool proxy service and recorded here,
+and the split is forced rather than chosen: that service opens a channel's store
+`readOnly`, and a writer there would be a second writer on one file, from the
+process that must not be able to repair a channel's evidence. So the create is
+served, the ticket it minted comes back in the result, and
+`session/scheduled.ts` turns it into a row.
+
+The seam is `ProxyToolClientOptions.onScheduledTask`. The router builds the sink
+from `session.store` **inside the lock**, beside `memoryFile` and `skillFiles`, and
+passes it on `TaskSettings`; `session/task.ts` wires it into the tool client the
+way it already wires `onUnmappedCall` and `onBudgetWarning`. Built from the
+session's store rather than opening one, because there is one handle per channel
+and a second would be the very thing the proxy is denied.
+
+**Why the write is exact against a model.** The proxy's pending cap counts what
+this side has written, and three properties in a row make that count right at the
+moment the next create is decided: the loop dispatches a task's tool calls one at a
+time, `node:sqlite` writes are synchronous, and a channel's work is serialized on
+one session mutex. So the row from create *N* is on disk before create *N+1* is
+submitted. That is the whole of the claim — a *compromised* agent process can
+write extra rows or none, and has cheaper attacks available anyway.
+
+**What can be lost, and in which direction.** The audit log records the governed
+create and the store records the ticket that will fire, and they can disagree one
+way: an audited create whose row never landed. It cannot be refused retroactively,
+because the call ran — so the model is told plainly (the client answers it an
+error result saying the check will not run) and `scheduled_task_unrecorded` is
+what an operator greps for. The other direction is unreachable: nothing writes a
+row the proxy did not serve.
+
+**The parse is on this side of the seam**, with the logger. `packages/agent`
+hands over the result's text; this parses it with `@getlibero/schema`, the same
+definition the proxy serialized it with. A failure is a deployment fact — two
+halves that do not agree about a shape — and that package cannot log and must not
+learn how.
+
 ## The proactive post: the one way this process starts a message
 
 `src/proactive/proactive.ts` answers #318. Everything else this app says is a

@@ -77,6 +77,7 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       forgetSkillMergeProposal: () => {},
       skillMergeNoticed: () => false,
       recordSkillMergeNotice: () => {},
+      scheduleTask: () => {},
       readThreadSummary: () => null,
       close: () => {
         closed += 1;
@@ -384,6 +385,7 @@ describe("createMessageIngest", () => {
         forgetSkillMergeProposal: () => {},
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
+        scheduleTask: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -437,6 +439,7 @@ describe("createMessageIngest", () => {
         forgetSkillMergeProposal: () => {},
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
+        scheduleTask: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -865,6 +868,7 @@ describe("createRevisionIngest", () => {
         forgetSkillMergeProposal: () => {},
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
+        scheduleTask: () => {},
         readThreadSummary: () => null,
         close: () => {}
       }
@@ -961,6 +965,7 @@ describe("createRevisionIngest", () => {
         forgetSkillMergeProposal: () => {},
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
+        scheduleTask: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -1014,6 +1019,7 @@ describe("createRevisionIngest", () => {
         forgetSkillMergeProposal: () => {},
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
+        scheduleTask: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })

@@ -33,6 +33,7 @@
 
 import {
   ToolCallResponse,
+  BUILTIN_SERVER,
   ToolListing,
   refusalMessage,
   type ApprovalTicket,
@@ -45,6 +46,25 @@ import type { ToolCallAttribution, ToolExecutor, ToolResult, ToolSource } from "
 import { proxyErrorFrom } from "./errors.js";
 import { mapPermittedTools, type MappedTool } from "./tool-names.js";
 import { ProxyClientError, type ProxyTransport } from "./transport.js";
+
+/**
+ * What the model is told when a create was permitted and its ticket did not land.
+ *
+ * One sentence for every way that happens — a store that is not open, a write
+ * that failed, a confirmation this build could not parse — because the model's
+ * remedy is the same for all of them and none of it is the model's fault. Which
+ * one it was belongs in the log the caller writes, not in a channel.
+ *
+ * `isError`, and it says the check will not run, because the alternative is a
+ * model that reports a scheduled check to the people in the channel and is wrong.
+ */
+const NOT_RECORDED =
+  "The check was permitted but could not be recorded, so it will not run. Nothing is scheduled. Say so rather than reporting a scheduled check, and do not try again without being asked.";
+
+/** Whether this call was the create that leaves a ticket behind. */
+function isScheduleCreate(mapped: MappedTool): boolean {
+  return mapped.server === BUILTIN_SERVER && mapped.tool === "schedule_task";
+}
 
 /**
  * A held call, as the prompter is told about it.
@@ -186,13 +206,49 @@ export interface ProxyToolClientOptions {
    * context on every subsequent turn of the task.
    */
   onBudgetWarning?: (warning: BudgetWarning) => void;
+  /**
+   * Told when a `schedule_task` create came back served (#323), with the ticket
+   * the tool proxy service minted. Answers whether it is now recorded.
+   *
+   * **This is where a governed create becomes a durable ticket.** The proxy
+   * decides — the sheet lists the tool, a human clicks, the meter is charged, the
+   * audit row is written — and hands back what it minted; this side writes it,
+   * because the proxy opens a channel's store `readOnly` and a writer there would
+   * be a second writer on one file from the process that must not be able to
+   * repair a channel's evidence.
+   *
+   * **It takes the result's text, not a parsed ticket**, and the parse is the
+   * caller's. Two reasons, and the second is this package's standing rule. The
+   * shape is `@getlibero/schema`'s, so the caller parses it with the same
+   * definition the proxy serialized it with rather than through a translation
+   * here. And a parse failure is a *deployment* fact — two halves that do not
+   * agree — which somebody has to log, and this package cannot log and must not
+   * learn how.
+   *
+   * **It must not throw**, on `onBudgetWarning`'s terms, and the caller answers
+   * `false` for everything it could not do: unparseable text, a store that is not
+   * open, a write that failed.
+   *
+   * **The hook is keyed on the `(server, tool)` pair and never on the flat name
+   * the model called.** `chooseName` gives the model bare `schedule_task` when
+   * nothing collides and `libero__schedule_task` when something does, so matching
+   * the flat name would be a parse of model-facing text — the thing
+   * ./tool-names.ts exists to refuse.
+   *
+   * **Absent, a create is an error result rather than a silent success.** This is
+   * the one place the client does not degrade the way `onHeld` does: a hold with
+   * no prompter relayed as a refusal abandons a call, which is safe, and a create
+   * with no sink would tell a model a check is scheduled that nothing will ever
+   * run.
+   */
+  onScheduledTask?: (ticket: string) => boolean;
 }
 
 /** Both halves, so a caller cannot wire one to the proxy and the other to a stub. */
 export interface ProxyToolClient extends ToolSource, ToolExecutor {}
 
 export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToolClient {
-  const { transport, channel, onHeld, onUnmappedCall, onBudgetWarning } = options;
+  const { transport, channel, onHeld, onUnmappedCall, onBudgetWarning, onScheduledTask } = options;
   let byModelName = new Map<string, MappedTool>();
 
   /**
@@ -204,8 +260,20 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
    * does not enforce that: the claim is the proxy's, made once against its own
    * meter, which is the only place that could know.
    */
-  function served(answer: Extract<ToolCallResponse, { outcome: "ran" }>): ToolResult {
+  function served(
+    answer: Extract<ToolCallResponse, { outcome: "ran" }>,
+    mapped: MappedTool
+  ): ToolResult {
     if (answer.warning !== undefined) onBudgetWarning?.(answer.warning);
+    if (isScheduleCreate(mapped) && !answer.result.isError) {
+      // Synchronous, and before the result reaches the model — which is what
+      // makes the proxy's pending count exact against a model rather than
+      // approximately right. A task's tool calls are dispatched one at a time,
+      // and this write lands before the next create is submitted.
+      if (onScheduledTask === undefined || !onScheduledTask(answer.result.content)) {
+        return { content: NOT_RECORDED, isError: true };
+      }
+    }
     return answer.result;
   }
 
@@ -323,7 +391,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
       const answer = await submit(body, signal);
       switch (answer.outcome) {
         case "ran":
-          return served(answer);
+          return served(answer, mapped);
         case "refused":
           // Relayed as what it is. `refusalMessage` words it, so the sentence a
           // channel sees cannot disagree with the reason the proxy gave.
@@ -382,7 +450,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
               // load-bearing; this one keeps the two facts about *this call*
               // adjacent.
               completion?.({ state: "ran" });
-              return served(redeemed);
+              return served(redeemed, mapped);
             // A second `held` for a ticketed call is a proxy the contract says
             // cannot exist; relaying its refusal abandons the call, which is
             // the safe reading of an impossible answer. The refusal cases are

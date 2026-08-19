@@ -523,13 +523,33 @@ Not every permitted call goes to an upstream. Two are served by this process:
 future check. `builtins.ts` holds the definitions and the strict argument parser;
 `builtin-dispatcher.ts` is the executor.
 
-**`schedule_task`'s executor is #323 and is not here yet.** The definition, the
-enum member, the declared hold and the sheet's grant landed in #322, so a channel
-that lists it today gets the whole governed path — the listing, the card, the
-audit row — and a `501` from the dispatcher's `unavailable` arm. That word is
-exact: it means the upstream kind is not built, where the `unanswered` a throw
-produces means a built-in that exists and broke. Nothing is denied and nothing is
-promised.
+**`schedule_task` is governed here and recorded elsewhere.** The create is a
+served tool call like any other — the sheet lists it, a human clicks, the meter is
+charged, an audit row is written — and what it produces is a *ticket* returned in
+the result, which the agent side writes into the channel's own store. This process
+does not write it, and could not: it opens those files `readOnly`, and a writer
+here would be a second writer on one file from the process that must not be able
+to repair a channel's evidence. So neither built-in writes anything, and "this arm
+holds a directory path" stays literally true.
+
+**Its three caps refuse from the dispatcher rather than from `decide`.** That is
+`Dispatch`'s `refused` arm, which has existed since the vault landed for "a
+refusal discovered while serving" — `credential_unresolved` needs a lookup a pure
+decision cannot make, and these need the model's *arguments*, which `decide`
+deliberately never reads, plus a count from the channel's store. `server.ts`
+audits a dispatch refusal exactly as it audits a decision's, so the record is
+unchanged: one row, the reason on it, and the sentence `refusalMessage` writes.
+The cost, stated rather than discovered: `recordToolCall` runs before dispatch, so
+a create refused for a cap is metered — `credential_unresolved`'s position
+already, and the right direction, since `daily_tool_calls` is the backstop a cap
+enforced in code is not.
+
+The pending count comes from `MessageReader.pendingScheduledTasks`, the second
+method that interface has ever had. What admits it is what admits `search`: no
+channel argument, one file closed over at open, read-only. What makes it a
+different question from the ones that interface refuses is that it answers a
+**number** — this process learns how many checks are waiting and never what any
+of them says.
 
 **A built-in is not a bypass**, and the type system is what says so rather than a
 comment. `decide` returns a `Target` — `{kind: "mcp", upstream}` or
@@ -589,6 +609,43 @@ from an upstream answer, so it is the one listing row that cannot degrade to a
 thin one — and it is checked against `MAX_TOOL_DESCRIPTION` at module load,
 because a description over that bound fails `ToolListing.parse` on the agent's
 side and ends the task rather than costing it a sentence.
+
+### What a governed create is worth, and what it is not
+
+Four claims, in this order, because three of them are the near overclaims.
+
+**Scheduling is not a permission.** A served create widens nothing. The turn it
+eventually fires is bounded by the same sheet, the same meter and the same
+approval rules a mention's is: every call it induces meets these gates, its post
+goes through a surface that allows one per firing, its tokens draw on the same
+budget. What the create buys is a turn happening later, not a turn allowed to do
+more.
+
+**It is not a boundary against a compromised agent process.** The ticket lives in
+the channel's own store, which the agent side writes; a process under an
+attacker's control could put a row there this proxy never served — and it could
+call the tools directly instead, which is cheaper and needs no forgery. In the
+terms `refusal.ts` uses, this has `daily_tokens`' standing and not
+`daily_tool_calls`'.
+
+**What it holds against is the prompt-injected model.** Injected text can talk a
+model into asking for future work. It cannot list a tool the sheet omits, cannot
+skip a hold the sheet left in place, cannot pass the pending cap or the horizon,
+and cannot make a create unaudited. Unbidden future work becomes a held, audited,
+budgeted act instead of a free one.
+
+**The pending cap holds in that same narrow sense, and holds exactly there.** This
+process counts what the agent has durably written; a task's tool calls are
+dispatched one at a time, the write is synchronous, and a channel's work is
+serialized on one session mutex — so the row from one create is on disk before the
+next is submitted, and no burst gets past the count. A compromised process can,
+and does not need to. The count is also a *floor* rather than an exact tally: a
+create this proxy served whose row failed to land is audited and uncounted, so a
+channel gets at most one extra slot and never one fewer.
+
+One thing that makes the hold worth having rather than ceremonial: the approval
+card renders the call's arguments, so the human clicking Approve has read the
+question and the offset before either becomes a ticket.
 
 Adding a built-in is four parts that fail the build separately: a member on
 `BuiltinToolName` in `@getlibero/schema`, an entry in `BUILTIN_APPROVAL_DEFAULT`
