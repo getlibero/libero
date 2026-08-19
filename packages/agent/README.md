@@ -117,6 +117,35 @@ rightly writes no audit row. Without that, a model can probe fifty names and the
 audit log shows a task that made no tool calls. The name is model-authored text,
 so it travels as a value and never as part of a sentence.
 
+### A served create leaves this package
+
+`schedule_task` is the one tool whose *result* this package does something with
+beyond handing it to the loop. When a served call's `(server, tool)` pair is the
+built-in create, `onScheduledTask` is raised with the result's text and answers
+whether the ticket is now recorded; if it answers `false`, or there is no sink
+wired at all, the model gets an error result saying the check will not run.
+
+Three things about that, and each is a decision.
+
+**It is keyed on the pair, never on the flat name.** `chooseName` gives the model
+bare `schedule_task` when nothing collides and `libero__schedule_task` when an
+upstream also offers one, so matching the flat name would be a parse of
+model-facing text — the thing `tool-names.ts` exists to refuse — and would route
+the *upstream's* result into the channel's store on exactly the sheet where that
+matters.
+
+**It hands over text and does not parse it.** The shape is
+`@getlibero/schema`'s, so the caller parses it with the same definition the proxy
+serialized it with. And a parse failure is a deployment fact — two halves that do
+not agree — which somebody has to log, and this package cannot log and must not
+learn how.
+
+**No sink is an error rather than a degradation, and this is the only place that
+is true.** A hold with no prompter is relayed as a refusal, which is safe: the
+call is abandoned and nothing runs. A create with no sink would be a model
+reporting a scheduled check to the people in a channel that nothing will ever run,
+which is worse than any refusal.
+
 ### A held call
 
 With an `onHeld` prompter, a hold is waited out and the identical call

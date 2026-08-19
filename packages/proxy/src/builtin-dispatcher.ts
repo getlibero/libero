@@ -1,18 +1,27 @@
 // The arm that serves a tool this process implements itself (#64).
 //
-// Today that is one tool, `search_channel_history`, reading the channel's own
-// message store. The store is written by the gateway under `AGENT_STORE_ROOT`
-// and read here under `PROXY_STORE_ROOT`; they name the same directory and the
-// two services are configured separately, which is why there are two variables
-// for one path.
+// Two tools. `search_channel_history` reads the channel's own message store, and
+// `schedule_task` (#323) turns an offset into one future check. The store is
+// written by the gateway under `AGENT_STORE_ROOT` and read here under
+// `PROXY_STORE_ROOT`; they name the same directory and the two services are
+// configured separately, which is why there are two variables for one path.
 //
 // ## What this arm is allowed to hold
 //
-// A directory path, and nothing else. It has no vault, no client pool, no
-// network. `createToolDispatcher` in ./dispatch.ts is what keeps that true: it
-// hands this arm a `BuiltinToolName` and hands `HttpDispatcher` an `McpServer`,
-// so neither can be given the other's work and neither needs a branch guarding
-// against it.
+// A directory path and a clock, and nothing else. It has no vault, no client
+// pool, no network. `createToolDispatcher` in ./dispatch.ts is what keeps that
+// true: it hands this arm a `BuiltinToolName` and hands `HttpDispatcher` an
+// `McpServer`, so neither can be given the other's work and neither needs a
+// branch guarding against it.
+//
+// ## Neither tool writes
+//
+// `search_channel_history` reads, and `schedule_task` mints a ticket and returns
+// it — the *agent* is what records it, because this process opens these files
+// `readOnly` and a writer here would be a second writer on one file from the
+// process that must not be able to repair a channel's evidence. So "this arm
+// holds a directory path" stays literally true: it can read that directory and
+// it cannot change it.
 //
 // ## Why the reader is opened per call
 //
@@ -40,14 +49,24 @@
 // argument parser in ./builtins.ts is `.strict()` with no channel field. There
 // is no code path here that reads a channel from anything the model wrote.
 
+import { randomUUID } from "node:crypto";
 import { openMessageReader } from "@getlibero/memory";
-import type { ResolvedToolCall, ToolResult } from "@getlibero/schema";
+import {
+  SCHEDULED_TASK_MAX_HORIZON_MINUTES,
+  SCHEDULED_TASK_MAX_PENDING,
+  SCHEDULED_TASK_MIN_LEAD_MINUTES,
+  ScheduleTaskArguments,
+  scheduledInstantFromMs,
+  serializeScheduledTask
+} from "@getlibero/schema";
+import type { ResolvedToolCall, ToolRefusal, ToolResult } from "@getlibero/schema";
 import type { StoredMessage } from "@getlibero/memory";
 import { SearchChannelHistoryArguments } from "./builtins.js";
 import type { BuiltinDispatcher, Dispatch } from "./dispatch.js";
 import type { CallLimits } from "./enforce.js";
 import type { Logger } from "./log.js";
 import { truncate } from "./mcp-bounds.js";
+import type { ZodError } from "zod";
 
 export interface BuiltinDispatcherOptions {
   /**
@@ -56,6 +75,14 @@ export interface BuiltinDispatcherOptions {
    */
   readonly storeRoot: string;
   readonly logger: Logger;
+  /**
+   * Injected so a test states the clock rather than faking timers.
+   *
+   * It exists for `schedule_task` and for nothing else: an offset from the model
+   * becomes an absolute instant exactly here, once, and every later reader of
+   * that ticket does no arithmetic at all.
+   */
+  readonly now?: () => number;
 }
 
 /** What the model is told when the channel has nothing stored at all. */
@@ -142,8 +169,41 @@ const ran = (content: string, isError = false): Dispatch => ({
   result: { content, isError } satisfies ToolResult
 });
 
+const refused = (refusal: ToolRefusal): Dispatch => ({ outcome: "refused", refusal });
+
+/**
+ * Where a bad-argument error result points.
+ *
+ * **Unrecognized keys are named, and that is a fix rather than a flourish.** Both
+ * argument parsers are `.strict()` precisely so that a model reaching for a field
+ * it was not given — `channel` above all — is rejected rather than quietly
+ * stripped, and ./builtins.ts has always claimed the model "gets an error result
+ * naming the key, which is also the clearest possible signal to whoever is
+ * reading the transcript that something tried". It did not: zod reports
+ * `unrecognized_keys` with an empty `path`, so every such call answered
+ * `at (root)` and the key it tried appeared nowhere. The case that covered it
+ * asserted only `isError`, which is how a claim in a comment outlived the
+ * behaviour.
+ *
+ * The keys come from the *parser's* own list of what it did not recognize, not
+ * from arbitrary text off the request: an unknown key is a short identifier or it
+ * would not be a key, and it goes back to the model that wrote it and into a
+ * transcript — never into a log line or a channel.
+ */
+function argumentFault(error: ZodError): string {
+  const issue = error.issues[0];
+  if (issue === undefined) return "";
+  if (issue.code === "unrecognized_keys") {
+    const named = issue.keys.map(key => `\`${key}\``).join(", ");
+    return `: unrecognized ${issue.keys.length === 1 ? "key" : "keys"} ${named}`;
+  }
+  const path = issue.path.join(".");
+  return path === "" ? "" : ` at ${path}`;
+}
+
 export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): BuiltinDispatcher {
   const { storeRoot, logger } = options;
+  const now = options.now ?? Date.now;
 
   const searchChannelHistory = (call: ResolvedToolCall, limits: CallLimits): Dispatch => {
     const parsed = SearchChannelHistoryArguments.safeParse(call.arguments);
@@ -155,9 +215,7 @@ export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): Buil
       // arguments the same way, so the model sees one familiar shape. The call
       // has already been charged, which is correct — it reached the proxy and
       // the proxy did work on it.
-      const issue = parsed.error.issues[0];
-      const where = issue === undefined ? "" : ` at ${issue.path.join(".") || "(root)"}`;
-      return ran(`search_channel_history: invalid arguments${where}.`, true);
+      return ran(`search_channel_history: invalid arguments${argumentFault(parsed.error)}.`, true);
     }
 
     // `call.channel` is the certificate's, and nothing in `parsed.data` can
@@ -173,21 +231,90 @@ export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): Buil
     }
   };
 
+  /**
+   * One future check, minted (#323).
+   *
+   * ## Why the caps refuse here rather than in `decide`
+   *
+   * `Dispatch` has had a `refused` arm since the vault landed, for "a refusal
+   * discovered while serving" — `credential_unresolved` needs a vault lookup that
+   * a pure decision cannot make. These three are the same kind of thing: two read
+   * the model's *arguments*, which `decide` deliberately never touches, and the
+   * third reads the channel's store. Putting them in `decide` would mean handing
+   * enforcement the arguments, and the first per-tool argument rule there is the
+   * one that makes the second one obvious.
+   *
+   * `server.ts` audits a dispatch refusal exactly as it audits a decision's, so
+   * nothing about the record changes: one row, the reason on it, and the sentence
+   * `refusalMessage` writes.
+   *
+   * **What it costs, said rather than discovered: a refused create is metered.**
+   * `recordToolCall` runs before dispatch, so a model probing the caps spends the
+   * channel's tool-call budget. That is where `credential_unresolved` already sits
+   * and it is the right direction — `daily_tool_calls` is the backstop a cap
+   * enforced in code is not.
+   *
+   * ## Cheapest first
+   *
+   * The two arithmetic caps decide before the store is opened, so a probe that is
+   * trivially out of range costs no file handle. The pending count is last of the
+   * three because it is the only one that opens anything.
+   *
+   * ## What the model cannot choose
+   *
+   * The id and the instant, both minted here. `ScheduleTaskArguments` is
+   * `.strict()`, so a call carrying `id` or `dueAt` is an unknown-key error rather
+   * than a ticket on the model's terms — and the channel is not a field at all.
+   *
+   * ## This writes nothing
+   *
+   * The ticket goes back as the result and the *agent* records it, which is not a
+   * convenience: this process opens these files `readOnly`, and a writer here
+   * would be a second writer on one file from the process that must not be able
+   * to repair a channel's evidence. The honest consequence is that an audited
+   * create can exist whose row never landed — the agent tells the model so, and
+   * the count below is a floor rather than an exact tally.
+   */
+  const scheduleTask = (call: ResolvedToolCall): Dispatch => {
+    const parsed = ScheduleTaskArguments.safeParse(call.arguments);
+    if (!parsed.success) {
+      return ran(`schedule_task: invalid arguments${argumentFault(parsed.error)}.`, true);
+    }
+
+    const minutes = parsed.data.due_in_minutes;
+    if (minutes < SCHEDULED_TASK_MIN_LEAD_MINUTES) return refused({ reason: "schedule_too_soon" });
+    if (minutes > SCHEDULED_TASK_MAX_HORIZON_MINUTES) return refused({ reason: "schedule_too_far" });
+
+    const reader = openMessageReader({ channel: call.channel, root: storeRoot, logger });
+    try {
+      // No store is no tickets, which is the same answer the reader gives for a
+      // file whose writer predates the table.
+      const pending = reader?.pendingScheduledTasks() ?? 0;
+      if (pending >= SCHEDULED_TASK_MAX_PENDING) return refused({ reason: "schedule_full" });
+    } finally {
+      reader?.close();
+    }
+
+    const at = now();
+    return ran(
+      serializeScheduledTask({
+        id: randomUUID(),
+        task: call.task,
+        prompt: parsed.data.prompt,
+        dueAt: scheduledInstantFromMs(at + minutes * 60_000),
+        createdAt: scheduledInstantFromMs(at)
+      })
+    );
+  };
+
   return {
     run(call, tool, limits) {
       try {
         switch (tool) {
           case "search_channel_history":
             return searchChannelHistory(call, limits);
-          // The definition, the enum member and the sheet's grant landed in
-          // #322; the executor is #323. `unavailable` is the honest word for that
-          // gap and is exactly what it means — "the upstream kind is not built" —
-          // where `unanswered` above is for a built-in that exists and broke. So
-          // a channel that lists this today gets the whole governed path, a card
-          // to click, an audit row, and a 501 saying the proxy cannot serve it
-          // yet. Nothing is denied and nothing is promised.
           case "schedule_task":
-            return { outcome: "unavailable" };
+            return scheduleTask(call);
         }
       } catch (error) {
         // A reason code, never the message: `openMessageReader` puts the file

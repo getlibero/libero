@@ -724,6 +724,51 @@ CREATE TABLE IF NOT EXISTS skill_merge_notice (
   PRIMARY KEY (skill_a, skill_b)
 );
 
+-- The channel's scheduled checks (#323): what \`schedule_task\` created, and what
+-- the ambient clock will fire.
+--
+-- Additive, and \`MESSAGE_STORE_SCHEMA_VERSION\` does not move, for the reason
+-- \`skill_merge_notice\` gives above and the same measurement: a new table appears
+-- on an existing store and the reader names it only behind a guard.
+--
+-- **Pending is the absence of a fire stamp, never a status value.** There is no
+-- \`state\` column and no pending/done enum on purpose, because a status column
+-- would need a value meaning "due but not run" — and that value is the bug. It is
+-- what would let a firing that produced no check consume a ticket that never ran.
+-- Absence cannot be consumed by anything except a fire.
+--
+-- **\`outcome\` is written only together with \`fired_at\`**, and says what the one
+-- firing did: it posted, it ran and had nothing to say, or it could not run and
+-- told the channel so. It is never read to decide whether a ticket may fire
+-- again — that question is answered by \`fired_at\` alone. It is provisioned here
+-- rather than added later because nothing in this module runs an \`ALTER\`.
+--
+-- What that rules out, for whoever writes the firing: no \`attempts\` column, since
+-- a due check fires exactly once and there are no retries to count; and no
+-- \`abandoned_at\`, since nothing lingers waiting to be given up on.
+--
+-- No channel column. The file is the channel.
+CREATE TABLE IF NOT EXISTS scheduled_task (
+  -- Minted by the proxy when it served the create. The model did not choose it.
+  id         TEXT PRIMARY KEY,
+  -- The task whose turn asked for this: the join from here into the audit log's
+  -- record of the governed create.
+  task       TEXT NOT NULL,
+  -- What to check. Model-authored, bounded at create, and read by a human on the
+  -- approval card before this row existed.
+  prompt     TEXT NOT NULL,
+  -- When to check, in milliseconds. Absolute, resolved once by the proxy's clock.
+  due_at     INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  fired_at   INTEGER,
+  outcome    TEXT
+);
+
+-- \`fired_at\` first, because every read starts by excluding the fired ones: the
+-- clock asks for the earliest pending due instant, and the cap counts pending
+-- rows. A due-only index would make both scan what has already happened.
+CREATE INDEX IF NOT EXISTS scheduled_task_due ON scheduled_task (fired_at, due_at);
+
 `;
 
 /**
@@ -1331,7 +1376,55 @@ export interface MessageStore {
    * once, ever" true.
    */
   recordSkillMergeNotice(pair: SkillPairKey, at: number): void;
+  /**
+   * Record a scheduled check the tool proxy service served (#323). Idempotent.
+   *
+   * **This store is where a `schedule_task` ticket lands, and the proxy is not
+   * what puts it here.** The proxy governs the create — the sheet lists the
+   * tool, a human clicks, the meter is charged, the audit row is written — and
+   * hands back the ticket it minted; the agent side writes it, because the proxy
+   * opens these files `readOnly` and giving it a writer would put a second writer
+   * on one file, from the process that must not be able to repair a channel's
+   * evidence.
+   *
+   * That split is also the honest limit of the pending cap: what the proxy counts
+   * is what this side wrote. It holds against a prompt-injected model, because a
+   * task's tool calls are dispatched one at a time and this write is synchronous,
+   * so the count the next create is checked against is exact. It does not hold
+   * against a compromised agent process, which could write extra rows or none —
+   * and which has cheaper attacks available.
+   *
+   * `ON CONFLICT DO NOTHING` on the proxy's minted id, `append`'s first-write-wins:
+   * a re-submission carrying the same ticket must not schedule the check twice.
+   *
+   * `void` rather than a boolean, `recordSkillMergeNotice`'s shape: a write here
+   * either happens or throws, and there is no third answer for a signature to
+   * carry. Whether the model is told its check was not recorded is a decision the
+   * caller makes by catching, which is where the logger is.
+   */
+  scheduleTask(task: StoredScheduledTask): void;
   close(): void;
+}
+
+/**
+ * One scheduled check, as this store holds it.
+ *
+ * Milliseconds where the wire shape carries an ISO instant, which is
+ * `skill.ts`'s split between what a person reads and what the machine stamps:
+ * every other clock column in this file is a number, and one exception would be
+ * the column somebody compares against the others.
+ *
+ * No channel, for the reason nothing here has one: the file is the channel.
+ */
+export interface StoredScheduledTask {
+  /** Minted by the proxy at create. Not chosen by the model. */
+  readonly id: string;
+  /** The task that asked. The join into the audit log's record of the create. */
+  readonly task: string;
+  readonly prompt: string;
+  /** When to check, in milliseconds. */
+  readonly dueAt: number;
+  readonly createdAt: number;
 }
 
 /**
@@ -1487,6 +1580,30 @@ export interface MessageReader {
    * text-not-an-expression rule. See `toMatchQuery`.
    */
   search(text: string, limit: number): readonly StoredMessage[];
+  /**
+   * How many of this channel's scheduled checks have not fired (#323).
+   *
+   * **The second method here, and it is a reviewed act rather than a list that
+   * grew.** What admits it is what admits `search`: no channel argument, one file
+   * closed over at open, read-only. What makes it a different question from the
+   * ones this interface refuses is that it answers a *number*. The proxy learns
+   * how many checks are waiting and never what any of them says — no prompt, no
+   * instant, no id — so nothing model-authored crosses back into the process that
+   * holds every tool credential.
+   *
+   * It is here because the pending cap has to be enforced at the create,
+   * deterministically, and the process that decides is not the process that
+   * writes. Counting on the agent side instead would put the cap in the one place
+   * this design says enforcement never lives.
+   *
+   * **`0` when the table is absent, and that is the truth rather than fail-open.**
+   * This connection runs no DDL, so a store whose writer has not opened since the
+   * deploy has no `scheduled_task` table — and preparing a statement against it at
+   * open would throw and take `search_channel_history` down with it, for a channel
+   * that has no scheduled checks by definition. The table is looked for once, at
+   * open, and a store without one holds no tickets.
+   */
+  pendingScheduledTasks(): number;
   close(): void;
 }
 
@@ -1632,6 +1749,18 @@ function quotedTerms(text: string): string[] {
  * materializing the whole match set. The outer ORDER BY is what survives the
  * join, which does not preserve the subquery's order.
  */
+/**
+ * How many checks are waiting, and nothing about any of them.
+ *
+ * A `COUNT` rather than a select of rows, which is the shape the reader's own
+ * doc argues for: the caller is the tool proxy service enforcing a cap, and a
+ * cap needs a number. Covered by `scheduled_task_due`, whose leading column is
+ * the one this filters on.
+ */
+const PENDING_SCHEDULED_TASKS_SQL = `
+SELECT COUNT(*) AS pending FROM scheduled_task WHERE fired_at IS NULL
+`;
+
 const SEARCH_SQL = `SELECT m.ts, m.thread_ts, m.user_id, m.display_name, m.text, m.at
      FROM message m
      JOIN (SELECT rowid AS hit_id, rank AS hit_rank
@@ -2356,6 +2485,11 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
             VALUES (?, ?, ?)
        ON CONFLICT (skill_a, skill_b) DO NOTHING`
     ),
+    scheduleTask: db.prepare(
+      `INSERT INTO scheduled_task (id, task, prompt, due_at, created_at)
+            VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`
+    ),
     // DESC because the only way to ask SQLite for a tail is to sort backwards
     // and take the head; `recent` reverses the rows before returning them.
     //
@@ -2830,6 +2964,10 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       statements.noticeSkillMerge.run(pair.a, pair.b, at);
     },
 
+    scheduleTask(task) {
+      statements.scheduleTask.run(task.id, task.task, task.prompt, task.dueAt, task.createdAt);
+    },
+
     close() {
       db.close();
     }
@@ -2953,6 +3091,16 @@ export function openMessageReader(options: MessageReaderOptions): MessageReader 
 
   const search = db.prepare(SEARCH_SQL);
 
+  // Asked once, at open, rather than caught per call. A store written before
+  // #323 has no `scheduled_task` table, and `prepare` against a missing table
+  // throws — which would turn "this channel has no scheduled checks" into a
+  // reader that cannot be opened at all, taking `search_channel_history` with it.
+  const hasScheduled =
+    db.prepare(`SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?`).get(
+      "scheduled_task"
+    ) !== undefined;
+  const pending = hasScheduled ? db.prepare(PENDING_SCHEDULED_TASKS_SQL) : null;
+
   logger?.log("info", { event: "store_reader_opened", channel, file });
 
   return {
@@ -2961,6 +3109,12 @@ export function openMessageReader(options: MessageReaderOptions): MessageReader 
       if (query === undefined) return [];
       const rows = search.all(query, clampLimit(limit)) as MessageRow[];
       return rows.map(toStoredMessage);
+    },
+
+    pendingScheduledTasks() {
+      if (pending === null) return 0;
+      const row = pending.get() as { pending: number } | undefined;
+      return row?.pending ?? 0;
     },
 
     close() {

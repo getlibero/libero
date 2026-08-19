@@ -273,6 +273,11 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
       // `warn`, on `tool_not_permitted`'s terms: nothing is broken and nothing
       // was denied, but a channel four fifths through its day is a thing an
       // operator wants to see before the refusals start.
+      // Where a governed create becomes a durable ticket (#323). Absent when the
+      // session has no store, and then the client tells the model the check was
+      // not recorded rather than letting it report one that will never run — see
+      // `TaskSettings.scheduled`.
+      ...(settings.scheduled !== undefined ? { onScheduledTask: settings.scheduled } : {}),
       onBudgetWarning: crossed => {
         warning ??= crossed;
         logger.log("warn", {

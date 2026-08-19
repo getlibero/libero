@@ -51,6 +51,7 @@ export type {
   MessageStoreOptions,
   StoredEmbedding,
   StoredMessage,
+  StoredScheduledTask,
   StoredThreadSummary
 } from "./store-db.js";
 

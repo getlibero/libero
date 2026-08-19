@@ -85,7 +85,13 @@ export interface LogFields {
    * would not take. `proactive_throttled` is deliberately its own word rather
    * than a `reason` on the failure line, because a refusal is the surface
    * working and a failure is not: an operator grepping for a channel the app
-   * cannot post in must not have to read past the throttle. Attribution:
+   * cannot post in must not have to read past the throttle. Scheduled checks
+   * (#323): "scheduled_task_recorded", "scheduled_task_unrecorded" — a governed
+   * create left a ticket that will fire, and one that did not. Two words rather
+   * than one with a field, because the second is the only direction the audit log
+   * and the channel's store can disagree in: a create the proxy served and
+   * audited whose row never landed, which is a human's approval having bought
+   * nothing. Attribution:
    * "user_lookup_failed". Approvals: "decision",
    * "decision_failed", "card_posted", "card_updated", "card_failed",
    * "approval_ignored", "approval_unknown".

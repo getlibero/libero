@@ -29,6 +29,7 @@ import { createSessionRegistry } from "./registry.js";
 import type { MemoryFileOpener } from "./memory.js";
 import type { QueryEmbedder } from "./embed.js";
 import type { Recall } from "./recall.js";
+import { createScheduledTaskSink } from "./scheduled.js";
 import type { SheetResolver } from "./sheet.js";
 import type { SkillFilesOpener } from "./skills.js";
 import type { SkillRecall } from "./skill-recall.js";
@@ -208,6 +209,19 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
 
         const store = session.store;
 
+        // Inside the lock, on `memoryFile`'s reason and one of its own: the
+        // proxy's pending cap counts what this writes, so the write has to be
+        // ordered against the next task's create the way every other write here
+        // is ordered against the next task's read.
+        //
+        // Built from `session.store` rather than opened, because there is one
+        // handle per channel and this must be that one — a second would be a
+        // second writer on one file, which is the thing the proxy is denied.
+        const scheduled =
+          store === null
+            ? undefined
+            : createScheduledTaskSink({ store, channel: request.key.channel, logger });
+
         // One embedding of the question, shared by both retrievers (#292).
         //
         // **Asked for only when something would search with it.** A channel with
@@ -297,6 +311,7 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
           // follows the reply sees the library as this task saw it rather than
           // opening it a second time.
           ...(skillFiles !== undefined ? { skillFiles } : {}),
+          ...(scheduled !== undefined ? { scheduled } : {}),
           loadedSkills: skills
         });
 

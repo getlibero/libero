@@ -169,6 +169,7 @@ describe("createSessionRegistry", () => {
           forgetSkillMergeProposal: () => {},
           skillMergeNoticed: () => false,
           recordSkillMergeNotice: () => {},
+          scheduleTask: () => {},
           readThreadSummary: () => null,
           close: () => {
             closed += 1;

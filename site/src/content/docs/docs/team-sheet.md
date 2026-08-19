@@ -875,6 +875,15 @@ Slack token and inventing a name would be worse than showing an id.
 
 #### `schedule_task`
 
+:::caution[The create is governed today; the firing is next]
+Creating a check works end to end — the sheet grants it, the card holds it, the meter is charged,
+the audit log records it, and the ticket is stored in the channel. **Nothing fires it yet.** The
+clock that wakes at a ticket's due instant is the next issue in this workstream
+([#324](https://github.com/getlibero/libero/issues/324)), so a check created now waits in the
+channel's store until that lands — at which point it fires, late, because its time is absolute.
+Both switches being off by default is what keeps a channel from reaching this state by accident.
+:::
+
 **Two switches, and both have to be on.** Listing it here is one; [`[ambient] enabled`](#ambient) is
 the other. A create against a channel with ambient off is refused, because nothing would ever run
 the check.

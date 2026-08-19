@@ -124,10 +124,7 @@ suite composed, and the surface had no `channel` verb.
 rather than aspirational — the declared hold and the `[ambient]` precondition,
 both in `decideBuiltin`, because a starter sheet documenting a hold the gate did
 not apply would be this repository's own "a test that encodes a gap" one file
-over. What is *not* here is the executor: the dispatcher's arm answers
-`unavailable`, which is the honest word for "the upstream kind is not built", so a
-channel listing the tool today gets the whole governed path and a 501. #323 fills
-it. Three decisions ride on
+over. Three decisions ride on
 `packages/schema/src/schedule-task.ts`'s header. **The model sends an offset and
 the proxy stores an instant** — `due_in_minutes`, resolved once at create, because
 a model has no clock and an absolute instant would want a timezone this tree
@@ -142,15 +139,33 @@ deployment to decide something about a tool this process implements itself. The
 four refusals stay four for the reason the broker's six do: wait, ask nearer, ask
 later, and edit the sheet are four different remedies.
 
-What phase 4 does *not* have yet is the governed create and the firing
-(#323–#325). What exists:
+#323 is the create itself, and the decision in it is **where a ticket lands**. The
+proxy has no write path into a channel's store by design, so the create is
+governed there and recorded here: `packages/agent`'s tool client raises
+`onScheduledTask` on a served create, keyed on the `(server, tool)` pair and never
+on the flat model name, and `apps/server/src/session/scheduled.ts` writes the row
+from the session's own store handle. Three properties in a row make the pending
+cap *exact* against a model — the loop dispatches tool calls one at a time,
+`node:sqlite` writes are synchronous, and a channel's work is serialized on one
+mutex — and none of them is a claim about a compromised process, which can write
+extra rows and does not need to. The three caps refuse from `Dispatch`'s
+**`refused` arm** rather than from `decide`, which is where `credential_unresolved`
+already sits: they read the model's arguments and the channel's store, and keeping
+enforcement argument-blind is what stops the refusal set growing a per-tool
+argument reason for every future tool. The cost is that a cap-refused create is
+metered, because `recordToolCall` runs before dispatch. `MessageReader` grew its
+second method ever for the count, and it answers an integer — the proxy learns how
+many checks wait and never what one says.
+
+What phase 4 does *not* have yet is the firing and its attacks (#324–#325). What
+exists:
 
 | Package | What it is |
 | --- | --- |
 | `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
-| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` as a built-in, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
+| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, the proactive post's verb and renderer, the app's own identity and workspace off one `auth.test`, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries and the two quiet-thread reads, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, the `proposals/` directory beside it, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
