@@ -145,6 +145,16 @@ export interface AgentSide {
    * `RigOptions.ambient` fails as itself rather than as a silent no-op.
    */
   heartbeat(at: number): Promise<number>;
+  /**
+   * One scan at `at`, answering how many due *checks* ran (#324).
+   *
+   * The same scan `heartbeat` drives, counting the other kind of due thing —
+   * and a separate verb because the two differ in the rule that matters to a
+   * case. A heartbeat's deadline is invented by the scheduler and so cannot fire
+   * on the scan that invents it; a ticket's instant is already on disk, so the
+   * first scan past it fires. There is no sighting scan to do.
+   */
+  check(at: number): Promise<number>;
   /** Every structured log line this side emitted — one of the canary surfaces. */
   log(): Array<{ level: LogLevel; fields: LogFields }>;
   /**
@@ -454,6 +464,16 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       }
       const { fired } = await ambient.scan(at);
       return fired;
+    },
+    async check(at: number): Promise<number> {
+      if (ambient === undefined) {
+        throw new Error("e2e: this rig composed no ambient clock — see RigOptions.ambient");
+      }
+      // The same scan, counting the other kind of due thing. Two counters rather
+      // than one, so "nothing was due" is assertable for each — a case proving a
+      // check did not fire must not be satisfied by a heartbeat that did.
+      const { checks } = await ambient.scan(at);
+      return checks;
     }
   };
 }

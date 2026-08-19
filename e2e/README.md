@@ -503,6 +503,32 @@ how many channels fired. The event words are `heartbeat_posted`,
 `heartbeat_failed`; a post lands in `agent.slack.channelPosts`, which is its own
 array precisely so a case cannot mistake one for a reply.
 
+**Fire a due scheduled check with `rig.check(at)`, which scans once.** The same
+scan, counting the other kind of due thing — and one scan rather than two,
+because a ticket has no first-sight rule. A heartbeat's deadline is invented by
+the scheduler and cannot already have passed; a ticket's instant is on disk
+before the scan starts, so the first scan past it fires. At most one per channel
+per scan, earliest first. The event words are `check_posted`, `check_silent`,
+`check_declined`, `check_failed` and `check_unposted`, plus `ambient_check_due`
+from the clock.
+
+**Do not scan at exactly the instant you asked for.** A ticket's due time is the
+*proxy's* clock at the moment the create was served, which is your `at` plus
+however long the rig took to start — so a case proving a check fired should scan
+generously past it, and only the case proving it does **not** fire early should
+scan tight. Both halves are in `schedule-task.test.ts`'s positive control, and
+that pairing is what makes it demonstrably able to fail.
+
+**A built-in the sheet omits never reaches the proxy.** It is not published to the
+model, so the flat name maps to nothing and the client refuses locally: the audit
+log stays empty and the refusal shows up as a `tool_not_permitted` line on the
+agent's side. A case asserting "unlisted is refused" for a built-in that asserts
+on an audit row is asserting the wrong thing.
+
+**`max_tool_calls_per_task` defaults to 5 in a harness sheet**, which is below
+several of the bounds a case might want to reach — the pending cap among them. A
+case about a different bound has to raise it, or it silently tests the loop's.
+
 **The lifecycle job's first run on a file writes nothing.** It adopts what the
 file says as its baseline, which is what makes a hand-set status survive — so a
 case that wants a status moved needs two runs, and the second has to clear
@@ -639,7 +665,8 @@ outlive the run.
   `openingContexts`.
 - `src/harness/embedding.ts` — the constant fake embedder, and the rule it
   carries.
-- `src/harness/ambient.ts` — the clock, the enumerator and the heartbeat, when a
+- `src/harness/ambient.ts` — the clock, the enumerator, the heartbeat and the
+  fire path, when a
   case asks. `passes.ts`'s shape, and it shares that file's `meteringClosures` so
   a background turn and a heartbeat are metered by one pair of closures over the
   wrapped transport, exactly as `index.ts` shares them.
