@@ -109,6 +109,13 @@ export type {
 } from "./ambient/turn.js";
 
 export {
+  SCHEDULED_CHECK_SYSTEM_PROMPT,
+  runScheduledCheckTurn,
+  scheduledCheckToolDefinition
+} from "./ambient/check.js";
+export type { ScheduledCheckTurnOptions, ScheduledCheckTurnResult } from "./ambient/check.js";
+
+export {
   SUMMARIZATION_SYSTEM_PROMPT,
   runSummarizationTurn
 } from "./summarize/turn.js";

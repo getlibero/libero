@@ -1256,6 +1256,93 @@ definition the proxy serialized it with. A failure is a deployment fact — two
 halves that do not agree about a shape — and that package cannot log and must not
 learn how.
 
+## Firing a due check (#324)
+
+`session/check.ts` is what a due ticket does, and it is a third kind of thing
+this process runs on a clock — not a background pass, which fires from the
+message ingest, and not a heartbeat, which asks whether anything merits saying. A
+check runs a question somebody already decided was worth asking and approved
+through the tool proxy service, minutes or days ago.
+
+### One firing, one outcome
+
+**A due check reaches a terminal state on its first wake, always.** It posts, or
+it runs and has nothing to say, or it could not run and the channel is told so —
+and in every one of those the row gets its fire stamp and is never looked at
+again.
+
+That rule replaced a queue, and what it removed is worth recording so nobody
+rebuilds it. A due check that stayed pending would keep contributing an entry to a
+plan whose loop sleeps until the next due instant — and an instant already in the
+past makes that sleep zero, so a channel over its budget would spin the scan at
+whatever rate the event loop allows until its meter reset. Fixing that needs a
+backoff; a backoff needs a retry stamp; a stamp needs a rule for how stale is too
+stale; and by then a reminder can arrive four days late, which is worse than not
+arriving at all.
+
+What the queue was protecting was real, and this keeps it by a different route:
+**the team is told.** A check that could not run says so in the channel, from a
+closed set of two reasons, so the people who set it up can act on the timer even
+though the agent could not do its part. No queue, no backoff, no grace window, no
+`abandoned` state, and nothing silently lost.
+
+`[ambient]` off is the one silence. Switched off between the approved create and
+the due time, the clock never enumerates the channel, so nothing fires and nothing
+is said — that switch means *do not speak here*, and a failure notice would be the
+agent speaking after being told not to.
+
+Four outcomes are recorded on the row, and only one of them is read by a person
+rather than by code: `posted`, `silent`, `over_budget`, `failed`. `silent` is not
+a failure — a conditional check that is usually quiet is working — but a check
+that has *never once* had anything to say is usually a badly written check, and
+that is only visible if the two are distinguishable.
+
+### Why the stamp is written after the attempt
+
+A crash between the model call and the stamp re-fires the check on the next scan,
+which costs one more turn. A stamp written first would lose the check entirely on
+the same crash. One is a cost and the other is a silent failure.
+
+The post is not what the stamp waits for either, and that differs from the
+proposal notice deliberately. There, nothing had been spent when a post failed, so
+leaving the row absent cost a retry and no tokens. Here the turn has already run,
+so a stamp that waited for Slack would buy a repeat of the *model call* on every
+scan against a channel the app cannot post in — which is exactly why
+`ProactivePoster` refuses to refund its window.
+
+### What a fired check cannot do
+
+It has no `ToolExecutor` and no tool proxy client: `runScheduledCheckTurn` is
+handed a completion client and a list of messages. So a fired check induces **no**
+served calls at all, and "every call it induces meets the same gates a mention's
+does" is true by there being none. Giving a check the ReAct loop would be a real
+widening of what unattended work can do, and it should be a decision somebody
+makes on purpose rather than one inherited from this file.
+
+### The clock reads the store every scan
+
+`session/ambient.ts` asks each enabled channel for its earliest unfired instant on
+every scan, rather than remembering one. That is the opposite of what it does with
+a heartbeat's deadline, and right for the opposite reason: a heartbeat's next
+instant is this process's own arithmetic, so holding it in memory *is* the
+skip-don't-replay rule, where a ticket's instant is a fact on disk that another
+task in this process can add to at any moment. A cached copy would miss a check
+created since the last scan and fire it late.
+
+The cost is one indexed lookup per enabled channel per scan, on a handle the
+session already holds — a channel with `[ambient]` on has its session opened every
+cadence anyway, so this adds a query and no file handles. It also makes a restart
+correct by construction: nothing has to be replayed into memory, because nothing
+was ever only in memory.
+
+Two bounds fall out of the same place. **At most one check per channel per scan**,
+earliest first, because a channel can hold several that come due together and
+firing all of them would be a burst of unprompted messages at one instant; the
+rest are due again on the next scan. And **a ticket already due contributes its
+plan entry at `AMBIENT_RESCAN_MS` rather than at its own instant**, which is the
+spin guard: every way a due ticket can stay pending would otherwise ask the loop
+to wake at a time that has passed.
+
 ## The proactive post: the one way this process starts a message
 
 `src/proactive/proactive.ts` answers #318. Everything else this app says is a

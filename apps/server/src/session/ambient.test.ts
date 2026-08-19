@@ -71,6 +71,13 @@ interface RigOptions {
   sheets?: Record<string, AmbientSchedulerSettings>;
   /** Overrides the heartbeat. The default records the channel and returns. */
   heartbeat?: AmbientSchedulerOptions["heartbeat"];
+  /**
+   * Overrides the fire path. Absent, the rig wires one that records the ticket.
+   *
+   * `null` composes the scheduler with none at all, which is the deployment
+   * where a due ticket is noticed and deliberately left pending.
+   */
+  fireTask?: AmbientSchedulerOptions["fireTask"] | null;
   /** Overrides the workspace, including to `undefined`. */
   workspace?: () => string | undefined;
   signal?: AbortSignal;
@@ -79,6 +86,7 @@ interface RigOptions {
 
 function rig(options: RigOptions = {}) {
   const fired: string[] = [];
+  const checked: string[] = [];
   // One store for every channel: nothing here asserts on its contents, and what
   // matters is that the store the session opened is the one the heartbeat gets.
   const sessions = createSessionRegistry({ openStore: () => store });
@@ -95,11 +103,29 @@ function rig(options: RigOptions = {}) {
         fired.push(channel);
         return Promise.resolve();
       }),
+    ...(options.fireTask === null
+      ? {}
+      : {
+          fireTask:
+            options.fireTask ??
+            ((channel: string, _store, task): Promise<void> => {
+              checked.push(`${channel}:${task.id}`);
+              // What the real one does, and what the scan's next plan depends
+              // on: a fired ticket stops being pending.
+              store.markScheduledTaskFired(task.id, AT, "posted");
+              return Promise.resolve();
+            })
+        }),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.logger !== undefined ? { logger: options.logger } : {})
   });
 
-  return { scheduler, fired, sessions };
+  return { scheduler, fired, checked, sessions };
+}
+
+/** A ticket in the one store the rig hands every channel. */
+function schedule(id: string, dueAt: number): void {
+  store.scheduleTask({ id, task: "task-1", prompt: `check ${id}`, dueAt, createdAt: AT });
 }
 
 describe("the ambient scheduler", () => {
@@ -108,7 +134,7 @@ describe("the ambient scheduler", () => {
 
     // First sight schedules and never fires — the restart rule, from the other
     // end. A channel this process has only just met has nothing it missed.
-    expect(await scheduler.scan(AT)).toEqual({ fired: 0, nextDueAt: AT + CADENCE_MS });
+    expect(await scheduler.scan(AT)).toEqual({ fired: 0, checks: 0, nextDueAt: AT + CADENCE_MS });
     expect(fired).toEqual([]);
 
     // One tick short.
@@ -117,6 +143,7 @@ describe("the ambient scheduler", () => {
 
     expect(await scheduler.scan(AT + CADENCE_MS)).toEqual({
       fired: 1,
+      checks: 0,
       nextDueAt: AT + 2 * CADENCE_MS
     });
     expect(fired).toEqual(["C0ENGINEERING"]);
@@ -150,7 +177,7 @@ describe("the ambient scheduler", () => {
 
     sheets["C0ENGINEERING"] = OFF;
 
-    expect(await scheduler.scan(AT + 2 * CADENCE_MS)).toEqual({ fired: 0, nextDueAt: null });
+    expect(await scheduler.scan(AT + 2 * CADENCE_MS)).toEqual({ fired: 0, checks: 0, nextDueAt: null });
     expect(fired).toEqual(["C0ENGINEERING"]);
   });
 
@@ -183,6 +210,7 @@ describe("the ambient scheduler", () => {
     // tightening the cadence is asking for.
     expect(await scheduler.scan(AT + CADENCE_MS)).toEqual({
       fired: 1,
+      checks: 0,
       nextDueAt: AT + CADENCE_MS + 60_000
     });
   });
@@ -363,6 +391,7 @@ describe("the ambient scheduler", () => {
 
     expect(await scheduler.scan(AT + 2 * CADENCE_MS)).toEqual({
       fired: 0,
+      checks: 0,
       nextDueAt: AT + 3 * CADENCE_MS
     });
     expect(started).toBe(1);
@@ -398,7 +427,7 @@ describe("the ambient scheduler", () => {
       logger
     });
 
-    expect(await scheduler.scan(AT)).toEqual({ fired: 0, nextDueAt: null });
+    expect(await scheduler.scan(AT)).toEqual({ fired: 0, checks: 0, nextDueAt: null });
     expect(lines.map(line => line.event)).toEqual(["ambient_unidentified"]);
 
     // And nothing was scheduled either, so the first scan that can act is also
@@ -439,6 +468,7 @@ describe("the ambient scheduler", () => {
 
     expect(await scheduler.scan(AT + CADENCE_MS)).toEqual({
       fired: 0,
+      checks: 0,
       nextDueAt: AT + 2 * CADENCE_MS
     });
     expect(fired).toEqual([]);
@@ -559,3 +589,130 @@ describe("earliestDue", () => {
     expect(earliestDue([])).toBeNull();
   });
 });
+
+// #324. A due ticket is a second kind of due thing on the same plan, and every
+// case here is about the difference between the two kinds: a heartbeat is an
+// opportunity and a check has a deadline.
+describe("a due scheduled check", () => {
+  it("fires at its own instant rather than at the next cadence", async () => {
+    // Due four minutes from the sighting scan, where the cadence is fifteen. A
+    // clock that only woke on cadence boundaries would run this eleven minutes
+    // late, which is the whole reason `DueEntry` has a second member.
+    schedule("t1", AT + 4 * 60_000);
+    const { scheduler, checked, fired } = rig({ sheets: { C0ENGINEERING: ON } });
+
+    const first = await scheduler.scan(AT);
+    expect(checked).toEqual([]);
+    expect(first.nextDueAt).toBe(AT + 4 * 60_000);
+
+    const second = await scheduler.scan(AT + 4 * 60_000);
+    expect(checked).toEqual(["C0ENGINEERING:t1"]);
+    expect(second.checks).toBe(1);
+    // The heartbeat is not due for another eleven minutes and did not run.
+    expect(fired).toEqual([]);
+  });
+
+  // Absolute time, the lifecycle clocks' argument. One row and one stamp, so
+  // there is nothing to fire per missed window.
+  it("fires once and late for a ticket that came due while the process was down", async () => {
+    schedule("t1", AT - 3 * 24 * 60 * 60_000);
+    const { scheduler, checked } = rig({ sheets: { C0ENGINEERING: ON } });
+
+    await scheduler.scan(AT);
+
+    expect(checked).toEqual(["C0ENGINEERING:t1"]);
+    expect((await scheduler.scan(AT + 1_000)).checks).toBe(0);
+  });
+
+  // A channel may hold several at once and they may come due together. Firing
+  // all of them would put a burst of unprompted messages into one channel at one
+  // instant; the rest are due again on the next scan.
+  it("fires at most one per channel per scan, earliest first", async () => {
+    schedule("t1", AT - 3_000);
+    schedule("t2", AT - 2_000);
+    schedule("t3", AT - 1_000);
+    const { scheduler, checked } = rig({ sheets: { C0ENGINEERING: ON } });
+
+    await scheduler.scan(AT);
+    expect(checked).toEqual(["C0ENGINEERING:t1"]);
+
+    await scheduler.scan(AT + 1);
+    expect(checked).toEqual(["C0ENGINEERING:t1", "C0ENGINEERING:t2"]);
+  });
+
+  // The spin guard. Every way a due ticket can stay pending — and this is the
+  // baldest one — would otherwise ask the loop to wake at an instant that has
+  // already passed, forever, as fast as the event loop allows.
+  it("never asks the loop to wake in the past when a due ticket stays pending", async () => {
+    schedule("t1", AT - 60 * 60_000);
+    const { scheduler, checked } = rig({ sheets: { C0ENGINEERING: ON }, fireTask: null });
+
+    const scan = await scheduler.scan(AT);
+
+    expect(checked).toEqual([]);
+    expect(scan.nextDueAt).toBe(AT + AMBIENT_RESCAN_MS);
+    expect(scan.nextDueAt).toBeGreaterThan(AT);
+  });
+
+  // A deployment with no fire path must not consume a channel's checks — the
+  // opposite of what the clock does with a heartbeat it cannot run, because a
+  // heartbeat is an opportunity and this is a thing somebody approved.
+  it("leaves a due ticket pending when nothing can run it", async () => {
+    schedule("t1", AT - 1_000);
+    const { logger, lines } = captureLogger();
+    const { scheduler } = rig({ sheets: { C0ENGINEERING: ON }, fireTask: null, logger });
+
+    await scheduler.scan(AT);
+
+    expect(store.nextScheduledTaskDueAt()).toBe(AT - 1_000);
+    expect(lines.filter(line => line.event === "ambient_check_due")).toHaveLength(1);
+  });
+
+  // `[ambient]` off is the one silence: the clock never enumerates the channel,
+  // so a ticket cannot fire and nothing is said about it either.
+  it("does not fire a ticket in a channel whose block is off", async () => {
+    schedule("t1", AT - 1_000);
+    const { scheduler, checked } = rig({ sheets: { C0ENGINEERING: OFF } });
+
+    const scan = await scheduler.scan(AT);
+
+    expect(checked).toEqual([]);
+    expect(scan.nextDueAt).toBeNull();
+    expect(store.nextScheduledTaskDueAt()).toBe(AT - 1_000);
+  });
+
+  // Two kinds of due thing on one plan, and `earliestDue` answers over both.
+  it("wakes at a ticket's instant when it beats every cadence", async () => {
+    schedule("t1", AT + 60_000);
+    const { scheduler } = rig({
+      sheets: { C0ENGINEERING: { enabled: true, heartbeatEveryMs: 60 * 60_000 } }
+    });
+
+    expect((await scheduler.scan(AT)).nextDueAt).toBe(AT + 60_000);
+  });
+
+  // A check has a deadline and a heartbeat does not, so when both are due the
+  // check goes first. They share the mutex, so this decides which one waits.
+  it("runs a due check before a due heartbeat in the same channel", async () => {
+    schedule("t1", AT + CADENCE_MS);
+    const order: string[] = [];
+    const { scheduler } = rig({
+      sheets: { C0ENGINEERING: ON },
+      heartbeat: () => {
+        order.push("heartbeat");
+        return Promise.resolve();
+      },
+      fireTask: (_channel, _store, task) => {
+        order.push("check");
+        store.markScheduledTaskFired(task.id, AT, "posted");
+        return Promise.resolve();
+      }
+    });
+
+    await scheduler.scan(AT);
+    await scheduler.scan(AT + CADENCE_MS);
+
+    expect(order).toEqual(["check", "heartbeat"]);
+  });
+});
+

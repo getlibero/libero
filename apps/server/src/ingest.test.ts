@@ -78,6 +78,9 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       skillMergeNoticed: () => false,
       recordSkillMergeNotice: () => {},
       scheduleTask: () => {},
+      nextScheduledTaskDueAt: () => null,
+      dueScheduledTasks: () => [],
+      markScheduledTaskFired: () => {},
       readThreadSummary: () => null,
       close: () => {
         closed += 1;
@@ -386,6 +389,9 @@ describe("createMessageIngest", () => {
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
         scheduleTask: () => {},
+        nextScheduledTaskDueAt: () => null,
+        dueScheduledTasks: () => [],
+        markScheduledTaskFired: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -440,6 +446,9 @@ describe("createMessageIngest", () => {
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
         scheduleTask: () => {},
+        nextScheduledTaskDueAt: () => null,
+        dueScheduledTasks: () => [],
+        markScheduledTaskFired: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -869,6 +878,9 @@ describe("createRevisionIngest", () => {
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
         scheduleTask: () => {},
+        nextScheduledTaskDueAt: () => null,
+        dueScheduledTasks: () => [],
+        markScheduledTaskFired: () => {},
         readThreadSummary: () => null,
         close: () => {}
       }
@@ -966,6 +978,9 @@ describe("createRevisionIngest", () => {
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
         scheduleTask: () => {},
+        nextScheduledTaskDueAt: () => null,
+        dueScheduledTasks: () => [],
+        markScheduledTaskFired: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -1020,6 +1035,9 @@ describe("createRevisionIngest", () => {
         skillMergeNoticed: () => false,
         recordSkillMergeNotice: () => {},
         scheduleTask: () => {},
+        nextScheduledTaskDueAt: () => null,
+        dueScheduledTasks: () => [],
+        markScheduledTaskFired: () => {},
         readThreadSummary: () => null,
         close: () => {}
       })

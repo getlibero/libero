@@ -31,8 +31,8 @@ import {
 } from "@getlibero/agent";
 import type { CompletedTurn } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
-import { createAmbientHeartbeat, createServer } from "./compose.js";
-import type { AmbientHeartbeat, ProactivePoster } from "./compose.js";
+import { createAmbientHeartbeat, createAmbientTaskFire, createServer } from "./compose.js";
+import type { AmbientHeartbeat, AmbientTaskFire, ProactivePoster } from "./compose.js";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
@@ -368,6 +368,36 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
     logger
   });
 
+/**
+ * Running a due scheduled check (#324), as a second factory over the same thing.
+ *
+ * `heartbeat` above and its reasons, with one difference worth naming: it takes
+ * no `proposals`. A merge proposal is housekeeping the heartbeat mentions when it
+ * happens to be speaking; a check is a question somebody asked, and folding an
+ * unrelated notice into its one post would answer them together.
+ *
+ * The same `reportTurn` and `maySpend`, because a check is spend on a clock in
+ * exactly the way a heartbeat is — and `maySpend` is what makes a capped channel
+ * spend nothing and still be told its check did not run.
+ */
+const fireTask = (post: ProactivePoster): AmbientTaskFire =>
+  createAmbientTaskFire({
+    completion,
+    post,
+    settings: async channel => {
+      const settings = await sheets(channel);
+      return {
+        enabled: settings.ambient.enabled,
+        model: settings.model,
+        maxTokens: settings.caps.maxOutputTokensPerTurn
+      };
+    },
+    reportTurn,
+    maySpend,
+    signal: tasks.signal,
+    logger
+  });
+
 const { gateway, ambient } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
@@ -403,6 +433,7 @@ const { gateway, ambient } = createServer({
   // nothing more — this process must never write there.
   channels: createChannelLister({ channelsRoot, logger }),
   heartbeat,
+  fireTask,
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
   skills,
   summarize,

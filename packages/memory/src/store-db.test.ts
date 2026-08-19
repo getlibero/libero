@@ -179,10 +179,13 @@ describe("the interface", () => {
       "adoptSkillStatus",
       "append",
       "close",
+      "dueScheduledTasks",
       "forgetSkillMergeProposal",
       "idleThreads",
       "listSkills",
+      "markScheduledTaskFired",
       "nearest",
+      "nextScheduledTaskDueAt",
       "orphanedSkillMergeProposals",
       "putEmbedding",
       "putThreadSummary",
@@ -1787,6 +1790,65 @@ describe("scheduled checks", () => {
     // Reopened so `afterEach` has a live handle to close.
     store = openMessageStore({ channel: CHANNEL, root });
   });
+
+  it("answers when the earliest unfired check is due, and null for none", () => {
+    expect(store.nextScheduledTaskDueAt()).toBeNull();
+
+    store.scheduleTask(ticket("late", { dueAt: 3_000 }));
+    store.scheduleTask(ticket("soon", { dueAt: 1_000 }));
+
+    expect(store.nextScheduledTaskDueAt()).toBe(1_000);
+  });
+
+  // "Late counts as due", which is what makes a check that came due while the
+  // process was down fire once when it comes back. At or *before*, and there is
+  // one row, so there is nothing to fire per missed window.
+  it("reads what is due at or before an instant, earliest first", () => {
+    store.scheduleTask(ticket("a", { dueAt: 1_000 }));
+    store.scheduleTask(ticket("b", { dueAt: 2_000 }));
+    store.scheduleTask(ticket("c", { dueAt: 9_000 }));
+
+    expect(store.dueScheduledTasks(5_000, 10).map(task => task.id)).toEqual(["a", "b"]);
+    expect(store.dueScheduledTasks(500, 10)).toEqual([]);
+    expect(store.dueScheduledTasks(5_000, 1).map(task => task.id)).toEqual(["a"]);
+  });
+
+  it("stops reading a check once it has fired, and answers a later due instant", () => {
+    store.scheduleTask(ticket("a", { dueAt: 1_000 }));
+    store.scheduleTask(ticket("b", { dueAt: 2_000 }));
+
+    store.markScheduledTaskFired("a", 1_100, "posted");
+
+    expect(store.dueScheduledTasks(5_000, 10).map(task => task.id)).toEqual(["b"]);
+    expect(store.nextScheduledTaskDueAt()).toBe(2_000);
+  });
+
+  // A fire is the one act that ends a ticket, so a second is a bug rather than
+  // an update — and the predicate is where that is one statement instead of a
+  // read and a write somebody could interleave.
+  it("does not move a stamp a second fire would overwrite", () => {
+    store.scheduleTask(ticket("a"));
+    store.markScheduledTaskFired("a", 1_100, "posted");
+    store.markScheduledTaskFired("a", 9_999, "failed");
+
+    const row = new DatabaseSync(file, { readOnly: true })
+      .prepare(`SELECT fired_at, outcome FROM scheduled_task WHERE id = 'a'`)
+      .get() as { fired_at: number; outcome: string };
+    expect(row).toEqual({ fired_at: 1_100, outcome: "posted" });
+  });
+
+  // Every outcome is terminal. There is no value that leaves a ticket pending,
+  // because that value is what would let a firing consume a check that never ran.
+  it.each(["posted", "silent", "over_budget", "failed"] as const)(
+    "ends a ticket whatever the outcome was: %s",
+    outcome => {
+      store.scheduleTask(ticket("a"));
+      store.markScheduledTaskFired("a", 1_100, outcome);
+
+      expect(pending()).toBe(0);
+      expect(store.nextScheduledTaskDueAt()).toBeNull();
+    }
+  );
 
   // Additive DDL, and the version is what a reader depends on. #229, #290 and
   // #295 each added tables without moving it; this is the fourth, measured the
