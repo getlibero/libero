@@ -188,7 +188,26 @@ rule), and not the proxy's entrypoints, because the proxy mounts that volume
 nothing records that a check was cancelled, because `fired_at` means when a check
 ran and widening it would make every reader of that table ask which.
 
-What phase 4 does *not* have yet is the attack suite (#325). What exists:
+#325 closed the phase. `e2e/schedule-task.test.ts` states the claim the way #293
+and #321 state theirs: injected content can steer *what a check asks and what its
+post says*, and what it must not do is widen anything governed. Two positive
+controls come first — a governed create leaves a ticket, and the clock reaches
+that ticket at its own instant — and the first is written to be demonstrably able
+to fail, asserting the check does **not** fire on an earlier scan. Then: an
+unlisted built-in, a hold nobody decided firing nothing ever, a flood refused at
+the pending cap, a channel with `[ambient]` off refusing the create outright, a
+hostile `channel` argument moving neither the create nor the firing, an injected
+question steering a post while inducing no served call, and a capped channel's due
+check spending nothing and telling the channel so.
+
+Two things the suite pinned down that are easy to get wrong in a later case. **An
+unlisted built-in never reaches the proxy** — it is not published, so the client
+refuses locally and the audit log stays empty; the refusal is a
+`tool_not_permitted` line on the agent's side. And **a ticket's instant is the
+proxy's clock at the create**, so a case scanning at exactly the instant it asked
+for is racing the rig's own startup.
+
+What exists:
 
 | Package | What it is |
 | --- | --- |
@@ -201,7 +220,7 @@ What phase 4 does *not* have yet is the attack suite (#325). What exists:
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, the proactive post surface and its rate window, the heartbeat evaluation and its pregate, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
-| `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes |
+| `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes and the ambient clock |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |
 | `site/` | getlibero.com — Astro + Starlight, outside the workspace |
 

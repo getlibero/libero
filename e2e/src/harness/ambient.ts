@@ -28,19 +28,26 @@
 // That also makes the first-sight rule visible rather than incidental: the first
 // `scan` schedules and never fires, so a case that wants a heartbeat scans
 // twice, the second time past the cadence. See `Rig.heartbeat`.
+//
+// **A due check has no first-sight rule**, and the rig has a second verb because
+// of it. A heartbeat's deadline is invented by the scheduler, so it cannot fire
+// on the scan that invents it; a ticket's instant is already on disk when the
+// scan starts, so the first scan past it fires. `Rig.check` scans once, and that
+// difference is the thing it exists to make visible. See `Rig.check`.
 
 import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import {
   createAmbientHeartbeat,
+  createAmbientTaskFire,
   createChannelLister,
   createSkillProposalsOpener
 } from "@getlibero/server";
 import type { ServerDeps, SheetResolver } from "@getlibero/server";
 import { meteringClosures } from "./passes.js";
 
-/** Exactly the two fields this module fills in on `ServerDeps`. */
-export type AmbientDeps = Pick<ServerDeps, "channels" | "heartbeat">;
+/** Exactly the three fields this module fills in on `ServerDeps`. */
+export type AmbientDeps = Pick<ServerDeps, "channels" | "heartbeat" | "fireTask">;
 
 export interface AmbientOptions {
   readonly completion: CompletionClient;
@@ -92,6 +99,34 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
           channelsRoot: options.channelsRoot,
           logger
         }),
+        signal,
+        logger,
+        ...(options.now === undefined ? {} : { now: options.now })
+      }),
+
+    // The second factory over the same poster (#324). Wired unconditionally
+    // beside the heartbeat rather than behind a knob of its own, because a
+    // channel still needs `[ambient] enabled = true` *and* a ticket in its store
+    // before anything here runs — the two switches the file header describes
+    // already gate it, and a third would make "a due check fired" depend on a
+    // rig setting no production deployment has.
+    fireTask: post =>
+      createAmbientTaskFire({
+        completion: options.completion,
+        post,
+        settings: async channel => {
+          const settings = await sheets(channel);
+          return {
+            enabled: settings.ambient.enabled,
+            model: settings.model,
+            maxTokens: settings.caps.maxOutputTokensPerTurn
+          };
+        },
+        // The same closures the heartbeat takes, over the wrapped transport, so
+        // "a capped channel's due check spends nothing" is a claim about two
+        // processes rather than about a stub.
+        reportTurn,
+        maySpend,
         signal,
         logger,
         ...(options.now === undefined ? {} : { now: options.now })

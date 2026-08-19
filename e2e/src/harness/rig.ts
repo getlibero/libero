@@ -362,6 +362,20 @@ export interface Rig {
    * schedule is already seeded by then, so the extra sighting scan is a no-op.
    */
   heartbeat(at: number): Promise<number>;
+  /**
+   * Runs every check due at `at`, and answers how many ran (#324).
+   *
+   * **One scan, not two, and that is the difference from `heartbeat` above.**
+   * That one scans twice because the scheduler's first sight of a channel
+   * schedules it and fires nothing — a deadline it invented cannot already have
+   * passed. A ticket's instant is on disk before the scan starts, so the first
+   * scan past it fires, and a sighting scan would only give a case a second
+   * chance to be wrong about when.
+   *
+   * At most one per channel per scan, earliest first. A case with several due
+   * together calls this again.
+   */
+  check(at: number): Promise<number>;
   stop(): Promise<void>;
 }
 
@@ -560,6 +574,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       budgetDb,
       storeRoot,
       embeddings,
+      check: (at: number): Promise<number> => agent.check(at),
       heartbeat: async (at: number): Promise<number> => {
         // The sighting scan, whose only job is to put every enabled channel on
         // the schedule. It fires nothing — that is the point — and its instant
