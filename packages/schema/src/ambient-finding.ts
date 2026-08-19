@@ -210,3 +210,37 @@ export const AMBIENT_FINDING_TOOL_DEFINITION = {
     "Post a message into this channel, unprompted. Call this ONLY if something in the recent activity genuinely merits interrupting the people here — an unanswered question that has sat, a deadline nobody has picked up, a thread that stalled on something you can unblock. Posting is not free: the channel did not ask for this, and at most one such message is allowed per channel every few hours. If nothing merits it, call no tool and answer nothing. That is the expected outcome and it is not a failure.",
   inputSchema: AMBIENT_FINDING_SCHEMA
 } as const;
+
+/**
+ * The same tool, offered to a scheduled check (#324).
+ *
+ * **One name, one shape, one parser — and a different sentence.** A fired check
+ * and a heartbeat both end in at most one message in a channel, so they take the
+ * same argument and are read by the same `parseAmbientFinding`; sharing those is
+ * what keeps "an answer that is neither a call nor a well-formed one is silent"
+ * true in both places by construction rather than twice over.
+ *
+ * What cannot be shared is the description, because the two turns are asked
+ * opposite questions and the heartbeat's text answers the wrong one. There, the
+ * model is deciding *whether* to interrupt a channel that did not ask, so the
+ * text leans hard against posting: "call this ONLY if something genuinely merits
+ * interrupting the people here". Here somebody already decided — a person
+ * approved this check and named the question — so leaning against posting would
+ * be the model second-guessing a human's click.
+ *
+ * Two clauses carry that difference and neither is decoration. **The check was
+ * asked for**, so the bar is the question rather than the interruption. And
+ * **saying nothing is still allowed**, because most checks are conditional by
+ * nature — "tell us if the deploy did not finish" is a check whose right answer
+ * is usually nothing — and a model that believed an empty answer was a failure
+ * would manufacture one every time.
+ *
+ * What it must not say is that silence is *preferred*. That is the heartbeat's
+ * rule and importing it here would lose the checks somebody is waiting on.
+ */
+export const SCHEDULED_CHECK_TOOL_DEFINITION = {
+  name: AMBIENT_FINDING_TOOL,
+  description:
+    "Post a message into this channel with the result of the check you were asked to run. Somebody set this check up in advance and approved it, so answering is expected rather than an interruption. Post if the check has an answer worth having — what you found, and what should happen about it. If the thing you were asked to watch for has not happened, and there is nothing a reader would act on, call no tool and answer nothing; a check that is usually quiet is working correctly. You get one message and no follow-up, so say the whole answer.",
+  inputSchema: AMBIENT_FINDING_SCHEMA
+} as const;

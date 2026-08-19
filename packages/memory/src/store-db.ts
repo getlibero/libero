@@ -1403,8 +1403,64 @@ export interface MessageStore {
    * caller makes by catching, which is where the logger is.
    */
   scheduleTask(task: StoredScheduledTask): void;
+  /**
+   * When this channel's earliest unfired check is due, or `null` for none (#324).
+   *
+   * What the ambient clock asks every scan, so that a due task wakes the loop at
+   * its own instant rather than at the next cadence boundary. One indexed lookup
+   * covered by `scheduled_task_due`, on a handle the session already holds — a
+   * channel with `[ambient]` on has its session opened every cadence anyway, so
+   * asking every scan adds a query and no file handles.
+   *
+   * A number rather than a row, because what the plan needs is an instant: the
+   * ticket itself is read only once something is actually due.
+   */
+  nextScheduledTaskDueAt(): number | null;
+  /**
+   * This channel's unfired checks due at or before `at`, earliest first.
+   *
+   * At or *before*, which is the whole of "late counts as due": a check that came
+   * due while this process was down is still due when it comes back, once, because
+   * its instant is absolute. It does not fire once per window it missed — there is
+   * one row and one fire stamp, so there is nothing to replay.
+   */
+  dueScheduledTasks(at: number, limit: number): readonly StoredScheduledTask[];
+  /**
+   * Mark a check fired, and record what the one firing did (#324).
+   *
+   * **Terminal, always, and written whatever happened.** A check that posted, one
+   * that ran and had nothing to say, and one that could not run and told the
+   * channel so are all *fired* — there is no outcome that leaves a ticket
+   * pending, because a value meaning "due but not run" is what would let a firing
+   * that produced no check consume a ticket that never ran.
+   *
+   * `outcome` is written only here, only beside the stamp, and is never read to
+   * decide whether a ticket may fire again — `fired_at` alone answers that. It is
+   * for the operator reading the table, and `silent` is the one worth having:
+   * a check that has never once had anything to say is usually a check that was
+   * badly written.
+   *
+   * Idempotent on a row that has already fired: the stamp is not moved. A fire is
+   * the one act that ends a ticket, and a second one is a bug rather than an
+   * update.
+   */
+  markScheduledTaskFired(id: string, at: number, outcome: ScheduledTaskOutcome): void;
   close(): void;
 }
+
+/**
+ * What one firing did.
+ *
+ * A closed set because it is read by a person rather than by code: the column is
+ * never consulted to decide anything, so its whole value is that four words mean
+ * four different things to whoever is looking at the table.
+ *
+ * `silent` is not a failure — the check ran and the answer was that there was
+ * nothing to say, which is the ordinary outcome of a well-written check. The two
+ * that follow it are: the channel was told the check could not run, and which of
+ * the two it was is a fact about the deployment rather than about the check.
+ */
+export type ScheduledTaskOutcome = "posted" | "silent" | "over_budget" | "failed";
 
 /**
  * One scheduled check, as this store holds it.
@@ -2297,6 +2353,19 @@ type MessageRow = {
   readonly at: number;
 };
 
+/**
+ * A `scheduled_task` row. `MessageRow`'s reasons apply, and so does its shape: a
+ * `type` rather than an `interface`, because only the former gets the implicit
+ * index signature that lets a `Record<string, SQLOutputValue>` be cast to it.
+ */
+type ScheduledTaskRow = {
+  readonly id: string;
+  readonly task: string;
+  readonly prompt: string;
+  readonly due_at: number;
+  readonly created_at: number;
+};
+
 /** A `thread_summary` row. `MessageRow`'s reasons apply. */
 type ThreadSummaryRow = {
   readonly thread_ts: string;
@@ -2484,6 +2553,25 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       `INSERT INTO skill_merge_notice (skill_a, skill_b, at)
             VALUES (?, ?, ?)
        ON CONFLICT (skill_a, skill_b) DO NOTHING`
+    ),
+    nextScheduledTaskDueAt: db.prepare(
+      `SELECT MIN(due_at) AS due FROM scheduled_task WHERE fired_at IS NULL`
+    ),
+    dueScheduledTasks: db.prepare(
+      `SELECT id, task, prompt, due_at, created_at
+         FROM scheduled_task
+        WHERE fired_at IS NULL AND due_at <= ?
+        ORDER BY due_at ASC
+        LIMIT ?`
+    ),
+    // `fired_at IS NULL` in the predicate rather than a check in TypeScript: a
+    // second fire must not move the first one's stamp, and the database is where
+    // that is one statement instead of a read and a write somebody could
+    // interleave.
+    markScheduledTaskFired: db.prepare(
+      `UPDATE scheduled_task
+          SET fired_at = ?, outcome = ?
+        WHERE id = ? AND fired_at IS NULL`
     ),
     scheduleTask: db.prepare(
       `INSERT INTO scheduled_task (id, task, prompt, due_at, created_at)
@@ -2966,6 +3054,26 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
 
     scheduleTask(task) {
       statements.scheduleTask.run(task.id, task.task, task.prompt, task.dueAt, task.createdAt);
+    },
+
+    nextScheduledTaskDueAt() {
+      const row = statements.nextScheduledTaskDueAt.get() as { due: number | null } | undefined;
+      return row?.due ?? null;
+    },
+
+    dueScheduledTasks(at, limit) {
+      const rows = statements.dueScheduledTasks.all(at, clampLimit(limit)) as ScheduledTaskRow[];
+      return rows.map(row => ({
+        id: row.id,
+        task: row.task,
+        prompt: row.prompt,
+        dueAt: row.due_at,
+        createdAt: row.created_at
+      }));
+    },
+
+    markScheduledTaskFired(id, at, outcome) {
+      statements.markScheduledTaskFired.run(at, outcome, id);
     },
 
     close() {

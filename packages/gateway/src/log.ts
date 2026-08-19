@@ -85,7 +85,16 @@ export interface LogFields {
    * would not take. `proactive_throttled` is deliberately its own word rather
    * than a `reason` on the failure line, because a refusal is the surface
    * working and a failure is not: an operator grepping for a channel the app
-   * cannot post in must not have to read past the throttle. Scheduled checks
+   * cannot post in must not have to read past the throttle. Firing a scheduled
+   * check (#324): "ambient_check_due", "check_posted", "check_unposted",
+   * "check_silent", "check_declined", "check_failed" — the clock found a ticket
+   * due, the check answered and the channel heard it, it answered and the post
+   * did not land, it ran and had nothing to say, it was not run because the
+   * channel is over its budget, and it could not be run. Six words for the
+   * heartbeat's reason and one of its own: here `check_silent` is the *good*
+   * outcome of a conditional check, where `check_declined` and `check_failed`
+   * both put a notice in a channel, so an operator asking "did anyone get told
+   * something they should not have" greps two words and not six. Scheduled checks
    * (#323): "scheduled_task_recorded", "scheduled_task_unrecorded" — a governed
    * create left a ticket that will fire, and one that did not. Two words rather
    * than one with a field, because the second is the only direction the audit log

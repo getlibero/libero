@@ -665,6 +665,21 @@ Which half writes what is the other half of the story, and it is in
 `apps/server/src/session/scheduled.ts`: the proxy governs the create and this
 side records it, because the proxy opens these files `readOnly`.
 
+The three reads the clock uses landed with the firing (#324) and are shaped by
+what each is for. `nextScheduledTaskDueAt` answers an **instant** rather than a
+row, because that is all a plan needs and the ticket itself is read only once
+something is due. `dueScheduledTasks` takes an instant and answers what is due *at
+or before* it — which is the whole of "late counts as due": a check whose time
+passed while the process was down is still due when it comes back, once, because
+there is one row and one stamp and therefore nothing to replay per missed window.
+And `markScheduledTaskFired` carries `fired_at IS NULL` in its own predicate, so a
+second fire cannot move the first one's stamp: a fire is the one act that ends a
+ticket, and a second is a bug rather than an update.
+
+Every `ScheduledTaskOutcome` is terminal. There is deliberately no value that
+leaves a ticket pending — that value is what would let a firing which produced no
+check consume a check that never ran.
+
 ## What is not here
 
 **Skills are whole as of #291**, storage and both directions. `apps/server`

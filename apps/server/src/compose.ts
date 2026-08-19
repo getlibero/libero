@@ -35,7 +35,7 @@ import { createSilentLogger } from "@getlibero/gateway";
 import { createProactivePoster } from "./proactive/proactive.js";
 import type { ProactivePoster } from "./proactive/proactive.js";
 import { createAmbientScheduler } from "./session/ambient.js";
-import type { AmbientHeartbeat, AmbientScheduler } from "./session/ambient.js";
+import type { AmbientHeartbeat, AmbientScheduler, AmbientTaskFire } from "./session/ambient.js";
 import type { ChannelLister } from "./session/channels.js";
 import { createDecisionHandler } from "./approvals/decisions.js";
 import { createHeldCallPrompter } from "./approvals/prompter.js";
@@ -147,6 +147,23 @@ export type SlackSurfaceFactory = (wiring: {
  * hand it is dealt into.
  */
 export type AmbientHeartbeatFactory = (post: ProactivePoster) => AmbientHeartbeat;
+
+/**
+ * Builds the fire path over the same capability (#324).
+ *
+ * A second factory rather than a second return from the first, because the two
+ * are wired independently: a deployment can have a heartbeat and no fire path
+ * (which is every deployment before #324) and the reverse is a legitimate
+ * composition too — a channel that wants scheduled checks and no unbidden
+ * noticing. One factory returning both would make each of those a `null` inside
+ * a tuple.
+ *
+ * It takes the poster for `AmbientHeartbeatFactory`'s reason, which is the whole
+ * withholding discipline: the capability is minted in `createServer` and reaches
+ * exactly the two consumers that produce posts, so the four background passes
+ * still cannot name the type.
+ */
+export type AmbientTaskFireFactory = (post: ProactivePoster) => AmbientTaskFire;
 
 export interface ServerDeps {
   readonly slack: SlackSurfaceFactory;
@@ -289,6 +306,17 @@ export interface ServerDeps {
    * about why a proposal is a file, and it stays true after this.
    */
   readonly heartbeat?: AmbientHeartbeatFactory;
+  /**
+   * Runs a due scheduled check (#324). `AmbientHeartbeatFactory`'s shape and its
+   * discipline, for the same reason: it produces a post, so it is minted here.
+   *
+   * Absent, the clock still notices a due ticket and logs `ambient_check_due` —
+   * and **leaves it pending**, which is the opposite of what it does with a
+   * heartbeat it cannot run. A heartbeat is an opportunity and skipping one costs
+   * nothing; a check is a thing somebody approved, and consuming it without
+   * running it would be the silent loss this design refused to build.
+   */
+  readonly fireTask?: AmbientTaskFireFactory;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -337,6 +365,8 @@ export interface ServerDeps {
 // against, and a caller stepping a clock over `4 * 60 * 60 * 1000` would be
 // asserting a number nobody named.
 export { HEARTBEAT_POST_WINDOW_MS, createProactivePoster } from "./proactive/proactive.js";
+export { MAX_CHECK_MESSAGES, createAmbientTaskFire, renderCheckFailureNotice } from "./session/check.js";
+export type { CheckOptions, CheckSettings } from "./session/check.js";
 export { MAX_HEARTBEAT_MESSAGES, createAmbientHeartbeat } from "./session/heartbeat.js";
 export { renderProposalNotice } from "./session/heartbeat.js";
 export type { HeartbeatOptions, HeartbeatSettings } from "./session/heartbeat.js";
@@ -435,6 +465,7 @@ export type {
   AmbientScheduler,
   AmbientSchedulerOptions,
   AmbientSchedulerSettings,
+  AmbientTaskFire,
   AmbientTimer,
   DueEntry
 } from "./session/ambient.js";
@@ -646,6 +677,14 @@ export function createServer(deps: ServerDeps): Server {
       ? deps.heartbeat(proactive)
       : undefined;
 
+  // Same rule, same reason: everything a fired check produces is a post, so one
+  // built without a poster would spend a model call to reach a surface it does
+  // not have. Without it the clock logs a due ticket and leaves it pending.
+  const fireTask =
+    deps.fireTask !== undefined && proactive !== undefined
+      ? deps.fireTask(proactive)
+      : undefined;
+
   const ambient =
     deps.channels === undefined
       ? undefined
@@ -661,6 +700,7 @@ export function createServer(deps: ServerDeps): Server {
             };
           },
           ...(heartbeat !== undefined ? { heartbeat } : {}),
+          ...(fireTask !== undefined ? { fireTask } : {}),
           ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
           logger
         });

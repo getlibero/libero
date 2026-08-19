@@ -875,15 +875,6 @@ Slack token and inventing a name would be worse than showing an id.
 
 #### `schedule_task`
 
-:::caution[The create is governed today; the firing is next]
-Creating a check works end to end — the sheet grants it, the card holds it, the meter is charged,
-the audit log records it, and the ticket is stored in the channel. **Nothing fires it yet.** The
-clock that wakes at a ticket's due instant is the next issue in this workstream
-([#324](https://github.com/getlibero/libero/issues/324)), so a check created now waits in the
-channel's store until that lands — at which point it fires, late, because its time is absolute.
-Both switches being off by default is what keeps a channel from reaching this state by accident.
-:::
-
 **Two switches, and both have to be on.** Listing it here is one; [`[ambient] enabled`](#ambient) is
 the other. A create against a channel with ambient off is refused, because nothing would ever run
 the check.
@@ -900,6 +891,18 @@ worked out when the create is served — so nothing depends on a language model 
 is, and there is no timezone anywhere in this. A check fires at its instant rather than at the next
 heartbeat, once, and late counts as due: one that came due while the process was down fires when it
 comes back, not once per window it missed.
+
+**A check runs once, and says so when it cannot.** It fires, and one of four things happens: it
+posts an answer, it runs and has nothing to say (the ordinary outcome of a conditional check), or —
+if the channel is over its daily budget, or the check could not be run at all — **the channel is
+told, in that one post, that the check did not happen**. Either way the check is done: there is no
+queue, no retry and no second attempt. That is deliberate. A reminder that silently slips is worse
+than one that says it could not run, because the team can still act on the timer themselves.
+
+The one exception is `[ambient] enabled`. Switched off between the approved create and the due
+time, nothing fires and nothing is said — that switch means *do not speak here*, and a notice would
+be the agent speaking after being told not to. The check waits, and fires once, late, if the
+channel turns ambient back on.
 
 **What bounds it is fixed, not configurable.** How many checks may be waiting, how far out one may
 be scheduled, how soon, and how long the question may be are architecture constants rather than

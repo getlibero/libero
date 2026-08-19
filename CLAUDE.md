@@ -157,8 +157,30 @@ metered, because `recordToolCall` runs before dispatch. `MessageReader` grew its
 second method ever for the count, and it answers an integer — the proxy learns how
 many checks wait and never what one says.
 
-What phase 4 does *not* have yet is the firing and its attacks (#324–#325). What
-exists:
+#324 fires them, and its decision is **one firing, one outcome**. A due check
+reaches a terminal state on its first wake, always: it posts, it runs and has
+nothing to say, or the channel is told — in that same one post — that it did not
+happen. That replaced a queue, and the queue is worth naming because it is the
+obvious thing to rebuild: a due check left pending keeps asking a loop that sleeps
+until the next due instant to wake at an instant already past, so it needs a
+backoff, a retry stamp and a staleness rule, at the end of which a reminder can
+arrive days late. Telling the team keeps what the queue was for — they can act on
+the timer even when the agent could not. `[ambient]` off is the one silence,
+because that switch means *do not speak here*.
+
+Two shapes follow. The clock **reads each enabled channel's next instant from the
+store every scan** rather than remembering it, which is the opposite of what it
+does with a heartbeat's deadline and right for the opposite reason: a heartbeat's
+next instant is this process's own arithmetic, where a ticket's is a fact on disk
+another task can add to at any moment. And a fired check **makes no tool calls at
+all** — one bounded turn, one tool that posts, no proxy client — so "every call it
+induces meets the same gates a mention's does" is true by there being none.
+Widening that is a decision to take on purpose. The question it runs is
+model-authored text re-entering a model's context, so it goes in a `user` message,
+fenced, with the ask last.
+
+What phase 4 does *not* have yet is the operator surface for scheduled checks and
+the attack suite (#324's second half, and #325). What exists:
 
 | Package | What it is |
 | --- | --- |

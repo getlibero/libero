@@ -194,6 +194,36 @@ budget on a clock with nothing to show for it. A silent turn reports too —
 almost every heartbeat is silent, so a turn metered only when it spoke would
 under-count ambient by roughly everything.
 
+## The scheduled check turn
+
+`runScheduledCheckTurn` is the heartbeat turn's sibling and its inverse. That one
+asks *whether* anything is worth saying in a channel nobody addressed; this one
+runs a question somebody already decided was worth asking. They share an argument
+shape and a parser — `post_finding`, `parseAmbientFinding` — so "an answer that is
+neither a call nor a well-formed one is silence" holds in both places by
+construction rather than twice over. What they cannot share is the description,
+because leaning against posting is right for one and is second-guessing a human's
+click for the other.
+
+**The question is untrusted text, and where it goes is the decision.** The prompt
+was written by a model. It reached a ticket through a governed create that a
+person approved on a card — but approving that a question be *asked* is not
+vouching for every sentence in it. So it goes in a `user` message and never in the
+system prompt, it is fenced and labelled as what it is, and the ask comes last,
+after both the question and the activity.
+
+What that buys is narrow: a poisoned question can steer *what this check says*,
+which is the same thing #293 concedes for a poisoned skill. What it cannot do is
+widen anything — the turn has one tool, no handler, one turn, and **no tool proxy
+client at all**, so a fired check induces no served calls and there is no second
+chance for an instruction in the question to take effect.
+
+Silence is allowed here and is not preferred, which is the one place the two turns
+differ in substance rather than in wording. Most checks are conditional by nature
+("tell us if the deploy did not finish"), so a model that believed an empty answer
+was a failure would manufacture one every time — and a model told silence was
+*preferred* would lose the checks somebody is waiting on.
+
 ## What a turn costs
 
 `src/proxy/spend.ts` reports four raw token counts to `POST /v1/spend`, fired

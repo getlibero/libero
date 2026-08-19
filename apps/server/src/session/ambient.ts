@@ -87,7 +87,7 @@
 
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
-import type { MessageStore } from "@getlibero/memory";
+import type { MessageStore, StoredScheduledTask } from "@getlibero/memory";
 import type { ChannelLister } from "./channels.js";
 import type { SessionRegistry } from "./registry.js";
 
@@ -169,17 +169,40 @@ export interface AmbientSchedulerSettings {
  */
 export type AmbientHeartbeat = (channel: string, store: MessageStore) => Promise<void>;
 
+/**
+ * What runs when a ticket's own instant comes due (#324).
+ *
+ * `AmbientHeartbeat`'s shape with the ticket added, and it is a *second* reader
+ * rather than an argument on the first because the two are different acts: a
+ * heartbeat asks whether anything merits saying, and this runs a question
+ * somebody already approved. Folding them into one callback with a nullable task
+ * would make every caller re-derive which of the two it was.
+ *
+ * Optional on the scheduler for `AmbientHeartbeat`'s reason. Absent, a due
+ * ticket is logged and left pending — it is not consumed, because a deployment
+ * with no reader must not silently spend a channel's checks.
+ */
+export type AmbientTaskFire = (
+  channel: string,
+  store: MessageStore,
+  task: StoredScheduledTask
+) => Promise<void>;
+
 /** One thing that will be due at an instant. */
 export interface DueEntry {
   /**
    * What kind of due thing this is.
    *
-   * One member today. `schedule_task`'s firing issue adds the second, and the
-   * point of the field is that it adds a *member* — a due task contributes an
-   * entry to this same plan and wakes the same loop at its own instant, rather
-   * than bringing a second clock.
+   * Two members since #324, and the shape of that addition was the point of the
+   * field: a due task contributes an entry to this same plan and wakes the same
+   * loop at its own instant, rather than bringing a second clock. `earliestDue`
+   * answers over both, so the loop sleeps until whichever comes first.
+   *
+   * The same word list `ProactiveSource` uses, deliberately — what wakes the
+   * loop, what governs the post, and what the channel is told are three views of
+   * the same two cases.
    */
-  readonly kind: "heartbeat";
+  readonly kind: "heartbeat" | "task";
   readonly channel: string;
   readonly dueAt: number;
 }
@@ -192,8 +215,13 @@ export interface AmbientScan {
    * Heartbeats run, or — with no heartbeat wired — channels that would have had
    * one. A channel skipped for an overrun, or one whose heartbeat threw, is not
    * counted.
+   *
+   * A due *ticket* is counted separately, in `checks`: they are two kinds of due
+   * thing and a single number would make "nothing was due" untestable for either.
    */
   readonly fired: number;
+  /** How many due tickets were run. At most one per channel per scan — see `scan`. */
+  readonly checks: number;
   /** The earliest instant anything is due, or `null` when nothing is. */
   readonly nextDueAt: number | null;
 }
@@ -220,6 +248,8 @@ export interface AmbientSchedulerOptions {
   /** The channel's `[ambient]` block, re-read per scan. Never throws. */
   settings: (channel: string) => Promise<AmbientSchedulerSettings>;
   heartbeat?: AmbientHeartbeat;
+  /** What runs a due ticket (#324). Absent, a due ticket is logged and left pending. */
+  fireTask?: AmbientTaskFire;
   /** Injected so a test drives the loop without waiting real minutes. */
   timer?: AmbientTimer;
   /** Injected so a test states the clock rather than faking timers. */
@@ -245,6 +275,13 @@ export interface AmbientScheduler {
    * **The whole of the behaviour**, so a test drives this rather than a timer.
    * Never rejects: an unreadable channels directory, an unopenable store and a
    * throwing heartbeat are each one log line and a scan that carries on.
+   *
+   * **At most one due ticket per channel per scan**, earliest first. A channel
+   * may hold several at once and they may come due together, and firing all of
+   * them would put a burst of unprompted messages into one channel at one
+   * instant. The rest are still due on the next scan, so the cost of the bound
+   * is a minute at worst — which a check that waited days for its instant can
+   * afford, and a channel full of simultaneous posts cannot.
    */
   scan(at: number): Promise<AmbientScan>;
 }
@@ -301,10 +338,29 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
   const now = options.now ?? Date.now;
   const timer = options.timer ?? defaultTimer;
   const heartbeat = options.heartbeat;
+  const fireTask = options.fireTask;
   const signal = options.signal;
 
   /** When each enabled channel is next due. Dropped when a channel disables. */
   const schedule = new Map<string, number>();
+  /**
+   * When each enabled channel's earliest unfired check is due, or absent for none.
+   *
+   * **Read from the store every scan rather than remembered**, which is the
+   * opposite of `schedule` above and is right for the opposite reason. A
+   * heartbeat's next instant is this process's own arithmetic, so holding it in
+   * memory *is* the skip-don't-replay rule. A ticket's instant is a fact on disk
+   * that another task in this process can add to at any moment — so the store is
+   * the source of truth, and a cached copy would miss a check created since the
+   * last scan and fire it late.
+   *
+   * The cost is one indexed lookup per enabled channel per scan, on a handle the
+   * session already holds: a channel with `[ambient]` on has its session opened
+   * every cadence anyway, so this adds a query and no file handles. It also makes
+   * a restart correct by construction — nothing has to be replayed into memory,
+   * because nothing was ever only in memory.
+   */
+  const taskDue = new Map<string, number>();
   /** Channels whose heartbeat has not finished. See the overrun rule. */
   const running = new Set<string>();
 
@@ -357,6 +413,85 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
     }
   }
 
+  /**
+   * When this channel's earliest unfired check is due, or `null`.
+   *
+   * Never throws: a channel whose store cannot be opened has no checks this scan
+   * can see, which is the same answer as having none — and one channel must not
+   * stop the rest, which is this loop's rule for the sheet read too.
+   *
+   * The session is opened rather than a store of this file's own, for `fire`'s
+   * reason: one handle per channel, held by the registry, so a second would be a
+   * second writer on one file.
+   */
+  function nextTicketDue(channel: string, workspace: string): number | null {
+    try {
+      const store = options.sessions.open({ workspace, channel }).store;
+      return store === null ? null : store.nextScheduledTaskDueAt();
+    } catch (error) {
+      logger.log("error", {
+        event: "ambient_failed",
+        team: workspace,
+        channel,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+      return null;
+    }
+  }
+
+  /**
+   * The channel's earliest due check, on its session's mutex. Never rejects.
+   *
+   * `fire`'s shape, and it shares `running` with it: a channel already running a
+   * heartbeat does not also start a check, and the reverse holds too. They read
+   * the same store and would otherwise queue on the mutex behind each other,
+   * which is the stacking the overrun rule exists to prevent.
+   */
+  async function runCheck(channel: string, workspace: string, at: number): Promise<boolean> {
+    running.add(channel);
+    try {
+      const session = options.sessions.open({ workspace, channel });
+      const store = session.store;
+      if (store === null) {
+        logger.log("error", {
+          event: "ambient_failed",
+          team: workspace,
+          channel,
+          reason: "store_unavailable"
+        });
+        return false;
+      }
+
+      // Re-read on the mutex rather than carried from the enumeration, so the
+      // row a check runs from is the one nothing else was mid-write on. One row:
+      // the earliest, and the rest wait for the next scan.
+      const [task] = store.dueScheduledTasks(at, 1);
+      if (task === undefined) return false;
+
+      if (fireTask === undefined) {
+        // No reader wired. Logged and *left pending* — a deployment without a
+        // fire path must not consume a channel's checks, which is the opposite
+        // of what the clock does with a heartbeat it cannot run.
+        logger.log("info", { event: "ambient_check_due", team: workspace, channel });
+        return false;
+      }
+
+      await session.mutex.run(() => fireTask(channel, store, task));
+      logger.log("info", { event: "ambient_check_due", team: workspace, channel });
+      return true;
+    } catch (error) {
+      logger.log("error", {
+        event: "ambient_failed",
+        team: workspace,
+        channel,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+      return false;
+    } finally {
+      running.delete(channel);
+    }
+  }
+
   async function scan(at: number): Promise<AmbientScan> {
     const workspace = options.workspace();
     if (workspace === undefined) {
@@ -366,12 +501,14 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       // keeps the first-sight rule true rather than seeding a schedule this
       // process could not have acted on.
       logger.log("warn", { event: "ambient_unidentified" });
-      return { fired: 0, nextDueAt: null };
+      return { fired: 0, checks: 0, nextDueAt: null };
     }
 
     const channels = await options.channels();
     const due: string[] = [];
+    const checksDue: string[] = [];
     const enabled = new Set<string>();
+    taskDue.clear();
 
     for (const channel of channels) {
       // Wrapped, though the resolver is documented total: this loop is the
@@ -394,6 +531,19 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       }
       if (!settings.enabled) continue;
       enabled.add(channel);
+
+      // A ticket's own instant, straight from the channel's store (#324). Read
+      // before the heartbeat's deadline is considered, because the two are
+      // independent: a channel can have a check due with no heartbeat due, which
+      // is the ordinary case for a check asked for at a particular time.
+      const ticketAt = nextTicketDue(channel, workspace);
+      if (ticketAt !== null) {
+        taskDue.set(channel, ticketAt);
+        // Due *or overdue*: a check whose instant passed while this process was
+        // down is still due when it comes back, once. Its row carries one fire
+        // stamp, so there is nothing to replay.
+        if (ticketAt <= at && !running.has(channel)) checksDue.push(channel);
+      }
 
       const dueAt = schedule.get(channel);
       if (dueAt === undefined) {
@@ -426,6 +576,24 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       if (!enabled.has(channel)) schedule.delete(channel);
     }
 
+    // Checks before heartbeats, because a check has a deadline and a heartbeat
+    // does not: the whole reason a ticket wakes this loop at its own instant is
+    // that "up to a cadence late" is wrong for a reminder and fine for a
+    // noticing job. They share the mutex either way, so this decides which
+    // waits.
+    let checks = 0;
+    // Guarded rather than run over an empty list, which is not a micro-
+    // optimization: awaiting anything here suspends the scan, and a deployment
+    // with no scheduled checks — every one of them until a channel lists the
+    // tool — would otherwise get an extra suspension point between reading its
+    // sheets and starting its heartbeats, for no work at all.
+    if (checksDue.length > 0) {
+      await runBounded(checksDue, MAX_CONCURRENT_HEARTBEATS, async channel => {
+        if (signal?.aborted === true || stopped) return;
+        if (await runCheck(channel, workspace, at)) checks += 1;
+      });
+    }
+
     let fired = 0;
     await runBounded(due, MAX_CONCURRENT_HEARTBEATS, async channel => {
       // Checked per channel rather than once: a scan of a hundred channels
@@ -435,12 +603,28 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       if (await fire(channel, workspace)) fired += 1;
     });
 
-    const plan: DueEntry[] = [...schedule].map(([channel, dueAt]) => ({
-      kind: "heartbeat",
-      channel,
-      dueAt
-    }));
-    return { fired, nextDueAt: earliestDue(plan) };
+    const plan: DueEntry[] = [
+      ...[...schedule].map(([channel, dueAt]): DueEntry => ({ kind: "heartbeat", channel, dueAt })),
+      // A ticket still in the future wakes the loop at its own instant, which is
+      // the whole point of this member. One that was *already* due is deliberately
+      // pushed to the ordinary rescan horizon instead, and that is a spin guard
+      // rather than a rounding: this map was read before the firing, so an
+      // instant in the past is still in it — and every way a due ticket can stay
+      // pending (no reader wired, a channel already busy, a store that would not
+      // take the stamp) would otherwise ask the loop to wake at a time that has
+      // passed, forever, as fast as the event loop allows.
+      //
+      // A minute is what `AMBIENT_RESCAN_MS` already promises as the slowest this
+      // process notices anything, so nothing is lost: the ticket is looked at
+      // again on the next ordinary pass. It is also what bounds the one-check-
+      // per-channel-per-scan rule to one post per channel per minute.
+      ...[...taskDue].map(([channel, dueAt]): DueEntry => ({
+        kind: "task",
+        channel,
+        dueAt: dueAt <= at ? at + AMBIENT_RESCAN_MS : dueAt
+      }))
+    ];
+    return { fired, checks, nextDueAt: earliestDue(plan) };
   }
 
   /** Scan, sleep, repeat. Nothing awaits this; it ends when `stop()` is called. */
@@ -448,7 +632,7 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
     if (stopped) return;
     const at = now();
     void scan(at)
-      .catch(() => ({ fired: 0, nextDueAt: null }) as AmbientScan)
+      .catch(() => ({ fired: 0, checks: 0, nextDueAt: null }) as AmbientScan)
       .then(result => {
         if (stopped) return;
         const horizon = at + AMBIENT_RESCAN_MS;
