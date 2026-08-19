@@ -16,6 +16,13 @@ import { CredentialName, DestinationHost, ModelId, ResourceName } from "./names.
  * credential the team sheet names that the vault cannot resolve, and a sheet
  * whose duplicate server entries disagree about where a tool goes.
  *
+ * Since #322 there are four that are not asked on every call: `schedule_task`'s,
+ * which are asked only of the one tool that can create future work. They are
+ * here rather than in a set of their own because they are the same kind of
+ * answer — a governance decision, relayed to a channel in one sentence and
+ * written to the audit log by reason — and a second closed set would mean two
+ * places to look for why a call did not run.
+ *
  * **There is no free-text field on any variant.** The relayable sentence is
  * derived from the enumerated fields by `refusalMessage`, so the text cannot
  * disagree with the reason and there is no prose a credential value could ride
@@ -123,7 +130,35 @@ export const RefusalReason = z.enum([
   /** Serving the call means reaching a host the egress allowlist omits. */
   "egress_denied",
   /** The sheet names a credential the vault has no entry for. */
-  "credential_unresolved"
+  "credential_unresolved",
+  /*
+   * `schedule_task`'s four (#322). They stay four rather than collapsing into
+   * one reason with a discriminant, on the argument the broker's six already
+   * make: each sends its reader somewhere different. Wait for one to fire, ask
+   * for something nearer, ask for something later, and — the odd one out — go
+   * and edit the sheet, which is not the model's remedy at all.
+   *
+   * Three of them are discovered while serving rather than by `decide`, because
+   * they read the model's arguments and one of them reads the channel's own
+   * store. That changes where they are raised and nothing about what they are:
+   * a refusal is a governance decision, wherever the proxy reaches it.
+   */
+  /** The channel already holds as many unfired checks as it may. */
+  "schedule_full",
+  /** The time asked for is inside the floor on how soon a check may be. */
+  "schedule_too_soon",
+  /** The time asked for is past the horizon on how far out a check may be. */
+  "schedule_too_far",
+  /**
+   * The channel's `[ambient]` block is off, so nothing would ever run the check.
+   *
+   * The one place the tool proxy service reads that block, and it reads only
+   * `enabled`. Refused rather than served, because the alternative is a channel
+   * quietly accumulating approved future work that no clock will ever enumerate
+   * — and each of those was a human clicking Approve on something that will not
+   * happen.
+   */
+  "ambient_disabled"
 ]);
 
 export type RefusalReason = z.infer<typeof RefusalReason>;
@@ -206,7 +241,15 @@ export const ToolRefusal = z.discriminatedUnion("reason", [
       /** The name from the team sheet. Never the value; see `CredentialName`. */
       credential: CredentialName
     })
-    .strict()
+    .strict(),
+  // Scheduling's four carry no facts at all. One tool can raise them, its name is
+  // in the sentence, and the two figures a reader might want are already in the
+  // input schema the model was given — a third place to write one of them is a
+  // third place for it to disagree.
+  z.object({ reason: z.literal("schedule_full") }).strict(),
+  z.object({ reason: z.literal("schedule_too_soon") }).strict(),
+  z.object({ reason: z.literal("schedule_too_far") }).strict(),
+  z.object({ reason: z.literal("ambient_disabled") }).strict()
 ]);
 
 export type ToolRefusal = z.infer<typeof ToolRefusal>;
@@ -274,5 +317,16 @@ export function refusalMessage(refusal: ToolRefusal): string {
       return `\`${refusal.destination}\` is not on this channel's egress allowlist. The call was not made.`;
     case "credential_unresolved":
       return `The credential \`${refusal.credential}\` is named in this channel's team sheet but is not in the vault. The call was not made.`;
+    // Scheduling's four end with what did not happen, which is what "The call was
+    // not made." says everywhere above. It is worded differently because here the
+    // call *was* made and answered: what did not happen is the check.
+    case "schedule_full":
+      return "This channel already has as many scheduled checks waiting as it may. One has to run before another can be added. Nothing was scheduled.";
+    case "schedule_too_soon":
+      return "That is sooner than a check may be scheduled for. Ask for a later time, or just do it now. Nothing was scheduled.";
+    case "schedule_too_far":
+      return "That is further out than a check may be scheduled for. Ask for a nearer time. Nothing was scheduled.";
+    case "ambient_disabled":
+      return "This channel's team sheet has `[ambient]` switched off, so nothing would ever run a scheduled check. An admin turns it on. Nothing was scheduled.";
   }
 }

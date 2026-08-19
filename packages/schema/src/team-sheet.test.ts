@@ -159,12 +159,33 @@ describe("the example sheet's built-in block", () => {
   const sheet = TeamSheet.parse(parse(readFileSync(examplePath, "utf8")));
 
   it("grants search_channel_history with a per-tool result bound", () => {
-    expect(sheet.builtin.map(entry => entry.name)).toEqual(["search_channel_history"]);
+    expect(sheet.builtin.map(entry => entry.name)).toEqual([
+      "search_channel_history",
+      "schedule_task"
+    ]);
     expect(sheet.builtin[0]?.approval).toBe("none");
     // Search returns whole messages, so the starter shows the override rather
     // than letting a channel-wide 32k decide how much of other people's
     // conversation reaches the model at once.
     expect(sheet.builtin[0]?.max_result_chars).toBe(8_000);
+  });
+
+  // The starter has to *show* the default hold rather than write it, or it
+  // teaches the wrong lesson: a sheet that spells `approval = "required"` reads
+  // as though forgetting the line would have been fine. #322's acceptance is this
+  // absence, and `BUILTIN_APPROVAL_DEFAULT` is what makes it a hold.
+  it("lists schedule_task with no approval line at all", () => {
+    const entry = sheet.builtin[1];
+    expect(entry?.name).toBe("schedule_task");
+    expect(entry?.approval).toBeUndefined();
+  });
+
+  // Both switches, and the starter leaves the second one off. A create against
+  // this sheet as written is refused `ambient_disabled` — which is the posture
+  // the file argues for everywhere else and should not quietly change because a
+  // second built-in wanted a working example.
+  it("leaves ambient off, so the create it lists is refused", () => {
+    expect(sheet.ambient.enabled).toBe(false);
   });
 
   it("carries no url and no credential, because there is nothing to dial", () => {

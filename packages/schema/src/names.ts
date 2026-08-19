@@ -148,6 +148,22 @@ export const TaskId = identifier();
 export const ApprovalTicketId = identifier();
 
 /**
+ * A scheduled check, as the proxy mints one and the channel's store keys it.
+ *
+ * `ApprovalTicketId`'s alphabet and its reason: the mint's format is the proxy's
+ * business — `randomUUID` today — and pinning it in a wire schema would make
+ * changing it a schema change. It lands in a log line and in a primary key, which
+ * is what the bound is for.
+ *
+ * **It is an identifier and never a capability.** A ticket id proves a human
+ * approved one exact call; this proves nothing at all. It names a row in one
+ * channel's store, reached only through a handle already closed over that
+ * channel's file, so there is no lookup it could widen. The model never sees one
+ * it did not just cause to exist, and nothing accepts one as an argument.
+ */
+export const ScheduledTaskId = identifier();
+
+/**
  * The human who decided a held call, as the gateway observed them.
  *
  * **Attribution, and a stronger claim than `RequestingUser` — but not

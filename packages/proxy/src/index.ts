@@ -152,6 +152,7 @@ export {
   permittedTools,
   permittedToolsFromState,
   resolveApproval,
+  resolveBuiltinApproval,
   upstreamKey
 } from "./enforce.js";
 export type { BudgetSpend, CallLimits, Decision, EnforcementInput, PermittedToolSource } from "./enforce.js";

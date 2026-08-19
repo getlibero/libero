@@ -20,7 +20,11 @@ const samples: Record<RefusalReason, ToolRefusal> = {
   model_not_priced: { reason: "model_not_priced", model: "claude-opus-4-6" },
   model_unreported: { reason: "model_unreported" },
   egress_denied: { reason: "egress_denied", destination: "api.example.net" },
-  credential_unresolved: { reason: "credential_unresolved", credential: "github_service_account" }
+  credential_unresolved: { reason: "credential_unresolved", credential: "github_service_account" },
+  schedule_full: { reason: "schedule_full" },
+  schedule_too_soon: { reason: "schedule_too_soon" },
+  schedule_too_far: { reason: "schedule_too_far" },
+  ambient_disabled: { reason: "ambient_disabled" }
 };
 
 describe("coverage", () => {
@@ -44,6 +48,15 @@ describe("coverage", () => {
     expect(refusalMessage(samples.approval_required)).toContain("`github.trigger_workflow`");
     for (const reason of RefusalReason.options) {
       expect(refusalMessage(samples[reason])).not.toMatch(/[!😀-🿿]/u);
+    }
+  });
+
+  // The two figures scheduling is refused against are constants, and the model
+  // has already been told both in the tool's input schema. A number here would be
+  // a third place to write one — and the third place is where they disagree.
+  it("quotes no figure in scheduling's sentences", () => {
+    for (const reason of ["schedule_full", "schedule_too_soon", "schedule_too_far"] as const) {
+      expect(refusalMessage(samples[reason])).not.toMatch(/\d/);
     }
   });
 });

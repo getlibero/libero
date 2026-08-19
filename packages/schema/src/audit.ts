@@ -292,6 +292,16 @@ export function auditRefusalMessage(
     // where "this model has no price" is not.
     case "model_unreported":
       return refusalMessage({ reason });
+    // Scheduling's four (#322), and all four are complete for the reason
+    // `model_unreported` is: their variants carry no facts, because the two
+    // figures a reader might want are constants rather than columns. An operator
+    // reading a `schedule_full` row and the channel that saw it get the same
+    // sentence, with nothing reconstructed.
+    case "schedule_full":
+    case "schedule_too_soon":
+    case "schedule_too_far":
+    case "ambient_disabled":
+      return refusalMessage({ reason });
     // The three the table cannot complete. Listed rather than defaulted, so a
     // new reason is a compile error here and a decision rather than a silent
     // `null` — `refusalMessage`'s totality would otherwise stop at this door.

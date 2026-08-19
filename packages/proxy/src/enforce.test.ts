@@ -1489,6 +1489,13 @@ describe("a built-in tool", () => {
 
   const callBuiltin = (tool: string) => callTo("libero", tool);
 
+  /**
+   * `schedule_task`'s second switch. `BASE` writes no `[ambient]` block, so it
+   * prefaults to off — which is the sheet most of this file's cases want, and is
+   * why every scheduling case has to say otherwise out loud.
+   */
+  const AMBIENT_ON = { ambient: { enabled: true } };
+
   it("is allowed when the sheet names it, and its target is not an upstream", () => {
     const decision = decide({
       sheet: withBuiltin([{ name: "search_channel_history" }]),
@@ -1515,15 +1522,12 @@ describe("a built-in tool", () => {
     ).toEqual({ outcome: "refuse", refusal: { reason: "server_not_allowed", server: "libero" } });
   });
 
-  // There is only one built-in today, so the sheet cannot name a second and
-  // omit this one. The decision is still written to tell them apart, and this
-  // asserts the branch by handing it a sheet whose entry was filtered out — the
-  // shape a second built-in will produce the day one lands.
+  // This used to reach past the schema with a `some_later_builtin` cast, because
+  // one built-in meant no sheet could name a second and omit the first. #322 is
+  // that day, so the case is written honestly now — a real sheet, a real second
+  // name, no cast.
   it("refuses tool_not_allowed when the sheet grants a different built-in", () => {
-    const sheet = withBuiltin([{ name: "search_channel_history" }]);
-    // Reaching past the schema on purpose: a closed enum cannot express the
-    // sheet a second built-in would make possible, and the branch exists for it.
-    const other = { ...sheet, builtin: [{ name: "some_later_builtin" }] } as unknown as TeamSheet;
+    const other = withBuiltin([{ name: "schedule_task" }]);
 
     expect(decide({ sheet: other, call: callBuiltin("search_channel_history"), spend: NO_SPEND })).toEqual({
       outcome: "refuse",
@@ -1633,6 +1637,110 @@ describe("a built-in tool", () => {
 
   it("is absent from the listing when the sheet grants none", () => {
     expect(permittedTools(sheetOf(BASE)).some(tool => tool.server === "libero")).toBe(false);
+  });
+
+  // #322's default hold, and it is asserted as the *difference* between the two
+  // built-ins rather than as a value: with no `approval` line at all, one runs
+  // and one is held. A heuristic over the name cannot produce that split, which
+  // is the whole reason a built-in declares its own default.
+  it("holds a create the sheet said nothing about, and runs a search it said nothing about", () => {
+    const sheet = withBuiltin([{ name: "search_channel_history" }, { name: "schedule_task" }], AMBIENT_ON);
+
+    expect(decide({ sheet, call: callBuiltin("schedule_task"), spend: NO_SPEND })).toMatchObject({
+      outcome: "hold",
+      refusal: { reason: "approval_required", server: "libero", tool: "schedule_task" }
+    });
+    expect(
+      decide({ sheet, call: callBuiltin("search_channel_history"), spend: NO_SPEND }).outcome
+    ).toBe("allow");
+  });
+
+  // Loosening is a line a channel writes, which is the direction that matters:
+  // forgetting one gets the hold, and turning the hold off is a decision on the
+  // sheet where a reviewer can see it.
+  it("lets a sheet loosen the create by writing the line", () => {
+    const sheet = withBuiltin([{ name: "schedule_task", approval: "none" }], AMBIENT_ON);
+
+    expect(decide({ sheet, call: callBuiltin("schedule_task"), spend: NO_SPEND })).toMatchObject({
+      outcome: "allow",
+      target: { kind: "builtin", tool: "schedule_task" }
+    });
+  });
+
+  // The listing publishes an approval the model is shown and the gate enforces
+  // one. Two resolvers would let them disagree in the one place a channel can
+  // see both, so this asserts they are the same answer for every built-in and
+  // every way a sheet can leave the field.
+  it.each([
+    [undefined, "search_channel_history"],
+    [undefined, "schedule_task"],
+    ["none", "schedule_task"],
+    ["required", "search_channel_history"]
+  ] as const)("publishes the approval it enforces (%s, %s)", (approval, name) => {
+    const entry = approval === undefined ? { name } : { name, approval };
+    const sheet = withBuiltin([entry], AMBIENT_ON);
+
+    const listed = permittedTools(sheet).find(tool => tool.tool === name);
+    const held = decide({ sheet, call: callBuiltin(name), spend: NO_SPEND }).outcome === "hold";
+
+    expect(listed?.approval).toBe(held ? "required" : "none");
+  });
+
+  // The second switch (#322). Listed, held by default, and still refused —
+  // because nothing would ever run the check, and an approved ticket no clock
+  // enumerates is worse than being told now.
+  it("refuses a create on a channel whose [ambient] block is off", () => {
+    const sheet = withBuiltin([{ name: "schedule_task" }]);
+
+    expect(decide({ sheet, call: callBuiltin("schedule_task"), spend: NO_SPEND })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "ambient_disabled" }
+    });
+  });
+
+  // Above the meter: a channel that could never run the check is told that,
+  // rather than told about a budget that is beside the point.
+  it("says the block is off before it says the budget is spent", () => {
+    const sheet = withBuiltin([{ name: "schedule_task" }]);
+
+    expect(decide({ sheet, call: callBuiltin("schedule_task"), spend: spending(0, 10) })).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "ambient_disabled" }
+    });
+  });
+
+  // One field, one tool. The block says nothing about a channel's own history,
+  // and reading it here must not start deciding anything else.
+  it("does not read [ambient] for the other built-in", () => {
+    const sheet = withBuiltin([{ name: "search_channel_history" }]);
+
+    expect(decide({ sheet, call: callBuiltin("search_channel_history"), spend: NO_SPEND }).outcome).toBe(
+      "allow"
+    );
+  });
+
+  // The listing is a description of what a call would do, not a second decision —
+  // the same reason an ambiguous server's tools are still listed. Two policy
+  // rules in two places is two rules that have to match.
+  it("still lists the create on a channel whose [ambient] block is off", () => {
+    const listed = permittedTools(withBuiltin([{ name: "schedule_task" }]));
+
+    expect(listed.find(tool => tool.tool === "schedule_task")?.approval).toBe("required");
+  });
+
+  // Sheet order, and it is the operator's priority under `MAX_DESCRIBED_TOOLS`:
+  // built-ins are appended last, so whichever a channel wrote first is the one
+  // that survives a catalog filling its budget.
+  it("keeps the sheet's order among built-ins, all of them after the upstreams", () => {
+    const sources = permittedToolSources(
+      withBuiltin([{ name: "schedule_task" }, { name: "search_channel_history" }])
+    );
+
+    expect(sources.slice(-2).map(source => source.tool.tool)).toEqual([
+      "schedule_task",
+      "search_channel_history"
+    ]);
+    expect(sources.slice(0, -2).every(source => source.target?.kind === "mcp")).toBe(true);
   });
 });
 

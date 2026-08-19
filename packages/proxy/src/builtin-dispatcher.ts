@@ -179,6 +179,15 @@ export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): Buil
         switch (tool) {
           case "search_channel_history":
             return searchChannelHistory(call, limits);
+          // The definition, the enum member and the sheet's grant landed in
+          // #322; the executor is #323. `unavailable` is the honest word for that
+          // gap and is exactly what it means — "the upstream kind is not built" —
+          // where `unanswered` above is for a built-in that exists and broke. So
+          // a channel that lists this today gets the whole governed path, a card
+          // to click, an audit row, and a 501 saying the proxy cannot serve it
+          // yet. Nothing is denied and nothing is promised.
+          case "schedule_task":
+            return { outcome: "unavailable" };
         }
       } catch (error) {
         // A reason code, never the message: `openMessageReader` puts the file

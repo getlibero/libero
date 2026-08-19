@@ -21,7 +21,7 @@
 // by relevance rather than recency, and the scope is this channel and is not
 // negotiable.
 
-import { MAX_TOOL_DESCRIPTION } from "@getlibero/schema";
+import { MAX_TOOL_DESCRIPTION, SCHEDULE_TASK_INPUT_SCHEMA } from "@getlibero/schema";
 import type { BuiltinToolName, ToolInputSchema } from "@getlibero/schema";
 import { READ_MAX_LIMIT } from "@getlibero/memory";
 import { z } from "zod";
@@ -114,6 +114,32 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, BuiltinDefinition> = {
       "Author names are as they were when the message was stored, and any <@U...> " +
       "mentions inside the text are left as ids.",
     inputSchema: SEARCH_CHANNEL_HISTORY_SCHEMA
+  },
+  // The one built-in whose input schema is not written here (#322). Its contract
+  // spans both processes — this one parses the arguments, the agent parses the
+  // ticket that comes back — so the whole of it lives in `@getlibero/schema`
+  // beside the ticket, where `search_channel_history`'s is read by this process
+  // alone and has no reason to leave.
+  //
+  // Four clauses below are load-bearing, because a model would assume each of
+  // them the other way. **That the time is an offset and it does not need a
+  // clock**, which is the whole reason this takes minutes rather than an instant.
+  // **That the check runs once**, or a model asked for a daily standup reminder
+  // will believe it has arranged one. **That creating one costs a person a
+  // click**, or it becomes the place notes-to-self go. And **that the answer may
+  // be nothing**, which is the same thing `post_finding` has to say and for the
+  // same reason: a turn asked to evaluate will evaluate.
+  schedule_task: {
+    description:
+      "Schedule one check to run later in this channel. Say what to check and how many minutes " +
+      "from now; the exact time is worked out when this is approved, so you do not need to know " +
+      "what time it is now. At that time the check runs once and posts here only if there is " +
+      "something worth saying. It is not a recurring job — to repeat one, schedule the next from " +
+      "the check that just ran. Creating one normally needs a person here to approve it, so it is " +
+      "not free and it is not a way to leave yourself a note. Only this channel can be scheduled " +
+      "for, and there is no argument for naming another. If the thing needs doing now, do it now " +
+      "instead.",
+    inputSchema: SCHEDULE_TASK_INPUT_SCHEMA
   }
 };
 
