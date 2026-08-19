@@ -296,6 +296,11 @@ credential = "notion_grant"                 # name only; keys the stored grant
 # written to the audit log, exactly as an [[mcp_server.tool]] is. Delete the
 # block and the channel does not get the tool.
 #
+# Omitting `approval` does not mean here what it means on an [[mcp_server.tool]].
+# There the destructive-verb heuristic decides, because those names were chosen
+# by somebody else. These were chosen in this repository, so each built-in
+# declares its own default: search is "none", scheduling is "required".
+#
 # "libero" is the server name these travel under, and it is reserved: an
 # [[mcp_server]] claiming it is a parse error rather than a channel whose
 # search_channel_history quietly left the process.
@@ -309,6 +314,30 @@ max_result_chars = 8000                       # whole messages come back; a chan
                                               # 32k is a lot of other people's
                                               # conversation to put in front of the
                                               # model at once.
+
+# The agent's own future checks. It asks for one now — a question, and how many
+# minutes from now to ask it — and something runs that check at that time and
+# posts if there is anything to say. The exact time is worked out when the create
+# is approved, so nothing has to trust a language model's arithmetic about clocks.
+#
+# NOTE THE MISSING approval LINE, AND THAT IT MEANS THE OPPOSITE OF delete_file's.
+# There, no line means the destructive-verb heuristic decides and happens to hold
+# it. Here, no line IS the hold: a built-in's default is declared rather than
+# guessed, and this one's is "required". Loosening it is writing approval = "none",
+# which is a channel deciding that unbidden future work needs no click. Deleting
+# the block is how a channel does not get this at all.
+#
+# TWO SWITCHES, AND BOTH HAVE TO BE ON. Listing it here is one. The other is
+# [ambient] enabled below, which is false in this file — so as written, a create
+# is refused, because nothing would ever run the check. That is deliberate: the
+# starter sheet does not turn on unbidden speech, and this block is here to be
+# read rather than to work out of the box.
+#
+# The channel is not a field. It comes from the client certificate when the check
+# is created and from the channel's own file when it fires, so there is nothing an
+# argument could name.
+[[builtin]]
+name = "schedule_task"
 
 # Where traffic may go when this sheet does not already say.
 #
@@ -353,7 +382,10 @@ allow = ["api.github.com", "*.internal.example.com"]
 # nothing, so 03:00 already costs you nothing and says nothing — which is the
 # whole thing a schedule with sleeping hours would have bought.
 [ambient]
-enabled                 = false             # off by default, always
+enabled                 = false             # off by default, always. Also the
+                                            # precondition for [[builtin]]
+                                            # schedule_task above: with this
+                                            # false, a create is refused.
 heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 
 # How long a question must sit before the heartbeat may answer it — the sibling

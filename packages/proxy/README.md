@@ -517,10 +517,19 @@ this sentence.
 
 ## Built-in tools
 
-Not every permitted call goes to an upstream. `search_channel_history` is served
-by this process, reading the calling channel's message store (`@getlibero/memory`,
-opened read-only). `builtins.ts` holds the definitions and the strict argument
-parser; `builtin-dispatcher.ts` is the executor.
+Not every permitted call goes to an upstream. Two are served by this process:
+`search_channel_history`, which reads the calling channel's message store
+(`@getlibero/memory`, opened read-only), and `schedule_task`, which creates one
+future check. `builtins.ts` holds the definitions and the strict argument parser;
+`builtin-dispatcher.ts` is the executor.
+
+**`schedule_task`'s executor is #323 and is not here yet.** The definition, the
+enum member, the declared hold and the sheet's grant landed in #322, so a channel
+that lists it today gets the whole governed path — the listing, the card, the
+audit row — and a `501` from the dispatcher's `unavailable` arm. That word is
+exact: it means the upstream kind is not built, where the `unanswered` a throw
+produces means a built-in that exists and broke. Nothing is denied and nothing is
+promised.
 
 **A built-in is not a bypass**, and the type system is what says so rather than a
 comment. `decide` returns a `Target` — `{kind: "mcp", upstream}` or
@@ -529,8 +538,40 @@ passed the same allowlist, the same budget check and the same approval rule, and
 the only way to obtain one is to be handed a `Decision`. `decideBuiltin` runs the
 same steps in the same order as the MCP branch, minus `server_ambiguous`, which
 has no question to answer when there is one provider; `exhaustedLimit`,
-`resolveLimits` and `resolveApproval` are the functions that branch calls rather
-than copies of them.
+`resolveLimits` is the function that branch calls rather than a copy of it.
+
+Approval is the one exception, and it is a fallthrough rather than a rule.
+`resolveBuiltinApproval` keeps `resolveApproval`'s three rules exactly — empty is
+required, any `required` wins, an explicit `none` beats silence — and differs only
+in what it answers when a sheet said nothing. There, `isDestructiveName` guesses
+from a verb, which is the right shape for names somebody else chose; a built-in's
+name was chosen in this repository, so `BUILTIN_APPROVAL_DEFAULT` in
+`@getlibero/schema` states the answer. `search_channel_history` declares `none`,
+which is what the heuristic already answered; `schedule_task` declares `required`,
+which the heuristic could not have — creating future work destroys nothing, and
+adding `"schedule"` to `DESTRUCTIVE_VERBS` would hold an upstream
+`reschedule_meeting` in every deployment to decide something about a tool this
+process implements itself. The consequence is the one #322 asks for: a sheet
+**loosens** scheduling by writing `approval = "none"`, and forgetting the line
+gets the hold.
+
+**Both callers use that resolver.** `permittedToolSources` publishes an approval
+the model is shown and `decideBuiltin` enforces one; a listing that said `none`
+where the gate held would be this process disagreeing with itself in the one place
+a channel can see both.
+
+**`decideBuiltin` has one per-tool branch, and it is the only field of `[ambient]`
+this process reads.** A `schedule_task` create against a channel whose block is
+off is refused `ambient_disabled`, above the meter — because nothing would ever
+enumerate that channel to run the check, and a channel accumulating approved
+future work no clock will reach is worse than a refusal when a human clicked
+Approve on each one. It sits here rather than in the executor because it is a fact
+the *sheet* answers and `ToolDispatcher` may not read one, and it does not change
+`[ambient]`'s standing: the field is read only to refuse, never to permit, so
+nothing an agent could do to its own copy widens anything. The listing is
+unaffected — it still publishes the tool, for the reason an ambiguous server's
+tools are still listed: a listing describes what a call would do rather than
+deciding it, and a second policy rule there is a second rule that has to match.
 
 **The two arms cannot be handed each other's work.** `createToolDispatcher` is
 the only thing that narrows a `Target`, and it is a switch with no I/O:
@@ -549,9 +590,13 @@ thin one — and it is checked against `MAX_TOOL_DESCRIPTION` at module load,
 because a description over that bound fails `ToolListing.parse` on the agent's
 side and ends the task rather than costing it a sentence.
 
-Adding a built-in is two halves that fail the build separately: a member on
-`BuiltinToolName` in `@getlibero/schema`, and a definition in `BUILTIN_TOOLS`
-plus a case in the executor's exhaustive switch.
+Adding a built-in is four parts that fail the build separately: a member on
+`BuiltinToolName` in `@getlibero/schema`, an entry in `BUILTIN_APPROVAL_DEFAULT`
+beside it, a definition in `BUILTIN_TOOLS`, and a case in the executor's
+exhaustive switch. Two `Record`s over the enum and one switch, so there is no
+order in which a half-added built-in compiles — and the approval entry is in that
+list because a built-in with no declared default would silently inherit a guess
+about somebody else's naming.
 
 ## Endpoints
 
@@ -626,6 +671,13 @@ thought about, not a classifier — but it is worth knowing before trusting it. 
 starter sheet says so in a comment and the docs say so in a table, because a
 starter showing only the caught case would teach the wrong lesson. A tool that
 must be reviewed gets `approval = "required"` in the sheet.
+
+It fires on **upstream** names only. A built-in's default is declared in
+`BUILTIN_APPROVAL_DEFAULT` — see *Built-in tools* above — because this heuristic
+exists to guess at names somebody else chose, and there is nothing to guess about
+a name that was chosen in this repository. Do not add a verb to that list to
+decide something about a built-in: the list is matched against every upstream tool
+in every deployment.
 
 Two gates, deliberately. `/v1/tools` keeps an unlisted tool out of the model's
 context; `/v1/tools/call` is what actually enforces, and it holds on its own —

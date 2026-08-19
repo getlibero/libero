@@ -120,7 +120,30 @@ the rig: the harness gateway had no `AppIdentity`, so `gateway.workspace` was
 `undefined` and the clock would have refused to scan in every deployment the
 suite composed, and the surface had no `channel` verb.
 
-What phase 4 does *not* have yet is `schedule_task` (#322–#325). What exists:
+#322 is `schedule_task`'s shapes, plus the two gates that make the shapes true
+rather than aspirational — the declared hold and the `[ambient]` precondition,
+both in `decideBuiltin`, because a starter sheet documenting a hold the gate did
+not apply would be this repository's own "a test that encodes a gap" one file
+over. What is *not* here is the executor: the dispatcher's arm answers
+`unavailable`, which is the honest word for "the upstream kind is not built", so a
+channel listing the tool today gets the whole governed path and a 501. #323 fills
+it. Three decisions ride on
+`packages/schema/src/schedule-task.ts`'s header. **The model sends an offset and
+the proxy stores an instant** — `due_in_minutes`, resolved once at create, because
+a model has no clock and an absolute instant would want a timezone this tree
+refuses everywhere plus a date grammar in a package the CLI publishes with no
+dependencies. **The caps are constants rather than `[ambient]` fields**, by the
+`RECALL_LIMIT` test read through who grew the corpus: these tickets are
+machine-grown, so bounding them bounds what the process assembles. And
+**approval-gated by default is declared, in `BUILTIN_APPROVAL_DEFAULT`, not
+guessed** — the destructive-verb heuristic exists for names somebody else chose,
+and adding `"schedule"` to it would hold an MCP `reschedule_meeting` in every
+deployment to decide something about a tool this process implements itself. The
+four refusals stay four for the reason the broker's six do: wait, ask nearer, ask
+later, and edit the sheet are four different remedies.
+
+What phase 4 does *not* have yet is the governed create and the firing
+(#323–#325). What exists:
 
 | Package | What it is |
 | --- | --- |

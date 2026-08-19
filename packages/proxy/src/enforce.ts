@@ -16,6 +16,7 @@
 // allowlist and not from the model.
 
 import {
+  BUILTIN_APPROVAL_DEFAULT,
   BUILTIN_SERVER,
   MICRO_USD_PER_USD,
   UNREPORTED_MODEL,
@@ -25,6 +26,7 @@ import {
 import type {
   ApprovalMode,
   BudgetWarning,
+  BuiltinEntry,
   BuiltinToolName,
   McpServer,
   PermittedTool,
@@ -360,6 +362,37 @@ export function resolveApproval(entries: readonly ToolEntry[], tool: string): Ap
   if (entries.some(entry => entry.approval === "required")) return "required";
   if (entries.some(entry => entry.approval === "none")) return "none";
   return isDestructiveName(tool) ? "required" : "none";
+}
+
+/**
+ * The same question for a built-in, whose default is declared rather than
+ * guessed (#322).
+ *
+ * The three rules above are unchanged and have to be: a sheet listing one tool
+ * twice resolves the same way whoever implements it, and two spellings of
+ * most-restrictive-wins is one of them going wrong. What differs is only the
+ * fallthrough. `isDestructiveName` is a guess from a verb, which is the right
+ * shape for names somebody else chose — there are thousands of them and nothing
+ * else is available. These two names were chosen in this repository, so
+ * `BUILTIN_APPROVAL_DEFAULT` states the answer instead.
+ *
+ * The consequence is that a sheet must **loosen** `schedule_task` by writing
+ * `approval = "none"`, rather than remember to tighten it. Forgetting the line
+ * gets the hold.
+ *
+ * **Both callers use this one**, and that is not tidiness: `permittedToolSources`
+ * publishes an `approval` the model is shown and `decideBuiltin` enforces one, and
+ * a listing that said `none` where the gate held would be the proxy disagreeing
+ * with itself in the one place a channel can see both.
+ */
+export function resolveBuiltinApproval(
+  entries: readonly BuiltinEntry[],
+  name: BuiltinToolName
+): ApprovalMode {
+  if (entries.length === 0) return "required";
+  if (entries.some(entry => entry.approval === "required")) return "required";
+  if (entries.some(entry => entry.approval === "none")) return "none";
+  return BUILTIN_APPROVAL_DEFAULT[name];
 }
 
 /**
@@ -740,6 +773,25 @@ function decideBuiltin(
     return refuse({ reason: "tool_not_allowed", server: call.server, tool: call.tool });
   }
 
+  // The one place this process reads `[ambient]`, and it reads one field of it
+  // (#322). With the block off nothing enumerates the channel, so a scheduled
+  // check could never fire — and a channel quietly accumulating approved future
+  // work that no clock will run is worse than a refusal, because a human clicked
+  // Approve on every one of them.
+  //
+  // Above the meter, deliberately: a channel that could never run the check
+  // should be told that rather than be told about its budget. And here rather
+  // than in the executor, because this is a fact the *sheet* answers and
+  // `ToolDispatcher` may not read one.
+  //
+  // The refusal is not a claim about `[ambient]`'s standing. That block is
+  // honoured by the agent, and this does not change it: the field is read here
+  // only to refuse, never to permit, so nothing a compromised agent could do to
+  // its own copy widens anything.
+  if (first.name === "schedule_task" && !sheet.ambient.enabled) {
+    return refuse({ reason: "ambient_disabled" });
+  }
+
   const overspent = exhaustedLimit(sheet, spend, prices);
   if (overspent !== null) {
     return refuse(overspent);
@@ -749,7 +801,7 @@ function decideBuiltin(
   const limits = resolveLimits(sheet, entries);
   const warning = crossedThreshold(sheet, spend, prices);
 
-  if (resolveApproval(entries, call.tool) === "required") {
+  if (resolveBuiltinApproval(entries, first.name) === "required") {
     return {
       outcome: "hold",
       target,
@@ -885,7 +937,7 @@ export function permittedToolSources(sheet: TeamSheet): PermittedToolSource[] {
       tool: {
         server: BUILTIN_SERVER,
         tool: entry.name,
-        approval: resolveApproval(named, entry.name)
+        approval: resolveBuiltinApproval(named, entry.name)
       },
       target: { kind: "builtin", tool: entry.name }
     });

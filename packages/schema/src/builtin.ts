@@ -1,4 +1,8 @@
 import { z } from "zod";
+// A type-only import, which is erased at compile time — ./team-sheet.ts imports
+// values from this file, and a runtime edge back would be a cycle whose
+// evaluation order decides whether a zod constant exists yet.
+import type { ApprovalMode } from "./team-sheet.js";
 
 /**
  * The tools the proxy implements itself, rather than dialling an upstream for.
@@ -51,11 +55,46 @@ export const BUILTIN_SERVER = "libero";
  * Every tool the proxy implements, as a closed set.
  *
  * A `z.enum` rather than `ResourceName`, and that is the whole argument for this
- * block existing — see the header. Adding a member here is the first half of
- * adding a built-in; the second is a definition in
- * `packages/proxy/src/builtins.ts`, and the exhaustive switch in the executor is
- * what fails the build if only one half lands.
+ * block existing — see the header. Adding a member here is the first of three
+ * parts of adding a built-in: an entry in `BUILTIN_APPROVAL_DEFAULT` below, a
+ * definition in `packages/proxy/src/builtins.ts`, and a case in the executor's
+ * exhaustive switch. Each of the three fails the build on its own if the others
+ * land without it — two `Record`s over this enum and one switch — so there is no
+ * order in which a half-added built-in compiles.
  */
-export const BuiltinToolName = z.enum(["search_channel_history"]);
+export const BuiltinToolName = z.enum(["search_channel_history", "schedule_task"]);
 
 export type BuiltinToolName = z.infer<typeof BuiltinToolName>;
+
+/**
+ * What a sheet gets when it lists a built-in and says nothing about approval.
+ *
+ * **Declared, because a built-in is ours.** `resolveApproval`'s fallback for an
+ * `[[mcp_server.tool]]` is the destructive-verb heuristic, and that is the right
+ * shape for it: those names were chosen by somebody else, there are thousands of
+ * them, and a guess from the verb is the only thing available. These two names
+ * were chosen here, in this repository, in a diff somebody reviewed — so the
+ * default is a decision to write down rather than a property to infer.
+ *
+ * The consequence is the one #322 asks for: `schedule_task` is `"required"`, so a
+ * sheet has to **loosen** it by writing `approval = "none"` rather than remember
+ * to tighten it. Forgetting the line gets you the hold.
+ *
+ * `search_channel_history` is `"none"`, which is exactly what the heuristic
+ * already answers for it — stated rather than left resting on the accident that
+ * its name contains no destructive verb.
+ *
+ * **Adding `"schedule"` to `DESTRUCTIVE_VERBS` was the other way to spell this
+ * and is wrong twice.** Creating a future check destroys nothing, and that list
+ * is matched against upstream tool names — so it would hold an MCP
+ * `reschedule_meeting` for every channel in every deployment, to decide something
+ * about a tool this process implements itself.
+ *
+ * A `Record` over the enum for `BUILTIN_TOOLS`' reason: adding a member without
+ * deciding its default is a type error rather than a built-in that quietly
+ * inherits a guess.
+ */
+export const BUILTIN_APPROVAL_DEFAULT: Record<BuiltinToolName, ApprovalMode> = {
+  search_channel_history: "none",
+  schedule_task: "required"
+};

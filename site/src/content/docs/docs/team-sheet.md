@@ -837,7 +837,7 @@ no `credential` to reference.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | Which built-in. A closed set; anything else is a parse error naming the field. |
-| `approval` | no | `"required"` or `"none"`, exactly as on `[[mcp_server.tool]]`. |
+| `approval` | no | `"required"` or `"none"`, exactly as on `[[mcp_server.tool]]`. Omitted, the **default is the built-in's own** — see below. |
 | `max_result_chars` | no | This tool's own ceiling, overriding `[llm] max_result_chars`. |
 
 **A built-in is not a bypass.** Listed here it is refused when the sheet omits it, held when this
@@ -850,11 +850,18 @@ stricter approval and the smaller result bound win.
 that name is a parse error rather than a channel whose `search_channel_history` quietly leaves the
 process.
 
-There is one built-in today:
+**Omitting `approval` does not mean the same thing here as it does on an `[[mcp_server.tool]]`.**
+There, the destructive-verb heuristic decides, because those names were chosen by somebody else and
+a guess from the verb is the only thing available. These names were chosen in this repository, so
+each built-in **declares** its own default and the table below states it. Writing the line always
+wins; leaving it out gets you the declared default rather than a guess.
 
-| Name | What it does |
-| --- | --- |
-| `search_channel_history` | Full-text search over **this channel's** stored messages. Takes words, not a query language; results are ranked by relevance rather than recency. |
+There are two built-ins today:
+
+| Name | Default `approval` | What it does |
+| --- | --- | --- |
+| `search_channel_history` | `none` | Full-text search over **this channel's** stored messages. Takes words, not a query language; results are ranked by relevance rather than recency. |
+| `schedule_task` | **`required`** | Creates one future check: a question, and how many minutes from now to ask it. At that time the agent runs that check and posts if there is anything to say. |
 
 Its scope is not negotiable and is not a setting. The channel comes from the client certificate, the
 tool's input schema has no field for one, and the arguments are parsed strictly — so a model that
@@ -865,6 +872,35 @@ Only messages the app has seen are searchable. It is not a Slack search API: not
 history starts when the app joined the channel. The author shown is the display name as it was when
 the message was stored, and `<@U…>` mentions inside message text stay as ids — the proxy holds no
 Slack token and inventing a name would be worse than showing an id.
+
+#### `schedule_task`
+
+**Two switches, and both have to be on.** Listing it here is one; [`[ambient] enabled`](#ambient) is
+the other. A create against a channel with ambient off is refused, because nothing would ever run
+the check.
+
+**It is held by default, and that is the whole of its governance.** A create is a served tool call
+like any other — allowlisted, held for a click, charged to the meter, written to the audit log — and
+the card the approver clicks shows the question and the time, so a human reads the text before it
+becomes future work. Writing `approval = "none"` is a channel deciding that unbidden future work
+needs no click. That is a real choice and the sheet lets you make it; it is not the default because
+forgetting a line should not be how a channel makes it.
+
+**The model sends an offset, not a time.** How many minutes from now, and the exact instant is
+worked out when the create is served — so nothing depends on a language model knowing what time it
+is, and there is no timezone anywhere in this. A check fires at its instant rather than at the next
+heartbeat, once, and late counts as due: one that came due while the process was down fires when it
+comes back, not once per window it missed.
+
+**What bounds it is fixed, not configurable.** How many checks may be waiting, how far out one may
+be scheduled, how soon, and how long the question may be are architecture constants rather than
+fields on this sheet — the same argument `[ambient]` makes for the rate limit on unbidden posts.
+Each has its own refusal, so a model that asks for more is told which bound it met. There is no
+recurrence: a repeating check is the agent scheduling the next one from the one that fired, which is
+a fresh create through the same gates.
+
+The channel is not a field, here or anywhere. It comes from the client certificate when the check is
+created and from the channel's own file when it fires.
 
 ### `[egress]`
 
@@ -908,12 +944,17 @@ send the proxy to a host no sheet named, so the call fails instead.
 
 Proactive posting: the agent starting a task nobody asked for, on a clock of its own.
 
-:::note[Parsed today, unread]
-Nothing reads this block yet. All three fields are accepted when the sheet loads and no code in
-either service consults them, so setting `enabled = true` does nothing at all rather than turning
-something on. Ambient work is phase 4 on the [roadmap](/docs/roadmap) — heartbeat,
-`schedule_task`, and rate limits, all behind the same budget as everything else — and the block
-has its shape now so a sheet written today does not have to change when the heartbeat lands.
+:::note[Read, and by both services]
+This block is live. `enabled` and `heartbeat_every_minutes` drive the agent's clock, which wakes at
+the next due instant and reaches a channel through the same session a task does;
+`answer_after_idle_minutes` is read by the heartbeat evaluation, before any model call, to decide
+whether a question has sat long enough to be worth answering. Setting `enabled = true` turns
+something on.
+
+`enabled` is also the one field on this page the **tool proxy** reads, and it reads nothing else
+here. A [`schedule_task`](#builtin) create against a channel with this switched off is refused,
+because nothing would ever run the check — and a channel quietly accumulating approved future work
+that no clock will enumerate is worse than a refusal, since a human clicked Approve on each of them.
 :::
 
 | Field | Required | Meaning |
