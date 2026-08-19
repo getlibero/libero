@@ -51,6 +51,14 @@ services:
       # read-write and the *directory* has to be writable. Unlike the two proxy
       # databases, this one holds message text: it is a channel's conversation,
       # and it belongs to that channel's members.
+      #
+      # It also holds a channel's scheduled checks. See what one is waiting on,
+      # or call one off, without restarting anything:
+      # `docker compose run --rm server node dist/tasks.js list <channel>` and
+      # `... cancel <channel> <id>`. That lives here rather than in the published
+      # CLI because this is a named volume the host cannot see, and here rather
+      # than on the proxy because the proxy mounts it read-only and a cancel is a
+      # write.
       AGENT_STORE_ROOT: /data/store
       # LLM provider keys go HERE (completion only) — never tool credentials.
       # Each provider's own conventional variable: the one matching

@@ -179,8 +179,16 @@ Widening that is a decision to take on purpose. The question it runs is
 model-authored text re-entering a model's context, so it goes in a `user` message,
 fenced, with the ask last.
 
-What phase 4 does *not* have yet is the operator surface for scheduled checks and
-the attack suite (#324's second half, and #325). What exists:
+#324 also gave `apps/server` its **first operator entrypoint** — `node
+dist/tasks.js list|cancel` — and where it lives was forced twice: not the
+published CLI, because `store-data` is a named volume the host cannot see (#98's
+rule), and not the proxy's entrypoints, because the proxy mounts that volume
+`readOnly` and a cancel is a write. A cancel is a *delete*, on
+`forgetSkillMergeProposal`'s argument, and it carries the same honest cost —
+nothing records that a check was cancelled, because `fired_at` means when a check
+ran and widening it would make every reader of that table ask which.
+
+What phase 4 does *not* have yet is the attack suite (#325). What exists:
 
 | Package | What it is |
 | --- | --- |

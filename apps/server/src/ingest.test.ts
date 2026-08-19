@@ -81,6 +81,8 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       nextScheduledTaskDueAt: () => null,
       dueScheduledTasks: () => [],
       markScheduledTaskFired: () => {},
+      listScheduledTasks: () => [],
+      cancelScheduledTask: () => false,
       readThreadSummary: () => null,
       close: () => {
         closed += 1;
@@ -392,6 +394,8 @@ describe("createMessageIngest", () => {
         nextScheduledTaskDueAt: () => null,
         dueScheduledTasks: () => [],
         markScheduledTaskFired: () => {},
+        listScheduledTasks: () => [],
+        cancelScheduledTask: () => false,
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -449,6 +453,8 @@ describe("createMessageIngest", () => {
         nextScheduledTaskDueAt: () => null,
         dueScheduledTasks: () => [],
         markScheduledTaskFired: () => {},
+        listScheduledTasks: () => [],
+        cancelScheduledTask: () => false,
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -881,6 +887,8 @@ describe("createRevisionIngest", () => {
         nextScheduledTaskDueAt: () => null,
         dueScheduledTasks: () => [],
         markScheduledTaskFired: () => {},
+        listScheduledTasks: () => [],
+        cancelScheduledTask: () => false,
         readThreadSummary: () => null,
         close: () => {}
       }
@@ -981,6 +989,8 @@ describe("createRevisionIngest", () => {
         nextScheduledTaskDueAt: () => null,
         dueScheduledTasks: () => [],
         markScheduledTaskFired: () => {},
+        listScheduledTasks: () => [],
+        cancelScheduledTask: () => false,
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -1038,6 +1048,8 @@ describe("createRevisionIngest", () => {
         nextScheduledTaskDueAt: () => null,
         dueScheduledTasks: () => [],
         markScheduledTaskFired: () => {},
+        listScheduledTasks: () => [],
+        cancelScheduledTask: () => false,
         readThreadSummary: () => null,
         close: () => {}
       })

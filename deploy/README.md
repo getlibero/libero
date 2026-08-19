@@ -87,10 +87,15 @@ is `{ readOnly: true }` on the connection, not the mount.
 `../prices` is bind-mounted `:ro` into the proxy alone, beside the channels
 directory and for the same reason: both are host-authored, reviewed, and written
 by nobody at runtime. It is inert until `PROXY_PRICE_TABLE` names a file inside
-it. The three databases stay in named volumes — the line `CLAUDE.md` draws is
-that the CLI owns what the operator authors on the host and the proxy's own
-entrypoints own what the services own inside their volumes, and a price table is
-authored.
+it. The four databases stay in named volumes — the line `CLAUDE.md` draws is that
+the CLI owns what the operator authors on the host and a service's own entrypoints
+own what that service owns inside its volumes, and a price table is authored.
+
+Since #324 that second half is no longer only the proxy's. `store-data` is a named
+volume too, and the scheduled checks in it are read and cancelled through
+`docker compose run --rm server node dist/tasks.js` — the server's first operator
+entrypoint. It is the server's rather than the proxy's because the proxy mounts
+that volume `readOnly` by design and a cancel is a write.
 
 ## Upgrading across #62: proxy first
 

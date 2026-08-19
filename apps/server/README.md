@@ -1343,6 +1343,33 @@ plan entry at `AMBIENT_RESCAN_MS` rather than at its own instant**, which is the
 spin guard: every way a due ticket can stay pending would otherwise ask the loop
 to wake at a time that has passed.
 
+### The operator surface, and why it is here
+
+`src/tasks-cli.ts` is this process's **first operator entrypoint** — `node
+dist/tasks.js list <channel>` and `cancel <channel> <id>` — beside the four
+`apps/proxy-server` already carries. Where it lives was forced twice over.
+
+Not the published `libero` CLI, for the reason #98 gave the audit log: the store
+is a named volume, so `npx @getlibero/cli` would open a path that is not on the
+operator's host. That is the rule the compose file already draws — the CLI owns
+what the operator authors on the host, and a service's own entrypoints own what
+that service owns inside its volumes.
+
+Not the proxy's entrypoints either, even though it mounts the same volume, because
+it mounts it `readOnly` by design. A cancel is a write, so it can only be this
+process's.
+
+**A cancel is a delete**, `forgetSkillMergeProposal`'s shape: the row's absence is
+unambiguous where a stamp saying "fired" about a check that never ran would not
+be, and the same act frees the pending slot. The cost is the one declining a
+proposal already carries and is worth stating — **nothing records that a check was
+cancelled.** If that is ever wanted it is a row somewhere else, not a value in
+`outcome`: `fired_at` means when a check ran, and widening it to mean "when it
+ended" would make every reader of that table ask which.
+
+It needs no restart to take effect, and that is the property the clock's
+read-every-scan was chosen for.
+
 ## The proactive post: the one way this process starts a message
 
 `src/proactive/proactive.ts` answers #318. Everything else this app says is a

@@ -178,10 +178,12 @@ describe("the interface", () => {
     expect(Object.keys(store).sort()).toEqual([
       "adoptSkillStatus",
       "append",
+      "cancelScheduledTask",
       "close",
       "dueScheduledTasks",
       "forgetSkillMergeProposal",
       "idleThreads",
+      "listScheduledTasks",
       "listSkills",
       "markScheduledTaskFired",
       "nearest",
@@ -1849,6 +1851,43 @@ describe("scheduled checks", () => {
       expect(store.nextScheduledTaskDueAt()).toBeNull();
     }
   );
+
+  // The operator's read, and the only one that answers rows. `MessageReader`
+  // deliberately does not get it: a cap needs a number, and a person deciding
+  // what to cancel needs to see what a check says.
+  it("lists what a channel is waiting on, earliest due first", () => {
+    store.scheduleTask(ticket("b", { dueAt: 2_000 }));
+    store.scheduleTask(ticket("a", { dueAt: 1_000 }));
+    store.markScheduledTaskFired("a", 1_100, "posted");
+    store.scheduleTask(ticket("c", { dueAt: 3_000 }));
+
+    expect(store.listScheduledTasks(10).map(task => task.id)).toEqual(["b", "c"]);
+  });
+
+  // A delete rather than a terminal outcome: the row's absence is unambiguous
+  // where a stamp saying "fired" about a check that never ran would not be, and
+  // the same act frees the pending slot.
+  it("forgets a waiting check, and says whether there was one", () => {
+    store.scheduleTask(ticket("a"));
+
+    expect(store.cancelScheduledTask("a")).toBe(true);
+    expect(pending()).toBe(0);
+    expect(store.listScheduledTasks(10)).toEqual([]);
+    expect(store.cancelScheduledTask("a")).toBe(false);
+  });
+
+  // A fired check is a record of something that happened; there is nothing to
+  // cancel about it, and a delete would remove the record.
+  it("does not forget a check that has already run", () => {
+    store.scheduleTask(ticket("a"));
+    store.markScheduledTaskFired("a", 1_100, "posted");
+
+    expect(store.cancelScheduledTask("a")).toBe(false);
+    const rows = new DatabaseSync(file, { readOnly: true })
+      .prepare(`SELECT COUNT(*) AS n FROM scheduled_task WHERE id = 'a'`)
+      .get() as { n: number };
+    expect(rows.n).toBe(1);
+  });
 
   // Additive DDL, and the version is what a reader depends on. #229, #290 and
   // #295 each added tables without moving it; this is the fourth, measured the
