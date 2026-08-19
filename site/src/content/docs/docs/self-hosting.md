@@ -25,7 +25,11 @@ and driven by a shell script and an edit to a team sheet rather than by anything
 is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowhere. Memory is whole — the message
 store and its full-text index, a curated `MEMORY.md`, and semantic recall over thread summaries —
 and so are skills, though a deployment with no embedding provider retrieves them on full text alone
-and proposes no merges. Ambient mode is a later phase. Point this at a
+and proposes no merges. Ambient mode is whole too — the heartbeat, proactive posts behind a rate
+window, and `schedule_task` — with two limits stated rather than hidden: a fired check is one
+bounded turn over the channel's recent messages and can look nothing up
+([#348](https://github.com/getlibero/libero/issues/348)), and cancelling a check leaves no record
+that it was cancelled ([#349](https://github.com/getlibero/libero/issues/349)). Point this at a
 scratch workspace before a real one.
 :::
 
@@ -434,6 +438,19 @@ history.
 
 `PROXY_BUDGET_DB` is required and has no default — a budget file invented under a path nobody meant
 is a channel whose hard limits never bite, which is the one misconfiguration here that fails open.
+
+Scheduled checks have an operator surface too, and it is on the **server** container rather than
+the proxy, because the tickets live in each channel's own store and that volume is the agent
+side's:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm server node dist/tasks.js list C024BE91L
+docker compose -f deploy/docker-compose.yml run --rm server node dist/tasks.js cancel C024BE91L 7
+```
+
+A cancel is a delete, and it carries an honest cost: nothing records that the check was cancelled,
+because `fired_at` means when a check ran and widening it would make every reader of that table
+ask which ([#349](https://github.com/getlibero/libero/issues/349)).
 SQLite writes `-wal` and `-shm` files beside it, so the *directory* must be writable and not just
 the file. Nothing in it is a secret.
 

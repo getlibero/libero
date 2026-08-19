@@ -299,7 +299,7 @@ small the answer is to rotate the file.
 
 ### Reading it
 
-`node dist/audit.js`, a third entrypoint beside the vault's and the budget's,
+`node dist/audit.js`, an entrypoint beside `vault`, `grant` and `budget`,
 and one for the same reason: the file is in a container volume the host cannot
 see, so it is not a command in the published `libero` CLI.
 

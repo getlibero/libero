@@ -34,7 +34,7 @@ Governance first, features second: tool credentials never enter the agent proces
 
 ## Status
 
-Pre-release. Phases 1 through 3 are done, so the quick start below is the whole of it: three CLI commands and `docker compose up` stand a deployment up from a clean checkout. It is still not something to point at a workspace you care about.
+Pre-release. Phases 1 through 4 are done, so the quick start below is the whole of it: three CLI commands and `docker compose up` stand a deployment up from a clean checkout. It is still not something to point at a workspace you care about.
 
 What exists is the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, a redaction pass that scrubs echoed secrets out of results, the MCP client and its pool with a per-upstream concurrency limit, OAuth against upstreams that need it — the proxy discovers, mints, stores and rotates the token, and the agent never sees it (#157) — the budget meter in calls and in dollars, failing closed on an unpriced model (#62), the append-only audit log, and the approval broker. The Slack gateway and the agent loop reach tools through the proxy and nowhere else, report what each model turn cost, and drain in-flight work on SIGTERM so the last turn's spend is not lost (#118).
 

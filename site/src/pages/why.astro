@@ -58,7 +58,7 @@ import { SITE } from '../consts';
       <p>
         Each channel has a <strong>team sheet</strong>: a TOML file in your git repo declaring
         which servers it may reach, which tools exist as far as it is concerned, which of those
-        need a human click, what the daily budget is, and where traffic may go.
+        need a human click, and what the daily budget is.
       </p>
       <p>
         A tool that is not on the sheet is not in the definitions the agent receives, and a call to
@@ -89,8 +89,8 @@ import { SITE } from '../consts';
         control, because that is what makes the credential boundary meaningful in the first place.
       </p>
       <p>
-        Models are swappable per channel — Anthropic, OpenAI, Google, Groq, Ollama, or anything
-        behind an OpenAI-compatible endpoint. That is not neutrality for its own sake. A governed
+        Models are swappable per channel — Anthropic, OpenAI, or anything behind an
+        OpenAI-compatible endpoint, Google, Groq, and Ollama among them. That is not neutrality for its own sake. A governed
         core that only works with one vendor&rsquo;s model has an availability dependency in the
         middle of a security boundary.
       </p>

@@ -41,8 +41,14 @@ them; `node_modules` stays excluded (#107).
 
 ## Current state
 
-Phases 1, 1.5, 2 and 3 are shipped and their milestones closed. Phase 4
-(ambient) is open. #316 gave `[ambient]` its real shape —
+Phases 1, 1.5, 2, 3 and 4 are shipped and their milestones closed. Phase 5
+(hardening, milestone 6) is open: the audit tamper-evidence workstream (#352)
+and the proxy hardening pass (#353). It was first written as "breadth"; the
+roadmap records why Discord and Temporal were dropped rather than deferred, and
+advanced scheduling is parked as #358 beside #348.
+
+The phase 4 record, kept because its decisions are load-bearing for anything
+touching ambient: #316 gave `[ambient]` its real shape —
 `heartbeat_every_minutes` and `answer_after_idle_minutes` beside `enabled` — and
 #317 is its first reader: `apps/server/src/session/ambient.ts` is **the one clock
 in this process and the one enumerator over every channel**, which is why the
