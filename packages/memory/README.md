@@ -676,6 +676,14 @@ And `markScheduledTaskFired` carries `fired_at IS NULL` in its own predicate, so
 second fire cannot move the first one's stamp: a fire is the one act that ends a
 ticket, and a second is a bug rather than an update.
 
+Two more landed with the operator surface, and they are the operator's rather
+than the clock's. `listScheduledTasks` is the only read here that answers *rows*
+— `MessageReader` deliberately does not get it, because the proxy enforces a cap
+and needs a number, where a person deciding what to cancel needs to see what a
+check says. `cancelScheduledTask` is a **delete** and not a terminal outcome, for
+`forgetSkillMergeProposal`'s reason; the honest cost, the same one declining a
+proposal carries, is that nothing records that a cancel happened.
+
 Every `ScheduledTaskOutcome` is terminal. There is deliberately no value that
 leaves a ticket pending — that value is what would let a firing which produced no
 check consume a check that never ran.

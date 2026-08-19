@@ -1445,6 +1445,33 @@ export interface MessageStore {
    * update.
    */
   markScheduledTaskFired(id: string, at: number, outcome: ScheduledTaskOutcome): void;
+  /**
+   * Every unfired check this channel is holding, earliest due first (#324).
+   *
+   * The operator's read, and the only one that answers *rows* rather than a
+   * count or an instant. `MessageReader` deliberately does not get it: the tool
+   * proxy service enforces a cap and needs a number, where a person deciding
+   * whether to cancel something needs to see what it says.
+   */
+  listScheduledTasks(limit: number): readonly StoredScheduledTask[];
+  /**
+   * Forget a check that has not fired. Answers whether there was one.
+   *
+   * **A delete rather than a terminal outcome**, which is `forgetSkillMergeProposal`'s
+   * shape and its argument: declining is deleting, and the row's absence is
+   * unambiguous where a stamp saying "fired" about a check that never ran would
+   * not be. It frees the pending slot by the same act.
+   *
+   * The honest cost, stated because it is the same one declining a proposal
+   * carries: **nothing records that a check was cancelled.** If that is ever
+   * wanted it is a row somewhere else, not a value here — `fired_at` means when a
+   * check ran, and widening it to mean "when it ended" would make every reader of
+   * this table ask which.
+   *
+   * Only an unfired check: a fired one is a record of something that happened,
+   * and there is nothing to cancel about it.
+   */
+  cancelScheduledTask(id: string): boolean;
   close(): void;
 }
 
@@ -2366,6 +2393,17 @@ type ScheduledTaskRow = {
   readonly created_at: number;
 };
 
+/** One `scheduled_task` row, in the names the interface uses. */
+function toStoredScheduledTask(row: ScheduledTaskRow): StoredScheduledTask {
+  return {
+    id: row.id,
+    task: row.task,
+    prompt: row.prompt,
+    dueAt: row.due_at,
+    createdAt: row.created_at
+  };
+}
+
 /** A `thread_summary` row. `MessageRow`'s reasons apply. */
 type ThreadSummaryRow = {
   readonly thread_ts: string;
@@ -2568,6 +2606,16 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     // second fire must not move the first one's stamp, and the database is where
     // that is one statement instead of a read and a write somebody could
     // interleave.
+    listScheduledTasks: db.prepare(
+      `SELECT id, task, prompt, due_at, created_at
+         FROM scheduled_task
+        WHERE fired_at IS NULL
+        ORDER BY due_at ASC
+        LIMIT ?`
+    ),
+    cancelScheduledTask: db.prepare(
+      `DELETE FROM scheduled_task WHERE id = ? AND fired_at IS NULL`
+    ),
     markScheduledTaskFired: db.prepare(
       `UPDATE scheduled_task
           SET fired_at = ?, outcome = ?
@@ -3063,17 +3111,20 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
 
     dueScheduledTasks(at, limit) {
       const rows = statements.dueScheduledTasks.all(at, clampLimit(limit)) as ScheduledTaskRow[];
-      return rows.map(row => ({
-        id: row.id,
-        task: row.task,
-        prompt: row.prompt,
-        dueAt: row.due_at,
-        createdAt: row.created_at
-      }));
+      return rows.map(toStoredScheduledTask);
     },
 
     markScheduledTaskFired(id, at, outcome) {
       statements.markScheduledTaskFired.run(at, outcome, id);
+    },
+
+    listScheduledTasks(limit) {
+      const rows = statements.listScheduledTasks.all(clampLimit(limit)) as ScheduledTaskRow[];
+      return rows.map(toStoredScheduledTask);
+    },
+
+    cancelScheduledTask(id) {
+      return statements.cancelScheduledTask.run(id).changes > 0;
     },
 
     close() {

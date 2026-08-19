@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
+    "tasks": "node dist/tasks.js",
     "test": "vitest run --exclude '**/dist/**'"
   },
   "dependencies": {
