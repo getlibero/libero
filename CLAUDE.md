@@ -465,8 +465,12 @@ optional properties reject explicit `undefined`.
 ## Release
 
 `@getlibero/cli` is the only npm-published package; everything else ships as
-Docker images built from `deploy/docker-compose.yml`. Pushing a `cli-v*` tag
-triggers `release-cli.yml`, which publishes with npm provenance attestations.
+Docker images built from `deploy/docker-compose.yml`. **One `v*` tag releases
+the whole deployment** — it triggers `release-cli.yml` (npm publish with
+provenance attestations) and the image publish (#313). `cli-v*` is retired.
+`RELEASING.md` at the repo root is the release procedure and the tag scheme's
+record, including the environment tag policy that lives in repo settings
+rather than in git.
 
 It publishes **one file and no dependencies**: `packages/cli/build.mjs` bundles
 `@getlibero/schema` and `@getlibero/atomic-write` in with esbuild, and the
