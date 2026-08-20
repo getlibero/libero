@@ -68,6 +68,22 @@ export interface LogFields {
    */
   file?: string;
   /**
+   * The audit log's chain tip at open: the last row's `row_hash` (#354).
+   *
+   * A hash, so it owes this file's rule the same argument `fingerprint` owes it,
+   * and it is the easier case. The rule is about a credential value or a digest
+   * of one; this is a digest of audit rows the proxy wrote itself, over columns
+   * that hold names, ids and a hash of arguments and never a credential value.
+   * Nothing behind it is secret, and knowing it grants nothing — a chain is
+   * unkeyed, so anyone holding the file can compute it.
+   *
+   * It is logged because the chain's honest limit is that evidence has to live
+   * outside the file, and a deployment shipping its logs off the host gets an
+   * anchor per restart for free. Only as far as the logs travel — the operator's
+   * own copy is `audit verify`'s job.
+   */
+  chainTip?: string;
+  /**
    * Validation failures in a team sheet, as `path: code` — the schema's own
    * field names and zod's issue codes. Both closed vocabularies; neither
    * carries a value out of the file. See `parseTeamSheet`.

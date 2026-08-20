@@ -52,22 +52,27 @@ reveals a credential and the one that scrubs the reply.
 - `audit-db.ts` / `audit-log.ts` — the audit log over `node:sqlite`: one row per
   decided tool call, and once the file is open the only statement that touches
   the audit table is an INSERT — the rest of the module's SQL is the
-  `schema_version` bookkeeping every database here carries, plus the one
-  migration below.
-  The file is at schema version 3, and version 1 and 2 files are migrated in
+  `schema_version` bookkeeping every database here carries, one read of the
+  chain's tip at open, plus the one migration below.
+  The file is at schema version 5, and version 1 through 4 files are migrated in
   place on first open. SQLite cannot widen a CHECK constraint, so the migration
   rebuilds the table — the one moment the append-only triggers are deliberately
   dropped. It runs inside a single transaction that also carries the version
   stamp, so a crash anywhere in it rolls back to an untouched older file. What
-  made it safe to write at all is that every version so far only *widens*: no
-  existing row can fail the new constraint. There is one rebuild rather than a
-  ladder — it asks the old table which columns it has rather than being told by
-  a version number — because the DDL in the module is by construction the
-  *current* table, and a ladder would need a frozen copy of each past one.
+  made it safe to write was that every version through 4 only *widens*: no
+  existing row can fail the new constraint. Version 5 is the first that cannot
+  say that — it adds two NOT NULL columns — so it answers the question
+  differently, by computing a value for every row it copies. There is one rebuild
+  rather than a ladder — it asks the old table which columns it has rather than
+  being told by a version number — because the DDL in the module is by
+  construction the *current* table, and a ladder would need a frozen copy of each
+  past one.
   Append-only comes from `BEFORE UPDATE`/`BEFORE DELETE` triggers that
   `RAISE(ABORT)` — SQLite has no roles and no grants, so the write-only
   interface and the file's permissions are defence in depth around those rather
-  than the mechanism. The row carries a hash of the model's arguments and never
+  than the mechanism. Rows are hash-chained on top of that, which is a different
+  kind of protection and is described below. The row carries a hash of the
+  model's arguments and never
   the arguments: nothing on the write path holds a credential value, so nothing
   on it could redact one. A failed write refuses the call rather than serving it
   unrecorded. No tokens column — tokens are per turn, so the row carries the
@@ -1000,6 +1005,76 @@ null every `ticket`.
 
 There is no retention command and a delete-based one should not be added;
 rotation is the shape.
+
+### The chain, and what it is evidence of
+
+Version 5 gives every row `prev_hash` and `row_hash` (#354). `row_hash` is
+SHA-256 over the predecessor's `row_hash` and a canonical serialization of the
+row's own columns; the first row chains from a stated genesis constant.
+Recomputing the walk from the first row is what detects an edit.
+
+**Evidence, not prevention, and the two halves do different jobs.** The
+append-only triggers stop the *service* rewriting history in normal operation.
+The chain catches *whoever holds the file* — the actor the triggers were always
+unable to see, and which `audit-db.ts` has said so about since #97.
+
+The serialization is pinned: the column order is a frozen array in the module,
+NULL columns are omitted, and both the key and the value go through
+`JSON.stringify` so that a model-authored `call_id` cannot forge a field
+boundary. Omitting NULLs is the load-bearing rule — it is what makes a future
+widening leave every historical hash alone, since every column this module has
+ever added is NULL on every row written before it. A change to the encoding is
+not a migration; it invalidates every file, which is why it versions with
+`schema_version` and why the tag naming it sits in the preimage.
+
+The serving path still runs exactly one statement. The tip is read once at open
+and carried in memory, because SQLite cannot compute a SHA-256 and reading the
+hash back after the insert would be a second statement.
+
+A **unique index on `prev_hash`** is what makes the one-writer assumption
+something SQLite checks rather than something this file asks you to believe. It
+matters because the triggers stop UPDATE and DELETE and **not** INSERT: anyone
+holding the file can append to it. A forged append takes the tip's successor
+slot, so the proxy's next call cannot be recorded — and is therefore refused,
+until an operator restarts it. That is a denial of service caused by tampering,
+and it is the posture the route already takes when it cannot write a row at all.
+Re-seeding the tip on conflict would mean chaining onto the attacker's row and
+serving on, which is why it is not done.
+
+**What it catches:** any row rewritten, deleted, or inserted without recomputing
+every hash after it. That is what an UPDATE through `sqlite3` does.
+
+**What it does not catch**, stated because "tamper-evident" invites more:
+
+- **A complete recompute.** The chain is unkeyed, so an attacker holding the file
+  can rewrite a row and re-derive every hash after it. The answer is anchoring
+  the tip outside the file — `audit verify` prints it (#355), and the proxy also
+  logs it as `chainTip` on `audit_opened`, which is an anchor as far as the logs
+  travel and no further. An HMAC was rejected: reading `audit.db` means being on
+  the proxy host where the key would be, a key is a thing to lose (turning "no
+  evidence" into "evidence destroyed by a mistake"), and an unkeyed chain is
+  checkable by anyone holding an archived copy — which for an audit log is the
+  feature, not the weakness.
+- **Truncation from the tail.** Dropping the last rows leaves a shorter chain
+  that is internally perfect. Same answer.
+- **A monotone renumbering of `id`.** The chain fixes the order, not the
+  numbering: swapping two ids breaks the walk, rewriting 1,2,3 as 10,20,30 does
+  not. What that costs is `afterId` as an export cursor, and closing it would
+  mean this process assigning the primary key instead of SQLite.
+- **Rotation.** A chain is per file. `VACUUM INTO` a dated archive starts a new
+  one; tying the new file's genesis to the old file's tip is the operator's act.
+
+Rows written before version 5 are chained *as of the migration*. That vouches for
+them from that moment forward and asserts nothing about what happened to them
+before it — an important difference from a row written under v5, which was
+chained at the moment it was written. Refusing a v4 file and making rotation the
+answer was considered and rejected: this log's whole value is not forgetting, and
+buying evidence by discarding the evidence is a bad trade.
+
+**An export is not the verification surface.** The CSV carries both columns,
+because an export that drops the chain is an export nobody can verify — but a
+*filtered* CSV is a subset whose hashes do not link. Verification is `audit
+verify` against the file.
 
 ### The priced columns, and what they are not
 

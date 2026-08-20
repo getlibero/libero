@@ -41,6 +41,13 @@ export interface AuditRow {
   readonly result_is_error: number | null;
   readonly approver: string | null;
   readonly ticket: string | null;
+  /**
+   * #354. The chain. `prev_hash` is the previous row's `row_hash`, and the first
+   * row's is a stated genesis constant; neither is null, because the migration
+   * gives every row it copies one.
+   */
+  readonly prev_hash: string;
+  readonly row_hash: string;
 }
 
 /**

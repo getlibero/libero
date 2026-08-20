@@ -178,6 +178,40 @@ async function audit(...args: string[]) {
   return result.stdout;
 }
 
+// #354. The positive control for the chain, and the only thing that shows a
+// real proxy writes one — every other case for it runs against a file the unit
+// tests opened themselves. It asserts the shape rather than recomputing the
+// walk, because recomputing it needs the serialization, and importing that here
+// would put a second copy of it outside audit-db.ts. #355 is the command that
+// walks it and #356 is the case that attacks it.
+it(
+  "chains every row it wrote",
+  () => {
+    const { auditDb } = rigOf(rig);
+    const written = auditRows(auditDb, start);
+
+    // A floor rather than a count: the three lifecycles the setup drives leave
+    // at least this many, and the loop below would pass vacuously on none. An
+    // equality here would be asserting how many rows a lifecycle happens to
+    // leave, which is not this case's business.
+    expect(written.length).toBeGreaterThanOrEqual(3);
+    for (const row of written) {
+      expect(row.row_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(row.prev_hash).toMatch(/^[0-9a-f]{64}$/);
+    }
+    // Each row names the one before it. The first is skipped because its
+    // predecessor is the genesis constant, and rows before `start` are the rig's
+    // own setup rather than this case's.
+    expect(written.slice(1).map(row => row.prev_hash)).toEqual(
+      written.slice(0, -1).map(row => row.row_hash)
+    );
+    // Distinct, which is what says these are links rather than a constant the
+    // writer stamped on every row — a mistake every assertion above would pass.
+    expect(new Set(written.map(row => row.row_hash)).size).toBe(written.length);
+  },
+  CASE_MS
+);
+
 it(
   "finds the call that ran, the call that was refused, and the call a human approved",
   async () => {
@@ -253,7 +287,7 @@ it(
     expect(header).toBe(
       "id,at,channel,requesting_user,task,request_id,call_id,server,tool,arguments_sha256," +
         "outcome,refusal_reason,budget_limit,day_spend_micro_usd,price_version," +
-        "result_bytes,result_is_error,approver,ticket"
+        "result_bytes,result_is_error,approver,ticket,prev_hash,row_hash"
     );
     expect(records.length).toBeGreaterThanOrEqual(6);
     expect(csv).toContain("list_prs");
@@ -267,8 +301,17 @@ it(
 
     // The approval's rows share one ticket, which is what ties four requests
     // together for someone reading this file a month later.
+    //
+    // Taken by the header's own index rather than as the last field. It was the
+    // last one until #354 appended the chain's two columns, and a positional
+    // `.at(-1)` silently became an assertion about `row_hash` — which passed the
+    // "not empty" filter on every row and then failed on the count. Reading the
+    // index off the header is what stops the next appended column doing it
+    // again.
+    const ticketAt = header?.split(",").indexOf("ticket") ?? -1;
+    expect(ticketAt).toBeGreaterThan(-1);
     const tickets = records
-      .map(line => line.split(",").at(-1))
+      .map(line => line.split(",")[ticketAt])
       .filter((ticket): ticket is string => ticket !== undefined && ticket !== "");
     expect(new Set(tickets).size).toBe(1);
     expect(tickets.length).toBeGreaterThanOrEqual(3);

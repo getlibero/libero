@@ -107,7 +107,14 @@ export const AUDIT_CSV_COLUMNS: readonly Column[] = [
   { header: "result_bytes", of: e => optional(e.resultBytes) },
   { header: "result_is_error", of: e => optional(e.resultIsError) },
   { header: "approver", of: e => optional(e.approver) },
-  { header: "ticket", of: e => optional(e.ticket) }
+  { header: "ticket", of: e => optional(e.ticket) },
+  // #354. Not `optional`, because the columns are NOT NULL — every exported row
+  // has both. They are here rather than left off because an export that drops
+  // the chain is an export nobody can verify: `row_hash` is what recomputation
+  // is checked against, and `prev_hash` is what ties a row to the one before it.
+  // A CSV of the log that cannot be checked is a copy of the log, not evidence.
+  { header: "prev_hash", of: e => e.prevHash },
+  { header: "row_hash", of: e => e.rowHash }
 ];
 
 /** RFC 4180, and nothing beyond it. */
