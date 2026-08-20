@@ -188,6 +188,11 @@ execution plan, not the spec.
 - **One milestone per phase**, created when the phase starts. Its description
   carries the phase's definition of done. An issue goes in the milestone only
   if the phase gates on it.
+- **Where something landed differently from the roadmap's own wording, the
+  roadmap records the difference** rather than the definition of done being
+  ticked as though it had not happened. Phase 3 has three of these and phase 5
+  has two; a box ticked against a sentence that turned out to be untrue is worse
+  than no box, because the next reader has no way to tell which.
 - **One tracking issue per workstream** (label `tracking`), holding native
   sub-issues. Sub-issues are sized to roughly one PR and state their own
   acceptance criteria.
