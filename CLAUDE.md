@@ -56,172 +56,6 @@ to build, and the next person to have the idea will not find it otherwise:
 and redact the secrets" is settled rather than open. #364 holds the gap it
 leaves.
 
-The phase 4 record, kept because its decisions are load-bearing for anything
-touching ambient: #316 gave `[ambient]` its real shape —
-`heartbeat_every_minutes` and `answer_after_idle_minutes` beside `enabled` — and
-#317 is its first reader: `apps/server/src/session/ambient.ts` is **the one clock
-in this process and the one enumerator over every channel**, which is why the
-four background passes stay on channel activity and this does not. It wakes at
-the next due instant rather than on a tick (so `schedule_task`'s due task joins
-as an event source rather than a second clock), skips windows it was down for
-rather than replaying them, and reaches a channel through the same session — and
-therefore the same mutex — a task does. One thing rides with it: the gateway now
-answers `workspace` off the same `auth.test` it already made, because a
-filesystem listing gives channel ids and a session key needs both.
-
-#318 gave that clock somewhere to speak. `apps/server/src/proactive/proactive.ts`
-is **the one path in this process that starts a message** — the gateway's
-`ChannelPoster` posts with no thread, because a proactive post has no inbound
-event to reply into. What keeps it from becoming a general capability is
-composition rather than a rule: `createServer` mints one `ProactivePoster` and
-`ServerDeps.heartbeat` is a **factory** over it, so the capability never reaches
-`index.ts` and the four background passes cannot name the type. The curator's
-"a proposal is a file because this process cannot post" is therefore still true
-after this, and #320 is what changes it. The rate limit is
-`HEARTBEAT_POST_WINDOW_MS` — four hours, per channel, an architecture constant
-the schema's `[ambient]` block already refused to make a field — and it governs
-`source: "heartbeat"` alone: a fired task's post was governed at its create, so
-it neither draws on the window nor is blocked by it. That discriminant is
-`DueEntry.kind`'s word list, deliberately, so the phase has one vocabulary.
-
-#335 came out of #319 rather than out of the roadmap, and it is the reason that
-issue is not next: the evaluation turn promises that a channel at its cap spends
-nothing, and the agent side had no way to find out. `GET /v1/budget` is the read
-that closes it — advisory rather than enforcement, because a completion never
-reaches the proxy — and the three background passes that spend now ask before
-they do. The gate sits immediately before each provider call rather than at the
-head of a pass, so a channel over its caps still reconciles its skill index.
-
-#319 is the reader those two were built for. `apps/server/src/session/heartbeat.ts`
-is what a due channel does: a four-question pregate — sheet, rate window, idle
-material, budget — where the first three are free and most ticks stop in them, and
-then one model call whose ordinary answer is nothing. **Silence is calling no
-tool**, which diverges from the architecture's "SILENT sentinel" wording on
-purpose: it is the idiom the other four background turns already use, and under
-it "an answer that is neither the sentinel nor a finding is silent" holds by
-construction rather than by a branch. The window is checked *before* the
-evaluation, which is what makes a shut window defer a finding rather than lose
-one, and a per-channel watermark is what makes a finding say-once — load-bearing
-because the agent's own replies are not in the store, so nothing else records
-that it already spoke. `[ambient] answer_after_idle_minutes` finally has a
-reader, and `packages/memory` grew `idleThreads` for it: `staleThreads` is joined
-against the summary corpus, so a channel that summarizes its quiet threads would
-be invisible to the heartbeat.
-
-#320 closed the heartbeat workstream's last feature and the loop phase 3 left
-open: a waiting merge proposal is now named in its channel, once. It is material
-in the pregate's sense and it is *free* — the notice is a template over two skill
-names, so a tick whose only material is a proposal makes no model call, and a
-channel over its caps still hears about one. A notice and a finding in the same
-evaluation are one post. Say-once is `skill_merge_notice` in the channel's index,
-a table of its own beside the considered one because *considered* is a fact about
-spend and *told* is a fact about a channel; it is written after the post lands and
-is never cleared when a proposal is forgotten, or deleting one would become a way
-to be asked again. The **directory** is what is listed rather than the index,
-which is what keeps deletion both the decline and the way to stop the notice.
-
-#321 closed the heartbeat workstream. The rig composes ambient on request — off
-twice, by a `RigOptions.ambient` switch *and* by the sheet, which is what makes
-"a channel that never opted in sees nothing" assertable rather than asserted —
-and `rig.heartbeat(at)` fires exactly one, scanning twice because first sight
-never fires. The suite states the claim the way #293 states its own: injected
-channel content can steer *what a proactive post says*, and what it must not do
-is widen anything governed — one post per rate window however many ticks fire, a
-question not answered before its threshold and answered after, a tick with
-nothing new spending nothing, a capped channel heartbeating without spending, a
-channel with `[ambient]` off seeing nothing, and a proposal notice that hostile
-content in the proposal itself cannot repeat. Wiring it found two real gaps in
-the rig: the harness gateway had no `AppIdentity`, so `gateway.workspace` was
-`undefined` and the clock would have refused to scan in every deployment the
-suite composed, and the surface had no `channel` verb.
-
-#322 is `schedule_task`'s shapes, plus the two gates that make the shapes true
-rather than aspirational — the declared hold and the `[ambient]` precondition,
-both in `decideBuiltin`, because a starter sheet documenting a hold the gate did
-not apply would be this repository's own "a test that encodes a gap" one file
-over. Three decisions ride on
-`packages/schema/src/schedule-task.ts`'s header. **The model sends an offset and
-the proxy stores an instant** — `due_in_minutes`, resolved once at create, because
-a model has no clock and an absolute instant would want a timezone this tree
-refuses everywhere plus a date grammar in a package the CLI publishes with no
-dependencies. **The caps are constants rather than `[ambient]` fields**, by the
-`RECALL_LIMIT` test read through who grew the corpus: these tickets are
-machine-grown, so bounding them bounds what the process assembles. And
-**approval-gated by default is declared, in `BUILTIN_APPROVAL_DEFAULT`, not
-guessed** — the destructive-verb heuristic exists for names somebody else chose,
-and adding `"schedule"` to it would hold an MCP `reschedule_meeting` in every
-deployment to decide something about a tool this process implements itself. The
-four refusals stay four for the reason the broker's six do: wait, ask nearer, ask
-later, and edit the sheet are four different remedies.
-
-#323 is the create itself, and the decision in it is **where a ticket lands**. The
-proxy has no write path into a channel's store by design, so the create is
-governed there and recorded here: `packages/agent`'s tool client raises
-`onScheduledTask` on a served create, keyed on the `(server, tool)` pair and never
-on the flat model name, and `apps/server/src/session/scheduled.ts` writes the row
-from the session's own store handle. Three properties in a row make the pending
-cap *exact* against a model — the loop dispatches tool calls one at a time,
-`node:sqlite` writes are synchronous, and a channel's work is serialized on one
-mutex — and none of them is a claim about a compromised process, which can write
-extra rows and does not need to. The three caps refuse from `Dispatch`'s
-**`refused` arm** rather than from `decide`, which is where `credential_unresolved`
-already sits: they read the model's arguments and the channel's store, and keeping
-enforcement argument-blind is what stops the refusal set growing a per-tool
-argument reason for every future tool. The cost is that a cap-refused create is
-metered, because `recordToolCall` runs before dispatch. `MessageReader` grew its
-second method ever for the count, and it answers an integer — the proxy learns how
-many checks wait and never what one says.
-
-#324 fires them, and its decision is **one firing, one outcome**. A due check
-reaches a terminal state on its first wake, always: it posts, it runs and has
-nothing to say, or the channel is told — in that same one post — that it did not
-happen. That replaced a queue, and the queue is worth naming because it is the
-obvious thing to rebuild: a due check left pending keeps asking a loop that sleeps
-until the next due instant to wake at an instant already past, so it needs a
-backoff, a retry stamp and a staleness rule, at the end of which a reminder can
-arrive days late. Telling the team keeps what the queue was for — they can act on
-the timer even when the agent could not. `[ambient]` off is the one silence,
-because that switch means *do not speak here*.
-
-Two shapes follow. The clock **reads each enabled channel's next instant from the
-store every scan** rather than remembering it, which is the opposite of what it
-does with a heartbeat's deadline and right for the opposite reason: a heartbeat's
-next instant is this process's own arithmetic, where a ticket's is a fact on disk
-another task can add to at any moment. And a fired check **makes no tool calls at
-all** — one bounded turn, one tool that posts, no proxy client — so "every call it
-induces meets the same gates a mention's does" is true by there being none.
-Widening that is a decision to take on purpose. The question it runs is
-model-authored text re-entering a model's context, so it goes in a `user` message,
-fenced, with the ask last.
-
-#324 also gave `apps/server` its **first operator entrypoint** — `node
-dist/tasks.js list|cancel` — and where it lives was forced twice: not the
-published CLI, because `store-data` is a named volume the host cannot see (#98's
-rule), and not the proxy's entrypoints, because the proxy mounts that volume
-`readOnly` and a cancel is a write. A cancel is a *delete*, on
-`forgetSkillMergeProposal`'s argument, and it carries the same honest cost —
-nothing records that a check was cancelled, because `fired_at` means when a check
-ran and widening it would make every reader of that table ask which.
-
-#325 closed the phase. `e2e/schedule-task.test.ts` states the claim the way #293
-and #321 state theirs: injected content can steer *what a check asks and what its
-post says*, and what it must not do is widen anything governed. Two positive
-controls come first — a governed create leaves a ticket, and the clock reaches
-that ticket at its own instant — and the first is written to be demonstrably able
-to fail, asserting the check does **not** fire on an earlier scan. Then: an
-unlisted built-in, a hold nobody decided firing nothing ever, a flood refused at
-the pending cap, a channel with `[ambient]` off refusing the create outright, a
-hostile `channel` argument moving neither the create nor the firing, an injected
-question steering a post while inducing no served call, and a capped channel's due
-check spending nothing and telling the channel so.
-
-Two things the suite pinned down that are easy to get wrong in a later case. **An
-unlisted built-in never reaches the proxy** — it is not published, so the client
-refuses locally and the audit log stays empty; the refusal is a
-`tool_not_permitted` line on the agent's side. And **a ticket's instant is the
-proxy's clock at the create**, so a case scanning at exactly the instant it asked
-for is racing the rig's own startup.
-
 What exists:
 
 | Package | What it is |
@@ -229,7 +63,7 @@ What exists:
 | `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
-| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only audit log, and the approval ticket store |
+| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, the proactive post's verb and renderer, the app's own identity and workspace off one `auth.test`, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries and the two quiet-thread reads, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, the `proposals/` directory beside it, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
@@ -246,47 +80,13 @@ phase 2: a channel's messages are searchable, its `MEMORY.md` is curated after a
 reply and read back before the next task, its quiet threads are summarized and
 embedded, and a task starts with whatever of that bears on the question.
 
-Skills close the same loop as of #291: a channel's `skills/` directory is
-reconciled against its index at the head of every task, the playbooks matching
-the incoming request are loaded into the opening context and record a use (#292),
-and a task whose *served* tool calls exceed the channel's threshold gets one
-extra model call that decides whether a reusable playbook emerged and writes it
-(#291). A skill somebody added with an editor and a skill the turn wrote reach
-the index by the same road. The layer is attacked in `e2e/` as of #293, which
-states the claim narrowly: a poisoned skill can steer the model, and what it
-must not do is widen anything the proxy governs. #305 gave that retrieval its
-second leg: nothing embedded a skill until then, so `nearest(…, "skill")`
-answered nothing in every deployment and the hybrid fusion ran on full text
-alone. `apps/server/src/session/skill-embed.ts` is the pass that fills it, on
-channel activity beside the quiescence sweep and reconciling first — which makes
-it `reconcileSkillIndex`'s second caller. #294 added the third and the clocks it
-serves: `apps/server/src/session/skill-lifecycle.ts` marks a skill stale at
-`[skills] stale_after_days` unused and archived at `archive_after_days`, on
-channel activity beside the other two and reconciling first — which is what makes
-respecting a hand-set status a property rather than a race. It is the one
-background pass that spends nothing, and structurally so: it holds no model
-client and no spend reporter. #295 closed the workstream with the curator:
-`apps/server/src/session/skill-curate.ts` asks the index for the closest *mutual
-nearest neighbour* pair of playbooks not yet considered, spends one model call
-asking whether they are one, and writes the answer as a **proposal** in
-`proposals/` beside `skills/` — never a rewrite. The review surface is the
-filesystem because it is forced: no path in this process can post to a channel.
-#308 closed the phase: the rig wires all four background passes on request
-(`passes`), on a clock that reaches them and nothing else, and the suite now
-attacks the two that write into the team's directory. It also fixed a latent
-hazard — `channels.ts` wrote `[memory] enabled` but not `summarize`, which the
-sweep actually gates on, so every sheet the harness produced already carried
-`summarize = true`.
-
-Three things in phase 3 landed differently from the roadmap's own wording, and
-the roadmap records them rather than ticking a definition of done that says
-something untrue. **The curator produces no diff** — a merged playbook is a
-rewrite rather than an edit, so a proposal shows three whole documents instead of
-hunks. **Where a proposal goes was forced rather than chosen** (until #320 gave
-it a notice in the channel — the file is still the review surface), because
-`postThreadReply` is withheld from this process and a card needs a thread from an
-inbound event. And **the lifecycle job runs on channel activity rather than
-weekly**, which its absolute-date clocks make equivalent.
+Everything below the phase line is a **pointer, not a record**. What each
+workstream decided is argued in the README or the header of the code it governs,
+and the table under "Where the reasoning lives" says which file — the phase 3 and
+phase 4 narratives that used to sit here were a hundred lines restating
+`apps/server/README.md`, which is exactly what this file's own rule forbids.
+`site/src/content/docs/docs/roadmap.md` is the phase record, including the three
+phase 3 clauses that landed differently from its own wording.
 
 ## Where the reasoning lives
 
@@ -304,6 +104,7 @@ code is a paragraph the next reader will not find.
 | Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, why the channel-post verb is a second exception to the `CardPoster` narrowing and a different kind of one, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why `idleThreads` is not `staleThreads` with another argument, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
 | Operator commands and the vault CLI, and what `audit verify`'s four exit codes are a contract for | `apps/proxy-server/README.md` |
+| The shapes both services agree on. No README — each file's own header is the record, `src/skill.ts` and `src/audit.ts` most of all | `packages/schema/src/*.ts` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
@@ -348,6 +149,16 @@ recipe was copied because a leaf could not import the proxy, and #272 removed th
 copy by giving the recipe a package instead; `Logger` stays duplicated because an
 interface the gateway declares has no third home worth making. **Copy only what
 has nowhere else to go, and say which it is.**
+
+**The published CLI and the proxy's entrypoints own different things** (#98).
+The CLI owns what the operator authors on the host — the channels directory, the
+certificates, the env file, all bind-mounted `:ro` into the services. The proxy's
+own entrypoints (`vault`, `grant`, `budget`, `audit`) own what the services own
+inside their named volumes, which the host cannot open. That is why reading the
+audit log is `node dist/audit.js` and not `npx @getlibero/cli audit`: the latter
+would be a command whose first act is to open a path that is not there. What the
+CLI ships instead of depending on the workspace — one bundled file and no
+declared dependencies — is `packages/cli/README.md`'s account.
 
 **A refusal is a served request, and a failure is not.** `ToolRefusal` is a
 closed set of governance decisions with no free-text member, worded once by
@@ -475,18 +286,13 @@ These are load-bearing, not stylistic:
   `scripts/dev-certs.sh` with two pins live across the overlap; the agent
   re-reads a changed certificate per request, so neither service restarts.
 
-  **`scripts/dev-certs.sh` never writes a sheet, and `libero channel add` is
-  not an exception to that.** The script's rule is that minting material and
-  authorizing it are two acts, so that a change to which key may speak for a
-  channel is a reviewable edit in git. Creation is not that change: at `add`
-  there is no prior sheet, no diff, and nobody to review it but the person
-  running the command — so `add` writes both files at once and refuses outright
-  on a channel that already has a sheet, which keeps "this only ever writes a
-  sheet nobody had reviewed yet" true by construction. Every later change to a
-  pin still goes through `channel rotate` → human edit → `channel promote`, and
-  `promote` still refuses until the sheet pins the staged fingerprint. If you
-  are tempted to let `add` merge into an existing sheet, that is the rule you
-  would be giving up.
+  **Minting material and authorizing it are two acts**, so that a change to
+  which key may speak for a channel is a reviewable edit in git.
+  `scripts/dev-certs.sh` never writes a sheet, and `libero channel add` is not an
+  exception — it writes both only where there is no prior sheet to diff, and
+  refuses outright on a channel that has one. `packages/cli/README.md` has the
+  argument; if you are tempted to let `add` merge into an existing sheet, that is
+  the rule you would be giving up.
 - **One SQLite file per channel is the isolation boundary** for anything holding
   channel *content* — messages, memory. No schema or query there should be able
   to join across channels. `packages/memory` is where that reading is built, and
@@ -502,155 +308,46 @@ These are load-bearing, not stylistic:
   `AGENT_CHANNELS_ROOT` — the agent must not be able to write to the directory
   the proxy reads team sheets from, because the proxy re-reads a sheet per call
   and a writable channels mount is a compromised agent widening its own
-  permissions. One thing moved with it: `openMessageStore` still creates no
-  directory, but the directory existing is no longer the operator's statement
-  that the channel exists, so the sheet check is explicit in
-  `apps/server/src/session/store.ts`. A second caller of `openMessageStore` that
-  skipped it would be inventing a channel with no authorization behind it.
+  permissions.
 
-  Since #64 the proxy mounts that same root as `PROXY_STORE_ROOT` and reads it
-  through `openMessageReader` — read-only, `search` and `close` only. That is one
-  direction across the line and does not weaken the rule above: the hazard is the
-  agent writing where the proxy reads *authorization*, and the store is neither
-  the channels root nor authorization. `openMessageReader` is where a second
-  caller's review goes now, and it needs no sheet check because it creates
-  nothing — a channel with no store is `null` rather than an invented one.
+  One thing moved with it: the directory existing is no longer the operator's
+  statement that the channel exists, so the sheet check is explicit in
+  `apps/server/src/session/store.ts` — a second caller that skipped it would be
+  inventing a channel with no authorization behind it. Since #64 the proxy mounts
+  that same root read-only through `openMessageReader`, which is one direction
+  across the line and does not weaken the rule: the hazard is the agent writing
+  where the proxy reads *authorization*, and the store is neither.
 
   **The line is whose data it is and who reads it, not how much of it there
   is.** Content belongs to a channel's members and is read on their behalf, so a
   cross-channel join is one channel's members seeing another's conversation.
-  Operator-facing tables — the budget meter and the audit log —
-  are read by the operator, and cross-channel aggregation there is a feature
-  rather than a hazard: a team asking how a workspace is tracking against its
-  caps needs exactly the query the per-file layout would forbid.
+  Operator-facing tables — the budget meter and the audit log — are read by the
+  operator, and cross-channel aggregation there is a feature rather than a
+  hazard: a team asking how a workspace is tracking against its caps needs
+  exactly the query the per-file layout would forbid. So those two are single
+  files with a `channel` column, decided in #96 and #97 rather than drifted into,
+  and what has to hold instead is that channel members cannot manipulate the
+  numbers and that aggregate reads stay off the interface the server closes over.
 
-  So the budget meter is one file keyed `(channel, day)`, decided in #96 rather
-  than drifted into. What has to hold instead is that **channel members cannot
-  manipulate the numbers**: the channel comes from the certificate, every write
-  is `x = x + n`, and the server's whole surface on the meter is `read`,
-  `recordToolCall`, `recordTokens` — clearing a counter lives in
-  `budget-admin.ts`, which the server never imports. Keep all three. Also keep
-  **every SQL string in `packages/proxy` in the module that opens the database
-  it runs against** — `src/budget-db.ts` and `src/audit-db.ts`, and no others.
-  One module per database, not one per package: the rule exists so
-  "no statement omits `WHERE channel = ?`" is checkable by reading one file, and
-  a second database does not weaken that as long as its statements are all in
-  one file too. A statement prepared anywhere else — a route, a writer, an admin
-  helper — is a review failure.
-
-  **Aggregate reads go on the operator path** (`budget-admin.ts`), never on the
-  interface the server closes over. Reading one channel is a serving concern;
-  reading all of them is an operator concern.
-
-  The audit log is that layout with a stricter write discipline (#97): one table
-  with a channel column, and the only statement that touches it is an INSERT
-  (the module's other SQL is `schema_version` bookkeeping at open).
-  Append-only is `BEFORE UPDATE`/`BEFORE DELETE` triggers that `RAISE(ABORT)` —
-  SQLite has no roles and no grants, so the architecture's "no UPDATE/DELETE
-  grants for the service role" cannot be built as written. The write-only
-  `AuditWriter` the server closes over and the file's permissions are defence in
-  depth around the triggers, not the mechanism, and the PR that landed it says
-  which is which. There is no retention command and a delete-based one should
-  not be added; rotation is the shape. A failed audit write **refuses the call**
-  rather than serving it unrecorded.
+  **Every SQL string in `packages/proxy` lives in the module that opens the
+  database it runs against** — `budget-db.ts` and `audit-db.ts`, and no others —
+  so "no statement omits `WHERE channel = ?`" is checkable by reading one file. A
+  statement prepared in a route, a writer or an admin helper is a review failure.
+  `packages/proxy/README.md` has the rest: the meter's surface, the audit log's
+  write discipline, and why there is no retention command.
 - **`packages/schema` is the single source of truth** for team sheets, audit
-  records, tool calls, approvals, and memory ops. Both services import from it;
-  don't redefine those shapes locally. `channels/example/channel.toml` is the
-  documented starter sheet and should stay in sync with the zod schema.
-  Built today: the team sheet, the tool call and its response, the tool
-  listing, refusals, the spend report, the proxy error shape, the audit
-  record, and the approval ticket and decision. Both services import them —
+  records, tool calls, approvals, and memory ops. Both services import from it —
   `packages/agent` since #109, which is what makes "the two ends agree on one
-  definition" true rather than aspirational. Memory ops joined them in #224, and
-  skills in #289.
+  definition" true rather than aspirational — so don't redefine those shapes
+  locally. `channels/example/channel.toml` is the documented starter sheet and
+  should stay in sync with the zod schema.
 
-  **`src/skill.ts` is the first shape here that is also a file *format*.** It
-  holds the frontmatter, the name — which is a path segment and an index key, so
-  it is `ChannelId`'s kind of primitive rather than a label — and both halves of
-  the `---`-fenced grammar, parser and serializer, round-tripped by a test.
-  The grammar is hand-written rather than YAML: the CLI inlines this package and
-  publishes no dependencies, and YAML's implicit typing would read
-  `description: no` as `false` and `created:` as a zoned `Date`. Two decisions
-  ride on that file's header and neither is re-derivable from the code. **The
-  file is the source of truth for what a human authored and the index for what
-  the runtime observed**, which is why `uses` is a column and not frontmatter
-  even though `architecture.md` used to say otherwise — retrieval records a use
-  per loaded skill per task, and that many rewrites of team-owned markdown loses
-  hand edits. And **no lifecycle clock reads the file**: `created` is
-  documentation, the clocks run on the index's own `first_seen_at` and
-  last-used, or a model writing `created: 2099-01-01` would move one.
-
-  `src/audit.ts` is the one shape that never crosses the wire: the proxy builds
-  it from its own observation and reads it back out of SQLite on the operator's
-  path. It is in schema because the row is written by one mapping and read by
-  another and the two must agree — a column renamed on one side is a type error
-  rather than a silently empty CSV column. `AuditRecord` is a **type with no zod
-  object**, for the reason `ResolvedToolCall` has none — a `.parse()` is how a
-  channel gets taken from a request body. `AuditOutcome` does get a zod enum,
-  because #98 parses it off `argv`. `auditRefusalMessage` lives here too: it
-  rebuilds a `ToolRefusal` from a row's columns and delegates to
-  `refusalMessage`, so the operator reading the log and the channel that saw the
-  refusal get the same words, and answers `null` for the three reasons whose
-  facts the table has no column for rather than inventing one.
-
-**#98 is the read path, and where it landed is the decision.** The issue said
-`packages/cli`; it went to `apps/proxy-server` as a third entrypoint
-(`node dist/audit.js`) beside `vault` and `budget`, because
-`deploy/docker-compose.yml` mounts the audit log as a **named volume**
-(`audit-data`) exactly as it does the vault's and the budget's — so
-`npx @getlibero/cli audit` would open a path that is not on the host. The rule
-the compose file already draws, now written down: **the CLI owns what the
-operator authors on the host** (`../channels`, `./certs`, the env file — all
-bind-mounted `:ro` into the services, and all still `libero init` /
-`channel add` / `doctor`'s), **and the proxy's own entrypoints own what the
-services own inside their volumes**.
-
-**The packaging question #98 deferred is answered in #217: the CLI imports
-`@getlibero/schema` and esbuild inlines it.** `packages/cli/build.mjs` bundles
-the entry point into a single `dist/index.js` carrying the schema, zod and
-smol-toml, so the published manifest declares **no dependencies at all** and
-`@getlibero/schema` stays `private`. That is a build-time inline of the one
-source of truth, not a vendored copy: there is no second checked-in definition to
-drift, and `pnpm -r build` fails the moment the schema's exports change. The
-workspace edge lives in `devDependencies` and `release-cli.yml` deletes that
-field before publishing, because `npm publish` — unlike pnpm's — does not rewrite
-`workspace:*` and would ship a specifier no registry client can resolve. CI packs
-the tarball and asserts both halves on every pull request. The rule this leaves:
-**a shape both services agree on is imported here, never restated** — the CLI
-validating a model id or a team sheet differently from the proxy would be a
-second answer to what a deployment is.
-
-#272 made that two inlined packages rather than one, and the rule generalizes
-from shapes to guarantees: `@getlibero/atomic-write` is inlined the same way, so
-`libero init` writes the file holding `PROXY_VAULT_KEY` with the recipe the vault
-uses rather than its own weaker copy of it. Two things follow. **A package the
-CLI inlines must declare nothing the bundle cannot carry** — an edge to
-`@getlibero/memory` would drag `sqlite-vec` into the one artifact people install
-from npm, which is why the recipe got a package of its own rather than a home in
-the message store. And **`build.mjs` reads the third-party notices off every
-inlined workspace package**, not off a hardcoded path to the schema; the second
-one changed no output, and the generator being right by coincidence was the point
-of fixing it.
-
-  Three things about the reader are settled. **It is a second connection, opened
-  `readOnly`**, so SQLite refuses a write before the append-only triggers have
-  to; the `-wal`/`-shm` sidecars it creates are bookkeeping beside the file
-  rather than a write to the log, and the module says so rather than claiming it
-  writes nothing. **It does not migrate**, in either direction, because
-  migrating is writing and a reader that repaired a file would be a reader that
-  changed the evidence — so a version mismatch names both numbers and stops.
-  And **the query statements are in `audit-db.ts`** with the INSERT, which is
-  what that file's rule already promised #98 would do; filter values are bound
-  and never concatenated, and the only thing whose length varies is the
-  `outcome IN (…)` placeholder run.
-
-  `parseArgs` from `node:util` is the flag parser, so no dependency was added.
-  The time bounds are parsed **by rule rather than by `Date.parse`**, which
-  accepts `04/08/2026` in whatever order it likes, silently rolls `2026-02-30`
-  into March, and reads a zoneless instant as the *host's* time on a command
-  whose usage says UTC. A bare date is that whole UTC day and a time must carry
-  a zone. **No colour is emitted**, ever: the outcome word is the status, three
-  colours do not cover eight outcomes, and ANSI in a CSV is a corrupt file.
+  There is no README here; each shape's own header is the record, and two are
+  worth knowing before you touch them. `src/skill.ts` is the one shape that is
+  also a *file format*, so its grammar is a compatibility surface rather than an
+  implementation detail. `src/audit.ts` is the one that never crosses the wire,
+  and it is a **type with no zod object** on purpose — a `.parse()` is how a
+  channel gets taken from a request body.
 
 ## Design
 
@@ -745,5 +442,5 @@ triggers `release-cli.yml`, which publishes with npm provenance attestations.
 It publishes **one file and no dependencies**: `packages/cli/build.mjs` bundles
 `@getlibero/schema` and `@getlibero/atomic-write` in with esbuild, and the
 workflow deletes `devDependencies` before `npm publish` so the workspace edges
-never reach the registry. See the #98 paragraph above for why that, rather than
-publishing them.
+never reach the registry. See `packages/cli/README.md` for why that, rather
+than publishing them.
