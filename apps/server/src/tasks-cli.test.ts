@@ -17,6 +17,9 @@ const CHANNEL = "C0ENGINEERING";
 const DUE = Date.UTC(2026, 7, 19, 9, 30, 0);
 
 let root: string;
+/** When this suite's cancels happen, stated rather than read (#349). */
+const NOW = Date.UTC(2026, 7, 19, 8, 0, 0);
+
 let store: MessageStore;
 
 function schedule(id: string, prompt = "check the release branch", dueAt = DUE): void {
@@ -31,6 +34,7 @@ function run(...argv: string[]): { code: number; out: string[]; err: string[] } 
     env: { AGENT_STORE_ROOT: root },
     out: line => out.push(line),
     err: line => err.push(line),
+    now: () => NOW,
     // The one store this suite opened, so a cancel is visible to the assertions
     // without the CLI and the test racing two handles on one file — with `close`
     // stubbed out, because the command owns the handle it opens and closes it in
@@ -136,6 +140,43 @@ describe("cancel", () => {
 
   it("needs an id", () => {
     expect(run("cancel", CHANNEL).code).toBe(EXIT_USAGE);
+  });
+
+  // The record the delete leaves (#349): the check a cancel calls off is one a
+  // human approved, and undoing that with nothing left behind was a hole in
+  // the account of what happened.
+  it("leaves a record the cancelled command prints", () => {
+    schedule("t1", "check the certs");
+
+    run("cancel", CHANNEL, "t1");
+    const { code, out } = run("cancelled", CHANNEL);
+
+    expect(code).toBe(EXIT_OK);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("t1");
+    expect(out[0]).toContain("2026-08-19 08:00:00Z");
+    expect(out[0]).toContain("was due 2026-08-19 09:30:00Z");
+    expect(out[0]).toContain("check the certs");
+  });
+});
+
+describe("cancelled", () => {
+  it("prints newest first, id first, tab-separated", () => {
+    schedule("t1");
+    schedule("t2");
+    store.cancelScheduledTask("t1", NOW - 1_000);
+    store.cancelScheduledTask("t2", NOW);
+
+    const { out } = run("cancelled", CHANNEL);
+
+    expect(out.map(line => line.split("\t")[0])).toEqual(["t2", "t1"]);
+  });
+
+  it("says so when nothing was ever called off", () => {
+    const { code, out } = run("cancelled", CHANNEL);
+
+    expect(code).toBe(EXIT_OK);
+    expect(out).toEqual([`no cancelled checks recorded in ${CHANNEL}`]);
   });
 });
 

@@ -769,6 +769,39 @@ CREATE TABLE IF NOT EXISTS scheduled_task (
 -- rows. A due-only index would make both scan what has already happened.
 CREATE INDEX IF NOT EXISTS scheduled_task_due ON scheduled_task (fired_at, due_at);
 
+-- The record a cancel leaves (#349). Cancelling is still a delete above —
+-- pending stays the absence of a row, and nothing can consume a cancelled
+-- ticket — but the deleted row's content lands here in the same transaction.
+-- The reason this table exists where \`skill_merge_proposal\` gets none: a
+-- cancel calls off something **a person in the channel approved**. A human
+-- clicked a card, a different human with a shell undoes it, and on a team
+-- where those are different people a delete with nothing left behind is a
+-- hole in the account of what happened.
+--
+-- The whole row, not just the id: the row it records is gone by the same
+-- transaction, so anything not copied here is not knowable afterwards — and
+-- "what was called off" is the question the record exists to answer.
+--
+-- Additive, like the table above and measured the same way: it appears on an
+-- existing store at open, and no reader outside this module names it.
+--
+-- No retention and no index beyond the key: a cancel is a human act with a
+-- shell, rare by construction, and the operator's read walks a table of that
+-- size.
+CREATE TABLE IF NOT EXISTS scheduled_task_cancellation (
+  -- The check's id as the proxy minted it — still the join into the audit
+  -- log's record of the governed create, which is what lets a reviewer put
+  -- the approval and the cancellation side by side.
+  id           TEXT PRIMARY KEY,
+  task         TEXT NOT NULL,
+  prompt       TEXT NOT NULL,
+  due_at       INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL,
+  -- When it was called off, in milliseconds. The caller's clock: a cancel is
+  -- an operator act on the host, and there is no proxy in the path to stamp it.
+  cancelled_at INTEGER NOT NULL
+);
+
 `;
 
 /**
@@ -1455,23 +1488,36 @@ export interface MessageStore {
    */
   listScheduledTasks(limit: number): readonly StoredScheduledTask[];
   /**
-   * Forget a check that has not fired. Answers whether there was one.
+   * Call off a check that has not fired. Answers whether there was one.
    *
    * **A delete rather than a terminal outcome**, which is `forgetSkillMergeProposal`'s
-   * shape and its argument: declining is deleting, and the row's absence is
-   * unambiguous where a stamp saying "fired" about a check that never ran would
-   * not be. It frees the pending slot by the same act.
+   * shape and its argument: the row's absence is unambiguous where a stamp
+   * saying "fired" about a check that never ran would not be. It frees the
+   * pending slot by the same act.
    *
-   * The honest cost, stated because it is the same one declining a proposal
-   * carries: **nothing records that a check was cancelled.** If that is ever
-   * wanted it is a row somewhere else, not a value here — `fired_at` means when a
-   * check ran, and widening it to mean "when it ended" would make every reader of
-   * this table ask which.
+   * **The delete leaves a record** (#349), in `scheduled_task_cancellation` and
+   * in the same transaction — a row somewhere else, exactly as this contract
+   * used to promise it would be if ever wanted, because `fired_at` means when a
+   * check ran and widening it to mean "when it ended" would make every reader
+   * of that table ask which. What earns a cancel the record a declined merge
+   * proposal does not get: the check it calls off is one a human approved, and
+   * the shape of that argument is the table's header comment. `at` is when, on
+   * the caller's clock.
    *
    * Only an unfired check: a fired one is a record of something that happened,
    * and there is nothing to cancel about it.
    */
-  cancelScheduledTask(id: string): boolean;
+  cancelScheduledTask(id: string, at: number): boolean;
+  /**
+   * The cancellations this channel's checks have accumulated, newest first
+   * (#349).
+   *
+   * The operator's read, `listScheduledTasks`' reason: the record is inside a
+   * named volume the host cannot open, so a record with no read here would be
+   * recorded and unreadable. Newest first because the reader is someone asking
+   * what was recently called off, not someone replaying history.
+   */
+  listCancelledScheduledTasks(limit: number): readonly CancelledScheduledTask[];
   close(): void;
 }
 
@@ -1508,6 +1554,18 @@ export interface StoredScheduledTask {
   /** When to check, in milliseconds. */
   readonly dueAt: number;
   readonly createdAt: number;
+}
+
+/**
+ * One cancelled check, as the record holds it (#349).
+ *
+ * The check's own fields as they were when it was called off, plus when. The
+ * `StoredScheduledTask` fields are copied rather than referenced because the
+ * row they came from is deleted by the same act.
+ */
+export interface CancelledScheduledTask extends StoredScheduledTask {
+  /** When it was called off, in milliseconds, on the cancelling caller's clock. */
+  readonly cancelledAt: number;
 }
 
 /**
@@ -2404,6 +2462,13 @@ function toStoredScheduledTask(row: ScheduledTaskRow): StoredScheduledTask {
   };
 }
 
+/** A `scheduled_task_cancellation` row. `MessageRow`'s reasons apply. */
+type CancelledScheduledTaskRow = ScheduledTaskRow & { readonly cancelled_at: number };
+
+function toCancelledScheduledTask(row: CancelledScheduledTaskRow): CancelledScheduledTask {
+  return { ...toStoredScheduledTask(row), cancelledAt: row.cancelled_at };
+}
+
 /** A `thread_summary` row. `MessageRow`'s reasons apply. */
 type ThreadSummaryRow = {
   readonly thread_ts: string;
@@ -2613,8 +2678,22 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         ORDER BY due_at ASC
         LIMIT ?`
     ),
+    // RETURNING, so the delete and the read of what was deleted are one
+    // statement: the record the transaction writes next copies these fields,
+    // and a separate read would be a row somebody could change between.
     cancelScheduledTask: db.prepare(
-      `DELETE FROM scheduled_task WHERE id = ? AND fired_at IS NULL`
+      `DELETE FROM scheduled_task WHERE id = ? AND fired_at IS NULL
+       RETURNING id, task, prompt, due_at, created_at`
+    ),
+    recordScheduledTaskCancellation: db.prepare(
+      `INSERT INTO scheduled_task_cancellation (id, task, prompt, due_at, created_at, cancelled_at)
+            VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+    listCancelledScheduledTasks: db.prepare(
+      `SELECT id, task, prompt, due_at, created_at, cancelled_at
+         FROM scheduled_task_cancellation
+        ORDER BY cancelled_at DESC
+        LIMIT ?`
     ),
     markScheduledTaskFired: db.prepare(
       `UPDATE scheduled_task
@@ -3123,8 +3202,36 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       return rows.map(toStoredScheduledTask);
     },
 
-    cancelScheduledTask(id) {
-      return statements.cancelScheduledTask.run(id).changes > 0;
+    cancelScheduledTask(id, at) {
+      // One transaction, so the delete and its record cannot come apart: a
+      // crash between them would otherwise be exactly the recordless cancel
+      // this table exists to end.
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const row = statements.cancelScheduledTask.get(id) as ScheduledTaskRow | undefined;
+        if (row !== undefined) {
+          statements.recordScheduledTaskCancellation.run(
+            row.id,
+            row.task,
+            row.prompt,
+            row.due_at,
+            row.created_at,
+            at
+          );
+        }
+        db.exec("COMMIT");
+        return row !== undefined;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    listCancelledScheduledTasks(limit) {
+      const rows = statements.listCancelledScheduledTasks.all(
+        clampLimit(limit)
+      ) as CancelledScheduledTaskRow[];
+      return rows.map(toCancelledScheduledTask);
     },
 
     close() {

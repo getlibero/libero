@@ -52,6 +52,7 @@ export type {
   StoredEmbedding,
   StoredMessage,
   ScheduledTaskOutcome,
+  CancelledScheduledTask,
   StoredScheduledTask,
   StoredThreadSummary
 } from "./store-db.js";
