@@ -438,6 +438,23 @@ altered without recomputing the rest, and comparing today's tip against one you 
 is what catches everything else. Rows written before schema version 5 were chained when the column
 was added, so they are covered from that migration forward rather than from when they were written.
 
+The arguments' hash is a record of a narrow kind, and worth knowing how to use before an incident
+makes it interesting. A refused or expired call reached no upstream, so what it attempted is not
+recoverable from the row — that is a decision rather than an accident: a blocked call's arguments
+are the most likely to have been shaped by an injected model, and a chained row cannot be redacted
+afterwards ([#364](https://github.com/getlibero/libero/issues/364) holds the gap and the argument).
+What the hash does afford: a reviewer who **suspects** what was attempted can confirm or refute the
+suspicion exactly. It is SHA-256 over the arguments as canonical JSON — object keys sorted,
+no whitespace — computed by the proxy over what it actually received, so a candidate can be checked
+against the row:
+
+```bash
+printf '%s' '{"branch":"gh-pages","force":true}' | sha256sum   # compare to the row's arguments hash
+```
+
+A match answers "it was exactly this call" with certainty; a mismatch rules the candidate out and
+says nothing more.
+
 Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
 or an admin resets the channel. The approach to it is visible too — a channel that passes `[budget]
 warn_at` is told once that day, in the thread, on a call that still runs. A reset re-arms that
