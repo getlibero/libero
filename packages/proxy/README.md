@@ -194,6 +194,24 @@ reveals a credential and the one that scrubs the reply.
   ladder every time and never hold a session at all. OAuth is not a reason for
   any of this — `CredentialSource` means the client holds the source and mints
   per request, so it already outlives a token.
+- `mcp-catalog.ts` — what an upstream says its tools are, bounded and cached on
+  `upstreamKey` with per-name freshness. Its file header is the record for the
+  walk, the budget and the three publication states; what belongs beside the
+  pool's entry above is that since #374 it also **collects**. The rule is per
+  resolution rather than per entry, and that is the whole of it: dropping an
+  entry only once everything in it had expired never fires on the case that
+  holds bytes, which is one tool removed from a server whose other tools keep
+  the entry warm while nothing asks for the removed name again. A published
+  resolution carries a bounded description and schema, so a stranded upstream is
+  most of a megabyte rather than a map slot. Lazy, on read, injected clock, no
+  timer — the same trade as the pool, including that a quiet proxy collects
+  nothing until the next listing or `clear()`. Collecting is otherwise invisible
+  by construction, since every reader already treats an expired resolution as a
+  missing one, which is why `size` exists and why the cases assert a walk count
+  beside it. The in-flight guard there is a **correctness** guard rather than a
+  memory one: an entry is emptiest while it is being walked, and collecting it
+  lets the next caller join that walk and then assemble from a different object,
+  answering with no tools at all.
 - `semaphore.ts` — FIFO permits with a bounded wait, and a waiter that gave up
   leaves the queue rather than being handed a permit nobody is waiting for.
 - `mcp-fake-server.ts` — a real `node:http` MCP server for the tests, speaking

@@ -3,6 +3,9 @@ import type { McpServer } from "@getlibero/schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHttpDispatcher } from "./http-dispatcher.js";
 import { createJsonLogger } from "./log.js";
+import { createMcpCatalog } from "./mcp-catalog.js";
+import { type HttpUpstream, createMcpPool } from "./mcp-pool.js";
+import { constantCredential } from "./outbound.js";
 import {
   CATALOG_BUDGET_MS,
   CATALOG_FAILURE_TTL_MS,
@@ -40,6 +43,16 @@ afterEach(async () => {
   await fake?.close();
   fake = undefined;
 });
+
+/** Polls rather than sleeps, per the convention in team-sheet-store.test.ts. */
+async function until(predicate: () => boolean, label: string, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
 
 function secretOf(value: string): Secret {
   return Object.freeze({ reveal: () => value, toJSON: () => "[redacted]", toString: () => "[redacted]" }) as Secret;
@@ -793,5 +806,180 @@ describe("what one upstream is already known to offer", () => {
     // The wide ask was served from the cache — the cap did not force a re-walk.
     expect(fake.callsTo("tools/list")).toHaveLength(walksSoFar);
     expect(lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === "truncated")).toBe(true);
+  });
+});
+
+/**
+ * What the cache stops holding (#374).
+ *
+ * **Built from the pool and the catalog directly, which is this file's one
+ * departure from the convention above.** Everywhere else the catalog is reached
+ * through `createHttpDispatcher`, because the lease — the transport guard and
+ * the vault lookup — is half of what those cases are about. It is no part of
+ * this one: these are about what survives in a map, and the lease's only job
+ * here is to hand over a client that really walks a real socket, which it does.
+ * The dispatcher does not expose the count, and widening the serving interface
+ * to carry a number only a test reads is the worse of the two trades.
+ *
+ * Collecting is otherwise invisible — an expired resolution and a swept one are
+ * treated identically by every reader — so `size` is the claim's only witness,
+ * and each case pairs it with a walk count to say the behaviour did not move.
+ */
+describe("what the cache stops holding", () => {
+  /** A pool and a catalog over it, with a clock the case drives. */
+  function cacheFor() {
+    const clock = clockFrom(1_000_000);
+    const pool = createMcpPool({ timeoutMs: 2000, now: clock.now });
+    const catalog = createMcpCatalog({
+      lease: upstream => {
+        if (upstream.transport !== "http") return { ok: false, reason: "unsupported_transport" };
+        const client = pool.acquire(upstream as HttpUpstream, constantCredential("bearer", undefined));
+        return client === null ? { ok: false, reason: "shutting_down" } : { ok: true, client };
+      },
+      now: clock.now
+    });
+    return { catalog, advance: clock.advance, close: () => pool.close() };
+  }
+
+  // The half the issue was written against: an upstream nobody names any more.
+  // A sheet edit that moves a url or renames a credential mints a new
+  // `upstreamKey`, and the old entry was never acquired again and never dropped.
+  it("drops an entry for an upstream nothing asks about any more", async () => {
+    fake = await startFakeMcpServer();
+    const { catalog, advance, close } = cacheFor();
+    try {
+      await catalog.describe(serverAt(fake.url), ["list_prs"]);
+      expect(catalog.size).toEqual({ entries: 1, resolutions: 1 });
+
+      advance(CATALOG_TTL_MS + 1);
+      // A different credential name, so a different key: the sheet edit, as the
+      // cache sees it. Any read is the sweep's only chance to run.
+      await catalog.describe(serverAt(fake.url, { credential: "rotated" }), ["list_prs"]);
+
+      // The stranded entry is gone rather than joined by a second.
+      expect(catalog.size).toEqual({ entries: 1, resolutions: 1 });
+    } finally {
+      await close();
+    }
+  });
+
+  // A stale name the next ask does not mention is collected rather than left to
+  // be overwritten by a `merge` that will never come. Both resolutions here are
+  // past their window, so this says sweeping happens and not yet at what
+  // granularity — the case below is the one that pins that.
+  it("drops a stale resolution the next ask does not name", async () => {
+    fake = await startFakeMcpServer();
+    const { catalog, advance, close } = cacheFor();
+    try {
+      const upstream = serverAt(fake.url);
+      await catalog.describe(upstream, ["list_prs", "merge_pr"]);
+      expect(catalog.size).toEqual({ entries: 1, resolutions: 2 });
+      const walked = fake.callsTo("tools/list").length;
+
+      // Past the window, then the sheet asks for one of the two. Both
+      // resolutions are stale, so both are swept and only the asked-for one is
+      // walked again — the dropped tool's description does not come back.
+      advance(CATALOG_TTL_MS + 1);
+      const described = await catalog.describe(upstream, ["list_prs"]);
+
+      expect([...described.described.keys()]).toEqual(["list_prs"]);
+      expect(catalog.size).toEqual({ entries: 1, resolutions: 1 });
+      expect(fake.callsTo("tools/list").length).toBeGreaterThan(walked);
+    } finally {
+      await close();
+    }
+  });
+
+  // **The discriminator, and the reason the rule is per resolution.** Here one
+  // name is past its window and one is not. A rule that dropped an entry only
+  // once *every* resolution in it had expired — the obvious shape, and the one
+  // #374 was written against — would keep both and pass every other case in
+  // this block. That rule never fires on the case that holds bytes: an operator
+  // removes one tool from a fifty-tool server, and the other forty-nine keep
+  // the entry warm forever while nothing ever asks for the removed name again.
+  //
+  // The other side of it is asserted here too: a resolution inside its window
+  // is a cache doing its job, and sweeping it would buy memory with round trips.
+  it("keeps a fresh resolution while collecting a stale one beside it", async () => {
+    fake = await startFakeMcpServer();
+    const { catalog, advance, close } = cacheFor();
+    try {
+      const upstream = serverAt(fake.url);
+      // Two names warmed at different instants, so the entry holds one of each
+      // once the clock lands between their windows.
+      await catalog.describe(upstream, ["list_prs"]);
+      advance(CATALOG_TTL_MS - 1000);
+      await catalog.describe(upstream, ["merge_pr"]);
+      expect(catalog.size).toEqual({ entries: 1, resolutions: 2 });
+      const walked = fake.callsTo("tools/list").length;
+
+      // `list_prs` is now past its window and `merge_pr` is not.
+      advance(2000);
+      const described = await catalog.describe(upstream, ["merge_pr"]);
+
+      expect([...described.described.keys()]).toEqual(["merge_pr"]);
+      // The stale one collected, the fresh one kept — and kept in the strong
+      // sense: the answer came out of the map without asking the upstream.
+      expect(catalog.size).toEqual({ entries: 1, resolutions: 1 });
+      expect(fake.callsTo("tools/list")).toHaveLength(walked);
+    } finally {
+      await close();
+    }
+  });
+
+  // A dropped entry is a cold cache and nothing else: the next ask re-walks and
+  // answers exactly what it answered before. This is the case that says the
+  // sweep is a memory decision rather than a change of behaviour.
+  it("answers the same tools after the entry it had was collected", async () => {
+    fake = await startFakeMcpServer();
+    const { catalog, advance, close } = cacheFor();
+    try {
+      const upstream = serverAt(fake.url);
+      const before = await catalog.describe(upstream, ["list_prs"]);
+
+      advance(CATALOG_TTL_MS + 1);
+      await catalog.describe(serverAt(fake.url, { credential: "rotated" }), ["list_prs"]);
+      const after = await catalog.describe(upstream, ["list_prs"]);
+
+      expect(after.described).toEqual(before.described);
+      expect(after.excluded).toEqual(before.excluded);
+    } finally {
+      await close();
+    }
+  });
+
+  // The `walks` guard, which is a correctness guard and not a memory one. An
+  // entry is at its emptiest exactly while it is being walked — the read that
+  // started the walk is the read whose sweep collected everything stale in it —
+  // so without this the next sweep drops it, and a caller joining that same
+  // in-flight walk assembles from a different object and answers with nothing.
+  // `costs one walk when several listings arrive at once` is where that shows
+  // as a wrong answer; this is where it shows as the entry going missing.
+  it("keeps an empty entry that a walk in flight is about to fill", async () => {
+    fake = await startFakeMcpServer();
+    const { catalog, advance, close } = cacheFor();
+    const upstream = serverAt(fake.url);
+    try {
+      await catalog.describe(upstream, ["list_prs"]);
+      advance(CATALOG_TTL_MS + 1);
+
+      fake.respond = request => (request.rpc?.method === "tools/list" ? { hang: true } : null);
+      const walking = catalog.describe(upstream, ["list_prs"]);
+      await until(() => (fake?.callsTo("tools/list").length ?? 0) >= 2, "the walk to reach the upstream");
+
+      // A read for a different upstream, which is the sweep's only trigger.
+      await catalog.describe(serverAt(fake.url, { credential: "other" }), ["list_prs"]);
+
+      // Two: the one being walked, held by its in-flight count despite holding
+      // nothing, and the one just filled. Without the guard the first is gone.
+      expect(catalog.size.entries).toBe(2);
+
+      await close();
+      await fake.close();
+      fake = undefined;
+      await Promise.allSettled([walking]);
+    } finally {
+      await close();
+    }
   });
 });
