@@ -147,6 +147,18 @@ export interface McpCatalog extends ToolCatalog {
    * a permitted call.
    */
   definitionFor(upstream: McpServer, tool: string): Promise<UpstreamCallDefinition>;
+  /**
+   * What the cache is holding, after whatever the last read swept (#374).
+   *
+   * **Introspection, because there is nothing else to assert against.**
+   * Collecting an expired resolution is deliberately invisible from the
+   * outside: `describeUpstream` already treats expired and absent alike, so a
+   * swept entry re-walks exactly as a stale one would have, and every answer is
+   * byte-for-byte what it was. That is the property — the change is about what
+   * the process holds, not what it says — and it leaves a count as the only
+   * honest way to state the claim.
+   */
+  readonly size: { readonly entries: number; readonly resolutions: number };
   clear(): void;
 }
 
@@ -229,6 +241,26 @@ interface Resolution {
 /** Everything known about one upstream's catalog, by tool name. */
 interface CacheEntry {
   readonly resolved: Map<string, Resolution>;
+  /**
+   * Walks merging into this entry, so the sweep does not collect it under one.
+   *
+   * **This one is load-bearing for correctness, not for memory**, and it is
+   * worth being exact about why, because the shape of the bug is not the
+   * obvious one. The obvious reading is that a walk whose entry was collected
+   * merges into an orphan and the work is merely not kept. What actually
+   * happens is worse: the *next* caller sweeps that entry away, `entryFor`
+   * hands it a different object, its missing set is identical so it joins the
+   * in-flight walk through `walking` rather than starting one — and then it
+   * assembles from the entry the walk never wrote to. It gets an empty answer,
+   * which is a listing that silently lost every tool the sheet named.
+   *
+   * The window is real rather than theoretical: an entry is at its emptiest
+   * precisely while it is being walked, because the read that started the walk
+   * is the read whose sweep had just collected everything stale in it. Removing
+   * this line fails `costs one walk when several listings arrive at once`,
+   * which predates #374 and is how the shape above was found.
+   */
+  walks: number;
 }
 
 /**
@@ -496,11 +528,51 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
   };
 
   /** This upstream's entry, created empty on first sight. */
+  /**
+   * Drop every resolution that has expired, and every entry left holding none.
+   *
+   * **Lazy and on read, with no timer** — `mcp-pool.ts`'s sweep and this cache's
+   * own expiry already work this way, and the clock is the one `now` option
+   * both of them read. A quiet proxy collects nothing until the next listing or
+   * `clear()`, which is the same trade stated there.
+   *
+   * **Per resolution rather than per entry, and that is the half that matters.**
+   * The obvious shape — drop an entry once every resolution in it has expired —
+   * never fires on the case worth fixing. An operator removing one tool from a
+   * fifty-tool server leaves that name's resolution behind while the other
+   * forty-nine keep the entry warm, and nothing asks for the removed name
+   * again, so it is never overwritten by `merge` and never expires out of a map
+   * that only grows. A published resolution carries a bounded description and
+   * schema — `MAX_TOOL_SCHEMA_BYTES` is 8 KiB and `MAX_DESCRIBED_TOOLS` is a
+   * hundred — so a stranded upstream is most of a megabyte rather than the map
+   * slot #374 was written against. Sweeping per name reclaims that and drops
+   * the whole entry as a consequence of emptying it, which is one rule instead
+   * of two.
+   *
+   * **Behaviour-preserving by construction, which is why nothing else moves.**
+   * `describeUpstream` reads expiry before it reads anything else and treats an
+   * expired resolution exactly as a missing one, and `assemble` treats an
+   * absent publication exactly as an undefined one. So pruning can only turn a
+   * value the readers were already ignoring into one that is not there.
+   *
+   * Deleting from a `Map` while iterating it is defined: entries removed before
+   * the walk reaches them are skipped, and the rest keep insertion order.
+   */
+  const sweep = (at: number): void => {
+    for (const [key, entry] of cached) {
+      if (entry.walks > 0) continue;
+      for (const [name, resolution] of entry.resolved) {
+        if (resolution.expiresAt <= at) entry.resolved.delete(name);
+      }
+      if (entry.resolved.size === 0) cached.delete(key);
+    }
+  };
+
   const entryFor = (upstream: McpServer): CacheEntry => {
     const key = upstreamKey(upstream);
     const existing = cached.get(key);
     if (existing !== undefined) return existing;
-    const fresh: CacheEntry = { resolved: new Map<string, Resolution>() };
+    const fresh: CacheEntry = { resolved: new Map<string, Resolution>(), walks: 0 };
     cached.set(key, fresh);
     return fresh;
   };
@@ -627,8 +699,15 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
    * matters, which is the listing route and the call path asking in turn.
    */
   const describeUpstream = async (upstream: McpServer, wanted: ReadonlySet<string>): Promise<CatalogAnswer> => {
-    const entry = entryFor(upstream);
     const at = now();
+    // Before `entryFor`, so an upstream whose every resolution has expired is
+    // collected rather than skipped for being the one in hand. There is no
+    // `except` guard here and no need of one: unlike a pooled client, the entry
+    // holds no session and no negotiated protocol, so rebuilding it is
+    // allocating an empty `Map` — and everything it held was expired, which
+    // means this caller was going to re-walk for all of it either way.
+    sweep(at);
+    const entry = entryFor(upstream);
 
     const missing = new Set<string>();
     let carried = 0;
@@ -655,6 +734,7 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
       return assemble(upstream, entry, wanted);
     }
 
+    entry.walks += 1;
     const started = (async (): Promise<void> => {
       const lease = options.lease(upstream);
       if (!lease.ok) {
@@ -673,6 +753,7 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
       merge(entry, missing, described, walked);
     })().finally(() => {
       walking.delete(key);
+      entry.walks -= 1;
     });
 
     walking.set(key, started);
@@ -698,6 +779,12 @@ export function createMcpCatalog(options: McpCatalogOptions): McpCatalog {
     async describe(upstream, wanted) {
       if (wanted.length === 0) return NO_CATALOG_ANSWER;
       return describeUpstream(upstream, new Set(wanted));
+    },
+
+    get size() {
+      let resolutions = 0;
+      for (const entry of cached.values()) resolutions += entry.resolved.size;
+      return { entries: cached.size, resolutions };
     },
 
     /**
