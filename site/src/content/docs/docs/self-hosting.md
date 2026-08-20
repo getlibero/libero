@@ -3,7 +3,7 @@ title: Self-hosting
 description: The target deployment — two containers, one team sheet per channel — and an honest account of what does not work yet.
 ---
 
-:::caution[Pre-release]
+:::caution[Early — pre-1.0]
 The stack described here runs. The proxy speaks mutual TLS, binds every request to a channel,
 enforces team sheets, holds credentials in an encrypted vault, injects them into outbound calls,
 scrubs them back out of results, meters each channel's daily budget in calls and in dollars, and
@@ -17,8 +17,10 @@ exercised end to end. The end-to-end suite that attacks all of this composes bot
 mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget exhaustion,
 held destructive calls, channel isolation, and a hostile authorization server.
 
-Both services build as images from the compose file, so
-`docker compose -f deploy/docker-compose.yml up` starts a deployment from a clean checkout.
+Both services are published to GHCR on every release since `v0.3.0`, and both still build from
+the compose file — so `docker compose -f deploy/docker-compose.yml up` starts a deployment from a
+clean checkout, and a `docker compose -f deploy/docker-compose.yml pull` first makes it run the
+exact bytes a release published.
 
 What is not finished: certificate rotation and revocation are manual — possible without downtime,
 and driven by a shell script and an edit to a team sheet rather than by anything automated. There

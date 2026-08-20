@@ -1,9 +1,9 @@
 ---
 title: Roadmap
-description: Phase-gated delivery. The governed core — vault, enforcement, approvals, budgets, audit — comes before anything that depends on it.
+description: The phase record — the governed core before anything that depends on it — and the release milestones that follow it.
 ---
 
-Phases are gated: later phases do not start until the governed core is solid.
+Phases were gated: a later phase did not start until the governed core was solid. Every phase is shipped; the releases that follow them close this page.
 
 **Phase 0 — skeleton. Shipped.** Monorepo, schema package, design system, site, docker-compose skeleton, CI with lint/typecheck/tests/license gate + CLA bot. `@getlibero/cli` placeholder published with provenance.
 
@@ -64,6 +64,25 @@ It was also first written down as "breadth" — a second platform adapter (Disco
 **Discord:** a second chat surface widens adoption, not the governed core, and every phase 1–4 feature has a Slack-shaped rendering — cards, checklist, proactive posts, the rig's fake gateway — so an adapter is a re-answering of all of it, not a gateway swap. The one thing it would prove, that the gateway seam is real rather than Slack-shaped, is worth proving when a real team asks. Platform adapters are a v1 non-goal in the architecture's scope section.
 
 **Temporal:** the two long-lived things this tree has are already durable rows — an approval ticket waiting for its click, a scheduled check waiting for its instant — and phase 4 deliberately removed the retry-and-continue machinery an orchestrator exists to provide, on the argument that a reminder retried into arriving days late is worse than an honest "it did not happen." A workflow engine would also put every step's arguments and results into one shared history database, which is the wrong shape against the one-file-per-channel boundary. What "multi-day" turned out to gesture at is scheduling rather than orchestration, and that is parked as its own work ([#358](https://github.com/getlibero/libero/issues/358), beside [#348](https://github.com/getlibero/libero/issues/348)) rather than gating this phase.
+
+## After the phases
+
+Phase 5 was the last phase; the list above is complete rather than paused. Delivery is
+milestone-gated per release now: each release gets one milestone whose description is its
+definition of done, and the open milestone is what lands next.
+
+**v0.3.0 — shipped.** The release that made releases real: both service images published to GHCR
+on every tag with provenance attestations, a [changelog](/docs/changelog/) an operator can
+upgrade by, and a written release procedure — plus the correctness items beside them: the
+approval card shows the exact call being approved, a cancelled scheduled check leaves a record,
+and a blocked call's arguments land in an off-chain, deletable store the audit row's own hash
+binds, without reopening the decision against argument capture in the chain.
+
+**v0.4.0 — open.** Code execution, governed: the ephemeral container the proxy invokes
+([#368](https://github.com/getlibero/libero/issues/368)) — the one section of the
+[architecture](/docs/architecture/) still marked designed-not-built — which gives `[egress]` its
+first live caller ([#219](https://github.com/getlibero/libero/issues/219)). The
+[milestone](https://github.com/getlibero/libero/milestone/8) carries the definition of done.
 
 ## What success looks like
 
