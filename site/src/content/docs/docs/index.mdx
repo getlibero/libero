@@ -14,7 +14,7 @@ only as itself, under admin-provisioned service credentials, through an allowlis
 every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
 model self-restraint.
 
-<Aside type="caution" title="Pre-release — phase 5 in progress">
+<Aside type="caution" title="Pre-release — no numbered release yet">
 The specification is ahead of the implementation on purpose — treat these pages as the design of
 record, not a description of running software.
 
@@ -24,9 +24,14 @@ and its pool, OAuth for upstreams that want it, daily caps in both calls and dol
 append-only audit log, and the approval broker with its Slack card — plus the gateway, the agent
 loop, and the per-channel message store. The layers on top of it are shipped too: curated memory
 and semantic recall (phase 2), skills and their lifecycle (phase 3), and ambient mode — the
-heartbeat, proactive posts behind a rate window, and `schedule_task` (phase 4). An end-to-end
+heartbeat, proactive posts behind a rate window, and `schedule_task` (phase 4). So is the
+hardening pass over them: the audit log is hash-chained and an operator command walks it, and
+the MCP path streams through redaction rather than buffering behind it (phase 5). An end-to-end
 suite attacks all of it. `npx @getlibero/cli init` through `docker compose up` stands the stack
 up from a clean checkout.
+
+Every phase is shipped, and there is still no numbered release: the work that makes one — the
+service images, the changelog, and the release procedure — is what `v0.3.0` is.
 
 What is not here: no sandbox, so `[egress]` is validated and enforced nowhere; a fired scheduled
 check runs one bounded turn and can look nothing up; certificate rotation is two commands and a
