@@ -30,6 +30,32 @@
 // different and is read again. What does not correct itself is handing that
 // answer to a caller who arrived after the write landed. So resolve() shares a
 // read only while it has not yet looked at the file.
+//
+// **The transient `team_sheet_invalid` is expected, and #342 decided not to
+// remove it.** A torn read is a read of a file that does not parse, so it takes
+// the same branch a real typo takes: an `error` line saying the edit did not
+// land and that the previous sheet is still in force, followed — once the write
+// settles and the watcher fires again — by an `info` line saying it did. Both
+// are true of the instant they describe. The sequence is still misleading, so
+// the second line now carries `supersedes: "team_sheet_invalid"` and retracts
+// the first in the log rather than in the reader's head.
+//
+// The complaint itself stays, because every way of suppressing it is worse.
+// Measured rather than argued: against a writer that holds the truncation window
+// open for 25ms, forty valid saves produced twenty-one complaints and forty
+// successful reloads. Re-stating after the failed parse and suppressing when the
+// file moved — the cheap fix, and no timer — took that to twenty, because a read
+// and a stat together are microseconds and the window they have to fall inside
+// is not. Closing it needs a delay before the complaint, which means a timer in
+// the watcher, which is where #141 lives; and the writers that provoke it are
+// both non-atomic *and* slow, which the CLI's own sheet writer is neither
+// (`@getlibero/atomic-write`, so `libero channel add` never tears). Paying with
+// timing in the weaker of the two mechanisms to quiet a line that retracts
+// itself is the wrong trade.
+//
+// So: a `team_sheet_invalid` with no `supersedes` line after it is real. One
+// followed by a reload that supersedes it was a torn read, and the sheet on disk
+// is fine.
 
 import { type FSWatcher, watch } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -278,11 +304,17 @@ export class TeamSheetStore implements TeamSheetSource {
 
     if (parsed.ok) {
       const reloaded = entry.state.status === "active";
+      // Whether a `team_sheet_invalid` is outstanding for this channel. `stale`
+      // is set only by the branch that logs one, so it is exactly the record of
+      // "something was complained about and has not been retracted" — which is
+      // what this line is about to retract. See `supersedes` in ./log.ts.
+      const complained = entry.state.status === "active" && entry.state.stale;
       entry.state = { status: "active", sheet: parsed.sheet, stale: false };
       this.#logger.log("info", {
         event: reloaded ? "team_sheet_reloaded" : "team_sheet_loaded",
         channel,
-        file
+        file,
+        ...(complained ? { supersedes: "team_sheet_invalid" as const } : {})
       });
       this.#watch(channel, entry);
       return entry.state;

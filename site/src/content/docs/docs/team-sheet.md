@@ -1071,7 +1071,9 @@ The retain rule is worth reading once more in the context of `certificate_sha256
 one field where "the previous version stays active" can mean "the key you were revoking is still
 accepted". An edit that removes a fingerprint has not taken effect until the sheet parses — watch
 for `team_sheet_reloaded` in the proxy's log, and treat `team_sheet_invalid` with
-`effect: "previous_sheet_retained"` as the revocation not having landed. When a key is known to be
+`effect: "previous_sheet_retained"` as the revocation not having landed — unless a later
+`team_sheet_reloaded` carries `supersedes: "team_sheet_invalid"`, which means the proxy read the
+file mid-write and the sheet on disk is fine. When a key is known to be
 compromised and the edit is not going smoothly, delete the sheet: that is exempt from the retain
 rule, takes effect immediately, and takes the channel offline until you restore it.
 

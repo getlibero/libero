@@ -386,6 +386,14 @@ certificate is refused. Two things are worth knowing about the edit:
   version in force — including the fingerprint you were trying to remove. The proxy logs
   `team_sheet_invalid` with `effect: "previous_sheet_retained"` when that happens, and
   `team_sheet_reloaded` when the edit lands. Watch for the second one.
+
+  A `team_sheet_invalid` you did not expect may be the proxy reading your file *while you were
+  writing it*: the watcher is live during a write that is not atomic, and a half-written sheet does
+  not parse. That case corrects itself, and the reload that corrects it says so —
+  `team_sheet_reloaded` carries `supersedes: "team_sheet_invalid"`. So the rule is exact: **a
+  complaint with no superseding reload after it is real.** Writing the sheet atomically — to a
+  temporary file in the same directory, then `mv` over the target, which is what `libero channel
+  add` does — avoids the transient one entirely.
 - **The emergency path is deleting the sheet.** That takes effect immediately, is exempt from the
   retain rule above, and takes the channel offline until you restore it. Use it when a key is known
   to be compromised and the sheet edit is not going smoothly.
