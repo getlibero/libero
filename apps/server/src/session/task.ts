@@ -81,6 +81,26 @@ export const SYSTEM_PROMPT = [
 ].join(" ");
 
 /**
+ * The system prompt, composed per channel.
+ *
+ * `SYSTEM_PROMPT` says what the agent is; the sheet's `[channel] description`
+ * says where it is — the one operator-authored sentence about the channel
+ * itself, which is what earns it this placement. Channel history never gets
+ * it: `context.ts` argues why untrusted text stays in a `user` message, and
+ * this function is the deliberate exception for text that is not untrusted,
+ * because it arrives through a sheet in the operator's own git repo (#369).
+ *
+ * One function rather than interpolation at the call site, so that when
+ * #270's persona lands, description and persona compose here — one place,
+ * not two fields interpolated in two files.
+ */
+export function systemPromptFor(description: string): string {
+  return description === ""
+    ? SYSTEM_PROMPT
+    : `${SYSTEM_PROMPT} The channel describes itself: ${description}`;
+}
+
+/**
  * What the channel is told when the tool listing could not be fetched.
  *
  * Posted rather than swallowed, which is a departure from how an unreachable
@@ -352,7 +372,9 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           // sent it — display-name resolution is the context assembler's (#67),
           // and a name is not what an audit record wants anyway.
           requestingUser: request.requestingUser,
-          system: SYSTEM_PROMPT,
+          // The static prompt plus the sheet's own description of the
+          // channel, when it has one.
+          system: systemPromptFor(settings.description),
           // The whole seed transcript, already assembled: the channel's recent
           // messages with their authors, then what was asked. Built by the router
           // from the session's store and name cache, because those are the

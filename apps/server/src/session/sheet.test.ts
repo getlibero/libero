@@ -91,6 +91,7 @@ describe("settingsFrom", () => {
   it("maps the four caps, the two bounds, and the window field for field", () => {
     expect(settingsFrom(sheetOf(VALID), MODEL)).toEqual({
       model: "sheet-model",
+      description: "",
       caps: {
         maxToolCalls: 7,
         // One of the two conversions rather than a rename, and the only kind of
@@ -139,6 +140,7 @@ describe("settingsFrom", () => {
     // a package boundary.
     expect(settingsFrom(sheetOf(NO_LLM_BLOCK), MODEL)).toEqual({
       model: MODEL,
+      description: "",
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -187,6 +189,17 @@ describe("settingsFrom", () => {
     );
 
     expect(settings.memory.summarizeAfterIdleMs).toBe(90 * 60_000);
+  });
+
+  it("carries the channel's description for the system prompt (#369)", () => {
+    const settings = settingsFrom(
+      sheetOf(
+        `[channel]\nname = "ops"\ndescription = "Deploys and incident response."\n${PIN}\n`
+      ),
+      MODEL
+    );
+
+    expect(settings.description).toBe("Deploys and incident response.");
   });
 
   // Two switches rather than one: a channel may want the agent to remember what
@@ -241,6 +254,7 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: "sheet-model",
+      description: "",
       caps: {
         maxToolCalls: 7,
         maxWallTimeMs: 30_000,
@@ -300,6 +314,7 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
+      description: "",
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -315,6 +330,7 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
+      description: "",
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -334,6 +350,7 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
+      description: "",
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -372,6 +389,7 @@ describe("createSheetResolver", () => {
 
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
+      description: "",
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -399,6 +417,7 @@ describe("createSheetResolver", () => {
 
       await expect(resolve(channel)).resolves.toEqual({
         model: MODEL,
+        description: "",
         caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,

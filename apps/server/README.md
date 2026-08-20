@@ -440,7 +440,10 @@ the router sees them.
 **It is one `user` message, and never the system prompt.** Channel text is
 written by whoever is in the channel; in `system` it would sit where the agent's
 own instructions are. The history is wrapped in a marked block that says it is
-context rather than instructions.
+context rather than instructions. The sheet's `[channel] description` is the
+deliberate exception (#369) — it does sit in the system prompt, composed by
+`systemPromptFor` in `task.ts`, and may, because it is operator-authored: it
+arrives through a file in the operator's git repo, never through the channel.
 
 **It is not a dialogue.** The agent's own replies are not stored, so history is
 one-sided — a labelled block of what people said is exactly as much as is true,

@@ -107,6 +107,7 @@ function rig(followUpWindowMs = WINDOW_MS): {
     sheets: () =>
       Promise.resolve({
         model: "test-model",
+        description: "",
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs,
@@ -419,6 +420,7 @@ describe("a follow-up arriving mid-task", () => {
       sheets: () =>
         Promise.resolve({
           model: "test-model",
+          description: "",
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
           history: { ...DEFAULT_HISTORY_BOUNDS },
           followUpWindowMs: WINDOW_MS,

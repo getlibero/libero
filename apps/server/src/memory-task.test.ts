@@ -136,6 +136,7 @@ function rig(options: RigOptions = {}) {
     sheets: () =>
       Promise.resolve({
         model: "test-model",
+        description: "",
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -399,6 +400,7 @@ describe("what the curation turn is metered as", () => {
       sheets: () =>
         Promise.resolve({
           model: "test-model",
+          description: "",
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
           history: { ...DEFAULT_HISTORY_BOUNDS },
           followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,

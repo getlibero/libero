@@ -303,6 +303,14 @@ export interface AmbientSettings {
 export interface ChannelSettings {
   /** The sheet's `[llm] model`, or `AGENT_MODEL`. Passed to the provider verbatim. */
   readonly model: string;
+  /**
+   * The sheet's `[channel] description`, `""` when the sheet has none.
+   * Appended to the system prompt when non-empty (#369) — it is
+   * operator-authored, the standing #270's persona will share, and that is
+   * what allows it that placement at all: channel history never gets it (see
+   * `context.ts`). Bounded by the schema's cap rather than truncated here.
+   */
+  readonly description: string;
   /** The four per-task caps, out of the sheet's `[llm]` block. */
   readonly caps: AgentLoopCaps;
   /** The two context bounds, out of the same block. */

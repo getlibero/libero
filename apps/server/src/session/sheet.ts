@@ -192,6 +192,7 @@ export interface SheetResolverOptions {
 export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSettings {
   return {
     model: sheet.llm.model ?? fallbackModel,
+    description: sheet.channel.description,
     caps: {
       maxToolCalls: sheet.llm.max_tool_calls_per_task,
       maxWallTimeMs: sheet.llm.max_task_seconds * 1000,
@@ -272,6 +273,8 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
 
   const defaults = (): ChannelSettings => ({
     model: options.model,
+    // No sheet parsed, so no description: the model gets the static prompt.
+    description: "",
     // Spread: the constant is an exported mutable object, and handing the same
     // one to every channel is a caller away from one channel's edit becoming
     // every channel's.
