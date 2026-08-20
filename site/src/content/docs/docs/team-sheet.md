@@ -529,8 +529,9 @@ they are.
 `daily_usd` caps the invoice. Tokens are the right unit for a runaway brake and need no pricing
 knowledge at all — a self-hosted channel has no dollar cost, and a router picking a model absent
 from any price table still needs stopping — but they are the wrong unit for a *budget*: with the
-model switching per task the same 60,000 tokens is an order-of-magnitude cost swing, and the number
-you wrote stops meaning what you thought. Set it beside `daily_tokens` rather than instead of it,
+model switching per task the same token allowance — the example's 60,000, or the schema's default
+of 200,000 — is an order-of-magnitude cost swing, and the number you wrote stops meaning what you
+thought. Set it beside `daily_tokens` rather than instead of it,
 and whichever binds first refuses. It is the one field in this block with no default, because a
 default token count is a brake and a default dollar cap is a bill.
 
@@ -601,7 +602,7 @@ directly: `pnpm budget` in `apps/proxy-server`.)
 **The soft limit.** `warn_at` is how far into any of the budgets a channel gets before it is told, once,
 in the thread. The call that carries the notice still runs — only `daily_tokens` and
 `daily_tool_calls` stop anything — and the message names the limit and the channel's position
-against it:
+against it. Against the example sheet's `daily_tool_calls = 400` (the schema's default is `200`):
 
 > Budget: this channel has made 320 of its 400 daily tool calls. Calls run until it reaches the
 > limit.
@@ -630,7 +631,7 @@ in the agent's own state root, never in the directory holding this sheet.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `enabled` | no | Whether the curation turn runs at all. **Defaults to `true`** — the one block on this page that is on when it is absent. `false` writes nothing and reads nothing back. |
+| `enabled` | no | Whether the curation turn runs at all. **Defaults to `true`.** `false` writes nothing and reads nothing back. |
 | `max_file_chars` | no | The whole file's ceiling, in characters. Defaults to `32768`. May not be set below `4096`, the most one operation may carry, or above `262144`. |
 | `summarize` | no | Whether quiet threads are summarized into searchable memory. **Defaults to `true`.** |
 | `summarize_after_idle_minutes` | no | How long a thread must be quiet first. Defaults to `60`. May not be set below `5` or above `10080` (a week). |

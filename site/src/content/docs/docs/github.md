@@ -225,11 +225,9 @@ A served call is one row, `outcome = ran`, naming the server, the tool, the requ
 arguments, and the size of the result. That row is the demonstration; the reply in the thread is
 only the visible part of it.
 
-Today the row appears and the reply carries GitHub's `-32020` refusal rather than an answer — see
-the note at the top of this page. What that row still proves is worth knowing: the channel was
-resolved from the client certificate, the sheet permitted the tool, the credential was found in the
-vault and accepted by GitHub, and the call was metered and recorded. The gap is in one step, and it
-is the last one.
+What the row attests, step by step: the channel was resolved from the client certificate, the
+sheet permitted the tool, the credential was found in the vault and accepted by GitHub, and the
+call was metered and recorded.
 
 The verification is also automated. `e2e/src/github-live.test.ts` in the repository runs exactly
 this path against real GitHub and is skipped unless `LIBERO_GITHUB_PAT` is set:

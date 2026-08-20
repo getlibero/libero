@@ -80,6 +80,7 @@ exist on the host:
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js set github_service_account < token.txt
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js list    # names only
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/vault.js remove github_service_account
 ```
 
 The value is read from stdin rather than an argument, because `ps` shows arguments to every user
@@ -445,7 +446,9 @@ warning along with the counters.
 
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/budget.js show  C024BE91L   # today's counters
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/budget.js days  C024BE91L   # which days hold spend
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/budget.js reset C024BE91L   # clears today only
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/budget.js prune             # drops turn ids older than 48h
 ```
 
 The reset is a second process against the proxy's own database rather than a request to the proxy,

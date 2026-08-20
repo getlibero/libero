@@ -36,18 +36,21 @@ describe("renderStarterSheet", () => {
     expect(parsed.sheet.ambient.enabled).toBe(false);
   });
 
-  // The one default that is on, so the generated file says so rather than
-  // leaving "grants nothing" above to be read as covering it. Curation is not a
-  // tool call and reaches nothing outside the channel, which is why it does not
-  // contradict the sheet's whole point — but an operator finding a MEMORY.md
-  // they were never told about is an operator who stops trusting the header.
-  it("says that memory curation is on, since the schema's default is on", () => {
+  // The defaults that are on — memory curation, thread summaries, the skill
+  // library — so the generated file says so rather than leaving "grants
+  // nothing" above to be read as covering them. None is a tool call and none
+  // reaches anything outside the channel, which is why they do not contradict
+  // the sheet's whole point — but an operator finding a MEMORY.md they were
+  // never told about is an operator who stops trusting the header.
+  it("says that memory and skills are on, since the schema's defaults are on", () => {
     const parsed = parseTeamSheet(sheet());
 
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.sheet.memory.enabled).toBe(true);
-    expect(sheet()).toContain("[memory] block saying");
+    expect(parsed.sheet.skills.enabled).toBe(true);
+    expect(sheet()).toContain("Memory and skills are on");
+    expect(sheet()).toContain("enabled = false");
   });
 
   it("escapes a name that would otherwise break the file", () => {
