@@ -22,7 +22,7 @@
 <p align="center">
   <a href="https://getlibero.com"><img alt="Site: getlibero.com" src="https://img.shields.io/badge/site-getlibero.com-1BA85A?style=flat-square&labelColor=131A18"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1BA85A?style=flat-square&labelColor=131A18">
-  <img alt="Status: v0.3.0, pre-release" src="https://img.shields.io/badge/status-v0.3.0_pre--release-8FA39D?style=flat-square&labelColor=131A18">
+  <a href="https://github.com/getlibero/libero/releases/tag/v0.3.0"><img alt="Release: v0.3.0" src="https://img.shields.io/badge/release-v0.3.0-1BA85A?style=flat-square&labelColor=131A18"></a>
   <a href="https://getlibero.com/discord"><img alt="Discord: join the server" src="https://img.shields.io/badge/discord-join-1BA85A?style=flat-square&labelColor=131A18"></a>
 </p>
 
@@ -34,7 +34,7 @@ Governance first, features second: tool credentials never enter the agent proces
 
 ## Status
 
-Pre-release. Every phase is now shipped, so the quick start below is the whole of it: three CLI commands and `docker compose up` stand a deployment up from a clean checkout. It is still not something to point at a workspace you care about — and there is still no numbered release, because the work that makes one is what `v0.3.0` is: the service images on GHCR, a changelog an operator can upgrade by, and a written release procedure.
+`v0.3.0` is the first numbered release: the CLI on npm and both service images on GHCR, each with provenance attestations, a [changelog](https://getlibero.com/docs/changelog) an operator can upgrade by, and a written release procedure (`RELEASING.md`). The quick start below is the whole of standing it up: three CLI commands and `docker compose up`, from a clean checkout or from the published images. It is still early — point it at a scratch workspace before one you care about, and read the changelog's Upgrading section when moving between versions.
 
 What exists is the tool proxy: mutual TLS, per-channel identity taken from the client certificate, team-sheet enforcement on both gates, a vault encrypted at rest, credential injection into outbound calls, a redaction pass that scrubs echoed secrets out of results, the MCP client and its pool with a per-upstream concurrency limit, OAuth against upstreams that need it — the proxy discovers, mints, stores and rotates the token, and the agent never sees it (#157) — the budget meter in calls and in dollars, failing closed on an unpriced model (#62), the append-only audit log, and the approval broker. The Slack gateway and the agent loop reach tools through the proxy and nowhere else, report what each model turn cost, and drain in-flight work on SIGTERM so the last turn's spend is not lost (#118).
 

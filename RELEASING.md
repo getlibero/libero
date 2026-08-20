@@ -47,6 +47,17 @@ refs (type: tag) — `npm-publish`'s was changed from `cli-v*` when the scheme
 changed. If a policy and the workflow triggers ever disagree, the run fails
 at the environment check — loudly, not silently.
 
+A second settings fact, learned cutting v0.3.0: **a GHCR package's first
+publish lands private**, whatever the workflow intended, and stays invisible
+to `docker compose pull` until two flips are made by hand — the org must
+allow public packages (Organization → Settings → Packages → Package
+creation → Public), and then each package's own visibility is changed in its
+package settings. This recurs per *package*, not per release: `server` and
+`proxy` are done, and any image added later will need the same first-publish
+flip before its first release is actually pullable. Verify from outside:
+an anonymous `docker manifest inspect` (or the registry's token + manifest
+round trip) answering 200, not the browser while signed in.
+
 ## Who can cut a release
 
 A maintainer with push access to the repository — tag pushes are the
