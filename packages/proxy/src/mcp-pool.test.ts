@@ -297,6 +297,17 @@ describe("the concurrency limit", () => {
     if (client === null) throw new Error("the pool handed out nothing");
 
     const { settled, drain } = fire(client, 4);
+    // **Both waits, and the first one is not decoration.** The losers give up
+    // on a timer of their own, which is causally independent of the winners
+    // getting through the handshake and onto the wire — so asserting the
+    // upstream's count off the losers alone asserts it at an arbitrary moment
+    // in the winners' progress. It passed on a fast machine and failed on a
+    // loaded runner with one call landed instead of two.
+    // `>=` rather than `===`: this wait establishes that the winners have
+    // landed, and the assertion below is what says no more than the limit did.
+    // Pinned to the exact number here, a build that let all four through would
+    // race past it and fail on the wrong line.
+    await until(() => (fake?.callsTo("tools/call").length ?? 0) >= 2, "the upstream to be saturated");
     await until(() => settled.length === 2, "the two queued calls to give up");
 
     // The two that never got a permit, and the upstream never heard of them.
@@ -304,6 +315,9 @@ describe("the concurrency limit", () => {
     for (const outcome of settled) {
       expect(outcome).toEqual({ outcome: "connect_failed", failure: "busy" });
     }
+    // Still two, now that the other two have demonstrably finished failing:
+    // the claim is that a refused permit sends nothing, and a broken gate would
+    // read four here — or hang all four and never satisfy the wait above.
     expect(fake.callsTo("tools/call")).toHaveLength(2);
 
     // Closing the fake is what lets the two held calls settle; without it they
