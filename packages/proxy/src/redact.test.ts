@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { RedactionError, encodingsOf, redactSecrets, redactionMarker } from "./redact.js";
+import {
+  RedactionError,
+  StreamingRedactor,
+  encodingsOf,
+  redactSecrets,
+  redactionMarker,
+  redactionPasses
+} from "./redact.js";
 
 // The generated tests below are deterministic. A seeded LCG rather than
 // Math.random, and rather than a property-testing dependency: the package whose
@@ -370,5 +377,126 @@ describe("nothing to do", () => {
 
   it("handles an empty body", () => {
     expect(redactSecrets("", [{ name: "c", value: "abc" }])).toBe("");
+  });
+});
+
+// #156's claim, and the only reason a streamed body is allowed to exist: the
+// incremental scan sees a chunk boundary the upstream chose, and must not care
+// where it fell.
+describe("StreamingRedactor", () => {
+  /** Feed a text through in the given pieces and join everything that comes out. */
+  function stream(text: string, pieces: readonly string[], secrets: readonly { name: string; value: string }[]) {
+    const redactor = new StreamingRedactor(redactionPasses(secrets));
+    let out = "";
+    for (const piece of pieces) out += redactor.push(piece);
+    return out + redactor.flush();
+  }
+
+  /** Every way of cutting a string into `parts` pieces, empty pieces included. */
+  function splits(text: string, parts: number): string[][] {
+    if (parts === 1) return [[text]];
+    const out: string[][] = [];
+    for (let i = 0; i <= text.length; i += 1) {
+      for (const rest of splits(text.slice(i), parts - 1)) out.push([text.slice(0, i), ...rest]);
+    }
+    return out;
+  }
+
+  it("matches the buffered scan across every split into two, three and four", () => {
+    const secrets = [{ name: "gh", value: "s3cr3t" }];
+    // Short enough to enumerate exhaustively, and every fragment of the secret
+    // appears in it so a naive per-chunk scan has many chances to be wrong.
+    const body = 'a s3cr3t {"k":"s3cr3t"} s3c s3cr3t';
+    const whole = redactSecrets(body, secrets);
+
+    for (const parts of [2, 3, 4]) {
+      for (const pieces of splits(body, parts)) {
+        expect(stream(body, pieces, secrets), `split ${JSON.stringify(pieces)}`).toBe(whole);
+      }
+    }
+  });
+
+  it("matches the buffered scan on generated bodies, one character at a time", () => {
+    const rng = lcg(156);
+    for (let i = 0; i < 200; i += 1) {
+      const secret = randomSecret(rng);
+      const secrets = [{ name: "cred", value: secret }];
+      // Planted in every encoding the buffered scan knows, so the split walks
+      // through the middle of base64, percent and `\uXXXX` spellings too.
+      const body = encodingsOf(secret)
+        .map((encoding, position) => plant(encoding, randomNoise(rng), position))
+        .join("|");
+      const pieces = [...body];
+      expect(stream(body, pieces, secrets), `seed 156 case ${i} secret ${JSON.stringify(secret)}`).toBe(
+        redactSecrets(body, secrets)
+      );
+    }
+  });
+
+  it("matches the buffered scan with two secrets and ragged chunks", () => {
+    const rng = lcg(157);
+    for (let i = 0; i < 200; i += 1) {
+      const secrets = [
+        { name: "one", value: randomSecret(rng) },
+        { name: "two", value: randomSecret(rng) }
+      ];
+      const body =
+        plant(secrets[0]?.value ?? "", randomNoise(rng), i) + randomNoise(rng) + plant(secrets[1]?.value ?? "", randomNoise(rng), i + 1);
+      const pieces: string[] = [];
+      for (let at = 0; at < body.length; ) {
+        const size = 1 + Math.floor(rng() * 9);
+        pieces.push(body.slice(at, at + size));
+        at += size;
+      }
+      expect(stream(body, pieces, secrets), `seed 157 case ${i}`).toBe(redactSecrets(body, secrets));
+    }
+  });
+
+  it("holds a secret split across chunks rather than emitting its front half", () => {
+    const secrets = [{ name: "gh", value: "abcdefgh" }];
+    const redactor = new StreamingRedactor(redactionPasses(secrets));
+    // "abcd" is a prefix of the value, so it is held: emitting it here would be
+    // the leak. The second chunk completes the match at the buffer's end, which
+    // makes it final — so the marker comes out of `push` rather than waiting for
+    // `flush`, and `flush` has nothing left.
+    expect(redactor.push("abcd")).toBe("");
+    expect(redactor.push("efgh")).toBe(redactionMarker("gh"));
+    expect(redactor.flush()).toBe("");
+  });
+
+  // The reason `#partialTail` measures instead of assuming: an event shorter
+  // than the longest needle must still get out, or a server that holds its
+  // stream open after delivering the result hangs exactly as the buffered read
+  // did — which is the failure #156 exists to remove.
+  it("emits an event shorter than the longest needle without waiting for the body to end", () => {
+    const secrets = [{ name: "gh", value: "ghp_live_token_do_not_log" }];
+    const redactor = new StreamingRedactor(redactionPasses(secrets));
+    const event = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n";
+
+    // Nothing held: no suffix of this is the start of any spelling of the value.
+    expect(redactor.push(event)).toBe(event);
+    expect(redactor.flush()).toBe("");
+  });
+
+  it("emits nothing that still contains the value, whatever the split", () => {
+    const rng = lcg(158);
+    for (let i = 0; i < 300; i += 1) {
+      const secret = randomSecret(rng);
+      const body = plant(secret, randomNoise(rng), i) + secret + randomNoise(rng) + secret;
+      const pieces = [...body];
+      const out = stream(body, pieces, [{ name: "cred", value: secret }]);
+      expect(out.includes(secret), `seed 158 case ${i} secret ${JSON.stringify(secret)}`).toBe(false);
+    }
+  });
+
+  it("passes text through untouched when there are no secrets", () => {
+    const redactor = new StreamingRedactor(redactionPasses([]));
+    expect(redactor.push("nothing ")).toBe("nothing ");
+    expect(redactor.push("held back")).toBe("held back");
+    expect(redactor.flush()).toBe("");
+  });
+
+  it("refuses an empty value while building the passes, before a byte flows", () => {
+    expect(() => redactionPasses([{ name: "c", value: "" }])).toThrow(RedactionError);
   });
 });

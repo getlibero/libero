@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { type McpClient, createMcpClient } from "./mcp-client.js";
-import { type FakeMcpServer, type FakeReply, startFakeMcpServer } from "./mcp-fake-server.js";
+import { type FakeMcpServer, type FakeReply, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 // Written down here rather than imported from the client, for the reason
 // ./mcp-fake-server.ts states: a test that shares its constants with the code
 // under test cannot catch that code disagreeing with a real server.
@@ -629,6 +629,62 @@ describe("when the call fails", () => {
 
     expect(outcome).toMatchObject({ outcome: "call_failed", failure: "http_error", status: 500 });
     expect(outcome.outcome === "call_failed" && (outcome.detail?.length ?? 0)).toBeLessThan(400);
+  });
+});
+
+// #156's two claims, against the real SDK rather than against the seam.
+describe("a server that leaves its event stream open", () => {
+  it("returns the result it already sent, instead of timing out", async () => {
+    fake = await startFakeMcpServer({ framing: "sse" });
+    fake.respond = request =>
+      request.rpc?.method === "tools/call"
+        ? {
+            keepStreamOpen: true,
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: completeResult({ content: [{ type: "text", text: "ok" }] })
+            }
+          }
+        : null;
+    // A budget short enough that the old buffered read could only have reported
+    // `timed_out`: nothing closes this stream before the test's own teardown.
+    const client = createMcpClient({ url: fake.url, source: constantCredential("bearer", undefined), timeoutMs: 2000 });
+
+    const started = process.hrtime.bigint();
+    const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(outcome).toMatchObject({ outcome: "called" });
+    // Answered on the event rather than on the timeout. Asserted as well as the
+    // outcome because a `timed_out` that happened to be reported as a result
+    // would pass the line above.
+    expect(elapsedMs).toBeLessThan(1500);
+  });
+
+  it("still scrubs a credential the held-open stream echoes back", async () => {
+    fake = await startFakeMcpServer({ framing: "sse" });
+    fake.respond = request =>
+      request.rpc?.method === "tools/call"
+        ? {
+            keepStreamOpen: true,
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: completeResult({ content: [{ type: "text", text: `saw ${request.authorization}` }] })
+            }
+          }
+        : null;
+    const client = createMcpClient({
+      url: fake.url,
+      source: constantCredential("bearer", secretOf(VALUE), "github_pat"),
+      timeoutMs: 2000
+    });
+
+    const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+
+    expect(outcome).toMatchObject({ outcome: "called" });
+    expect(JSON.stringify(outcome)).not.toContain(VALUE);
   });
 });
 

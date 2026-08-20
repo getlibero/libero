@@ -210,15 +210,207 @@ export function encodingsOf(value: string): string[] {
  * this over-redact the body, which is useless but safe, and the operator
  * problem it signals is not one this function should paper over by returning
  * text it knows may still carry the value.
+ *
+ * **Both halves are named separately below, and this is their composition.**
+ * #156 needed the needles built once and applied many times, so the rules split
+ * into `redactionPasses` (which spellings, and the empty-value refusal) and
+ * `applyPasses` (the two orderings above). Everything this comment describes is
+ * still what happens; the streaming path shares it rather than restating it,
+ * which is what keeps "what matches" a single answer.
  */
 export function redactSecrets(text: string, secrets: readonly SecretValue[]): string {
-  let out = text;
-  for (const secret of secrets) {
+  return applyPasses(text, redactionPasses(secrets));
+}
+
+/**
+ * One secret's marker and every spelling of it worth searching for.
+ *
+ * Split out of `redactSecrets` for #156: a streamed body redacts many times
+ * against the same secret, and `encodingsOf` is fifteen encodings and a sort per
+ * call. Building the needles once and carrying them is the difference between
+ * that cost being paid per response and per chunk.
+ *
+ * **The empty-value refusal moved here with them, and that is the point rather
+ * than a side effect.** `StreamingRedactor` cannot fail closed halfway through a
+ * body it has already emitted the front of, so the one failure this file has is
+ * raised while building the passes — before a byte flows — and every caller gets
+ * it at the same place `redactSecrets` always raised it.
+ */
+export interface RedactionPass {
+  /** What replaces a match. Names the credential; never any part of the value. */
+  readonly marker: string;
+  /** Longest first, per `encodingsOf`. */
+  readonly needles: readonly string[];
+}
+
+/**
+ * The passes for a set of secrets, in the order the scan must apply them.
+ *
+ * Throws `RedactionError` on an empty value, per `redactSecrets`'s fail-closed
+ * note — which is now the only place that check lives.
+ */
+export function redactionPasses(secrets: readonly SecretValue[]): RedactionPass[] {
+  return secrets.map(secret => {
     if (secret.value.length === 0) throw new RedactionError("empty_value");
-    const marker = redactionMarker(secret.name);
-    for (const needle of encodingsOf(secret.value)) {
-      out = out.replaceAll(needle, marker);
+    return { marker: redactionMarker(secret.name), needles: encodingsOf(secret.value) };
+  });
+}
+
+/** Apply prebuilt passes to a whole string. Each pass is fully applied before the next begins. */
+export function applyPasses(text: string, passes: readonly RedactionPass[]): string {
+  let out = text;
+  for (const pass of passes) {
+    for (const needle of pass.needles) {
+      out = out.replaceAll(needle, pass.marker);
     }
   }
   return out;
+}
+
+
+/**
+ * The same scan, over a body that is still arriving.
+ *
+ * **What it is for.** Until #156 the proxy read every upstream response to
+ * completion before anything parsed it, which made "every byte passes
+ * `redactSecrets` before anything parses it" a single readable statement — and
+ * cost the two things #128 accepted at the time: an SSE stream left open after
+ * the result was delivered hit the timeout instead of returning, and progress
+ * notifications were read only after the whole body landed. This is what lets
+ * the bytes move without giving that statement up.
+ *
+ * **The guarantee, stated exactly.** For any way a text is chopped into chunks,
+ * every needle occurrence in the concatenation is replaced in the concatenated
+ * output. Not "every chunk is scanned" — a chunk boundary is chosen by an
+ * upstream's TCP writes, so a scan that only ever saw one chunk at a time would
+ * let a credential through by being split across two of them. That is the whole
+ * difficulty here and it is the only one.
+ *
+ * **How.** Text is final once no later byte can change how it redacts. Two
+ * things can, and each gets its own guard in `push`:
+ *
+ * - a match the arrived text could still *grow* into, which is any suffix that
+ *   is a proper prefix of a needle. `#partialTail` measures it rather than
+ *   assuming the worst case, for the reason argued there — assuming it is
+ *   correct and makes streaming pointless.
+ * - a match already whole that the cut happens to land inside. The tail above
+ *   does not catch it, because what follows the cut is then the *middle* of a
+ *   needle rather than a prefix of one. So the cut is walked backward past any
+ *   such match, which puts the whole occurrence in the held-back region for the
+ *   next round to replace.
+ *
+ * **What it is not.** It is not a second set of rules. Everything about *what*
+ * matches is `redactionPasses`, shared with the buffered path, and the suite
+ * pins the two against each other across every split of a body rather than
+ * asserting them separately. The one divergence is the marker cascade
+ * `redactSecrets` already documents — a credential whose value is a substring
+ * of a marker written by an earlier secret — because a marker is text this scan
+ * inserts rather than text the needles were built from. Absurd as a real
+ * credential, and it over-redacts in both paths; it is named here only so the
+ * equivalence test's exclusion is not a mystery.
+ *
+ * Not a `TransformStream`: the caller is a byte reader that already owns its
+ * loop, and handing it a second stream to plumb would buy nothing.
+ */
+export class StreamingRedactor {
+  readonly #passes: readonly RedactionPass[];
+  #carry = "";
+
+  constructor(passes: readonly RedactionPass[]) {
+    this.#passes = passes;
+  }
+
+  /**
+   * The length of the longest suffix of `pending` that is a proper prefix of
+   * some needle — which is exactly how much of it a later chunk could still
+   * turn into a match, and therefore exactly how much must be held.
+   *
+   * **Measured rather than assumed, and that is what makes streaming worth
+   * doing.** Holding a fixed `longestNeedle - 1` is also correct and was the
+   * first version of this; it is useless in practice, because the longest needle
+   * is the fully-`\uXXXX`-escaped spelling at six characters per character of
+   * the credential — 150 for a modest token. An SSE event is often shorter than
+   * that, so every event would sit in the hold-back until the body ended, and a
+   * stream left open after the result was delivered would hang exactly as the
+   * buffered read did. The measured tail is nearly always zero, because ordinary
+   * body text does not end mid-credential.
+   *
+   * Scanned from the earliest candidate forward, so the first hit is the longest
+   * tail that needle can claim, and only over positions that would improve on
+   * what another needle already claimed. The character-by-character compare
+   * bails on the first mismatch, so the common case costs one comparison per
+   * position rather than a slice.
+   */
+  #partialTail(pending: string): number {
+    let hold = 0;
+    for (const pass of this.#passes) {
+      for (const needle of pass.needles) {
+        const first = needle.charCodeAt(0);
+        const from = Math.max(0, pending.length - (needle.length - 1));
+        const limit = pending.length - hold;
+        for (let at = from; at < limit; at += 1) {
+          if (pending.charCodeAt(at) !== first) continue;
+          let k = 1;
+          while (at + k < pending.length && pending.charCodeAt(at + k) === needle.charCodeAt(k)) k += 1;
+          if (at + k === pending.length) {
+            hold = pending.length - at;
+            break;
+          }
+        }
+      }
+    }
+    return hold;
+  }
+
+  /** Redacted text that is final. May be `""` while a tail is held. */
+  push(text: string): string {
+    // No secrets, nothing to hold: the fast path is also the common one, since
+    // an upstream with no credential in its sheet redacts against nothing.
+    if (this.#passes.length === 0) return text;
+
+    const pending = this.#carry + text;
+    let cut = pending.length - this.#partialTail(pending);
+
+    // The tail above covers a match this text could still *grow* into. This
+    // covers a match already whole that the cut happens to land inside — which
+    // the tail does not catch, because the part after the cut is the middle of a
+    // needle rather than a prefix of one. `lastIndexOf` with a `fromIndex` finds
+    // the latest occurrence starting at or before it, which is the only one that
+    // can straddle. Moving the cut can expose another straddler behind it, so
+    // this repeats; it always settles, because the cut only ever decreases.
+    for (let moved = true; moved && cut > 0; ) {
+      moved = false;
+      for (const pass of this.#passes) {
+        for (const needle of pass.needles) {
+          const at = pending.lastIndexOf(needle, cut - 1);
+          if (at >= 0 && at + needle.length > cut) {
+            cut = at;
+            moved = true;
+          }
+        }
+      }
+    }
+
+    if (cut <= 0) {
+      this.#carry = pending;
+      return "";
+    }
+
+    this.#carry = pending.slice(cut);
+    return applyPasses(pending.slice(0, cut), this.#passes);
+  }
+
+  /**
+   * The held-back tail, redacted. Call once, when the body has ended.
+   *
+   * Nothing is held after this, so a caller that flushes early and keeps
+   * pushing gets a correct scan of each part and no scan across the seam. The
+   * one caller ends the body here.
+   */
+  flush(): string {
+    if (this.#carry.length === 0) return "";
+    const rest = applyPasses(this.#carry, this.#passes);
+    this.#carry = "";
+    return rest;
+  }
 }

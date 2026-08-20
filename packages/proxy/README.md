@@ -95,8 +95,18 @@ reveals a credential and the one that scrubs the reply.
   the reason that is sufficient rather than merely helpful is structural: a
   credential can only appear in a response if it was sent in a request, and this
   is the only function that sends one. `credentialHeader` and `injectCredential`
-  are not exported from the package for the same reason — `callUpstream` is the
-  only exported way to send a credential, and it always scrubs the reply.
+  are not exported from the package for the same reason — `callUpstream` and the
+  guarded fetch built on it are the only exported ways to send a credential, and
+  both scrub the reply.
+
+  Since #156 the body is **scrubbed as it arrives** rather than read to
+  completion first. `callUpstreamStream` is the call and `callUpstream` is that
+  same call drained to a string, so there is still one reveal site and one
+  redaction rule set — the token exchange and every control-plane read take the
+  drained one, and the MCP transport takes the stream. What it bought is what
+  #128 had accepted: a server that leaves its event stream open after delivering
+  the result now returns that result instead of hitting the timeout, and a
+  progress notification arrives while it is still progress.
 - `redact.ts` — the scanning rules, kept apart from the custody so they can be
   property-tested without a `Secret` or a socket. Replaces every occurrence of a
   value, in raw, base64 (standard and URL-safe, padded and unpadded),
@@ -107,6 +117,15 @@ reveals a credential and the one that scrubs the reply.
   its own auth header" class and says plainly in its header what no scan can
   close — a value the upstream *transforms* is invisible to any search for it.
   An empty stored value throws rather than shredding the body.
+
+  `StreamingRedactor` is the same rules over a body still arriving, and the
+  difficulty it exists for is the only one there is: a chunk boundary is chosen
+  by an upstream's TCP writes, so a credential can be split across two of them
+  and a per-chunk scan would pass it through. It holds back exactly the tail that
+  a later chunk could still complete into a match — measured, not the worst case,
+  because assuming the worst case would hold back more than an SSE event is long
+  and make streaming pointless. The suite pins it against the buffered path
+  across every split of a body rather than asserting the two separately.
 - `http-dispatcher.ts` — serves an allowed call against an HTTP upstream:
   resolves the entry's named credential against the vault, then hands the call
   to the client pool. A credential the vault cannot resolve refuses by name

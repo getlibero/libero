@@ -21,7 +21,7 @@ import {
   destinationHost,
   injectCredential
 } from "./outbound.js";
-import { RedactionError } from "./redact.js";
+import { RedactionError, redactionMarker } from "./redact.js";
 import type { Secret } from "./vault.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -924,11 +924,76 @@ describe("the guarded fetch", () => {
     expect(wire?.aborted).toBe(true);
   });
 
-  it("reports an oversized answer as too_large rather than as a transport failure", async () => {
+  // The assertion this replaces had the guarded fetch itself reject. That was
+  // true of the buffered read and is not a property anything depended on: the
+  // bound is a fact about a body, and #156 made the body arrive after the
+  // headers, so it cannot be known before the response resolves. What has to
+  // hold — and what `http-dispatcher.test.ts` pins end to end — is that the
+  // word reaching the channel is still `too_large`.
+  it("reports an oversized answer as too_large on the body, not as a transport failure", async () => {
     const { fetch } = recordingFetch("x".repeat(64));
-    await expect(
-      guarded({ fetch, maxBodyBytes: 8 })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" })
-    ).rejects.toMatchObject({ failure: "too_large" });
+    const response = await guarded({ fetch, maxBodyBytes: 8 })("http://mcp-github:3001/mcp", {
+      method: "POST",
+      body: "{}"
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toMatchObject({ failure: "too_large" });
+  });
+
+  // The half of streaming that is the point: a body is readable before the
+  // upstream has finished sending it. Buffered, the first read would block
+  // until `close()`.
+  it("hands back a body that can be read before the upstream ends it", async () => {
+    let push: ((chunk: string) => void) | undefined;
+    let finish: (() => void) | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        push = chunk => controller.enqueue(encoder.encode(chunk));
+        finish = () => controller.close();
+      }
+    });
+    const fetch = (async () =>
+      new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof globalThis.fetch;
+
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+    const reader = response.body!.getReader();
+
+    push?.("event: message\ndata: {}\n\n");
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("event: message\ndata: {}\n\n");
+
+    // Only now does the upstream end its stream — the read above did not wait
+    // for it, which is the whole of what #156 bought.
+    finish?.();
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it("redacts a credential split across two chunks of a streamed body", async () => {
+    let push: ((chunk: string) => void) | undefined;
+    let finish: (() => void) | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        push = chunk => controller.enqueue(encoder.encode(chunk));
+        finish = () => controller.close();
+      }
+    });
+    const fetch = (async () => new Response(body, { status: 200 })) as typeof globalThis.fetch;
+
+    const response = await guarded({ fetch })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+    // `guarded` spends VALUE under the name `github_pat`; the upstream echoes
+    // it back astride a
+    // chunk boundary, which is the split a per-chunk scan would miss.
+    const half = Math.floor(VALUE.length / 2);
+    push?.(`{"echo":"${VALUE.slice(0, half)}`);
+    push?.(`${VALUE.slice(half)}"}`);
+    finish?.();
+
+    const text = await response.text();
+    expect(text).not.toContain(VALUE);
+    expect(text).toBe(`{"echo":"${redactionMarker("github_pat")}"}`);
   });
 });
 

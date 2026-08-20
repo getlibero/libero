@@ -7,8 +7,9 @@
 // is one grep. Two `reveal()` sites live here, each deliberate, and a third
 // appearing anywhere is the thing a reviewer should stop:
 //
-// - `callUpstream` spends a credential on an upstream call and scrubs the
-//   reply before returning it.
+// - `callUpstreamStream` spends a credential on an upstream call and scrubs the
+//   reply as it arrives. `callUpstream` is that function read to completion, so
+//   the two are one site rather than two.
 // - `exchangeRefreshToken` spends a refresh token at the issuer its record
 //   binds, and returns the reply to no caller at all — the reply *is* the
 //   credential, wrapped into a `Secret` before it leaves.
@@ -24,9 +25,9 @@
 // stand up themselves — the same shape `packages/agent/src/completion/*.ts`
 // uses for provider clients.
 //
-// **The secret does not come back, either.** `callUpstream` redacts the
-// response before returning it, and the reason that is sufficient rather than
-// merely helpful is structural: a credential value can only appear in a
+// **The secret does not come back, either.** The response is redacted before it
+// reaches a caller, and the reason that is sufficient rather than merely helpful
+// is structural: a credential value can only appear in a
 // response if it was sent in a request, the only place a credential is revealed
 // and sent is this file, so scrubbing here covers every path by which a
 // stored secret can be echoed back. That is why redaction lives at this level
@@ -34,9 +35,17 @@
 // pass inside one implementation would leave #39's client pool and every test
 // double uncovered, and it would need a second `reveal()` to do it.
 //
+// Since #156 the body is scrubbed chunk by chunk rather than in one pass over a
+// finished string, and the sentence above survives that intact — `redact.ts`'s
+// `StreamingRedactor` holds back the tail a match could still be completed from,
+// so a needle split across two of an upstream's TCP writes is still caught. That
+// is argued where it is implemented; what matters here is that no byte reaches a
+// caller without having been through it.
+//
 // The same argument is why `credentialHeader` and `injectCredential` are not
-// exported from the package index: `callUpstream` is the only exported way to
-// send a credential, and it always redacts what comes back.
+// exported from the package index: `callUpstream` and the guarded fetch built on
+// it are the only exported ways to send a credential, and both redact what comes
+// back.
 //
 // **What this file does not do.** It does not check the egress allowlist, and
 // that is not an omission. `[egress]` governs destinations the sheet does not
@@ -45,7 +54,7 @@
 // merging the two lists would widen both. What this file does own is the one
 // destination nothing declared — a redirect target — and it refuses to follow.
 
-import { redactSecrets } from "./redact.js";
+import { type RedactionPass, StreamingRedactor, applyPasses, redactionPasses } from "./redact.js";
 import { makeSecret } from "./vault.js";
 import type { Secret } from "./vault.js";
 
@@ -137,10 +146,11 @@ export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
  * The sibling of the timeout above, and it exists for the same reason: an
  * upstream that answers forever and an upstream that answers enormously are the
  * same failure wearing different clothes, and neither is bounded by anything
- * else on this path. Until this landed, `response.text()` read a body to
- * completion — so a fifty-megabyte answer was buffered, scanned fifteen times by
- * `redactSecrets`, parsed, and handed to a model that spent a channel's whole
- * task budget reading it.
+ * else on this path. Until this landed, the body was read to completion with no
+ * bound at all — so a fifty-megabyte answer was buffered, scanned fifteen times,
+ * parsed, and handed to a model that spent a channel's whole task budget reading
+ * it. Since #156 the count is kept as the body streams, which is where the
+ * refusal now happens; the number and its argument are unchanged.
  *
  * **Four megabytes, and deliberately not `MAX_BODY_BYTES`'s one.** That number
  * bounds an *inbound* request, which is one tool call's arguments; this bounds
@@ -149,11 +159,13 @@ export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
  * exotic happens. Four leaves room for that and still refuses to hold a file
  * transfer.
  *
- * **The real cost is three to five times this number per concurrent call**, and
- * an operator changing it should know that: the decoded string is up to two
- * bytes per character, `redactSecrets` builds an output copy per needle it
- * matches, and `JSON.parse` then builds an object graph beside both. The cap is
- * on the bytes off the wire because that is the quantity this function can
+ * **The real cost is a multiple of this number per concurrent call**, and an
+ * operator changing it should know that. #156 took one term out of it: the body
+ * is no longer held as a decoded string while it is scanned, so the redaction
+ * peak is now one chunk plus a held-back tail rather than the whole body plus a
+ * copy per needle matched. What remains is the SDK's own buffer and the object
+ * graph `JSON.parse` builds beside it, which still scale with the response. The
+ * cap is on the bytes off the wire because that is the quantity this code can
  * actually refuse, not because it is the whole bill.
  *
  * A default rather than a constant: `PROXY_MAX_RESPONSE_BYTES` overrides it, for
@@ -401,6 +413,23 @@ export interface UpstreamRequest {
 }
 
 /** What the upstream said. Status and text; interpreting them is the caller's job. */
+/**
+ * One upstream call, with the body still arriving.
+ *
+ * The shape `callUpstreamStream` returns and `callUpstream` drains. Status and
+ * headers are final — both are in hand before a body byte is read, and the
+ * headers are already scrubbed. The body is not: it is bounded and redacted as
+ * it arrives, and it is where every remaining failure of the call shows up, as
+ * an `UpstreamError`.
+ */
+interface UpstreamStreamResponse {
+  readonly status: number;
+  /** `null` for a response that had no body at all — a 202 ack, a 204 `DELETE`. */
+  readonly body: ReadableStream<Uint8Array> | null;
+  /** The allowlisted response headers, lowercased and redacted. */
+  readonly headers: Readonly<Record<string, string>>;
+}
+
 export interface UpstreamResponse {
   readonly status: number;
   readonly body: string;
@@ -432,67 +461,162 @@ function safeRequestHeaders(headers: Readonly<Record<string, string>> | undefine
 /**
  * The body, decoded, or `null` if it ran past the limit.
  *
- * **Equivalent to `response.text()` for anything under the limit, and that is a
- * fact about the specification rather than an approximation.** `Response.text()`
- * is defined as "consume body" followed by *UTF-8 decode* — the declared charset
- * is never consulted, unlike `XMLHttpRequest` — and *UTF-8 decode* is exactly
- * `TextDecoder("utf-8")` at its defaults: `ignoreBOM: false`, so a leading byte
- * order mark is stripped, and `fatal: false`, so an invalid sequence becomes
- * U+FFFD rather than throwing. `{ stream: true }` holds an incomplete sequence
- * back across a chunk boundary, including a BOM split across the first two
- * chunks, so the joined result is character-for-character what one decode of the
- * whole buffer produces. The suite proves this rather than trusting it, by
- * feeding the same bytes through both paths three at a time.
+ * **The credential-shaped read**, and the reason it is not `callUpstream`: the
+ * three callers are the token exchange and the issuer discovery beside it, where
+ * the body *is* the credential. It must not be redacted — there are no needles
+ * for a value that has not been minted yet — and it must not be returned to
+ * anybody. So they read a body directly rather than spending one through the
+ * function that scrubs and relays.
  *
- * **Counted on the wire bytes, before decoding**, because that is the quantity
- * the heap is spent in and the only one available before the spending happens.
- * Chunks are decoded and dropped as they arrive rather than accumulated, so the
- * peak is one chunk plus the string built so far.
- *
- * **Overflow is this return value and never a thrown error**, which is load
- * bearing rather than stylistic. The caller runs this inside the try that
- * classifies transport failures, and that catch reads `error.name` to tell an
- * abort from a broken socket: an `UpstreamError` thrown from in here would be
- * caught, found not to be a `TimeoutError`, and rethrown as `unreachable`. The
- * bound would vanish, and every test asserting only that the call failed would
- * go on passing. A value the catch cannot see is the version of this that cannot
- * be undone by an edit somewhere else.
+ * A drain of `boundedRedactedBody` with no passes rather than a second loop, so
+ * the bound, the decode and the abort classification have one implementation.
+ * The `null` return is what the callers were already written against: overflow
+ * is a value rather than a throw, because their `catch` maps to
+ * `TokenExchangeFailure` and would report the bound as a transport failure.
  */
 async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit: number): Promise<string | null> {
+  const body = boundedRedactedBody(stream, limit, []);
+  if (body === null) return "";
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const parts: string[] = [];
+  for (;;) {
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (error instanceof UpstreamError && error.failure === "too_large") return null;
+      throw error;
+    }
+    if (chunk.done) break;
+    parts.push(decoder.decode(chunk.value, { stream: true }));
+  }
+  parts.push(decoder.decode());
+  return parts.join("");
+}
+
+/**
+ * The classifier both reads share: whether a thrown value was the abort.
+ *
+ * Nothing else about it is kept — see the note on `UpstreamError`.
+ */
+function transportFailure(error: unknown): UpstreamFailure {
+  return wasTimeout(error) ? "timed_out" : "unreachable";
+}
+
+/**
+ * The response body, bounded and redacted, as it arrives.
+ *
+ * **Why this is a stream since #156, and what did not change.** It used to read
+ * to completion and hand back a string, which made "every byte passes the
+ * redaction before anything parses it" true by construction — nothing could
+ * parse what had not finished arriving. It cost the two things #128 wrote down:
+ * a server that leaves its event stream open after delivering the result hit
+ * `AbortSignal.timeout` and was reported `timed_out` rather than returning the
+ * answer it had already sent, and a progress notification was read only after
+ * the whole body landed, which is not progress. The statement survives the
+ * change intact — every byte still passes the same scan, in the same order,
+ * before this function emits it — because `StreamingRedactor` holds back the
+ * tail a match could still be completed from. That is the entire difficulty and
+ * ./redact.ts is where it is argued.
+ *
+ * **Counted on the wire bytes, before decoding**, exactly as it was: that is the
+ * quantity the heap is spent in and the only one available before the spending
+ * happens. Chunks are decoded, scanned and emitted rather than accumulated, so
+ * the peak is one chunk plus the held-back tail — which is *lower* than the
+ * whole-body string the buffered version held.
+ *
+ * **Decoding is `response.text()`'s, and that is a fact about the specification
+ * rather than an approximation.** `Response.text()` is defined as "consume body"
+ * followed by *UTF-8 decode* — the declared charset is never consulted, unlike
+ * `XMLHttpRequest` — and *UTF-8 decode* is exactly `TextDecoder("utf-8")` at its
+ * defaults: `ignoreBOM: false`, so a leading byte order mark is stripped, and
+ * `fatal: false`, so an invalid sequence becomes U+FFFD rather than throwing.
+ * `{ stream: true }` holds an incomplete sequence back across a chunk boundary,
+ * including a BOM split across the first two chunks. The suite proves this
+ * rather than trusting it, by feeding the same bytes through both paths.
+ *
+ * The re-encode on the way out is lossy in exactly one direction and it is the
+ * one the buffered path was already lossy in: a byte sequence that was not valid
+ * UTF-8 became U+FFFD at the decode, so it leaves as U+FFFD's bytes. A consumer
+ * sees the characters `response.text()` would have given it, which is what it
+ * would have received before.
+ *
+ * **Every failure is an `UpstreamError` on the stream**, including the bound and
+ * including a socket that broke mid-body. The consumer is the SDK, several
+ * layers above; `upstreamFailure` in ./mcp-client.ts walks the cause chain to
+ * find one, so what a channel is told stays a member of the closed set rather
+ * than becoming whatever word a library chose.
+ */
+function boundedRedactedBody(
+  source: ReadableStream<Uint8Array> | null,
+  limit: number,
+  passes: readonly RedactionPass[]
+): ReadableStream<Uint8Array> | null {
   // What `response.text()` answers for a bodiless response, which is an ordinary
   // case here rather than an edge: the 202 an MCP server acknowledges a
   // notification with, and the 204 a session `DELETE` is answered by.
-  if (stream === null) return "";
+  if (source === null) return null;
 
-  const reader = stream.getReader();
+  const reader = source.getReader();
   const decoder = new TextDecoder("utf-8");
-  const parts: string[] = [];
+  const encoder = new TextEncoder();
+  const redactor = new StreamingRedactor(passes);
   let total = 0;
 
-  for (;;) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    total += chunk.value.byteLength;
-    // Strictly greater, so a body of exactly the limit is a body that fits. And
-    // before the decode below, so the chunk that crosses the line is never added
-    // to what is being accumulated.
-    if (total > limit) {
-      // Tells the transport to stop pulling rather than draining a body nobody
-      // will read, and awaited so the socket is released before this returns.
-      // Its rejection is swallowed on purpose: cancelling an already-errored
-      // stream rejects, and letting that escape would land in the caller's
-      // transport catch and be reported as `unreachable` — the exact confusion
-      // the return value above exists to avoid.
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    parts.push(decoder.decode(chunk.value, { stream: true }));
-  }
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      // Loops rather than returning after one read: a chunk whose every
+      // character is still inside the hold-back yields nothing final, and
+      // enqueuing an empty array would tell the consumer a body ended.
+      for (;;) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (error) {
+          // The response began and then failed mid-stream. Still a transport
+          // failure, and it matters more here than at the headers: an event
+          // stream spends most of a call's life in this read, so the timeout
+          // usually fires during the body.
+          controller.error(new UpstreamError(transportFailure(error)));
+          return;
+        }
 
-  // Flushes a trailing incomplete sequence to U+FFFD, as one whole-buffer decode
-  // would.
-  parts.push(decoder.decode());
-  return parts.join("");
+        if (chunk.done) {
+          // Flushes a trailing incomplete sequence to U+FFFD, as one
+          // whole-buffer decode would, then the tail the scan was holding.
+          const rest = redactor.push(decoder.decode()) + redactor.flush();
+          if (rest.length > 0) controller.enqueue(encoder.encode(rest));
+          controller.close();
+          return;
+        }
+
+        total += chunk.value.byteLength;
+        // Strictly greater, so a body of exactly the limit is a body that fits.
+        // And before the decode below, so the chunk that crosses the line is
+        // never scanned, never emitted, and never held.
+        if (total > limit) {
+          // Tells the transport to stop pulling rather than draining a body
+          // nobody will read, and awaited so the socket is released first. Its
+          // rejection is swallowed on purpose: cancelling an already-errored
+          // stream rejects, and that rejection is not the failure to report.
+          await reader.cancel().catch(() => undefined);
+          controller.error(new UpstreamError("too_large"));
+          return;
+        }
+
+        const text = redactor.push(decoder.decode(chunk.value, { stream: true }));
+        if (text.length > 0) {
+          controller.enqueue(encoder.encode(text));
+          return;
+        }
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+    }
+  });
 }
 
 /**
@@ -519,7 +643,7 @@ async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit:
  * as ordinary results — a 404 from a tool is something the model should see and
  * may recover from, which is the distinction `ToolResult.isError` draws.
  */
-export async function callUpstream(request: UpstreamRequest): Promise<UpstreamResponse> {
+async function callUpstreamStream(request: UpstreamRequest): Promise<UpstreamStreamResponse> {
   const send = request.fetch ?? globalThis.fetch;
 
   // The first of this file's two `reveal()` sites — the header lists both. It
@@ -584,8 +708,7 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
   } catch (error) {
     // The only thing read off the thrown value is whether it was the abort.
     // Nothing else about it is kept — see the note on `UpstreamError`.
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    throw new UpstreamError(timedOut ? "timed_out" : "unreachable");
+    throw new UpstreamError(transportFailure(error));
   }
 
   // Before the body is read, so nothing from the 3xx is parsed, scanned, or
@@ -597,51 +720,78 @@ export async function callUpstream(request: UpstreamRequest): Promise<UpstreamRe
 
   const limit = request.maxBodyBytes ?? DEFAULT_UPSTREAM_RESPONSE_BYTES;
 
-  let body: string | null;
-  try {
-    body = await readBoundedText(response.body, limit);
-  } catch (error) {
-    // The response began and then failed mid-stream. Still a transport
-    // failure, and still nothing from the error is kept beyond whether it was
-    // the abort — which matters here rather than only above, because an event
-    // stream spends most of a call's life in this read, so the timeout usually
-    // fires during the body rather than during the headers.
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    throw new UpstreamError(timedOut ? "timed_out" : "unreachable");
-  }
-
-  // Outside the catch, deliberately: this is a limit this function chose to
-  // enforce, not a transport failure it was handed, and the classifier above
-  // would turn it into `unreachable`. See the note on `readBoundedText`.
-  //
-  // Nothing was decoded and nothing is returned, so there is no body to redact
-  // and none to relay — which is also why no caller can report what the upstream
-  // said. That is the same shape `McpOutcome.connect_failed` takes one level up:
-  // bytes the proxy declined to hold are bytes it has nothing to say about.
-  if (body === null) throw new UpstreamError("too_large");
-
-  // Before the body goes anywhere. Not at the caller's discretion and not
-  // behind a flag: the return statement below is the only way out of this
-  // function, so a response cannot leave without passing through here.
+  // Built before a byte of the body is read, which is what keeps the one
+  // failure this scan has fail-*closed* on a streamed response: a body already
+  // half-emitted cannot be un-emitted, so the value is checked while there is
+  // still nothing to take back.
   //
   // Throws `RedactionError` on a value the scan cannot be run for. That is
   // deliberately *not* caught — see the fail-closed note in ./redact.ts. It
   // unwinds past the dispatcher to the server's handler catch, which answers a
   // constant 500 without inspecting the thrown value, so a redaction that could
   // not be performed produces no response rather than an unscrubbed one.
-  const secrets = value === undefined ? [] : [{ name: request.credentialName ?? "credential", value }];
-  const scrub = (text: string): string => (secrets.length === 0 ? text : redactSecrets(text, secrets));
+  const passes = redactionPasses(
+    value === undefined ? [] : [{ name: request.credentialName ?? "credential", value }]
+  );
 
   // The allowlisted headers are selected here rather than returned wholesale,
-  // and scrubbed with the same needles as the body. Both happen before the one
-  // return, so neither can leave without passing through the same pass.
+  // and scrubbed with the same needles as the body — the same `passes`, not a
+  // second construction of them. Headers are in hand now, so they are scrubbed
+  // now; the body is scrubbed as it arrives. Neither leaves without the scan.
   const responseHeaders: Record<string, string> = {};
   for (const name of READABLE_RESPONSE_HEADERS) {
     const header = response.headers.get(name);
-    if (header !== null) responseHeaders[name] = scrub(header);
+    if (header !== null) responseHeaders[name] = applyPasses(header, passes);
   }
 
-  return { status: response.status, body: scrub(body), headers: responseHeaders };
+  return {
+    status: response.status,
+    headers: responseHeaders,
+    body: boundedRedactedBody(response.body, limit, passes)
+  };
+}
+
+/**
+ * The same call, read to completion.
+ *
+ * **A wrapper rather than a second path, which is the whole point of the
+ * split.** Every caller that is not the MCP transport wants a string — the
+ * token exchange, and anything reading a control-plane answer nobody streams —
+ * and giving them their own request function would mean a second place a
+ * credential is revealed and a second thing to check when reasoning about
+ * redaction. There is still exactly one of each; this drains what that one
+ * produces.
+ *
+ * Throws `UpstreamError` for transport failures and returns non-2xx responses
+ * as ordinary results — a 404 from a tool is something the model should see and
+ * may recover from, which is the distinction `ToolResult.isError` draws.
+ */
+export async function callUpstream(request: UpstreamRequest): Promise<UpstreamResponse> {
+  const streamed = await callUpstreamStream(request);
+  if (streamed.body === null) return { status: streamed.status, body: "", headers: streamed.headers };
+
+  const reader = streamed.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const parts: string[] = [];
+  for (;;) {
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      // Rethrown unchanged when it is already ours. `boundedRedactedBody`
+      // classifies transport failures and raises the bound itself, and both
+      // arrive here as an `UpstreamError`; re-running the abort classifier over
+      // one would turn `too_large` into `unreachable` and silently undo the
+      // bound. Anything else reaching here came from the stream machinery rather
+      // than from that function, and is classified as it always was.
+      throw error instanceof UpstreamError ? error : new UpstreamError(transportFailure(error));
+    }
+    if (chunk.done) break;
+    parts.push(decoder.decode(chunk.value, { stream: true }));
+  }
+  parts.push(decoder.decode());
+
+  return { status: streamed.status, body: parts.join(""), headers: streamed.headers };
 }
 
 /**
@@ -753,9 +903,11 @@ export interface GuardedFetchOptions {
  * socket. The SDK opens a standalone `GET` event stream to listen for
  * server-initiated messages whenever a request is answered `202` with no body —
  * which the legacy `notifications/initialized` acknowledgement is. That stream
- * stays open for the connection's life, and the read below is bounded and
- * buffered, so it would sit on a socket until the timeout and then report a
- * failure that nothing asked for.
+ * stays open for the connection's life and nothing here would ever read it to an
+ * end, so it would hold a socket until the timeout and then report a failure
+ * that nothing asked for. #156 does not soften that: streaming a body the SDK is
+ * waiting on is not the same as listening on one nobody asked for, and the
+ * paragraph below is why this proxy declines the second at any speed.
  *
  * `405` is the answer a server offering no listen endpoint already gives, and
  * the SDK treats it as benign on that path. Measured rather than assumed: on the
@@ -804,8 +956,8 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
     // synchronous and single.
     const acquired = await options.source.acquire();
 
-    const call = (secret: Secret | undefined): Promise<UpstreamResponse> =>
-      callUpstream({
+    const call = (secret: Secret | undefined): Promise<UpstreamStreamResponse> =>
+      callUpstreamStream({
         url: String(url),
         method,
         ...(typeof init?.body === "string" ? { body: init.body } : {}),
@@ -830,7 +982,14 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
     // straggler from forcing a second refresh past one already made.
     if (response.status === 401 && acquired !== undefined) {
       const fresh = await options.source.refresh(acquired.generation);
-      if (fresh !== null) response = await call(fresh.secret);
+      if (fresh !== null) {
+        // The refused response's body is never read, and since #156 it is a
+        // live stream rather than a string already in hand — so it is cancelled
+        // rather than dropped, which releases the socket instead of leaving it
+        // held until the transport times it out.
+        await response.body?.cancel().catch(() => undefined);
+        response = await call(fresh.secret);
+      }
     }
 
     const exposed = new Headers();
@@ -840,8 +999,12 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
     if (session !== null) exposed.set("mcp-session-id", session);
 
     // A body is forbidden on these statuses by the `Response` constructor, and
-    // `readBoundedText` already answers `""` for a stream that was never there.
+    // `boundedRedactedBody` already answers `null` for a stream that was never
+    // there. Cancelled rather than dropped on the forbidden statuses, for the
+    // reason the 401 retry cancels: a stream nobody will read still holds a
+    // socket.
     const bodyless = response.status === 204 || response.status === 205 || response.status === 304;
+    if (bodyless) await response.body?.cancel().catch(() => undefined);
     return new Response(bodyless ? null : response.body, { status: response.status, headers: exposed });
   };
 }
@@ -1160,8 +1323,18 @@ export async function exchangeAuthorizationCode(request: CodeExchangeRequest): P
   };
 }
 
-/** The abort classifier `callUpstream` uses, shared by the exchange's two reads. */
+/**
+ * The abort classifier, shared by every read in this file.
+ *
+ * **It recognises this file's own error class as well as the runtime's**, which
+ * it has to since #156: a body read now runs inside `boundedRedactedBody`, which
+ * classifies a mid-stream abort and raises an `UpstreamError` for it, so a
+ * caller draining that stream is handed our word rather than the runtime's
+ * `TimeoutError`. Without this branch the token exchange would report a timeout
+ * as `unreachable` — the same failure, told to the operator wrong.
+ */
 function wasTimeout(error: unknown): boolean {
+  if (error instanceof UpstreamError) return error.failure === "timed_out";
   return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
