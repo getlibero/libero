@@ -225,8 +225,7 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     },
     // Renames, and the same standing as the block above it — see
     // `DEFAULT_SKILL_SETTINGS` for why its fallback is not the schema's default.
-    // `author_after_tool_calls` is not carried, because nothing reads it until
-    // the author turn lands (#291).
+    // `author_after_tool_calls` is the skill-author turn's threshold (#291).
     skills: {
       enabled: sheet.skills.enabled,
       curate: sheet.skills.curate,
@@ -241,8 +240,8 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     },
     // Renames and the minutes-to-milliseconds conversion again, and the same
     // standing as the two blocks above — see `DEFAULT_AMBIENT_SETTINGS` for why
-    // its fallback is not the schema's default either. `answer_after_idle_ms`
-    // is carried and unread until the evaluation turn lands (#319); the
+    // its fallback is not the schema's default either. `answerAfterIdleMs` is
+    // the heartbeat evaluation's idle gate (#319, `heartbeat.ts`); the
     // scheduler reads the other two.
     ambient: {
       enabled: sheet.ambient.enabled,

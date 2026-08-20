@@ -193,6 +193,11 @@ Ships last, disabled by default, and only behind the budget meter. A per-channel
 
 ## Sandbox
 
+Designed, not built — the one section of this page a reader is most likely to take as shipped, so
+it carries the marker the [security model](/docs/security) and [self-hosting](/docs/self-hosting)
+already do. The build is tracked in
+[#368](https://github.com/getlibero/libero/issues/368).
+
 The built-in code-execution tool runs in an ephemeral container (Docker by default; gVisor documented for hardened deployments) with no network unless the team sheet grants an egress allowlist, a read-only rootfs, cpu/mem/time limits, and a tmpfs workdir. The runner is invoked *by the proxy*, not the agent, so code execution is audited and budgeted like any other tool.
 
 ## Threat model
