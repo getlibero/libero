@@ -10,6 +10,8 @@
 
 [channel]
 name        = "engineering"
+# The description reaches the model: appended to the system prompt of every
+# task, so a sentence or two about what the channel is for. Capped at 500.
 description = "Deploys, code review, incident response."
 
 # Which client certificates may speak for this channel. The certificate says

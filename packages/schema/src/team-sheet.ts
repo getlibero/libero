@@ -213,7 +213,15 @@ const McpServerList = z.array(McpServer).check(ctx => {
 export const TeamSheet = z.object({
   channel: z.object({
     name: z.string().min(1),
-    description: z.string().default(""),
+    // Free text with two readers: the human opening the sheet, and the model —
+    // when non-empty it is appended to the system prompt of every task the
+    // channel runs (#369). Operator-authored, which is what earns it that
+    // placement; channel history never gets it. The cap keeps a paragraph from
+    // becoming a standing tax on every task's `max_tokens_per_task`, and it is
+    // a parse failure rather than a truncation because a sheet is a reviewed
+    // file — an operator should hear "too long" at edit time, not have the
+    // model quietly briefed on half a sentence.
+    description: z.string().max(500).default(""),
     // Which client certificates may speak for this channel (#79).
     //
     // The certificate says *which channel* is calling; this says *which key* is

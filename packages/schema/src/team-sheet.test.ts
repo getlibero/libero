@@ -26,6 +26,20 @@ const minimalChannel = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+describe("the channel description", () => {
+  // Appended to the system prompt of every task (#369), so the cap is what
+  // keeps a sheet from taxing every task's token budget with a wiki page. A
+  // parse failure rather than a truncation: the operator hears "too long" at
+  // edit time instead of the model being quietly briefed on half a sentence.
+  it("accepts up to 500 characters and rejects past it", () => {
+    const at = TeamSheet.safeParse({ channel: minimalChannel({ description: "x".repeat(500) }) });
+    expect(at.success).toBe(true);
+
+    const past = TeamSheet.safeParse({ channel: minimalChannel({ description: "x".repeat(501) }) });
+    expect(past.success).toBe(false);
+  });
+});
+
 describe("the example team sheet", () => {
   const sheet = TeamSheet.parse(parse(readFileSync(examplePath, "utf8")));
 

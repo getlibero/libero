@@ -28,7 +28,7 @@ import {
   DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS
 } from "./sheet.js";
-import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor } from "./task.js";
+import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor, systemPromptFor } from "./task.js";
 import type { TaskRequest, TaskSettings } from "./types.js";
 
 const MODEL = "test-model";
@@ -44,6 +44,7 @@ const MODEL = "test-model";
  */
 const SETTINGS: TaskSettings = {
   model: MODEL,
+  description: "",
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },
   followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -268,11 +269,33 @@ describe("createMentionHandler", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.model).toBe(MODEL);
+    // The fixture's description is empty, so the static prompt and nothing else.
     expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
     // The settings' transcript, not the request's raw text. The runner does not
     // build one — the router does, from the session's store and name cache —
     // and this is what proves it carries rather than reinvents.
     expect(requests[0]?.messages).toEqual([{ role: "user", content: "@alice asks: @libero ping" }]);
+  });
+
+  it("appends the sheet's description to the system prompt (#369)", async () => {
+    // Operator-authored context about the channel, composed in one place —
+    // `systemPromptFor` — so #270's persona has somewhere to land.
+    const { client, requests } = fakeCompletion({ text: "pong" });
+    const runner = createTaskRunner({
+      completion: client,
+      transport: fakeTransport().transport
+    });
+
+    await runner(taskRequest("<@U0BOT> ping"), {
+      ...SETTINGS,
+      description: "Deploys, code review, incident response.",
+      messages: [{ role: "user", content: "@alice asks: @libero ping" }]
+    });
+
+    expect(requests[0]?.system).toBe(
+      `${SYSTEM_PROMPT} The channel describes itself: Deploys, code review, incident response.`
+    );
+    expect(systemPromptFor("")).toBe(SYSTEM_PROMPT);
   });
 
   it("does not put the raw request text in the transcript itself", async () => {

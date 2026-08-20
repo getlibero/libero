@@ -177,6 +177,7 @@ function rig(redeemed: () => ProxyResponse) {
     transport: proxy.transport,
     sheets: () => Promise.resolve({
           model: "test-model",
+          description: "",
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
           history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,

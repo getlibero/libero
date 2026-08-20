@@ -436,8 +436,11 @@ answer_after_idle_minutes = 60              # five minutes to a week
 
 ### `[channel]`
 
-Identity and a description. The description is part of the agent's context, so it is worth
-writing: it is how the model knows what kind of channel it is in.
+Identity and a description. The description reaches the model: when it is non-empty it is appended
+to the system prompt of every task the channel runs, so it is how the model knows what kind of
+channel it is in, and it is worth writing. At most 500 characters — a longer one is a parse failure,
+not a truncation — because it is charged against `max_tokens_per_task` on every task: a sentence or
+two about what the channel is for, not a wiki page.
 
 `certificate_sha256` is required, and it is the one field here that is about *authentication* rather
 than about what the channel may do. It lists the SHA-256 fingerprints of the client certificates
