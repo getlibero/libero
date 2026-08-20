@@ -63,7 +63,13 @@ export type { AuditWriter, AuditWriterOptions } from "./audit-log.js";
 // composition root. Reading the log is an operator concern; the serving path
 // writes.
 export { openAuditReader } from "./audit-db.js";
-export type { AuditEntry, AuditQuery, AuditReader, AuditReaderOptions } from "./audit-db.js";
+export type {
+  AuditChainVerdict,
+  AuditEntry,
+  AuditQuery,
+  AuditReader,
+  AuditReaderOptions
+} from "./audit-db.js";
 
 export { createHttpDispatcher } from "./http-dispatcher.js";
 export type { HttpDispatcher, HttpDispatcherOptions } from "./http-dispatcher.js";

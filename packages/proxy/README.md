@@ -199,7 +199,10 @@ The audit log's read path is `openAuditReader` in `audit-db.ts` — a second
 connection, opened read-only, whose statements are in that file with the write
 path's for the reason every statement is. It is reached by `node dist/audit.js`
 in `apps/proxy-server` and by nothing on the serving path, which an ESLint rule
-enforces by name.
+enforces by name. `verifyChain` is on it for a second reason on top of that one:
+the walk needs the serialization as well as the SQL, and a walk that recomputed
+with a different encoding would report a break on every untampered file ever
+written.
 
 Still to come, with its own issue: the egress allowlist (#73).
 `http-dispatcher.ts` marks where the egress check slots in.
@@ -1048,7 +1051,8 @@ every hash after it. That is what an UPDATE through `sqlite3` does.
 
 - **A complete recompute.** The chain is unkeyed, so an attacker holding the file
   can rewrite a row and re-derive every hash after it. The answer is anchoring
-  the tip outside the file — `audit verify` prints it (#355), and the proxy also
+  the tip outside the file — `node dist/audit.js verify` walks the chain and
+  prints it, and the proxy also
   logs it as `chainTip` on `audit_opened`, which is an anchor as far as the logs
   travel and no further. An HMAC was rejected: reading `audit.db` means being on
   the proxy host where the key would be, a key is a thing to lose (turning "no

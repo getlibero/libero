@@ -48,10 +48,26 @@ export interface AuditCliIo {
   err: (line: string) => void;
 }
 
-/** 0 ok, 1 an operator error, 2 a usage error. Nothing else — as the two peers. */
+/**
+ * 0 ok, 1 an operator error, 2 a usage error — as the two peers — and 3.
+ *
+ * The fourth is `verify`'s alone and it is a deliberate departure from the
+ * vocabulary the other entrypoints share (#355). A broken chain is not an
+ * operator error: nothing failed, the command did exactly what it was asked and
+ * the answer is bad news about the file. Spelling that as 1 would make it
+ * indistinguishable from a missing file or a schema version this build cannot
+ * read — and `verify` is the one command here written to be run unattended, on a
+ * timer, by something that has to decide whom to wake. "The audit log has been
+ * altered" and "the audit log could not be opened" want different people.
+ *
+ * A code rather than a line on stdout, because the caller that most needs to
+ * tell them apart is a shell, and asking a shell to grep for prose makes the
+ * wording a contract.
+ */
 export const EXIT_OK = 0;
 export const EXIT_ERROR = 1;
 export const EXIT_USAGE = 2;
+export const EXIT_TAMPERED = 3;
 
 /**
  * What `list` shows when nobody said otherwise.
@@ -70,6 +86,7 @@ const USAGE = [
   "  show <id>         print one row in full",
   "  ticket <id>       print every row for one approval ticket",
   "  open              print held and approved rows with no successor",
+  "  verify            walk the hash chain; print the row count and the tip",
   "",
   "Filters, for list and csv:",
   "",
@@ -92,6 +109,17 @@ const USAGE = [
   "",
   "open takes --channel. show and ticket take an id and nothing else.",
   "",
+  "verify takes no filters and no arguments. The chain links consecutive rows,",
+  "so a subset of them is a set of rows whose neighbours are missing, and a",
+  "filtered walk would report a break at the second row of every query. It",
+  "exits 0 when the chain holds, 3 when it does not, and 1 if the log could",
+  "not be read at all.",
+  "",
+  "Write the tip hash down somewhere this file's holder does not control. The",
+  "chain is unkeyed, so it detects a row altered without recomputing the rest;",
+  "an attacker who recomputes the whole chain, or who drops rows from the end,",
+  "leaves a file that verifies. The tip is what a kept copy is compared against.",
+  "",
   "The file is opened read-only and this command has no statement that writes",
   "it. A CSV field beginning with = + - or @ is a formula to a spreadsheet;",
   "call_id is model-authored, and this export records values rather than",
@@ -100,7 +128,7 @@ const USAGE = [
   "Reads PROXY_AUDIT_DB."
 ].join("\n");
 
-const COMMANDS = ["list", "csv", "show", "ticket", "open"] as const;
+const COMMANDS = ["list", "csv", "show", "ticket", "open", "verify"] as const;
 type Command = (typeof COMMANDS)[number];
 
 function isCommand(value: string): value is Command {
@@ -382,6 +410,43 @@ function run(io: AuditCliIo, reader: AuditReader, command: Command, parsed: Pars
     case "open": {
       requireNoPositionals(positionals, "open");
       return printOrEmpty(io, reader.openApprovals(query.channel));
+    }
+
+    case "verify": {
+      requireNoPositionals(positionals, "verify");
+      // Refused rather than ignored. A filter here would silently answer a
+      // different question — the chain links consecutive rows, so a walk over a
+      // subset breaks at its second row — and a command whose whole output is a
+      // verdict must not have a way to be given one nobody asked for.
+      if (Object.keys(query).length > 0) {
+        throw new UsageError("audit: verify takes no filters — it walks the whole log");
+      }
+
+      const verdict = reader.verifyChain();
+      if (!verdict.ok) {
+        // stderr, and named. Everything after a break was computed over a
+        // predecessor this walk cannot vouch for, so those rows are unverified
+        // rather than wrong — `verified` says how much of the log still holds
+        // and the sentence stops there.
+        io.err(
+          verdict.reason === "content"
+            ? `audit: the chain is broken at row ${verdict.brokenAt}: its columns do not hash to the ` +
+                `value stored with them. ${verdict.verified} row(s) before it verify.`
+            : `audit: the chain is broken at row ${verdict.brokenAt}: it does not follow the row ` +
+                `before it. ${verdict.verified} row(s) before it verify.`
+        );
+        io.err("audit: rows after it are unverified, not vouched for.");
+        return EXIT_TAMPERED;
+      }
+
+      io.out(`rows: ${verdict.rows}`);
+      io.out(`tip:  ${verdict.tip}`);
+      // The instruction, not a flourish. A tip nobody kept is a checksum of the
+      // file against itself, which an attacker who rewrote the file can produce
+      // as easily as this can — see the chain's limits in packages/proxy.
+      io.out("");
+      io.out("audit: keep the tip somewhere this file's holder does not control.");
+      return EXIT_OK;
     }
   }
 }

@@ -409,6 +409,7 @@ docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js sh
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js ticket tk-8f2c1b   # one approval's lifecycle
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js open           # held or approved, unresolved
 docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js csv > audit.csv
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js verify       # walk the hash chain
 ```
 
 Filters compose — channel, date range, server, tool, outcome — and nothing matching is an empty
@@ -420,6 +421,14 @@ It is a second process against the proxy's own database rather than a command in
 connection is opened **read-only**, so it cannot write the log even by accident, and it is safe to
 run against a live proxy. It will not migrate a file from another schema version — migrating is
 writing, and a reader that repaired the evidence would not be a reader.
+
+`verify` walks the hash chain and prints the row count and the **tip** — one 64-character hash that
+depends on every row in the file. Exit 0 means the chain holds, 3 means it is broken and the first
+bad row is named, 1 means the log could not be read at all, so a timer can page different people for
+each. Keep the tip somewhere the machine holding the file does not control: the chain catches a row
+altered without recomputing the rest, and comparing today's tip against one you recorded last month
+is what catches everything else. Rows written before schema version 5 were chained when the column
+was added, so they are covered from that migration forward rather than from when they were written.
 
 Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
 or an admin resets the channel. The approach to it is visible too — a channel that passes `[budget]
