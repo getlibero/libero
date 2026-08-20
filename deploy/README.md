@@ -65,10 +65,40 @@ The `images` job in `.github/workflows/ci.yml` builds through this compose file
 and then asserts those properties against the built images — non-root, no source,
 no compiled tests, no toolchain — on `boundary-check`'s argument that a
 multi-stage build and a `--prod` prune are each one edit away from silently
-shipping the workspace whole. It supplies placeholder values for the two `:?`
-guards, because compose interpolates the whole file before it builds;
-`.env.example` cannot serve, since it ships `PROXY_VAULT_KEY` empty, which is
-exactly what `:?` rejects.
+shipping the workspace whole. The four assertions live in
+`scripts/image-checks.sh`, shared with the release workflow below so what a PR
+checks and what a release publishes cannot drift. The job supplies placeholder
+values for the two `:?` guards, because compose interpolates the whole file
+before it builds; `.env.example` cannot serve, since it ships `PROXY_VAULT_KEY`
+empty, which is exactly what `:?` rejects.
+
+## Publishing
+
+Since v0.3.0 a `v*` tag publishes both images to GHCR —
+`.github/workflows/release-images.yml`, the GHCR counterpart to the CLI's
+`release-cli.yml`: one tag releases the whole deployment (`RELEASING.md` is the
+scheme's record), behind a reviewed environment gate, with build provenance
+attestations verifiable against the commit that built them:
+
+```bash
+gh attestation verify oci://ghcr.io/getlibero/server:v0.3.0 -R getlibero/libero
+```
+
+Each release publishes the version tag and moves `latest`. Both images are
+multi-arch — `linux/amd64` and `linux/arm64`, because the VM guide covers
+Graviton and the arm64 sqlite-vec prebuild was already in the lockfile. After
+the push, the release workflow pulls each image back by its published digest,
+per platform, and runs `scripts/image-checks.sh` against it — the same four
+assertions every PR passes, this time against the bytes an operator will pull.
+
+**The compose file keeps its `build:` block.** `docker compose up` from a clean
+checkout still builds locally, with no registry access — the quick start's
+promise — because compose builds rather than pulls when a service carries
+`build:` and the image is absent. An operator who wants the published bytes,
+provenance and all, runs `docker compose pull` first, and pins the version tag
+in a compose override rather than tracking `latest`, as the VM guide says. The
+two paths run the same Dockerfiles; what `pull` adds is that the bytes are
+provably the ones the tag built.
 
 ## The mounts
 

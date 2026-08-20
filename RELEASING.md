@@ -36,16 +36,15 @@ private and ships inside the images.
 ## The gates a tag meets
 
 A tag alone does not release. Each publish workflow runs behind a reviewed
-environment — `npm-publish` for the CLI, and the environment
-`release-images.yml` declares for the images. A required reviewer approves
-each run in the Actions UI. For npm, the trusted publisher pins the workflow
+environment — `npm-publish` for the CLI, `ghcr-publish` for the images. A
+required reviewer approves each run in the Actions UI. For npm, the trusted publisher pins the workflow
 file and environment name, so the OIDC claim makes skipping the gate a
 registry-side rejection, not just a repo-settings one.
 
 One piece of this lives in repo settings rather than in git, which is why it
-is recorded here: the `npm-publish` environment's deployment tag policy must
-allow `v*` refs (type: tag). It was changed from `cli-v*` when the scheme
-changed. If the policy and the workflow trigger ever disagree, the run fails
+is recorded here: each environment's deployment tag policy must allow `v*`
+refs (type: tag) — `npm-publish`'s was changed from `cli-v*` when the scheme
+changed. If a policy and the workflow triggers ever disagree, the run fails
 at the environment check — loudly, not silently.
 
 ## Who can cut a release
@@ -95,6 +94,3 @@ the answer here, not the mechanism.
    unfriendly — and a copy made once at release and never edited after cannot
    drift.
 9. **Close the milestone.**
-
-Until #313 lands `release-images.yml`, the image half of steps 6 and 7 does
-not exist; the first cut gates on that issue.

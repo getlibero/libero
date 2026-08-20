@@ -169,41 +169,11 @@ jobs:
         run: docker compose -f deploy/docker-compose.yml build
 
       - name: Nothing in either image but what runs
-        # The proxy holds every tool credential in the deployment, so what is in
-        # its filesystem is a security property in the same way its dependency
-        # list is. Asserting it here rather than trusting the Dockerfile is the
-        # same move as boundary-check backing up the ESLint rule: the multi-stage
-        # build and the `pnpm deploy --prod` prune are each one edit away from
-        # silently shipping the workspace whole.
-        #
-        # Scoped to what this workspace built. Third-party packages ship their
-        # own sources and declarations and are left as their publisher shipped
-        # them — rewriting the inside of a dependency is not a hardening step.
-        run: |
-          failed=0
-          for image in ghcr.io/getlibero/proxy:latest ghcr.io/getlibero/server:latest; do
-            user=$(docker image inspect "$image" --format '{{.Config.User}}')
-            if [ "$user" = "" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
-              echo "::error::$image runs as '${user:-root}'. Both images must run as a non-root user."
-              failed=1
-            fi
-
-            # One `docker run` per property. Three container starts rather than
-            # one, because splitting a multi-line result back apart depends on
-            # the shell's word-splitting and this has to be legible more than it
-            # has to be quick.
-            count() { docker run --rm --entrypoint sh "$image" -c "$1" | tr -d '[:space:]'; }
-
-            src=$(count 'find /app -name "*.ts" ! -name "*.d.ts" -not -path "*/node_modules/*" | wc -l')
-            [ "$src" = "0" ] || { echo "::error::$image carries $src TypeScript source file(s)."; failed=1; }
-
-            tests=$(count 'find /app \( -path "/app/dist/*" -o -path "*/@getlibero/*" \) -name "*.test.js" | wc -l')
-            [ "$tests" = "0" ] || { echo "::error::$image carries $tests compiled test file(s)."; failed=1; }
-
-            toolchain=$(count 'ls /app/node_modules/.pnpm 2>/dev/null | grep -cE "^(typescript|vitest|eslint|vite|esbuild)@" || true')
-            [ "$toolchain" = "0" ] || { echo "::error::$image carries $toolchain build-toolchain package(s) — the --prod prune did not happen."; failed=1; }
-          done
-          exit $failed
+        # The four assertions live in scripts/image-checks.sh — the argument
+        # for them too — shared with release-images.yml, which re-runs them
+        # against the published digests. One script, so what a PR checks and
+        # what a release publishes cannot drift.
+        run: scripts/image-checks.sh ghcr.io/getlibero/proxy:latest ghcr.io/getlibero/server:latest
 
   workflow-guard:
     # A pull_request_target workflow runs with a write token against the base

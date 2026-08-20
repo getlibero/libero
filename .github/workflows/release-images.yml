@@ -1,0 +1,111 @@
+name: Release service images
+
+# The GHCR counterpart to release-cli.yml: the same v* tag triggers both — one
+# tag releases the whole deployment, and RELEASING.md is the scheme's record —
+# with the same shape: a reviewed environment gate, and provenance
+# attestations linking each image to the commit that built it. These two
+# images hold every credential in the deployment, which is why they get the
+# same provenance story as the CLI rather than a lesser one.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write # push to ghcr.io/getlibero/*
+  id-token: write # sign the build provenance
+  attestations: write # store it
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # A tag alone does not release: this environment requires a reviewer's
+    # approval in the Actions UI, and only v* tag refs may use it — the same
+    # deployment tag policy npm-publish carries, recorded in RELEASING.md
+    # because repo settings are not a file git can diff.
+    environment: ghcr-publish
+    steps:
+      - uses: actions/checkout@v7
+      # The images are multi-arch — linux/amd64 and linux/arm64 — because the
+      # VM guide covers Graviton and the arm64 sqlite-vec prebuild is already
+      # in the lockfile. QEMU is what builds the arm64 half on an amd64
+      # runner, and what lets the assertions at the bottom run against it.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same contexts and dockerfiles deploy/docker-compose.yml names —
+      # ci.yml's images job builds through the compose file itself on every
+      # PR, which is what keeps these lines from drifting from it. Not built
+      # through compose here because a multi-arch build-and-push with a digest
+      # output is buildx's job, and the digest is what the attestation signs.
+      #
+      # provenance: false switches off buildx's own unsigned provenance
+      # manifest; the provenance this release carries is the attestation
+      # below, signed behind the reviewed environment like the CLI's.
+      - name: Build and push server
+        id: server
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/getlibero/server:${{ github.ref_name }}
+            ghcr.io/getlibero/server:latest
+      - name: Build and push proxy
+        id: proxy
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/proxy-server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/getlibero/proxy:${{ github.ref_name }}
+            ghcr.io/getlibero/proxy:latest
+
+      - name: Attest server
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/getlibero/server
+          subject-digest: ${{ steps.server.outputs.digest }}
+          push-to-registry: true
+      - name: Attest proxy
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/getlibero/proxy
+          subject-digest: ${{ steps.proxy.outputs.digest }}
+          push-to-registry: true
+
+      # The four assertions ci.yml runs on every PR, here against what was
+      # *published* rather than only what was built: each image pulled back by
+      # the digest that was pushed, per platform, and checked as pulled. CI
+      # already gated every merge on the same script, so a failure here is a
+      # released tag to delete rather than the first line of defence — but a
+      # release that asserts only what it built would be trusting the push.
+      - name: Assert the published images
+        env:
+          SERVER_DIGEST: ${{ steps.server.outputs.digest }}
+          PROXY_DIGEST: ${{ steps.proxy.outputs.digest }}
+        run: |
+          set -eu
+          check() {
+            ref="ghcr.io/getlibero/$1@$2"
+            for platform in linux/amd64 linux/arm64; do
+              docker image rm -f "$ref" > /dev/null 2>&1 || true
+              docker pull --platform "$platform" "$ref"
+              scripts/image-checks.sh "$ref"
+            done
+          }
+          check server "$SERVER_DIGEST"
+          check proxy "$PROXY_DIGEST"
