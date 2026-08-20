@@ -156,9 +156,14 @@ export function encodingsOf(value: string): string[] {
   const candidates = [
     value,
     base64,
-    base64.replace(/=+$/, ""),
+    // `{1,2}`, not `+`: base64 padding is at most two characters by
+    // construction, and the bounded form is linear where `=+$` backtracks
+    // quadratically on a run of `=` — input here is a vault credential, so
+    // that was a CodeQL finding about robustness rather than an attack
+    // surface, but the precise pattern costs nothing and documents itself.
+    base64.replace(/={1,2}$/, ""),
     base64url,
-    base64url.replace(/=+$/, ""),
+    base64url.replace(/={1,2}$/, ""),
     percent,
     // Lowercase only the escape sequences, not the whole string: the
     // surrounding characters are the value and must not be case-folded.

@@ -52,8 +52,15 @@ const REVISION_SUBTYPES: ReadonlySet<string> = new Set(["message_changed", "mess
  * No `g` flag, deliberately. A global regexp carries `lastIndex` between calls,
  * so a shared one used with `.test` answers alternately true and false for the
  * same string — which here would be an intermittent duplicate answer.
+ *
+ * The label is bounded at 256, and that is a denial-of-service bound rather
+ * than a format claim: `[^>]*` unbounded goes quadratic on text packed with
+ * `<@U0|` and no closing `>` — channel-member-authored text, scanned on the
+ * event loop — because the unanchored search rescans the label from every
+ * start. Slack caps a display name at 80 characters, so 256 changes the
+ * answer for no token a real client can produce.
  */
-const MENTION_TOKEN = /<@[UW][A-Z0-9]+(?:\|[^>]*)?>/u;
+const MENTION_TOKEN = /<@[UW][A-Z0-9]+(?:\|[^>]{0,256})?>/u;
 
 /**
  * Whether this text addresses the app.
