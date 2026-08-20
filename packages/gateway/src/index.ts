@@ -51,7 +51,7 @@ export {
   verdictForActionId
 } from "./slack/approval-ids.js";
 
-export { renderApprovalCard } from "./slack/approval-card.js";
+export { renderApprovalCard, renderHeldCallArguments } from "./slack/approval-card.js";
 export type {
   ApprovalCardInput,
   ApprovalCardState,

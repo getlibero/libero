@@ -52,7 +52,7 @@
 
 import type { HeldCallCompletion, HeldCallOutcome, HeldCallPrompter, HeldToolCall } from "@getlibero/agent";
 import type { CardPoster, Logger, PostedCard, Scheduler } from "@getlibero/gateway";
-import { createSilentLogger, renderApprovalCard } from "@getlibero/gateway";
+import { createSilentLogger, renderApprovalCard, renderHeldCallArguments } from "@getlibero/gateway";
 import { refusalMessage } from "@getlibero/schema";
 import type { ApprovalRegistry, ApprovalSettlement } from "./registry.js";
 
@@ -119,10 +119,14 @@ export function createHeldCallPrompter(options: HeldCallPrompterOptions): HeldCa
 
         const ticketId = held.ticket.id;
         const toolName = `${held.server}.${held.tool}`;
-        // Rendered whole; the renderer escapes it and caps it at its own
-        // length. Truncating here would show a human different bytes than the
-        // ticket's hash binds.
-        const args = Object.keys(held.arguments).length === 0 ? undefined : JSON.stringify(held.arguments);
+        // Short and lossy, by design (#376): the renderer's field is capped,
+        // and `renderHeldCallArguments` owns the selection that keeps a lossy
+        // rendering from misleading — the sharp argument first, the dropped
+        // ones named. What makes a partial rendering safe to decide on is the
+        // ticket: it binds the exact arguments by hash and redemption
+        // re-checks it, so what the human saw cannot be spent on a call they
+        // never saw.
+        const args = renderHeldCallArguments(held.arguments);
         const face = (status: CardStatus) =>
           renderApprovalCard({
             toolName,

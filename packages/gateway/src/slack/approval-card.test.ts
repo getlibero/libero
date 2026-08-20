@@ -1,6 +1,6 @@
 import type { ApprovalTicket } from "@getlibero/schema";
 import { describe, expect, it } from "vitest";
-import { renderApprovalCard } from "./approval-card.js";
+import { renderApprovalCard, renderHeldCallArguments } from "./approval-card.js";
 import type { ApprovalCardStatus } from "./approval-card.js";
 import { APPROVE_ACTION_ID, DENY_ACTION_ID } from "./approval-ids.js";
 import { toDecision } from "./decision.js";
@@ -220,6 +220,21 @@ describe("renderApprovalCard", () => {
     expect(rendered_text).toContain("<@U0HUMAN>");
   });
 
+  it("neutralizes the backtick that would end the code span", () => {
+    // `arguments` and the tool name render inside code spans. A backtick ends
+    // the span and hands the rest of the string to mrkdwn as live markup — a
+    // bold forged approver line needs nothing more — so it is substituted, not
+    // rendered.
+    const rendered = card(AWAITING, {
+      arguments: 'branch: "x` *Approved by admin* `"'
+    });
+    const rendered_text = `${text(rendered)}${rendered.fallback}`;
+
+    // The renderer's own code-span backticks survive; the input's do not.
+    expect(rendered_text).not.toContain("x`");
+    expect(rendered_text).toContain("x' *Approved by admin* '");
+  });
+
   it("truncates an argument that would blow Slack's section limit", () => {
     const rendered = card(AWAITING, { arguments: "x".repeat(5000) });
 
@@ -258,5 +273,79 @@ describe("renderApprovalCard", () => {
         verdict === "approve" ? APPROVE_ACTION_ID : DENY_ACTION_ID
       );
     }
+  });
+});
+
+describe("renderHeldCallArguments", () => {
+  /** The escaped length, which is the budget the function promises to hold. */
+  function costOf(value: string): number {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/`/g, "'").length;
+  }
+
+  it("renders nothing for a call that took no arguments", () => {
+    expect(renderHeldCallArguments({})).toBeUndefined();
+  });
+
+  it("keeps the model's order when everything fits", () => {
+    // A complete rendering cannot mislead by omission, so it is not reordered.
+    expect(renderHeldCallArguments({ repo: "a/b", number: 123, force: true })).toBe(
+      'repo: "a/b", number: 123, force: true'
+    );
+  });
+
+  it("puts the sharp argument ahead of the blob and names what it dropped", () => {
+    // The issue's own hazard: `force: true` clipped off the end of a long body
+    // reads as the whole call. Shortest-first is what makes the flag survive,
+    // and the dropped key is named so the body is visible as existing.
+    const rendered = renderHeldCallArguments({ body: "x".repeat(400), force: true });
+
+    expect(rendered).toBe("force: true — +1 more not shown: body");
+    expect(costOf(rendered ?? "")).toBeLessThanOrEqual(300);
+  });
+
+  it("degrades to a count when the dropped names do not fit either", () => {
+    const args: Record<string, unknown> = { ok: 1 };
+    for (let i = 0; i < 40; i++) args[`long_argument_name_${String(i).padStart(2, "0")}`] = "y".repeat(400);
+    const rendered = renderHeldCallArguments(args) ?? "";
+
+    expect(rendered).toContain("ok: 1");
+    expect(rendered).toContain("+40 more not shown");
+    expect(rendered).not.toContain("not shown:");
+    expect(costOf(rendered)).toBeLessThanOrEqual(300);
+  });
+
+  it("cuts inside a value only when no whole entry fits, and says so", () => {
+    const rendered = renderHeldCallArguments({ body: "z".repeat(400) }) ?? "";
+
+    expect(rendered).toContain("body: ");
+    expect(rendered).toContain("…");
+    expect(rendered).toContain("— truncated");
+    expect(rendered).not.toContain("not shown");
+    expect(costOf(rendered)).toBeLessThanOrEqual(300);
+  });
+
+  it("counts the budget in escaped characters, so the note survives the cap", () => {
+    // 120 `<`s escape fourfold. Measured raw they would fit; measured escaped
+    // they cannot, and the renderer's own cap would then eat the suffix off
+    // whatever this returned. The promise is that what this returns still
+    // fits after escaping.
+    const rendered = renderHeldCallArguments({ a: "<".repeat(120), force: true }) ?? "";
+
+    expect(rendered).toContain("force: true");
+    expect(costOf(rendered)).toBeLessThanOrEqual(300);
+  });
+
+  it("through the card: a partial rendering reaches the reader intact", () => {
+    // End to end through `renderApprovalCard`: the partiality note is inside
+    // the section, not eaten by `safeText`'s cap.
+    const detail = renderHeldCallArguments({ body: "x".repeat(400), force: true });
+    const rendered = card(AWAITING, { ...(detail !== undefined ? { arguments: detail } : {}) });
+
+    expect(sectionText(rendered)).toContain("force: true");
+    expect(sectionText(rendered)).toContain("+1 more not shown: body");
   });
 });

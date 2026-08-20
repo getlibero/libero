@@ -159,12 +159,13 @@ export interface ApprovalCardInput {
   /**
    * A short rendering of the call's arguments, when the caller has one.
    *
-   * Optional, and nothing fills it yet. It exists now rather than later because
-   * of what it is: **model-authored text on a security-decision surface**. A
-   * ticket binds an argument hash, so the human is approving one exact call, and
-   * a card naming only the tool is asking them to approve blind. Landing the
-   * field together with the escaping below means the caller that fills it cannot
-   * introduce the hole by filling it.
+   * Filled by the server's held-call prompter with `renderHeldCallArguments`
+   * (#376), which owns the argument that lossy does not mislead. The field
+   * landed before its filler because of what it is: **model-authored text on a
+   * security-decision surface**. A ticket binds an argument hash, so the human
+   * is approving one exact call, and a card naming only the tool is asking
+   * them to approve blind. Landing the field together with the escaping below
+   * meant the caller that fills it could not introduce the hole by filling it.
    */
   arguments?: string;
   status: ApprovalCardStatus;
@@ -199,6 +200,26 @@ const REASON_LIMIT = 400;
  */
 function escapeMrkdwn(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * For the two caller strings this renderer places inside its own code spans:
+ * the tool name and the arguments rendering.
+ *
+ * There the backtick has the power the angle brackets have everywhere — it
+ * ends the span and hands the rest of the string to mrkdwn as live markup,
+ * and a convincing bold `*Approved*` line needs nothing more. Slack has no
+ * entity for it, so it is substituted rather than escaped: a visible quote in
+ * a rendering that is lossy by contract, not a silent edit to something
+ * claiming to be exact.
+ *
+ * Deliberately not part of `escapeMrkdwn`: the refusal reason renders as
+ * plain context text, where a backtick opens a code span rather than closing
+ * one — cosmetic at worst — and `refusalMessage`'s own sentences use
+ * backticks the operator is meant to see rendered.
+ */
+function neutralizeBackticks(value: string): string {
+  return value.replace(/`/g, "'");
 }
 
 /** Escapes, then caps. In that order: escaping can only lengthen. */
@@ -253,11 +274,92 @@ function deadline(expiresAt: number): string {
   return `Expires <!date^${String(seconds)}^{time}|at ${String(seconds)}>`;
 }
 
+/**
+ * The short form of a held call's arguments, for the card's `arguments` field
+ * (#376).
+ *
+ * Short and lossy is the contract: the card is for a human deciding in a
+ * Slack thread, the budget is `ARGUMENTS_LIMIT`, and the ticket binds the
+ * *exact* arguments by hash — redemption re-checks it — so what is shown can
+ * never be swapped for what runs. Lossy must not mislead, though, and this
+ * function is the argument for how it does not:
+ *
+ * - **When everything fits, the model's order.** A complete rendering cannot
+ *   mislead by omission, and reordering it would only surprise.
+ * - **Under pressure, shortest entry first.** The hazard is one long value —
+ *   a diff body — starving the short, sharp ones: `force: true` clipped off
+ *   the end reads as the whole call. Ordering by rendered length puts every
+ *   flag and name ahead of the blob, so the dangerous part is what survives.
+ * - **What is dropped is named.** A partial rendering ends with `+N more not
+ *   shown:` and the dropped keys, so even an argument that did not fit is
+ *   visible as existing. Only when the names themselves do not fit does it
+ *   degrade to the count alone, and only when no whole entry fits does it cut
+ *   inside a value — saying `truncated` when it does.
+ * - **Measured escaped.** The budget is checked against the escaped text, so
+ *   the renderer's own cap never fires on what this produced and silently
+ *   eats the partiality note off the end.
+ *
+ * Empty arguments render as nothing rather than as `{}`: a card naming only
+ * the tool is the honest face of a call that took none.
+ */
+export function renderHeldCallArguments(args: Record<string, unknown>): string | undefined {
+  const entries = Object.entries(args).map(([key, value]) => ({
+    key,
+    text: `${key}: ${JSON.stringify(value) ?? "undefined"}`
+  }));
+  if (entries.length === 0) return undefined;
+
+  // The budget is the code-span pipeline's: backticks substituted, then
+  // escaped — the same two steps the renderer applies to this field.
+  const cost = (value: string): number => escapeMrkdwn(neutralizeBackticks(value)).length;
+
+  const whole = entries.map(entry => entry.text).join(", ");
+  if (cost(whole) <= ARGUMENTS_LIMIT) return whole;
+
+  // Stable, so entries of equal length keep the model's order.
+  const sorted = [...entries].sort((a, b) => cost(a.text) - cost(b.text));
+
+  // The most entries that fit whole, preferring named drops over counted ones
+  // at each size before giving up a shown entry for the next smaller size.
+  for (let shown = sorted.length - 1; shown >= 1; shown--) {
+    const body = sorted
+      .slice(0, shown)
+      .map(entry => entry.text)
+      .join(", ");
+    const droppedKeys = sorted.slice(shown).map(entry => entry.key);
+    const named = `${body} — +${String(droppedKeys.length)} more not shown: ${droppedKeys.join(", ")}`;
+    if (cost(named) <= ARGUMENTS_LIMIT) return named;
+    const counted = `${body} — +${String(droppedKeys.length)} more not shown`;
+    if (cost(counted) <= ARGUMENTS_LIMIT) return counted;
+  }
+
+  // Not even the shortest entry fits whole: cut inside its value and say so.
+  // The walk spends the budget in escaped characters while emitting raw ones,
+  // which is what keeps the suffix safe from the renderer's cap.
+  const first = sorted[0];
+  /* v8 ignore next -- sorted is non-empty by the length check above */
+  if (first === undefined) return undefined;
+  const others = sorted.length - 1;
+  const suffix =
+    others === 0 ? " — truncated" : ` — truncated, +${String(others)} more not shown`;
+  let budget = ARGUMENTS_LIMIT - cost(suffix) - 1; // 1 for the ellipsis
+  let prefix = "";
+  for (const char of first.text) {
+    const price = cost(char);
+    if (budget < price) break;
+    budget -= price;
+    prefix += char;
+  }
+  return `${prefix}…${suffix}`;
+}
+
 /** Renders one approval card in one state. Pure. */
 export function renderApprovalCard(input: ApprovalCardInput): SlackCard {
-  const tool = safeText(input.toolName, TOOL_NAME_LIMIT);
+  const tool = safeText(neutralizeBackticks(input.toolName), TOOL_NAME_LIMIT);
   const detail =
-    input.arguments === undefined ? undefined : safeText(input.arguments, ARGUMENTS_LIMIT);
+    input.arguments === undefined
+      ? undefined
+      : safeText(neutralizeBackticks(input.arguments), ARGUMENTS_LIMIT);
   const on = detail === undefined ? "" : ` on \`${detail}\``;
   const state = input.status.state;
   const label = `\`${STATUS_LABEL[state]}\``;
@@ -271,7 +373,14 @@ export function renderApprovalCard(input: ApprovalCardInput): SlackCard {
         section(
           `${label}\nThe agent wants to call \`${tool}\`${on}. The call is held until a human decides.`
         ),
-        context(deadline(input.status.ticket.expiresAt)),
+        // The second sentence leans on a property redemption enforces: the
+        // ticket binds the arguments' hash and the re-submission is checked
+        // against it, so the human cannot be shown one call and have another
+        // run under their click. Worded to stay true when the rendering
+        // above is partial — what is bound is the call, not the excerpt.
+        context(
+          `${deadline(input.status.ticket.expiresAt)} · Approving runs this exact call and no other — the ticket binds its arguments by hash.`
+        ),
         {
           type: "actions",
           elements: [

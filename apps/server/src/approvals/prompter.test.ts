@@ -106,6 +106,23 @@ describe("the amber card", () => {
     await wait;
   });
 
+  it("renders a partial form that says what it dropped", async () => {
+    // The selection itself is `renderHeldCallArguments`'s tests' business;
+    // what this asserts is that the prompter routes through it rather than
+    // dumping JSON — the flag survives the blob, and the drop is named.
+    const { slack, registry, onHeld } = rig();
+
+    const wait = onHeld({ ...HELD, arguments: { body: "x".repeat(400), force: true } });
+    await flush();
+
+    const rendered = JSON.stringify(slack.cards[0]?.card);
+    expect(rendered).toContain("force: true");
+    expect(rendered).toContain("+1 more not shown: body");
+
+    registry.get(CHANNEL, "tk-7f3a")?.settle({ state: "expired" });
+    await wait;
+  });
+
   // A click's dispatch races the post's own response, and a decision must find
   // its entry — so registration precedes the post.
   it("registers the wait before the card is posted, and deregisters when it settles", async () => {
