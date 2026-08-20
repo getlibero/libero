@@ -13,6 +13,7 @@ import {
   createSqliteSpendMeter,
   createToolDispatcher,
   loadTlsOptions,
+  openAttemptStore,
   openAuditWriter,
   openBudgetDb,
   openPriceTableStore,
@@ -20,6 +21,7 @@ import {
   openVault
 } from "@getlibero/proxy";
 import {
+  attemptsDbFromEnv,
   auditDbFromEnv,
   budgetDbFromEnv,
   channelsRootFromEnv,
@@ -90,6 +92,17 @@ const prices = openPriceTableStore({ file: priceTableFromEnv(process.env), logge
 // into startup failures, which is where nearly all of that risk lives — leaving
 // the route to handle only the disk that fills while it is serving.
 const { writer: audit, db: auditDb } = openAuditWriter({ file: auditDbFromEnv(process.env), logger });
+
+// The attempt store (#364), beside the audit log and opened on its argument:
+// a capture failure refuses the call it could not record, so the file's
+// problems belong at startup. Absent variable is capture off — a legitimate
+// deployment, said once here so a mistyped name is a line in the log rather
+// than a discovery at the incident.
+const attemptsFile = attemptsDbFromEnv(process.env);
+const attempts = attemptsFile === undefined ? undefined : openAttemptStore({ file: attemptsFile, logger });
+if (attempts === undefined) {
+  logger.log("warn", { event: "attempt_capture_off", reason: "PROXY_ATTEMPTS_DB is not set" });
+}
 
 // Hoisted out of the composition below because shutdown needs a handle on it.
 // The dispatcher owns the MCP client pool; `createProxyServer` takes the narrow
@@ -163,6 +176,7 @@ const server = createProxyServer({
   // The writer, not the handle: the serving process appends and cannot close
   // the file it is being audited into. `auditDb` stays here, where shutdown is.
   audit,
+  ...(attempts !== undefined ? { attempts } : {}),
   logger
 });
 
@@ -217,6 +231,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
       void mcp.close().finally(() => {
         budget.close();
         auditDb.close();
+        attempts?.close();
         prices.close();
         // Last, after the pool's sessions are gone: nothing can need a token
         // any more, and this is the line that zeroes the master key.

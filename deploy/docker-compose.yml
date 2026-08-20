@@ -152,6 +152,14 @@ services:
       # row, so 10k calls a day is about 2 MB a day — and the answer when that
       # stops being small is to rotate the file, not to prune it.
       PROXY_AUDIT_DB: /data/audit/audit.db
+      # The attempt store (#364): what a blocked call tried to do, in full,
+      # beside the audit log whose rows carry its key. Unlike audit.db this
+      # file can hold secrets — its content is the model's own arguments,
+      # captured raw — and unlike audit.db it is deletable by design:
+      # `node dist/audit.js attempt-delete <hash>` removes a record and the
+      # chain stays green. Unsetting this variable is the off switch; the
+      # proxy says so once at startup rather than failing.
+      PROXY_ATTEMPTS_DB: /data/audit/attempts.db
       # Read, and required. The per-channel message stores the gateway writes,
       # read here to answer search_channel_history (#64). Same directory the
       # server service mounts as AGENT_STORE_ROOT; two names because the two

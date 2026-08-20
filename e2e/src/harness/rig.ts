@@ -318,6 +318,8 @@ export interface Rig {
   readonly certs: Certs;
   /** `PROXY_AUDIT_DB` — read it with `auditRows` / `lastAuditId`. */
   readonly auditDb: string;
+  /** `PROXY_ATTEMPTS_DB` — read it as the operator does, through `runAuditCli` (#364). */
+  readonly attemptsDb: string;
   /** `PROXY_BUDGET_DB` — read it with `spendFor`. */
   readonly budgetDb: string;
   /**
@@ -486,6 +488,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     const dbDir = mkdtempSync(join(tmpdir(), "libero-e2e-db-"));
     cleanup.add("databases", () => rmSync(dbDir, { recursive: true, force: true }));
     const auditDb = join(dbDir, "audit.db");
+    const attemptsDb = join(dbDir, "attempts.db");
     const budgetDb = join(dbDir, "budget.db");
 
     // Its own root, not a subdirectory of the sheets, because that is the
@@ -512,6 +515,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       vaultKey: vault.keyBase64,
       budgetDb,
       auditDb,
+      attemptsDb,
       // The same directory `startAgent` gets below. One process writes it and
       // the other reads it, which is the production shape and is what makes a
       // `search_channel_history` case a real two-process claim rather than a
@@ -571,6 +575,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       model,
       certs,
       auditDb,
+      attemptsDb,
       budgetDb,
       storeRoot,
       embeddings,

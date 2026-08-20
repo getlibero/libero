@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { openAuditDb } from "@getlibero/proxy";
+import { hashArguments, openAttemptStore, openAuditDb } from "@getlibero/proxy";
 import type { AuditRecord } from "@getlibero/schema";
 import { refusalMessage } from "@getlibero/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -637,5 +637,110 @@ describe("usage and errors", () => {
   // export deliberately does not mitigate.
   it("warns in usage that a spreadsheet may read a field as a formula", () => {
     expect(run(["--help"]).text).toContain("formula");
+  });
+});
+
+describe("attempt and attempt-delete", () => {
+  const ARGS = { branch: "main", force: true };
+  let attemptsFile: string;
+
+  /** One refused row whose hash has a captured record behind it. */
+  function seedAttempt(): string {
+    const digest = hashArguments(ARGS);
+    append({ tool: "delete_repo", outcome: "refused", refusalReason: "tool_not_allowed", argumentsSha256: digest });
+    const attempts = openAttemptStore({ file: attemptsFile });
+    attempts.record(ARGS, NOON);
+    attempts.close();
+    return digest;
+  }
+
+  function withStore(argv: string[]): Run {
+    return run(argv, { PROXY_AUDIT_DB: file, PROXY_ATTEMPTS_DB: attemptsFile });
+  }
+
+  beforeEach(() => {
+    attemptsFile = join(dir, "attempts.db");
+  });
+
+  it("prints the record by hash, labelled hostile, and by row id", () => {
+    const digest = seedAttempt();
+
+    const byHash = withStore(["attempt", digest]);
+    expect(byHash.code).toBe(EXIT_OK);
+    expect(byHash.out).toContain('{"branch":"main","force":true}');
+    expect(byHash.text).toContain("model-authored");
+
+    const byId = withStore(["attempt", "1"]);
+    expect(byId.code).toBe(EXIT_OK);
+    expect(byId.out).toContain('{"branch":"main","force":true}');
+  });
+
+  it("says when nothing was captured for a hash", () => {
+    seedAttempt();
+
+    const missing = withStore(["attempt", "f".repeat(64)]);
+    expect(missing.code).toBe(EXIT_ERROR);
+    expect(missing.text).toContain("never captured, or deleted");
+  });
+
+  it("refuses to run with capture off, and to invent a store for a typo'd path", () => {
+    seedAttempt();
+
+    const off = run(["attempt", "1"], { PROXY_AUDIT_DB: file });
+    expect(off.code).toBe(EXIT_ERROR);
+    expect(off.text).toContain("PROXY_ATTEMPTS_DB is not set");
+
+    const typod = run(["attempt", "1"], {
+      PROXY_AUDIT_DB: file,
+      PROXY_ATTEMPTS_DB: join(dir, "nope.db")
+    });
+    expect(typod.code).toBe(EXIT_ERROR);
+    expect(typod.text).toContain("no attempt store at");
+    expect(existsSync(join(dir, "nope.db"))).toBe(false);
+  });
+
+  // The verdict the off-chain design leans on: the chained row committed to
+  // this hash, and these bytes no longer produce it.
+  it("exits 3 when a record was altered under its hash", () => {
+    const digest = seedAttempt();
+    const raw = new DatabaseSync(attemptsFile);
+    raw.prepare("UPDATE attempt SET arguments = ? WHERE arguments_sha256 = ?").run('{"branch":"innocent"}', digest);
+    raw.close();
+
+    const res = withStore(["attempt", digest]);
+    expect(res.code).toBe(EXIT_TAMPERED);
+    expect(res.text).toContain("altered since capture");
+    // The bytes are still shown: they are evidence about the alteration.
+    expect(res.out).toContain('{"branch":"innocent"}');
+  });
+
+  it("neutralizes control characters on the way to the terminal", () => {
+    const digest = hashArguments({ note: "x" });
+    append({ outcome: "refused", refusalReason: "tool_not_allowed", argumentsSha256: digest });
+    // Written past the store's own writer, the way an attacker would: raw
+    // bytes with a cursor-moving escape sequence in them.
+    const attempts = openAttemptStore({ file: attemptsFile });
+    attempts.close();
+    const raw = new DatabaseSync(attemptsFile);
+    raw.prepare("INSERT INTO attempt (arguments_sha256, arguments, first_seen) VALUES (?, ?, ?)").run(digest, "{\u001b[2Jcleared}", NOON);
+    raw.close();
+
+    const res = withStore(["attempt", digest]);
+    expect(res.text).not.toContain("\u001b");
+    expect(res.text).toContain("\uFFFD[2Jcleared");
+  });
+
+  it("deletes a record and leaves the audit rows alone", () => {
+    const digest = seedAttempt();
+    const before = run(["show", "1"]).text;
+
+    const deleted = withStore(["attempt-delete", digest]);
+    expect(deleted.code).toBe(EXIT_OK);
+    expect(deleted.text).toContain("unchanged");
+
+    expect(withStore(["attempt", digest]).code).toBe(EXIT_ERROR);
+    expect(withStore(["attempt-delete", digest]).code).toBe(EXIT_ERROR);
+    expect(run(["show", "1"]).text).toBe(before);
+    expect(run(["verify"]).code).toBe(EXIT_OK);
   });
 });

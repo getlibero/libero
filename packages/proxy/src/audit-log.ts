@@ -56,10 +56,12 @@
 // an operator reading a column labelled redacted believes it. So: a hash, which
 // answers whether two calls were the same and claims nothing else.
 //
-// What the decision costs is written down rather than waved off: a call that was
-// *refused* reached no upstream, so nothing anywhere records what it attempted.
-// For a call that ran, the upstream has its own record. That gap is parked, not
-// solved.
+// What the decision costs was written down rather than waved off — a call that
+// was *refused* reached no upstream, so nothing anywhere recorded what it
+// attempted — and #364 closed that cost without reopening the decision:
+// ./attempts-db.ts stores a blocked call's arguments off-chain, keyed by the
+// hash this row carries, raw and deletable. Nothing new enters the row, and
+// the chain stays exactly as argued above.
 //
 // ## Why a hash of the arguments is not the fingerprint ./log.ts forbids
 //

@@ -79,7 +79,8 @@ reveals a credential and the one that scrubs the reply.
   joins by task id.
 
   **Every SQL string in this package is in the module that opens the database it
-  runs against** — `budget-db.ts` and `audit-db.ts`, and nowhere else — which is
+  runs against** — `budget-db.ts`, `audit-db.ts` and `attempts-db.ts`, and
+  nowhere else — which is
   what makes "no statement omits `WHERE channel = ?`" checkable in one place.
 - `spend-route.ts` — `POST /v1/spend`. The one route with no authorization
   decision on it, and the header says why and what keeps it that way.
@@ -1150,11 +1151,46 @@ decision someone re-opens by accident:
   it breaks the chain from that row to the tip, so the remedy would be rotating
   the credential *and* the log.
 
-What it costs, stated rather than waved off: a **refused** call reached no
-upstream, so nothing anywhere records what it attempted. A call that ran leaves
-its arguments in the upstream's own record. That narrower gap is parked rather
-than solved, and `redact` is now banned from the writer and the route by ESLint —
-the exception that kept it importable was standing on a change that is not coming.
+What it cost, stated rather than waved off: a **refused** call reached no
+upstream, so nothing anywhere recorded what it attempted. A call that ran leaves
+its arguments in the upstream's own record. #364 closed that narrower gap
+without reopening the decision — see the attempt store below — and `redact`
+stays banned from the writer and the route by ESLint: the exception that kept it
+importable was standing on a change that is still not coming, because the store
+claims no redaction at all.
+
+### The attempt store: the gap closed off-chain (#364)
+
+`attempts-db.ts` is its own SQLite file beside the audit log, holding the full
+argument blob of every **blocked** call — refused captured at refusal, held
+captured at mint, which is what covers a later deny or expiry, since by
+decision time the ticket store holds only the hash. It threads the three
+constraints above instead of arguing with them:
+
+- **It stores raw and claims no redaction.** The content is model-authored,
+  labelled hostile on every read, and may contain anything the model saw.
+  Nobody believes a redacted column, because there is not one.
+- **Nothing is resolved.** Capture stores bytes the proxy already holds, so a
+  refusal still causes no token-endpoint traffic — asserted in e2e against a
+  live fake issuer.
+- **It is not chained, so it is deletable.** The key is the audit row's own
+  `arguments_sha256` and the stored bytes are exactly what that digest covers,
+  so the read path re-verifies content against key — tamper-evident by
+  reference — and deleting a record degrades its rows to hash-only without
+  touching the chain. `audit verify` stays green. A secret that lands in a
+  record is removed by deleting the record, not by rotating the log.
+
+Its own file rather than a second table, because the write disciplines are
+opposites — append-only-and-chained against deletable-by-design — and one file
+per discipline keeps each rule checkable by reading the module that opens it.
+No channel column: the store is content-addressed and the audit rows are its
+index. A capture failure refuses the call it could not record, the audit
+writer's rule, so "every blocked call leaves an attempt record" holds with no
+exception clause. The operator reads and deletes through `node dist/audit.js
+attempt` / `attempt-delete`, which neutralize control characters on the way to
+the terminal — the approval card's escaping argument, for an operator's screen.
+Capture is on when `PROXY_ATTEMPTS_DB` is set, which the shipped compose file
+does; unset is the deployment-level off switch, said once at startup.
 
 **An export is not the verification surface.** The CSV carries both columns,
 because an export that drops the chain is an export nobody can verify — but a

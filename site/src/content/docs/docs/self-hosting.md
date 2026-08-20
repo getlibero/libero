@@ -438,6 +438,31 @@ altered without recomputing the rest, and comparing today's tip against one you 
 is what catches everything else. Rows written before schema version 5 were chained when the column
 was added, so they are covered from that migration forward rather than from when they were written.
 
+The row carries a hash of the arguments, never the arguments — and for a **blocked** call, what was
+attempted lands in the attempt store instead, a separate deletable file beside the log
+([#364](https://github.com/getlibero/libero/issues/364)):
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js attempt 1422
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/audit.js attempt-delete 1422
+```
+
+`attempt` takes a row id from `list`, or the 64-hex hash a row carries, and prints the arguments the
+blocked call was made with. Its content is the model's own text, captured raw with no redaction
+claimed — it may contain anything the model saw, which is exactly why it is worth reading after an
+incident and why it is **deletable**: `attempt-delete` removes a record, the chained rows stay
+byte-identical, and `verify` stays green. The read re-verifies the content against the hash the row
+committed to and exits 3 if the file was altered under it. Capture is on in the shipped compose
+file; unsetting `PROXY_ATTEMPTS_DB` switches it off, and the proxy says so once at startup.
+
+The hash alone still affords something worth knowing: it is SHA-256 over the arguments as canonical
+JSON — object keys sorted, no whitespace — so a reviewer who suspects what a call's arguments were
+can check a candidate against any row, captured or not:
+
+```bash
+printf '%s' '{"branch":"gh-pages","force":true}' | sha256sum   # compare to the row's arguments hash
+```
+
 Budget exhaustion is visible in-thread: the hard limit stops the loop until the UTC day rolls over
 or an admin resets the channel. The approach to it is visible too — a channel that passes `[budget]
 warn_at` is told once that day, in the thread, on a call that still runs. A reset re-arms that
@@ -483,7 +508,9 @@ finally looks. It has no reset command, because the table refuses `DELETE` from 
 and the read command above opens it read-only, so there is no supported path that writes it at all.
 Nothing in it is a secret either: names, ids, and a hash of the model's arguments, never an argument
 value and never a credential. A proxy that cannot write this file refuses the call it could not
-record rather than serving it unrecorded.
+record rather than serving it unrecorded. The attempt store beside it is the deliberate opposite —
+a blocked call's arguments in full, model-authored and possibly secret-bearing, which is why it is
+the one deletable file in the volume; see [operating it](#operating-it).
 
 `AGENT_STORE_ROOT` is the agent side's equivalent and is required on the same terms: one
 `<channel>/store.db` under it, the *directory* writable for the `-wal` and `-shm` files. **It is

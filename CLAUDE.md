@@ -59,7 +59,10 @@ table below says which file.
 Two belong here rather than there. One is a decision *not* to build, which the
 next person to have the idea will not find otherwise: **#122's argument capture
 was designed and declined**, so "store the arguments and redact the secrets" is
-settled rather than open, and #364 holds the gap it leaves. The other is that
+settled rather than open. #364 closed the cost it left without reopening it —
+a blocked call's arguments land in an off-chain, deletable store the audit
+row's own hash binds (`packages/proxy/src/attempts-db.ts`), and the chain
+stays hash-only exactly as decided. The other is that
 **the milestone's own wording for #158 was wrong** — it asked for eviction
 "sized against the token lifetimes OAuth gave them", and a pooled client never
 held a token, because #256 gave it a credential *source* it asks per request.
@@ -114,7 +117,7 @@ code is a paragraph the next reader will not find.
 | Question | Read |
 | --- | --- |
 | What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes, what the skill-author turn sees of a task that curation deliberately does not, and why the merge turn takes no handler | `packages/agent/README.md` |
-| Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, why the budget read is advisory rather than a second enforcement point, approvals, the audit log's write discipline, what the hash chain catches and the four things it does not, why the unique index on `prev_hash` does more than the chain alone, and why argument capture was declined rather than deferred | `packages/proxy/README.md` |
+| Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, why the budget read is advisory rather than a second enforcement point, approvals, the audit log's write discipline, what the hash chain catches and the four things it does not, why the unique index on `prev_hash` does more than the chain alone, why argument capture in the chain was declined rather than deferred, and the off-chain attempt store built beside that decision (#364) | `packages/proxy/README.md` |
 | Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for, why the proactive post surface is minted in the composition, why its window is four hours, why its two sources are named for the wake reason, and what the heartbeat's pregate asks in what order, why its watermark makes a finding say-once, and why a shut window defers rather than loses | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, why the channel-post verb is a second exception to the `CardPoster` narrowing and a different kind of one, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why `idleThreads` is not `staleThreads` with another argument, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
@@ -359,9 +362,12 @@ These are load-bearing, not stylistic:
   numbers and that aggregate reads stay off the interface the server closes over.
 
   **Every SQL string in `packages/proxy` lives in the module that opens the
-  database it runs against** — `budget-db.ts` and `audit-db.ts`, and no others —
-  so "no statement omits `WHERE channel = ?`" is checkable by reading one file. A
-  statement prepared in a route, a writer or an admin helper is a review failure.
+  database it runs against** — `budget-db.ts`, `audit-db.ts` and
+  `attempts-db.ts`, and no others — so "no statement omits `WHERE channel = ?`"
+  is checkable by reading one file per database. (The attempt store has no
+  channel column at all: it is content-addressed, and the audit rows are its
+  index — its header makes that case.) A statement prepared in a route, a
+  writer or an admin helper is a review failure.
   `packages/proxy/README.md` has the rest: the meter's surface, the audit log's
   write discipline, and why there is no retention command.
 - **`packages/schema` is the single source of truth** for team sheets, audit

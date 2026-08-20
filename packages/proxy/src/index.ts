@@ -55,6 +55,8 @@ export { channelDays, pruneTurnReports, readChannelSpend, resetChannel } from ".
 export { AUDIT_SCHEMA_VERSION, openAuditDb } from "./audit-db.js";
 export type { AuditDb, AuditDbOptions } from "./audit-db.js";
 export { canonicalJson, createSqliteAuditWriter, hashArguments, openAuditWriter } from "./audit-log.js";
+export { MAX_ATTEMPT_BYTES, openAttemptStore } from "./attempts-db.js";
+export type { AttemptStore, StoredAttempt } from "./attempts-db.js";
 export type { AuditWriter, AuditWriterOptions } from "./audit-log.js";
 
 // The audit log's read path, exported for the audit CLI and reached by nothing

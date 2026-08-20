@@ -26,7 +26,9 @@ import {
   ToolCallResponse,
   ToolListing
 } from "@getlibero/schema";
-import { openAuditDb } from "./audit-db.js";
+import { openAttemptStore } from "./attempts-db.js";
+import type { AttemptStore } from "./attempts-db.js";
+import { openAuditDb, openAuditReader } from "./audit-db.js";
 import type { AuditDb } from "./audit-db.js";
 import { createSqliteAuditWriter } from "./audit-log.js";
 import type { AuditWriter } from "./audit-log.js";
@@ -122,6 +124,7 @@ let logLines: string[] = [];
  */
 let auditDir: string;
 let auditDb: AuditDb;
+let attempts: AttemptStore;
 let auditFile: string;
 let auditCursor = 0;
 
@@ -326,6 +329,8 @@ beforeAll(() => {
   auditDir = mkdtempSync(join(tmpdir(), "libero-proxy-audit-"));
   auditFile = join(auditDir, "audit.db");
   auditDb = openAuditDb({ file: auditFile });
+  // Beside the audit log, as the deployment lays it out (#364).
+  attempts = openAttemptStore({ file: join(auditDir, "attempts.db") });
 
   server = createProxyServer({
     tls: loadTlsOptions({
@@ -343,6 +348,7 @@ beforeAll(() => {
     dispatcher,
     catalog: createUnavailableCatalog(),
     audit: createSqliteAuditWriter({ db: auditDb }),
+    attempts,
     logger: createJsonLogger(line => {
       logLines.push(line);
     })
@@ -379,6 +385,7 @@ afterAll(() => {
   sheets.close();
   budgetDb.close();
   auditDb.close();
+  attempts.close();
   rmSync(certs, { recursive: true, force: true });
   rmSync(foreignCerts, { recursive: true, force: true });
   rmSync(channelsRoot, { recursive: true, force: true });
@@ -3286,5 +3293,74 @@ describe("the approval broker", () => {
         call("/v1/approvals", undefined, "POST", brokerPort, JSON.stringify({}))
       ).rejects.toThrow();
     });
+  });
+});
+
+describe("the attempt record (#364)", () => {
+  const attempted = (tool: string, args: Record<string, unknown>) =>
+    asked({ id: "toolu_attempt", server: "github", tool, arguments: args });
+
+  // The record's whole reason: a refused call reached no upstream, so what it
+  // attempted is knowable only here — keyed by the same hash the chained row
+  // carries, content verified against it on read.
+  it("captures a refused call's arguments, keyed by the row's own hash", async () => {
+    await post("/v1/tools/call", attempted("force_push", { branch: "main", force: true }));
+
+    const row = auditRows().at(-1);
+    expect(row).toMatchObject({ outcome: "refused", tool: "force_push" });
+    const stored = attempts.read(String(row?.arguments_sha256));
+    expect(stored?.verified).toBe(true);
+    expect(stored?.argumentsJson).toBe('{"branch":"main","force":true}');
+  });
+
+  // Capture at mint is what covers a later deny or expiry: by decision time
+  // the ticket store holds only the hash, so mint is the last sight of the
+  // arguments themselves.
+  it("captures a held call's arguments at mint", async () => {
+    const res = await post("/v1/tools/call", attempted("merge_pr", { branch: "release", force: true }));
+    expect(ToolCallResponse.parse(res.body).outcome).toBe("held");
+
+    const row = auditRows().at(-1);
+    expect(row).toMatchObject({ outcome: "held" });
+    const stored = attempts.read(String(row?.arguments_sha256));
+    expect(stored?.verified).toBe(true);
+    expect(stored?.argumentsJson).toContain('"release"');
+  });
+
+  // A call that ran has its record at the upstream that served it; capturing
+  // it here would put permitted arguments in the hostile store for nothing.
+  it("does not capture a served call", async () => {
+    const res = await post(
+      "/v1/tools/call",
+      attempted("list_prs", { state: "attempt-none" })
+    );
+    expect(ToolCallResponse.parse(res.body).outcome).toBe("ran");
+
+    const row = auditRows().at(-1);
+    expect(row).toMatchObject({ outcome: "ran" });
+    expect(attempts.read(String(row?.arguments_sha256))).toBeUndefined();
+  });
+
+  // Deletion is the designed remedy: the blob goes, the chained row stays
+  // byte-identical, and the chain still verifies. That is the property that
+  // makes storing hostile bytes survivable at all.
+  it("deleting a record leaves the chain verifying and the row unchanged", async () => {
+    await post("/v1/tools/call", attempted("force_push", { secret: "hunter2" }));
+
+    const before = auditRows().at(-1);
+    const hash = String(before?.arguments_sha256);
+    expect(attempts.read(hash)?.argumentsJson).toContain("hunter2");
+
+    expect(attempts.delete(hash)).toBe(true);
+    expect(attempts.read(hash)).toBeUndefined();
+
+    const after = auditRows().at(-1);
+    expect(after).toEqual(before);
+    const reader = openAuditReader({ file: auditFile });
+    try {
+      expect(reader.verifyChain()).toMatchObject({ ok: true });
+    } finally {
+      reader.close();
+    }
   });
 });

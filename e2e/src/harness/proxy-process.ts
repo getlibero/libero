@@ -37,6 +37,12 @@ export interface ProxyEnv {
   readonly budgetDb: string;
   readonly auditDb: string;
   /**
+   * The attempt store (#364). Always set by the rig, because the compose file
+   * ships the variable set — capture on is the deployment default, and a rig
+   * that left it off would be testing a deployment nobody ships.
+   */
+  readonly attemptsDb: string;
+  /**
    * The per-channel message stores (#64). The same directory the in-process
    * agent writes under, so a message the stub Slack delivered is one this
    * spawned process can read back — which is the whole of what the
@@ -155,6 +161,7 @@ export async function spawnProxy(
       PROXY_VAULT_KEY: env.vaultKey,
       PROXY_BUDGET_DB: env.budgetDb,
       PROXY_AUDIT_DB: env.auditDb,
+      PROXY_ATTEMPTS_DB: env.attemptsDb,
       PROXY_STORE_ROOT: env.storeRoot,
       // Absent rather than empty when the rig has no table, so the case that
       // exercises "this deployment has no prices" reaches the real code path
