@@ -6,7 +6,14 @@ import { openAuditDb } from "@getlibero/proxy";
 import type { AuditRecord } from "@getlibero/schema";
 import { refusalMessage } from "@getlibero/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_LIST_LIMIT, EXIT_ERROR, EXIT_OK, EXIT_USAGE, runAuditCommand } from "./audit-cli.js";
+import {
+  DEFAULT_LIST_LIMIT,
+  EXIT_ERROR,
+  EXIT_OK,
+  EXIT_TAMPERED,
+  EXIT_USAGE,
+  runAuditCommand
+} from "./audit-cli.js";
 
 const CHANNEL = "C024BE91L";
 const OTHER = "C7ZZZ9999";
@@ -459,6 +466,128 @@ describe("the file it opens", () => {
     run(["show", "1"]);
     run(["open"]);
     run(["ticket", "tk-77"]);
+
+    expect(run(["csv"]).out).toEqual(before);
+  });
+});
+
+// #355. The command an operator runs on a timer, so what is asserted is the
+// contract something unattended reads: the exit code, and the tip on stdout.
+describe("verify", () => {
+  beforeEach(seed);
+
+  /** Tampering as the actor who holds the file does it: triggers off first. */
+  function tamper(sql: string): void {
+    const raw = new DatabaseSync(file);
+    try {
+      raw.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_update");
+      raw.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_delete");
+      raw.exec(sql);
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("prints the row count and the tip, and exits 0", () => {
+    const result = run(["verify"]);
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.err).toEqual([]);
+    expect(result.out[0]).toBe("rows: 7");
+    expect(result.out[1]).toMatch(/^tip: {2}[0-9a-f]{64}$/);
+  });
+
+  // The tip is only evidence if it leaves the file. A command that printed it
+  // and said nothing would be handing an operator a number with no instruction.
+  it("says what the tip is for", () => {
+    expect(run(["verify"]).text).toContain("does not control");
+  });
+
+  it("names a rewritten row and exits 3", () => {
+    tamper("UPDATE tool_call_audit SET tool = 'delete_branch' WHERE id = 4");
+    const result = run(["verify"]);
+
+    expect(result.code).toBe(EXIT_TAMPERED);
+    expect(result.err.join("\n")).toContain("broken at row 4");
+    expect(result.err.join("\n")).toContain("do not hash");
+    // The prefix that still holds, so an operator knows how much of the log is
+    // worth reading.
+    expect(result.err.join("\n")).toContain("3 row(s) before it verify");
+  });
+
+  it("detects a deleted row and exits 3", () => {
+    tamper("DELETE FROM tool_call_audit WHERE id = 4");
+    const result = run(["verify"]);
+
+    expect(result.code).toBe(EXIT_TAMPERED);
+    expect(result.err.join("\n")).toContain("broken at row 5");
+    expect(result.err.join("\n")).toContain("does not follow the row before it");
+  });
+
+  // 3 is not 1, and that distinction is the reason the code exists: an
+  // unattended caller pages different people for "the log was altered" and "the
+  // log could not be opened".
+  it("keeps a broken chain apart from a log it could not read", () => {
+    tamper("UPDATE tool_call_audit SET tool = 'x' WHERE id = 1");
+    expect(run(["verify"]).code).toBe(EXIT_TAMPERED);
+
+    expect(run(["verify"], { PROXY_AUDIT_DB: join(dir, "nope.db") }).code).toBe(EXIT_ERROR);
+    expect(run(["verify"], {}).code).toBe(EXIT_ERROR);
+  });
+
+  // A filtered walk would break at the second row of every query, because the
+  // chain links rows that are next to each other. Refused rather than ignored:
+  // a command whose whole output is a verdict must not have a way to be handed
+  // one nobody asked for.
+  it("refuses a filter rather than walking a subset", () => {
+    const result = run(["verify", "--channel", CHANNEL]);
+
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(result.text).toContain("takes no filters");
+    expect(result.text).not.toContain("tip:");
+  });
+
+  it("refuses an argument", () => {
+    expect(run(["verify", "4"]).code).toBe(EXIT_USAGE);
+  });
+
+  // It does not migrate, in either direction. The proxy brings an older file
+  // forward on first open; a *verifier* that did would be repairing the evidence
+  // it was asked to check — and it would rechain the file in the process, which
+  // is the one operation that would make a tampered log verify clean.
+  it("refuses an older file rather than bringing it forward", () => {
+    const old = join(dir, "old.db");
+    const raw = new DatabaseSync(old);
+    try {
+      raw.exec("CREATE TABLE schema_version (version INTEGER NOT NULL)");
+      raw.exec("INSERT INTO schema_version (version) VALUES (4)");
+    } finally {
+      raw.close();
+    }
+
+    const result = run(["verify"], { PROXY_AUDIT_DB: old });
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(result.err.join("")).toContain("schema version 4");
+
+    // Still 4 afterwards: it read the number and stopped.
+    const after = new DatabaseSync(old, { readOnly: true });
+    try {
+      expect(after.prepare("SELECT version FROM schema_version").get()).toEqual({ version: 4 });
+    } finally {
+      after.close();
+    }
+  });
+
+  // The command exists to read evidence, so it had better not be capable of
+  // changing it. The connection is read-only, but this asserts the outcome
+  // rather than the mechanism.
+  it("leaves the log exactly as it found it", () => {
+    // Through `csv`, as the peer case above does: the export carries every
+    // column including both hashes, so an unchanged CSV is an unchanged log.
+    const before = run(["csv"]).out;
+
+    expect(run(["verify"]).code).toBe(EXIT_OK);
 
     expect(run(["csv"]).out).toEqual(before);
   });

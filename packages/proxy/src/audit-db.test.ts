@@ -15,7 +15,7 @@ import {
   openAuditDb,
   openAuditReader
 } from "./audit-db.js";
-import type { AuditDb, AuditReader, AuditRowValues } from "./audit-db.js";
+import type { AuditChainVerdict, AuditDb, AuditReader, AuditRowValues } from "./audit-db.js";
 
 const CHANNEL = "C0ENGINEERING";
 const OTHER = "C0DESIGN";
@@ -1739,6 +1739,98 @@ describe("reading it back", () => {
 
       expect(read(r => r.openApprovals(CHANNEL).map(e => e.ticket))).toEqual(["tk-here"]);
       expect(read(r => r.openApprovals(OTHER).map(e => e.ticket))).toEqual(["tk-there"]);
+    });
+  });
+
+  // #355. The walk an operator runs, as opposed to `firstBrokenRow` above —
+  // that one is an independent recomputation, written to check the writer's
+  // arithmetic; this is the shipped answer, and what is asserted here is the
+  // verdict rather than the hashes.
+  describe("verifyChain", () => {
+    /** The tip, or a failure that says what the walk found instead. */
+    const tipOf = (verdict: AuditChainVerdict): string => {
+      if (!verdict.ok) throw new Error(`expected a passing walk, got a ${verdict.reason} break at ${verdict.brokenAt}`);
+      return verdict.tip;
+    };
+
+    it("passes a log nothing has touched, and names the tip", () => {
+      expect(read(r => r.verifyChain())).toEqual({
+        ok: true,
+        rows: 5,
+        tip: rows(file).at(-1)?.["row_hash"]
+      });
+    });
+
+    // The tip is the whole product of a passing walk, so it has to be the
+    // *last row's* hash and not merely some hash the walk saw. Appending moves
+    // it; a walk that returned a constant, or the first row's, would pass the
+    // case above and fail this one.
+    it("answers a tip that moves with the log", () => {
+      const before = tipOf(read(r => r.verifyChain()));
+      db.append(record({ task: "t-later" }));
+      const after = read(r => r.verifyChain());
+
+      expect(tipOf(after)).not.toBe(before);
+      expect(tipOf(after)).toBe(rows(file).at(-1)?.["row_hash"]);
+      expect(after).toMatchObject({ rows: 6 });
+    });
+
+    // An empty log is verified rather than special-cased: nothing was written,
+    // so nothing was altered, and the tip is what the first row will chain from.
+    // Its own file, because this block's `beforeEach` seeds the shared one.
+    it("passes an empty log with the genesis as its tip", () => {
+      const empty = join(dir, "empty.db");
+      openAuditDb({ file: empty }).close();
+
+      const reader = openAuditReader({ file: empty });
+      try {
+        expect(reader.verifyChain()).toEqual({ ok: true, rows: 0, tip: AUDIT_CHAIN_GENESIS });
+      } finally {
+        reader.close();
+      }
+    });
+
+    it("names a rewritten row and calls it a content break", () => {
+      tamper(file, "UPDATE tool_call_audit SET tool = 'delete_branch' WHERE id = 3");
+
+      expect(read(r => r.verifyChain())).toEqual({
+        ok: false,
+        verified: 2,
+        brokenAt: 3,
+        reason: "content"
+      });
+    });
+
+    // A deleted row leaves its successor entirely intact — the successor's own
+    // columns still hash to its stored `row_hash`. So this is the case that
+    // decides the order of the two checks inside the walk: content-first would
+    // report `content` for a row nobody edited.
+    it("names the successor of a deleted row and calls it a link break", () => {
+      tamper(file, "DELETE FROM tool_call_audit WHERE id = 3");
+
+      expect(read(r => r.verifyChain())).toEqual({
+        ok: false,
+        verified: 2,
+        brokenAt: 4,
+        reason: "link"
+      });
+    });
+
+    // Naming one row is the contract. A second break further on must not change
+    // the answer, because everything past the first is unverified rather than
+    // wrong, and reporting the later one would present a guess as a finding.
+    it("names the first break and stops", () => {
+      tamper(file, "UPDATE tool_call_audit SET tool = 'x' WHERE id IN (2, 4)");
+
+      expect(read(r => r.verifyChain())).toMatchObject({ ok: false, brokenAt: 2 });
+    });
+
+    it("reads without writing, on a connection that could not", () => {
+      const before = rows(file);
+
+      expect(read(r => r.verifyChain()).ok).toBe(true);
+
+      expect(rows(file)).toEqual(before);
     });
   });
 });

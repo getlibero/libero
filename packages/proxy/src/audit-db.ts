@@ -723,8 +723,55 @@ export interface AuditReader {
    * query with a different last word.
    */
   openApprovals(channel?: string): readonly AuditEntry[];
+  /**
+   * Walk the chain from the first row and answer what it found (#355).
+   *
+   * Here rather than in the command that runs it, for the reason every statement
+   * in this package is in the module that opens its database — and for a second
+   * reason this one has on its own: the walk needs the serialization as well as
+   * the SQL, and those two agreeing is the whole of whether a verdict means
+   * anything. A walk that recomputed with a different encoding would report a
+   * break on every untampered file ever written.
+   *
+   * It takes no filter and there is no version of it that does. The chain links
+   * consecutive rows, so any subset of them is a set of rows whose neighbours
+   * are missing — a filtered walk would report a break at the second row of
+   * every query. `AuditQuery` is for reading the log; this is for checking it.
+   */
+  verifyChain(): AuditChainVerdict;
   close(): void;
 }
+
+/**
+ * What a walk found, and the two shapes are the two things an operator does.
+ *
+ * A pass carries the **tip**, which is the point: it is the one value that
+ * commits to every row in the file, so writing it down somewhere the file's
+ * holder does not control is what turns this from a consistency check into
+ * evidence. `rows` beside it is what says the tip is a commitment to a log
+ * rather than to an empty table.
+ *
+ * A failure names **one** row and stops. That is the contract rather than a
+ * limitation: a break means every hash after it was computed over a predecessor
+ * this walk cannot vouch for, so the rows beyond it are unverified rather than
+ * wrong, and listing them would present a guess as a finding. `verified` is how
+ * many rows were checked before it — the prefix that does still hold.
+ *
+ * `reason` separates the two ways a row fails, because they are different
+ * events. `content` is a row whose own columns no longer hash to the value
+ * stored beside them: somebody edited that row. `link` is a row whose
+ * `prev_hash` is not the predecessor's `row_hash`: something was deleted from in
+ * front of it, inserted before it, or the log forked. Neither reads on the
+ * other's evidence, so neither is worded to.
+ */
+export type AuditChainVerdict =
+  | { readonly ok: true; readonly rows: number; readonly tip: string }
+  | {
+      readonly ok: false;
+      readonly verified: number;
+      readonly brokenAt: number;
+      readonly reason: "content" | "link";
+    };
 
 /**
  * Every column, named, in the table's declared order.
@@ -939,6 +986,45 @@ export function openAuditReader(options: AuditReaderOptions): AuditReader {
           )
           .all(...params) as Record<string, unknown>[]
       ).map(rowToEntry);
+    },
+
+    verifyChain() {
+      // `iterate`, never `all`: this is the one read whose result set is the
+      // whole table by definition, and an operator runs it on the log that has
+      // been growing since the deployment started. The walk holds one row.
+      //
+      // Ordered by `id` for the reason `page` is: it is the order the log was
+      // appended in, and the chain was built in that order. Every column, because
+      // the preimage covers every column — `AUDIT_COLUMNS` is the same list the
+      // writer bound, which is what makes recomputation here the same arithmetic
+      // that happened there.
+      const walk = db
+        .prepare(`SELECT ${AUDIT_COLUMNS} FROM tool_call_audit ORDER BY id`)
+        .iterate() as Iterable<Record<string, unknown>>;
+
+      let prev: string = AUDIT_CHAIN_GENESIS;
+      let rows = 0;
+      for (const row of walk) {
+        const id = row["id"] as number;
+        // The link first. A row whose predecessor is wrong has a `row_hash` that
+        // may well recompute correctly over its own columns — a deleted row
+        // leaves its successor entirely intact — so checking the content first
+        // would answer `content` for an event that is nothing of the kind.
+        if (row["prev_hash"] !== prev) {
+          return { ok: false, verified: rows, brokenAt: id, reason: "link" } as const;
+        }
+        if (auditRowHash(prev, auditRowValuesOf(row)) !== row["row_hash"]) {
+          return { ok: false, verified: rows, brokenAt: id, reason: "content" } as const;
+        }
+        prev = row["row_hash"] as string;
+        rows += 1;
+      }
+
+      // An empty log passes, and its tip is the genesis. That is the honest
+      // answer rather than a special case: nothing has been written, so nothing
+      // has been altered, and the value that commits to no rows is the value the
+      // first row will chain from.
+      return { ok: true, rows, tip: prev } as const;
     },
 
     close() {

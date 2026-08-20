@@ -310,6 +310,7 @@ docker compose run --rm proxy node dist/audit.js show 1422
 docker compose run --rm proxy node dist/audit.js ticket tk-8f2c1b
 docker compose run --rm proxy node dist/audit.js open
 docker compose run --rm proxy node dist/audit.js csv --since 2026-08-01 > audit.csv
+docker compose run --rm proxy node dist/audit.js verify
 ```
 
 `list` shows the most recent 50 by default and says so when it truncated; `csv`
@@ -332,6 +333,54 @@ row is the contract and a new column is appended at the end, so positional
 indexing keeps working. And a field beginning with `=`, `+`, `-` or `@` is a
 formula to a spreadsheet: `call_id` is model-authored, and this export records
 what was written rather than altering it, so open it as text if that matters.
+
+### Verifying it
+
+`verify` walks the hash chain from the first row. It takes no filters and no
+arguments — the chain links rows that are next to each other, so a walk over a
+subset would break at its second row.
+
+```
+$ docker compose run --rm proxy node dist/audit.js verify
+rows: 14203
+tip:  41be9c...
+
+audit: keep the tip somewhere this file's holder does not control.
+```
+
+**Keep the tip.** That instruction is the whole point of the command, and the
+reason is worth understanding rather than following. The chain is unkeyed, so it
+detects a row altered without recomputing the rest — an `UPDATE` through
+`sqlite3`, a deletion, a splice — and it does *not* detect an attacker who
+rewrites a row and re-derives every hash after it, or who drops rows from the
+end. Both of those change the tip. Comparing today's tip against one you wrote
+down last month is what makes this file evidence rather than a checksum of itself.
+
+The exit code is the contract for anything running this on a timer:
+
+| | |
+| --- | --- |
+| `0` | the chain holds; the row count and tip are on stdout |
+| `1` | the log could not be read — no `PROXY_AUDIT_DB`, no file, or a schema version this build does not read |
+| `2` | usage |
+| `3` | **the chain is broken.** The first bad row is named on stderr |
+
+`3` is a departure from the `0/1/2` the other entrypoints share, and it is
+deliberate: a broken chain is not an operator error — nothing failed, and the
+answer is bad news about the file. "The audit log has been altered" and "the
+audit log could not be opened" want different people woken up.
+
+A failure names **one** row and stops. Everything after a break was hashed over a
+predecessor the walk cannot vouch for, so those rows are unverified rather than
+wrong, and the message says how many rows before it do still verify. The two
+wordings are two different events: columns that no longer hash to the value
+stored with them is somebody editing that row, and a row that does not follow the
+one before it is a deletion, an insertion, or a fork.
+
+Rows written before schema version 5 were chained by the migration that added the
+columns, so they verify from that point forward and say nothing about what
+happened to them before it. A file chained from its first row is one that was
+rotated after v5.
 
 ### The priced columns
 
