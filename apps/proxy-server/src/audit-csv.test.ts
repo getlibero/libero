@@ -22,6 +22,10 @@ function entry(overrides: Partial<AuditEntry> = {}): AuditEntry {
     tool: "list_prs",
     argumentsSha256: "c".repeat(64),
     outcome: "ran",
+    // #354. Required rather than optional, as the columns are, so a fixture
+    // cannot describe a row the table could not hold.
+    prevHash: "a".repeat(64),
+    rowHash: "b".repeat(64),
     ...overrides
   };
 }
@@ -114,11 +118,11 @@ describe("the column contract", () => {
 
   it("puts the headers in the header row", () => {
     expect(csvHeader()).toBe(AUDIT_CSV_COLUMNS.map(column => column.header).join(","));
-    // The number moves with the table — nineteen since #62 added `budget_limit`,
-    // `day_spend_micro_usd` and `price_version`. It is here as a second pair of
-    // eyes on the count rather than as a contract: the case above is what pins
-    // the headers to the table's own columns.
-    expect(csvHeader().split(",")).toHaveLength(19);
+    // The number moves with the table — twenty-one since #354 added `prev_hash`
+    // and `row_hash`. It is here as a second pair of eyes on the count rather
+    // than as a contract: the case above is what pins the headers to the table's
+    // own columns.
+    expect(csvHeader().split(",")).toHaveLength(21);
   });
 });
 

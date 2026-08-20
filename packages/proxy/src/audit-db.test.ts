@@ -5,8 +5,17 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AuditRecord } from "@getlibero/schema";
-import { AUDIT_SCHEMA_VERSION, openAuditDb, openAuditReader } from "./audit-db.js";
-import type { AuditDb, AuditReader } from "./audit-db.js";
+import {
+  AUDIT_CHAIN_GENESIS,
+  AUDIT_SCHEMA_VERSION,
+  CHAINED_COLUMNS,
+  auditRowHash,
+  auditRowPreimage,
+  auditRowValuesOf,
+  openAuditDb,
+  openAuditReader
+} from "./audit-db.js";
+import type { AuditDb, AuditReader, AuditRowValues } from "./audit-db.js";
 
 const CHANNEL = "C0ENGINEERING";
 const OTHER = "C0DESIGN";
@@ -43,6 +52,62 @@ function rows(path: string): Record<string, unknown>[] {
   const raw = new DatabaseSync(path);
   try {
     return raw.prepare("SELECT * FROM tool_call_audit ORDER BY id").all() as Record<string, unknown>[];
+  } finally {
+    raw.close();
+  }
+}
+
+/**
+ * A row without the two columns the chain adds, for an assertion about the rest.
+ *
+ * The chain's own properties are asserted in `describe("the chain")` below; a
+ * case about what a migration preserved should not have to carry a hash literal
+ * that changes whenever any other column does.
+ */
+function unchained(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(row).filter(([name]) => name !== "prev_hash" && name !== "row_hash")
+  );
+}
+
+/**
+ * Walk the log and answer the id of the first row that does not verify, or
+ * `undefined` when every row does.
+ *
+ * This is #354's round-trip: rows the writer produced are checked by
+ * recomputing the hash from the row's own columns rather than by trusting the
+ * column beside them. It deliberately re-derives `prev_hash` from the walk as
+ * well as recomputing `row_hash`, because a chain whose links are each
+ * self-consistent but which do not join is a deleted row.
+ *
+ * #355 is the operator command that does this against a real file; this is the
+ * same walk in twenty lines, which is what makes the property testable now.
+ */
+function firstBrokenRow(path: string): number | undefined {
+  let prev: string = AUDIT_CHAIN_GENESIS;
+  for (const row of rows(path)) {
+    if (row["prev_hash"] !== prev || auditRowHash(prev, auditRowValuesOf(row)) !== row["row_hash"]) {
+      return row["id"] as number;
+    }
+    prev = row["row_hash"] as string;
+  }
+  return undefined;
+}
+
+/**
+ * A connection with the append-only triggers taken off it.
+ *
+ * The actor the module header names and the triggers cannot stop: somebody who
+ * holds the file. Every case in `describe("what the chain detects")` goes
+ * through here, because a tamper the triggers already refuse would prove nothing
+ * about the chain.
+ */
+function tamper(path: string, sql: string): void {
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_update");
+    raw.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_delete");
+    raw.exec(sql);
   } finally {
     raw.close();
   }
@@ -90,7 +155,12 @@ describe("appending", () => {
         result_bytes: 12,
         result_is_error: 0,
         approver: null,
-        ticket: null
+        ticket: null,
+        // #354. The first row chains from the genesis constant, and its hash is
+        // asserted by recomputation rather than as a literal — a literal here
+        // would have to be regenerated from the code it is meant to check.
+        prev_hash: AUDIT_CHAIN_GENESIS,
+        row_hash: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown as string
       }
     ]);
   });
@@ -210,6 +280,301 @@ describe("append-only", () => {
   });
 });
 
+describe("the chain", () => {
+  it("chains the first row from the genesis constant", () => {
+    db.append(record());
+
+    expect(rows(file)[0]?.["prev_hash"]).toBe(AUDIT_CHAIN_GENESIS);
+  });
+
+  it("links each row to the one before it", () => {
+    db.append(record({ task: "t-1" }));
+    db.append(record({ task: "t-2" }));
+    db.append(record({ task: "t-3" }));
+
+    const written = rows(file);
+    expect(written.map(row => row["prev_hash"])).toEqual([
+      AUDIT_CHAIN_GENESIS,
+      written[0]?.["row_hash"],
+      written[1]?.["row_hash"]
+    ]);
+  });
+
+  // #354's round trip, and the acceptance criterion this block exists for.
+  it("produces rows that verify by recomputation", () => {
+    db.append(record({ resultBytes: 12, resultIsError: false }));
+    db.append(record({ outcome: "refused", refusalReason: "budget_exhausted", budgetLimit: "daily_usd" }));
+    db.append(record({ outcome: "approved", approver: "U0BOSS", ticket: "tk-1" }));
+
+    expect(firstBrokenRow(file)).toBeUndefined();
+  });
+
+  // What makes a chain a chain rather than a per-row checksum: the same call
+  // recorded twice does not hash the same, because its predecessor differs. A
+  // per-row digest would let an attacker swap two identical rows, or splice one
+  // in, without changing anything.
+  it("gives two identical calls different hashes", () => {
+    db.append(record());
+    db.append(record());
+
+    const [first, second] = rows(file);
+    expect(second?.["row_hash"]).not.toBe(first?.["row_hash"]);
+    expect(firstBrokenRow(file)).toBeUndefined();
+  });
+
+  // The tip is held in memory, so this is the case that proves it is *seeded*
+  // from the file rather than reset. Without the read at open, a restarted proxy
+  // would begin a second chain from the genesis constant and every walk over the
+  // file would report a break at the first row written after the restart.
+  it("carries the tip across a close and reopen", () => {
+    db.append(record({ task: "before" }));
+    db.close();
+
+    const reopened = openAuditDb({ file });
+    try {
+      reopened.append(record({ task: "after" }));
+    } finally {
+      reopened.close();
+    }
+    db = openAuditDb({ file });
+
+    expect(rows(file)).toHaveLength(2);
+    expect(firstBrokenRow(file)).toBeUndefined();
+  });
+
+  // The append-only triggers stop UPDATE and DELETE and not INSERT, so anyone
+  // holding the file can append to it. These two are what the unique index on
+  // `prev_hash` buys, and without them the single-writer assumption would be a
+  // sentence in the README rather than something SQLite checks.
+  it("refuses a second row claiming the same predecessor", () => {
+    db.append(record());
+    const tip = rows(file)[0]?.["row_hash"] as string;
+
+    const raw = new DatabaseSync(file);
+    try {
+      raw.exec(
+        `INSERT INTO tool_call_audit
+           (at, channel, requesting_user, task, request_id, call_id, server, tool,
+            arguments_sha256, outcome, prev_hash, row_hash)
+         VALUES (${NOON}, '${CHANNEL}', 'U0ALICE', 't-fork', 'r-fork', 'toolu_f', 'github',
+                 'create_issue', '${"d".repeat(64)}', 'ran', '${tip}', '${"e".repeat(64)}')`
+      );
+    } finally {
+      raw.close();
+    }
+
+    // The forged row took the tip's successor slot, so this proxy's next call
+    // cannot be recorded — and a call that cannot be recorded is refused, which
+    // is the rule the route already runs on. Loud, and deliberately not repaired
+    // by re-seeding the tip: that would chain onto the forgery and carry on.
+    expect(() => db.append(record({ task: "t-next" }))).toThrow();
+    expect(rows(file).map(row => row.task)).toEqual(["t-1", "t-fork"]);
+  });
+
+  it("leaves the tip where it was when an append is refused", () => {
+    db.append(record());
+    const before = rows(file);
+
+    const raw = new DatabaseSync(file);
+    try {
+      raw.exec("CREATE UNIQUE INDEX tmp_block ON tool_call_audit (task)");
+    } finally {
+      raw.close();
+    }
+    expect(() => db.append(record())).toThrow();
+    const unblock = new DatabaseSync(file);
+    try {
+      unblock.exec("DROP INDEX tmp_block");
+    } finally {
+      unblock.close();
+    }
+
+    db.append(record({ task: "t-2" }));
+
+    // Three rows would mean the refused attempt landed; a broken walk would mean
+    // the writer advanced its tip past a row SQLite never took.
+    expect(rows(file)).toHaveLength(before.length + 1);
+    expect(firstBrokenRow(file)).toBeUndefined();
+  });
+
+  // The null-omitting encoding has to be unambiguous, or a row with a column
+  // absent could serialize to the same bytes as one with it present. Two rows
+  // differing in nothing but that are what tests it.
+  it("hashes a null column differently from a present one", () => {
+    // Each row is the first in its own file, so all three chain from the genesis
+    // constant and the only thing that can differ between the preimages is the
+    // column itself.
+    const firstRowHash = (name: string, entry: AuditRecord): string => {
+      const handle = openAuditDb({ file: join(dir, name) });
+      try {
+        handle.append(entry);
+      } finally {
+        handle.close();
+      }
+      return rows(join(dir, name))[0]?.["row_hash"] as string;
+    };
+
+    const present = firstRowHash("present.db", record({ resultBytes: 12 }));
+    const absent = firstRowHash("absent.db", record());
+    const absentAgain = firstRowHash("again.db", record());
+
+    expect(present).not.toBe(absent);
+    // The control: without it the case above also passes on an encoding that is
+    // simply unstable, which would say nothing about how a null is treated.
+    expect(absentAgain).toBe(absent);
+  });
+});
+
+// The serialization is what the whole chain is denominated in, so a change to it
+// invalidates every log on every operator's disk. These cases exist to make that
+// change loud: it should fail here, with a readable diff, rather than silently
+// somewhere a year from now.
+describe("the canonical serialization", () => {
+  const cells = (overrides: Partial<AuditRowValues> = {}): AuditRowValues => ({
+    at: NOON,
+    channel: CHANNEL,
+    requesting_user: "U0ALICE",
+    task: "t-1",
+    request_id: "r-1",
+    call_id: "toolu_01",
+    server: "github",
+    tool: "create_issue",
+    arguments_sha256: "a".repeat(64),
+    outcome: "ran",
+    refusal_reason: null,
+    budget_limit: null,
+    day_spend_micro_usd: null,
+    price_version: null,
+    result_bytes: null,
+    result_is_error: null,
+    approver: null,
+    ticket: null,
+    ...overrides
+  });
+
+  // Pinned as bytes rather than as a digest of them, so that changing the
+  // encoding fails with something a reviewer can read.
+  it("is pinned, byte for byte", () => {
+    expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells())).toBe(
+      `libero/tool_call_audit/chain/1\n${AUDIT_CHAIN_GENESIS}\n` +
+        `{"at":${NOON},"channel":"${CHANNEL}","requesting_user":"U0ALICE","task":"t-1",` +
+        `"request_id":"r-1","call_id":"toolu_01","server":"github","tool":"create_issue",` +
+        `"arguments_sha256":"${"a".repeat(64)}","outcome":"ran"}`
+    );
+  });
+
+  it("chains from a genesis that is 64 hex characters like every other link", () => {
+    expect(AUDIT_CHAIN_GENESIS).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // The property that lets the next widening leave every historical hash alone.
+  it("omits a null column rather than encoding it", () => {
+    expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells())).not.toContain("ticket");
+    expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells({ ticket: "tk-1" }))).toContain('"ticket":"tk-1"');
+  });
+
+  it("keeps a numeric column and a text one carrying the same digits apart", () => {
+    expect(auditRowHash(AUDIT_CHAIN_GENESIS, cells({ call_id: "12" }))).not.toBe(
+      auditRowHash(AUDIT_CHAIN_GENESIS, cells({ call_id: 12 }))
+    );
+  });
+
+  // `call_id` is model-authored and the schema bounds its length and not its
+  // alphabet, so it is the column an attacker would write fields with. Escaping
+  // both the key and the value is the only thing that stops them.
+  it("cannot be forged by a value carrying the serialization's own punctuation", () => {
+    const forged = auditRowHash(AUDIT_CHAIN_GENESIS, cells({ call_id: '","channel":"C0EVIL' }));
+    const real = auditRowHash(AUDIT_CHAIN_GENESIS, cells({ channel: "C0EVIL" }));
+
+    expect(forged).not.toBe(real);
+  });
+
+  // What stops a version 6 adding a column to the DDL and silently leaving it
+  // out of the chain — which would be a row whose new column nothing vouches
+  // for, in a table whose whole claim is that it does.
+  it("covers every column the table has except the three it cannot", () => {
+    const raw = new DatabaseSync(file);
+    let names: string[];
+    try {
+      names = raw
+        .prepare("PRAGMA table_info(tool_call_audit)")
+        .all()
+        .map(row => row["name"] as string);
+    } finally {
+      raw.close();
+    }
+
+    expect([...CHAINED_COLUMNS]).toEqual(
+      names.filter(name => name !== "id" && name !== "prev_hash" && name !== "row_hash")
+    );
+  });
+
+  it("refuses a row that is missing a column it has to cover", () => {
+    expect(() => auditRowValuesOf({ at: NOON })).toThrow(/channel/);
+  });
+});
+
+// The actor the triggers cannot stop, which is the whole reason this workstream
+// exists: somebody holding the file, who drops the triggers before touching a
+// row. #97 said in as many words that append-only does not cover this.
+//
+// What the chain does *not* catch is not tested here because it cannot be: an
+// attacker who recomputes every hash after the row they edited leaves a file
+// that verifies clean. That is stated in the module header and answered by
+// #355's tip hash, anchored outside the file by the operator.
+describe("what the chain detects", () => {
+  beforeEach(() => {
+    db.append(record({ task: "t-1" }));
+    db.append(record({ task: "t-2" }));
+    // A refusal, so the downgrade case below has something to downgrade. Three
+    // rows that were all `ran` would let an UPDATE setting `ran` pass while
+    // changing nothing, which is a test that cannot fail.
+    db.append(record({ task: "t-3", outcome: "refused", refusalReason: "budget_exhausted" }));
+  });
+
+  it("names a row rewritten through a trigger-stripped connection", () => {
+    tamper(file, "UPDATE tool_call_audit SET tool = 'delete_branch' WHERE id = 2");
+
+    expect(firstBrokenRow(file)).toBe(2);
+  });
+
+  it("catches an outcome quietly downgraded to a success", () => {
+    tamper(file, "UPDATE tool_call_audit SET outcome = 'ran', refusal_reason = NULL WHERE id = 3");
+
+    expect(firstBrokenRow(file)).toBe(3);
+  });
+
+  it("catches a deleted row at the successor that no longer joins", () => {
+    tamper(file, "DELETE FROM tool_call_audit WHERE id = 2");
+
+    // Row 3, not row 2: the deleted row is gone, and what remains to be observed
+    // is that row 3 claims a predecessor the file no longer holds. Naming the
+    // first row that does not verify is the contract, and everything after a
+    // break is unverifiable rather than vouched for.
+    expect(firstBrokenRow(file)).toBe(3);
+  });
+
+  it("catches a row spliced in with a forged hash", () => {
+    tamper(
+      file,
+      `INSERT INTO tool_call_audit
+         (id, at, channel, requesting_user, task, request_id, call_id, server, tool,
+          arguments_sha256, outcome, prev_hash, row_hash)
+       VALUES (99, ${NOON}, '${CHANNEL}', 'U0ALICE', 't-forged', 'r-forged', 'toolu_f',
+               'github', 'delete_branch', '${"d".repeat(64)}', 'ran',
+               '${"e".repeat(64)}', '${"f".repeat(64)}')`
+    );
+
+    expect(firstBrokenRow(file)).toBe(99);
+  });
+
+  // The negative control for this whole block: without it, every case above
+  // also passes against a walk that reports a break on any file at all.
+  it("reports nothing on the log it was given", () => {
+    expect(firstBrokenRow(file)).toBeUndefined();
+  });
+});
+
 describe("isolation", () => {
   // The property the whole layout rests on: one table, and two channels'
   // calls still tell apart. There is no cross-channel join to make here
@@ -249,9 +614,9 @@ describe("durability", () => {
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA synchronous = FULL");
       db.prepare(
-        "INSERT INTO tool_call_audit (at, channel, requesting_user, task, request_id, call_id, server, tool, arguments_sha256, outcome) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(${NOON}, "${CHANNEL}", "U0ALICE", "t-kill", "r-kill", "toolu_kill", "github", "create_issue", "b".repeat(64), "ran");
+        "INSERT INTO tool_call_audit (at, channel, requesting_user, task, request_id, call_id, server, tool, arguments_sha256, outcome, prev_hash, row_hash) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(${NOON}, "${CHANNEL}", "U0ALICE", "t-kill", "r-kill", "toolu_kill", "github", "create_issue", "b".repeat(64), "ran", "c".repeat(64), "d".repeat(64));
       process.kill(process.pid, "SIGKILL");
     `;
 
@@ -460,6 +825,103 @@ function writeV2File(path: string, count: number): void {
   }
 }
 
+/**
+ * The version 4 schema, verbatim as it shipped. Frozen on V1_SCHEMA's argument.
+ *
+ * It differs from v5 by the two chain columns and by nothing else, which is what
+ * the block below is for: v4 is the last shape written without a chain, so it is
+ * the file that proves the migration can give every row a hash rather than
+ * failing the NOT NULL it just declared.
+ */
+const V4_SCHEMA = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_call_audit (
+  id               INTEGER PRIMARY KEY,
+  at               INTEGER NOT NULL,
+  channel          TEXT    NOT NULL,
+  requesting_user  TEXT    NOT NULL,
+  task             TEXT    NOT NULL,
+  request_id       TEXT    NOT NULL,
+  call_id          TEXT    NOT NULL,
+  server           TEXT    NOT NULL,
+  tool             TEXT    NOT NULL,
+  arguments_sha256 TEXT    NOT NULL,
+  outcome          TEXT    NOT NULL CHECK (outcome IN
+                     ('ran', 'held', 'refused', 'unavailable', 'unanswered',
+                      'approved', 'denied', 'expired')),
+  refusal_reason   TEXT,
+  budget_limit     TEXT CHECK (budget_limit IS NULL OR budget_limit IN
+                     ('daily_tokens', 'daily_tool_calls', 'daily_usd')),
+  day_spend_micro_usd INTEGER,
+  price_version    TEXT,
+  result_bytes     INTEGER,
+  result_is_error  INTEGER,
+  approver         TEXT,
+  ticket           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_at ON tool_call_audit (channel, at);
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_task ON tool_call_audit (channel, task);
+CREATE INDEX IF NOT EXISTS tool_call_audit_ticket ON tool_call_audit (ticket) WHERE ticket IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_update
+BEFORE UPDATE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_delete
+BEFORE DELETE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+`;
+
+/**
+ * A version 4 file with `count` rows in it.
+ *
+ * Rows differ from one another in more than their ids, and one of them is a
+ * budget refusal carrying #62's three columns — so a chain computed over them
+ * is computed over a mix of present and null values rather than over rows that
+ * happen to serialize alike.
+ */
+function writeV4File(path: string, count: number): void {
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("PRAGMA journal_mode = WAL");
+    raw.exec(V4_SCHEMA);
+    raw.prepare("INSERT INTO schema_version (version) VALUES (4)").run();
+    const insert = raw.prepare(
+      `INSERT INTO tool_call_audit
+         (at, channel, requesting_user, task, request_id, call_id, server, tool,
+          arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
+          price_version, result_bytes, result_is_error, approver, ticket)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (let n = 1; n <= count; n += 1) {
+      const refused = n % 2 === 0;
+      insert.run(
+        NOON + n, CHANNEL, "U0ALICE", `t-${n}`, `r-${n}`, `toolu_${n}`, "github",
+        refused ? "merge_pr" : "create_issue", "c".repeat(64),
+        refused ? "refused" : "ran",
+        refused ? "budget_exhausted" : null,
+        refused ? "daily_usd" : null,
+        refused ? 5_000_000 : null,
+        refused ? "sha256:abc" : null,
+        refused ? null : 10,
+        refused ? null : 0,
+        refused ? null : "U0BOSS",
+        refused ? null : `tk-${n}`
+      );
+    }
+  } finally {
+    raw.close();
+  }
+}
+
 /** What SQLite says a table is, normalised for the quoting a RENAME leaves. */
 function tableSql(path: string, table: string): string {
   const raw = new DatabaseSync(path);
@@ -500,8 +962,8 @@ describe("migrating a version 1 file", () => {
       // Every v1 column survives untouched; the four v1 lacked are null on old
       // rows. Null is the honest value rather than a gap — those rows really had
       // no ticket, no budget limit and no priced figure.
-      expect(after[0]).toEqual({
-        ...before[0],
+      expect(unchained(after[0] as Record<string, unknown>)).toEqual({
+        ...unchained(before[0] as Record<string, unknown>),
         ticket: null,
         budget_limit: null,
         day_spend_micro_usd: null,
@@ -768,9 +1230,9 @@ describe("migrating a version 3 file", () => {
     const migrated = openAuditDb({ file: old });
     try {
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
-      expect(rows(old)).toEqual(
+      expect(rows(old).map(unchained)).toEqual(
         before.map(row => ({
-          ...row,
+          ...unchained(row),
           budget_limit: null,
           day_spend_micro_usd: null,
           price_version: null
@@ -824,9 +1286,9 @@ describe("migrating a version 2 file", () => {
       const after = rows(old);
       // Every v2 column unchanged, plus #62's three as null: those rows carried
       // no priced figure because nothing was priced when they were written.
-      expect(after).toEqual(
+      expect(after.map(unchained)).toEqual(
         before.map(row => ({
-          ...row,
+          ...unchained(row),
           budget_limit: null,
           day_spend_micro_usd: null,
           price_version: null
@@ -926,6 +1388,146 @@ describe("migrating a version 2 file", () => {
     } finally {
       migrated.close();
     }
+  });
+});
+
+describe("migrating a version 4 file", () => {
+  let old: string;
+
+  beforeEach(() => {
+    old = join(dir, "v4.db");
+    writeV4File(old, 3);
+  });
+
+  it("keeps every row, its id, and its order", () => {
+    const before = rows(old);
+    const migrated = openAuditDb({ file: old });
+    try {
+      const after = rows(old);
+      expect(after.map(unchained)).toEqual(before);
+      expect(after.map(row => row.id)).toEqual([1, 2, 3]);
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The case v5 exists for, and the answer to the question
+  // `AUDIT_SCHEMA_VERSION`'s doc asks each version to answer for itself: two NOT
+  // NULL columns and no default any older row could be given, so the rebuild has
+  // to compute one for every row it copies or the copy fails the constraint.
+  it("gives every migrated row a hash, and the whole file verifies", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(rows(old).map(row => row["prev_hash"])).not.toContain(null);
+      expect(rows(old).map(row => row["row_hash"])).not.toContain(null);
+      expect(firstBrokenRow(old)).toBeUndefined();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The chain has to continue across the migration rather than restart at it,
+  // or every walk over a migrated file would report a break at the first row
+  // written afterwards.
+  it("continues the chain into rows written after it", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      migrated.append(record({ task: "t-after" }));
+      expect(rows(old)).toHaveLength(4);
+      expect(firstBrokenRow(old)).toBeUndefined();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The counterpart of the ticket case above, one column later and with a worse
+  // failure mode. `schema_version` carries no triggers, so deleting the stamp is
+  // how an attacker asks for a rebuild; a rebuild that recomputed would re-bless
+  // whatever they had already edited, turning the chain into a laundering step.
+  it("keeps the hashes in a chained file whose version row was deleted", () => {
+    openAuditDb({ file: old }).close();
+    const chained = rows(old);
+    tamper(old, "UPDATE tool_call_audit SET tool = 'delete_branch' WHERE id = 2");
+    const raw = new DatabaseSync(old);
+    try {
+      raw.exec("DELETE FROM schema_version");
+    } finally {
+      raw.close();
+    }
+
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(rows(old).map(row => row["row_hash"])).toEqual(
+        chained.map(row => row["row_hash"])
+      );
+      // Still broken afterwards, which is the whole point: the rebuild carried
+      // the evidence through rather than writing over it.
+      expect(firstBrokenRow(old)).toBe(2);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("puts the append-only triggers back", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      const raw = new DatabaseSync(old);
+      try {
+        expect(() => raw.exec("UPDATE tool_call_audit SET tool = 'x'")).toThrow(/append-only/);
+        expect(() => raw.exec("DELETE FROM tool_call_audit")).toThrow(/append-only/);
+      } finally {
+        raw.close();
+      }
+      expect(rows(old)).toHaveLength(3);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("builds the same table a new file gets", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      const rebuilt = tableSql(old, "tool_call_audit");
+      expect(rebuilt).toContain("row_hash");
+      expect(rebuilt).toBe(tableSql(file, "tool_call_audit"));
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("runs once and is a no-op on every open after it", () => {
+    openAuditDb({ file: old }).close();
+    const afterFirst = rows(old);
+
+    const second = openAuditDb({ file: old });
+    try {
+      expect(rows(old)).toEqual(afterFirst);
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(tableSql(old, "tool_call_audit_rebuilt")).toBe("");
+    } finally {
+      second.close();
+    }
+  });
+
+  // The rollback case, on the shape the other migration blocks use: the scratch
+  // table already exists, so the rebuild's CREATE fails. It matters more here
+  // than it did before, because the loop writes N times rather than once and a
+  // partial chain committed halfway would be a file that verifies to its own
+  // truncation point.
+  it("leaves the file exactly as it was when the rebuild fails", () => {
+    const before = rows(old);
+    const blocker = new DatabaseSync(old);
+    try {
+      blocker.exec("CREATE TABLE tool_call_audit_rebuilt (id INTEGER PRIMARY KEY)");
+    } finally {
+      blocker.close();
+    }
+
+    expect(() => openAuditDb({ file: old })).toThrow();
+
+    expect(rows(old)).toEqual(before);
+    expect(versionOf(old)).toBe(4);
   });
 });
 

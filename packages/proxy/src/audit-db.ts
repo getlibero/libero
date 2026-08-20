@@ -12,8 +12,15 @@
 // The claim to check here is narrower than the budget's and stronger: **once
 // the file is open, the audit table is touched by exactly one statement, an
 // INSERT.** There is no UPDATE and no DELETE against `tool_call_audit` on the
-// serving path — the only other SQL is the `schema_version` bookkeeping at open
-// — and the table refuses both from any connection.
+// serving path — the only other SQL is the `schema_version` bookkeeping at open,
+// and since #354 one read of the chain's tip, also at open — and the table
+// refuses both from any connection.
+//
+// That tip read is why the chain does not cost the serving path a second
+// statement: `openAuditDb` reads the last `row_hash` once and carries it in
+// memory, so `append` still runs one INSERT and nothing else. The cost of that
+// choice is stated where it is made — it assumes this is the only connection
+// appending to the file.
 //
 // That claim is now per *connection* rather than per file, and the distinction
 // is what the reader below rests on. `openAuditDb` is the writing connection and
@@ -70,9 +77,62 @@
 // **What none of it stops**, so nobody has to infer it: DROP TABLE, DROP
 // TRIGGER, PRAGMA writable_schema, `rm audit.db`, and a hex editor. Append-only
 // means the service cannot rewrite history in normal operation. It does not
-// mean an attacker holding the file cannot. Tamper *evidence* — hash-chaining
-// rows so a deletion is detectable — is phase 5 on the roadmap and is
-// deliberately not built here.
+// mean an attacker holding the file cannot. That is what the chain below is
+// for, and it is *evidence* rather than prevention: the triggers stop the
+// service, the chain catches whoever holds the file.
+//
+// ## The chain (#354)
+//
+// Every row carries `prev_hash` and `row_hash`. `row_hash` is SHA-256 over the
+// predecessor's `row_hash` and a canonical serialization of this row's own
+// columns; the first row chains from `AUDIT_CHAIN_GENESIS`. Recomputing the walk
+// from the first row is what detects an edit — #355 is the operator command that
+// does it, and its statements land in this file with the rest.
+//
+// **What it catches**, stated narrowly because the word "tamper-evident" invites
+// more: any row rewritten, deleted or inserted *without* recomputing every hash
+// after it. That is what an UPDATE through `sqlite3` does, and it is the whole of
+// what the append-only triggers were already unable to see.
+//
+// **What it does not catch**, three things:
+//
+//   1. **A complete recompute.** The chain is unkeyed, so an attacker holding
+//      the file can rewrite a row and re-derive every hash after it, and the
+//      walk verifies clean. The answer is #355 printing the tip hash and the
+//      operator writing it down somewhere the attacker does not hold — evidence
+//      lives outside the file or it is not evidence. An HMAC was considered and
+//      rejected for the reason ./audit-log.ts already gives about the argument
+//      hash: reading `audit.db` means being on the proxy host, where the vault
+//      file and this process's memory already are, so the key is standing next
+//      to the thing it would protect.
+//   2. **Truncation from the tail.** Dropping the last n rows leaves a shorter
+//      chain that is internally perfect. Same answer: an anchored tip.
+//   3. **A monotone renumbering of `id`.** The chain fixes the *order* and not
+//      the numbering: nothing in a preimage names an id, so rewriting 1,2,3 as
+//      10,20,30 leaves a walk that verifies. Swapping two ids is caught, because
+//      the walk is `ORDER BY id` and the pair stops linking. What a renumbering
+//      costs is `afterId` as an export cursor rather than a row or a sequence,
+//      and closing it would mean this process assigning the primary key instead
+//      of SQLite — a real change to who owns `id`, bought against an attacker who
+//      is rebuilding the table anyway and can therefore recompute the chain too.
+//   4. **Rotation.** A chain is per *file*. `VACUUM INTO` a dated archive starts
+//      a new one, and tying the new file's genesis to the old file's tip is the
+//      operator's act — the writer has no way to know a rotation happened.
+//
+// One thing the chain does more than detect. The unique index on `prev_hash`
+// (see `auditIndexDdl`) makes a forked chain a refused INSERT, which matters
+// because the append-only triggers stop UPDATE and DELETE and **not** INSERT:
+// anyone holding the file can append to it. The cost is worth stating plainly —
+// once something has written the tip's successor behind this process's back,
+// every call it serves is refused until an operator restarts it. That is a
+// denial of service caused by tampering, and it is the posture the route already
+// takes when it cannot write a row at all: a proxy that cannot record what it
+// did must not answer. Re-seeding the tip on conflict would mean chaining onto
+// the attacker's row and carrying on, which is why it is not done.
+//
+// The serialization is pinned by `CHAINED_COLUMNS` and `auditRowPreimage` below,
+// and changing either is a chain break, which is why both version with
+// `AUDIT_SCHEMA_VERSION`.
 //
 // ## No retention, and no DELETE-based one later
 //
@@ -116,6 +176,7 @@
 // `node:sqlite` for the reason ./budget-db.ts gives: it is built in, so the
 // proxy gains no dependency and the license gate has nothing new to check.
 
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
 import type { AuditOutcome, AuditRecord, BudgetLimit, RefusalReason } from "@getlibero/schema";
@@ -132,21 +193,31 @@ import type { Logger } from "./log.js";
  * Version 2 widened the outcome vocabulary for the approval broker (#125) and
  * added the `ticket` column. Version 3 widened it again, by one member:
  * `unanswered`, the row a decided call leaves when the handler failed before it
- * could answer (#124). No column changed.
+ * could answer (#124). No column changed. Version 4 added `budget_limit`,
+ * `day_spend_micro_usd` and `price_version` (#62) — three nullable columns, each
+ * of which an older row is given `NULL` for, because a row written before the
+ * column existed had no such figure.
  *
- * Both are *widenings*, and that is the property each version has to establish
- * for itself rather than inherit: v3 accepts every outcome v2 did, so no
- * existing row can fail the new constraint and the copy cannot be rejected. A
- * migration that *can* reject a row is a different kind of thing and needs a
- * different answer to "what happens to the rows that fail" — check this before
- * adding a version 4, and if that version adds a column rather than a value,
- * `rebuildAuditTable` is where every older source has to be given something for
- * it.
+ * Each of those is a *widening*, and that is the property a version has to
+ * establish for itself rather than inherit: v3 accepts every outcome v2 did, so
+ * no existing row can fail the new constraint and the copy cannot be rejected.
+ * A migration that *can* reject a row is a different kind of thing and needs a
+ * different answer to "what happens to the rows that fail".
+ *
+ * **Version 5 is the first one that is not a widening in that sense**, and it
+ * has to answer the question differently rather than skip it. It adds
+ * `prev_hash` and `row_hash` **NOT NULL** (#354), so there is no value an older
+ * row could be given by default. What makes it safe is that the rebuild computes
+ * one for every row it copies, in order, so no row reaches the new constraint
+ * without a value. The honest consequence is recorded at `rebuildAuditTable`:
+ * rows written before v5 are chained *as of the migration*, which vouches for
+ * them from that moment forward and asserts nothing about what happened to them
+ * before it.
  *
  * A file from the future is still a startup failure, and so is a file from a
  * past this build has no migration from.
  */
-export const AUDIT_SCHEMA_VERSION = 4;
+export const AUDIT_SCHEMA_VERSION = 5;
 
 /**
  * The table, parameterised on its name.
@@ -195,7 +266,21 @@ CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
   result_bytes     INTEGER,
   result_is_error  INTEGER,
   approver         TEXT,
-  ticket           TEXT
+  ticket           TEXT,
+  -- #354. The chain: two columns a row does not supply, because this module
+  -- computes them as SQLite computes id. NOT NULL because every row has one --
+  -- the migration computes a hash for every row it copies, so a version 5 file
+  -- holds no unchained row.
+  --
+  -- A new column goes at the END of this list, here and in AUDIT_COLUMNS and in
+  -- audit-csv.ts, and now for a second reason on top of the one that file gives
+  -- about scripts indexing positionally: CHAINED_COLUMNS fixes the chain's
+  -- serialization order, so a column inserted in the middle of it would rewrite
+  -- the preimage of every row already written.
+  -- A shape check, not hex validation. Lowercase hex is pinned by the round-trip
+  -- test; a CHECK that pretended to validate it would be worse than none.
+  prev_hash        TEXT    NOT NULL CHECK (length(prev_hash) = 64),
+  row_hash         TEXT    NOT NULL CHECK (length(row_hash) = 64)
 )`;
 
 /**
@@ -210,6 +295,21 @@ CREATE INDEX IF NOT EXISTS tool_call_audit_channel_task ON tool_call_audit (chan
 -- broker: what this answers is "show me this ticket's lifecycle", which is four
 -- rows across four requests that share nothing else.
 CREATE INDEX IF NOT EXISTS tool_call_audit_ticket ON tool_call_audit (ticket) WHERE ticket IS NOT NULL;
+-- #354, and the only UNIQUE index in either database. Two rows claiming the same
+-- predecessor is a forked chain, and this is what makes that a refused INSERT
+-- rather than a file that verifies as tampered. It is the same *class* of
+-- mechanism as the two triggers below — SQLite enforcing it on the file, for
+-- every connection that opens it — which is what lets the writer's in-memory tip
+-- be an assumption SQLite checks rather than one the README asks you to believe.
+--
+-- It covers two things the triggers do not. **The triggers stop UPDATE and
+-- DELETE and not INSERT**, so anyone holding the file can append to it today; a
+-- forged append takes the tip's successor slot, and this proxy's next call is
+-- refused instead of quietly starting a second chain. And two proxies against
+-- one file — which is not a deployment shape here, but is the mistake that would
+-- otherwise make an untampered log verify as broken, the one failure that
+-- teaches an operator to ignore the tool.
+CREATE UNIQUE INDEX IF NOT EXISTS tool_call_audit_prev_hash ON tool_call_audit (prev_hash);
 `;
 
 const auditTriggerDdl = `
@@ -242,6 +342,197 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 ${auditTableDdl("tool_call_audit", true)};
 `;
+
+/**
+ * Domain separation, and the serialization's own version number.
+ *
+ * It goes into every preimage, so a digest computed here can never coincide with
+ * one computed over the same bytes for another purpose. The trailing `/1` is
+ * where a future change to the encoding becomes a value somebody has to edit
+ * deliberately, which is the point: changing the serialization does not migrate
+ * a file, it invalidates it.
+ */
+export const AUDIT_CHAIN_TAG = "libero/tool_call_audit/chain/1";
+
+/**
+ * What the first row chains from.
+ *
+ * Derived from the tag rather than written as a word, so that every `prev_hash`
+ * in the table is 64 hex characters and the column's CHECK can say so. A zero
+ * hash was rejected for the opposite reason: all-zeroes is what a half-finished
+ * forgery produces, and it should not accidentally be a valid genesis.
+ *
+ * It is not file-specific, and that is a decision rather than an oversight.
+ * Tying it to a path or an inode would break the chain the moment the file is
+ * copied — and copying it is the first thing an operator preserving evidence
+ * does, as well as being what `VACUUM INTO` rotation is. A random per-file nonce
+ * is no better: it would be data in the file, which is data the attacker holding
+ * the file can rewrite. Splicing a prefix out of another file is answered by an
+ * anchored tip, the same answer the other limits get.
+ */
+export const AUDIT_CHAIN_GENESIS = createHash("sha256")
+  .update(`${AUDIT_CHAIN_TAG}/genesis`, "utf8")
+  .digest("hex");
+
+/**
+ * The columns a row's hash covers, in the table's declared order.
+ *
+ * This is the pinned serialization order #354 asks for, and it is also the
+ * INSERT's column list and its bind order — all three are generated from this
+ * one array below, which is what makes the hash provably cover exactly what was
+ * written. Before this they were two hand-aligned lists, and a hash computed
+ * from one while the other was bound would have been a chain over a row that
+ * does not exist.
+ *
+ * `id`, `prev_hash` and `row_hash` are deliberately absent. `id` is assigned by
+ * SQLite at the insert, so it cannot be in a preimage computed before it. What
+ * that costs is stated exactly at the head of this file: the chain fixes the
+ * order, so *reordering* two rows breaks it, and *renumbering* them monotonically
+ * does not. `prev_hash` is hashed separately, and `row_hash` is the output —
+ * a hash cannot cover itself.
+ */
+export const CHAINED_COLUMNS = [
+  "at",
+  "channel",
+  "requesting_user",
+  "task",
+  "request_id",
+  "call_id",
+  "server",
+  "tool",
+  "arguments_sha256",
+  "outcome",
+  "refusal_reason",
+  "budget_limit",
+  "day_spend_micro_usd",
+  "price_version",
+  "result_bytes",
+  "result_is_error",
+  "approver",
+  "ticket"
+] as const;
+
+type ChainedColumn = (typeof CHAINED_COLUMNS)[number];
+
+/** One row's audited columns, as SQLite holds them: no `undefined`, only NULL. */
+export type AuditRowValues = Readonly<Record<ChainedColumn, string | number | null>>;
+
+/**
+ * The bytes a row's hash is taken over: its predecessor, then its own columns.
+ *
+ * Pinned, because a change here is a chain break — every row already on disk
+ * would stop verifying. That is why it versions with `AUDIT_SCHEMA_VERSION`, and
+ * why the two rules below are rules rather than choices.
+ *
+ * **Order is `CHAINED_COLUMNS`**, not sorted. `canonicalJson` in ./audit-log.ts
+ * sorts because its input is an arbitrary parsed object whose key order is not a
+ * fact about anything; here the order is a module-private constant, so pinning it
+ * there pins it here. This is the same discipline as that function and not a copy
+ * of it — a flat map of known columns rather than a recursive walk — and the two
+ * could not share code anyway, since ./audit-log.ts imports this module.
+ *
+ * **NULL columns are omitted**, and this is the load-bearing rule. Every schema
+ * version this module has shipped added nullable columns that are NULL on every
+ * row written before them, so omitting nulls means a later widening does not
+ * change the preimage of a row already chained — the chain survives the next
+ * migration instead of having to be recomputed by it. Including `"ticket":null`
+ * would have made v2 break every v1 row's hash, had there been one to break.
+ *
+ * Both the key and the value go through `JSON.stringify`, so a `tool` or a
+ * `call_id` containing a quote, a brace or a colon cannot shift a field boundary
+ * and make two different rows serialize alike. `call_id` is the sharp case:
+ * `ToolCall` bounds its length and constrains its alphabet not at all, so a
+ * model can send `","channel":"C0EVIL` and would otherwise be writing its own
+ * fields into the preimage. Escaping is the only thing standing between that and
+ * a collision, which is why this is not a `join("|")`. It also keeps `12` and
+ * `"12"` apart, so an INTEGER column and a TEXT one holding the same digits do
+ * not serialize alike.
+ *
+ * Every numeric column here holds an integer inside `Number.MAX_SAFE_INTEGER`
+ * — `at` is epoch ms, `day_spend_micro_usd` is exact past nine billion dollars,
+ * `result_bytes` is bounded by the result cap and `result_is_error` is 0 or 1 —
+ * so each renders without a fraction or an exponent. A future column that is not
+ * is a serialization change, which is to say a chain break.
+ *
+ * Exported so a test can pin the bytes rather than pin a digest of them: a
+ * change here should fail with a readable diff, not with two hex strings.
+ */
+export function auditRowPreimage(prevHash: string, values: AuditRowValues): string {
+  const fields = CHAINED_COLUMNS.filter(column => values[column] !== null).map(
+    column => `${JSON.stringify(column)}:${JSON.stringify(values[column])}`
+  );
+  return `${AUDIT_CHAIN_TAG}\n${prevHash}\n{${fields.join(",")}}`;
+}
+
+/**
+ * A row's link in the chain: SHA-256 over `auditRowPreimage`, lowercase hex.
+ *
+ * The same digest and the same encoding as `hashArguments` in ./audit-log.ts,
+ * for the reason that function's own header gives — this is text the proxy
+ * observed, never a credential, and ./log.ts's ban on hashing a secret is about
+ * a different kind of value.
+ *
+ * Exported so the round-trip test and #355's walk can recompute a row rather than
+ * trusting the column beside it. It is not on the package barrel: nothing on the
+ * serving path should be able to compute one for a row it did not write.
+ */
+export function auditRowHash(prevHash: string, values: AuditRowValues): string {
+  return createHash("sha256").update(auditRowPreimage(prevHash, values), "utf8").digest("hex");
+}
+
+/**
+ * The chained columns of a row as SQLite handed it back, for recomputing a hash.
+ *
+ * **It throws on a column the row does not have**, and that is the whole reason
+ * it exists rather than a cast. `undefined` and `null` are one thing to a
+ * `Record<string, unknown>` lookup and two things here: a `SELECT` that lost a
+ * column would otherwise produce a preimage with that field omitted, which is a
+ * perfectly well-formed hash of the wrong row. Loud beats plausible.
+ */
+export function auditRowValuesOf(row: Record<string, unknown>): AuditRowValues {
+  const values: Record<string, string | number | null> = {};
+  for (const column of CHAINED_COLUMNS) {
+    const value = row[column];
+    if (value === undefined) {
+      throw new Error(`proxy audit: cannot hash a row with no ${column} column`);
+    }
+    values[column] = value as string | number | null;
+  }
+  return values as AuditRowValues;
+}
+
+/**
+ * An `AuditRecord` as the columns SQLite is given, which is what gets hashed.
+ *
+ * The `?? null` conversions are here rather than at the bind site so the hash is
+ * taken over the values that are actually written — `undefined` and `null` are
+ * one thing to SQLite and two to TypeScript, and the preimage has to see what
+ * the row will hold.
+ */
+function auditRowValues(record: AuditRecord): AuditRowValues {
+  return {
+    at: record.at,
+    channel: record.channel,
+    requesting_user: record.requestingUser,
+    task: record.task,
+    request_id: record.requestId,
+    call_id: record.callId,
+    server: record.server,
+    tool: record.tool,
+    arguments_sha256: record.argumentsSha256,
+    outcome: record.outcome,
+    refusal_reason: record.refusalReason ?? null,
+    budget_limit: record.budgetLimit ?? null,
+    day_spend_micro_usd: record.daySpendMicroUsd ?? null,
+    price_version: record.priceVersion ?? null,
+    result_bytes: record.resultBytes ?? null,
+    // NULL rather than 0 when the call did not run: a refusal has no result, and
+    // 0 would read as a tool that succeeded and said nothing.
+    result_is_error: record.resultIsError === undefined ? null : record.resultIsError ? 1 : 0,
+    approver: record.approver ?? null,
+    ticket: record.ticket ?? null
+  };
+}
 
 export interface AuditDbOptions {
   /** The database file. Its directory must exist and be writable. */
@@ -299,44 +590,65 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
   }
 
   const statements = {
-    // No ON CONFLICT clause, deliberately: an upsert would fire the update
-    // trigger, and there is nothing to conflict on anyway. Two calls that are
-    // identical in every column are two rows, because they are two calls.
+    // No ON CONFLICT clause, deliberately, and since #354 the reason is stronger
+    // than it was. An upsert would fire the update trigger, and two calls
+    // identical in every column are still two rows because they are two calls —
+    // but there is now something to conflict *on*: the unique index on
+    // `prev_hash`. An `ON CONFLICT` clause there would be the difference between
+    // refusing the call and quietly serving into a forked log.
+    //
+    // The column list and the placeholder run are generated from
+    // CHAINED_COLUMNS, so the order this binds in cannot drift from the order
+    // the hash was taken in. That is not a tidiness argument: two hand-aligned
+    // lists would let a future column be added to one and not the other, and the
+    // symptom would be a chain that verifies over a row nobody wrote.
     append: db.prepare(
-      `INSERT INTO tool_call_audit
-         (at, channel, requesting_user, task, request_id, call_id, server, tool,
-          arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
-          price_version, result_bytes, result_is_error, approver, ticket)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tool_call_audit (${CHAINED_COLUMNS.join(", ")}, prev_hash, row_hash)
+       VALUES (${CHAINED_COLUMNS.map(() => "?").join(", ")}, ?, ?)`
     )
   } satisfies Record<string, StatementSync>;
 
-  logger?.log("info", { event: "audit_opened", file });
+  // The chain's tip, read once and then carried, which is what keeps the serving
+  // path at one statement — see the head of this file. `ORDER BY id DESC LIMIT 1`
+  // rather than `MAX(id)` because the value wanted is the last row's hash, and
+  // `id` is the append order the whole log is read in.
+  //
+  // **This assumes one connection appends to this file**, and the unique index
+  // on `prev_hash` is what makes that an assumption SQLite checks rather than one
+  // this comment asks you to trust. A second writer holds the same tip, so its
+  // row claims a predecessor already claimed and the INSERT is refused — which
+  // turns what would otherwise be a silent fork, indistinguishable from tampering
+  // to anyone walking the chain later, into a call that fails now. The deployment
+  // shape is one proxy against one `audit-data` volume
+  // (deploy/docker-compose.yml); the index is there for the deployments that are
+  // not.
+  let tip =
+    (
+      db.prepare("SELECT row_hash FROM tool_call_audit ORDER BY id DESC LIMIT 1").get() as
+        | { row_hash: string }
+        | undefined
+    )?.row_hash ?? AUDIT_CHAIN_GENESIS;
+
+  // The tip rides along, and it is worth having: where logs are shipped off the
+  // host, this is an anchor per restart at no cost — the thing the chain's first
+  // limit says has to live outside the file. It is an anchor only as far as the
+  // logs travel, which is why #355 still prints one for the operator to keep.
+  // ./log.ts's ban on logging a fingerprint is about credential values; a row
+  // hash is neither.
+  logger?.log("info", { event: "audit_opened", file, chainTip: tip });
 
   return {
     append(record) {
-      statements.append.run(
-        record.at,
-        record.channel,
-        record.requestingUser,
-        record.task,
-        record.requestId,
-        record.callId,
-        record.server,
-        record.tool,
-        record.argumentsSha256,
-        record.outcome,
-        record.refusalReason ?? null,
-        record.budgetLimit ?? null,
-        record.daySpendMicroUsd ?? null,
-        record.priceVersion ?? null,
-        record.resultBytes ?? null,
-        // NULL rather than 0 when the call did not run: a refusal has no result,
-        // and 0 would read as a tool that succeeded and said nothing.
-        record.resultIsError === undefined ? null : record.resultIsError ? 1 : 0,
-        record.approver ?? null,
-        record.ticket ?? null
-      );
+      const values = auditRowValues(record);
+      const rowHash = auditRowHash(tip, values);
+      statements.append.run(...CHAINED_COLUMNS.map(column => values[column]), tip, rowHash);
+      // After the write, never before. A throw out of `run` — a full disk, a
+      // constraint — leaves the tip where it was, so the next call chains onto
+      // the last row that actually landed rather than onto one that did not.
+      // (That call is refused anyway, by ./server.ts, which is what makes a
+      // failed chain computation refuse the call: this function throws and
+      // nothing here catches it.)
+      tip = rowHash;
     },
 
     close() {
@@ -352,9 +664,15 @@ export function openAuditDb(options: AuditDbOptions): AuditDb {
  * assigns it. It is on the way back out because it is the log's own append
  * order and the cursor an export bookmarks, which is why `rebuildAuditTable`
  * copies it explicitly rather than letting a migration renumber history.
+ *
+ * The two hashes are here for exactly that reason and no other: the writer does
+ * not supply them either, this module computes them. They are not optional —
+ * the columns are NOT NULL, so a row that reached a reader has both.
  */
 export interface AuditEntry extends AuditRecord {
   readonly id: number;
+  readonly prevHash: string;
+  readonly rowHash: string;
 }
 
 /**
@@ -411,15 +729,17 @@ export interface AuditReader {
 /**
  * Every column, named, in the table's declared order.
  *
- * Never `SELECT *`. The point is that this list and the INSERT's column list sit
- * on one screen, so a column added to one is visibly missing from the other —
- * and `rowToEntry` below reads by name, so a `SELECT *` that silently gained a
- * column would produce an entry that silently lacked it.
+ * Never `SELECT *`: `rowToEntry` below reads by name, so a `SELECT *` that
+ * silently gained a column would produce an entry that silently lacked it.
+ *
+ * This used to be a hand-written list kept on one screen with the INSERT's, so
+ * that a column added to one was visibly missing from the other. Since #354 both
+ * are generated from `CHAINED_COLUMNS` and the drift is not possible rather than
+ * merely visible — which it had to become, because the same order also fixes the
+ * chain's preimage.
  */
 const AUDIT_COLUMNS = `
-  id, at, channel, requesting_user, task, request_id, call_id, server, tool,
-  arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
-  price_version, result_bytes, result_is_error, approver, ticket`;
+  id, ${CHAINED_COLUMNS.join(", ")}, prev_hash, row_hash`;
 
 /**
  * The WHERE clause and its bound values.
@@ -500,7 +820,11 @@ function rowToEntry(row: Record<string, unknown>): AuditEntry {
     ...(row["result_bytes"] === null ? {} : { resultBytes: row["result_bytes"] as number }),
     ...(row["result_is_error"] === null ? {} : { resultIsError: row["result_is_error"] === 1 }),
     ...(row["approver"] === null ? {} : { approver: row["approver"] as string }),
-    ...(row["ticket"] === null ? {} : { ticket: row["ticket"] as string })
+    ...(row["ticket"] === null ? {} : { ticket: row["ticket"] as string }),
+    // Unconditional, unlike everything above them: the columns are NOT NULL, so
+    // there is no absence to distinguish from a value.
+    prevHash: row["prev_hash"] as string,
+    rowHash: row["row_hash"] as string
   };
 }
 
@@ -624,18 +948,24 @@ export function openAuditReader(options: AuditReaderOptions): AuditReader {
 }
 
 /**
- * Does the table have this column? Structural, from SQLite's own catalogue.
+ * Which columns does the table have? Structural, from SQLite's own catalogue.
  *
  * `PRAGMA table_info` answers a structural question with a structural API, which
  * is what separates it from the move `migrate` rejects below: sniffing a *CHECK
  * constraint* out of `sqlite_master.sql` with a substring test is guessing at
  * SQL text, and this is asking SQLite what the columns are.
  *
+ * A set rather than the per-column predicate this used to be. #62 added three
+ * columns and three call sites to go with them; asking once and testing
+ * `CHAINED_COLUMNS` against the answer means the next version adds none.
+ *
  * The table name is a module-private literal at every call site, as it is for
  * `auditTableDdl`, and cannot be input.
  */
-function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
-  return db.prepare(`PRAGMA table_info(${table})`).all().some(entry => entry["name"] === column);
+function columnNames(db: DatabaseSync, table: string): ReadonlySet<string> {
+  return new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map(entry => entry["name"] as string)
+  );
 }
 
 /**
@@ -652,10 +982,25 @@ function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
  * immediately. So `migrate` fans in here instead, and this function's only
  * concern is what the *source* table can give it.
  *
- * Today that is one column. **v1 has no `ticket` and v2 and v3 differ in no
- * column at all** — v3 is a pure CHECK widening — so the copy takes `ticket`
- * when the old table has one and `NULL` when it does not. Asking the table
- * rather than the version number is what makes the no-stamp case below safe.
+ * **v1 has no `ticket`, v2 and v3 differ in no column at all** — v3 is a pure
+ * CHECK widening — and v4 added #62's three, so the copy takes each column when
+ * the old table has one and `NULL` when it does not. Asking the table rather
+ * than the version number is what makes the no-stamp case below safe.
+ *
+ * **v5 is where this stopped being a bulk copy** (#354). Each row's hash depends
+ * on the row before it, so the `INSERT … SELECT` became a loop that carries the
+ * tip forward. Two consequences worth having in front of you:
+ *
+ * The rows are chained **as of this migration**. That is a real guarantee — from
+ * here on an edit to any of them breaks the walk — and it is not the guarantee a
+ * row written under v5 has, which is that it was chained at the moment it was
+ * written. The README and the architecture page say so in those words. The
+ * alternative considered was refusing a v4 file and making rotation the answer;
+ * it was rejected because this log's entire value is not forgetting, and buying
+ * evidence by discarding the evidence is a bad trade.
+ *
+ * And a file that already carries hashes keeps them, rather than being rechained
+ * — see the comment on `chained` below for the attack that rules out.
  *
  * SQLite cannot alter a CHECK constraint in place, so widening one is
  * create-new / copy / drop / rename — the procedure the SQLite manual gives for
@@ -680,10 +1025,13 @@ function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
  * audit CLI bookmarks; letting SQLite reassign rowids would silently renumber
  * history.
  *
- * **No row can fail the new constraint**, because each version's vocabulary is a
- * strict superset of the one before it. That is what makes this a widening
- * rather than a data question, and it is the property `AUDIT_SCHEMA_VERSION`'s
- * doc asks each new version to check for itself.
+ * **No row can fail the new constraints**, and up to v4 that was one sentence:
+ * each version's outcome vocabulary is a strict superset of the one before it,
+ * and every added column was nullable. v5's two are NOT NULL, so the sentence it
+ * needs is a different one — the loop below computes a value for every row it
+ * copies, so no row reaches the constraint without one. Either way it is the
+ * property `AUDIT_SCHEMA_VERSION`'s doc asks each new version to check for
+ * itself, and the answer is not inherited.
  *
  * The scratch table is named for what it is rather than for a version. A
  * `tool_call_audit_v2` would have to be renamed — here and in the two tests that
@@ -697,34 +1045,61 @@ function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
  */
 function rebuildAuditTable(db: DatabaseSync): void {
   // Read before the transaction opens: it is a question about the table as it
-  // stands, and the answer decides one expression in the copy below.
-  const ticket = hasColumn(db, "tool_call_audit", "ticket") ? "ticket" : "NULL";
-  // #62's three, each answered the same way: a row written before the column
-  // existed had no such figure, and `NULL` is what "no figure exists" already
-  // reads as on every row that was never priced. So the copy loses nothing and
-  // invents nothing — which is the check `AUDIT_SCHEMA_VERSION` asks a new
-  // version to make for itself.
-  const budgetLimit = hasColumn(db, "tool_call_audit", "budget_limit") ? "budget_limit" : "NULL";
-  const daySpend = hasColumn(db, "tool_call_audit", "day_spend_micro_usd")
-    ? "day_spend_micro_usd"
-    : "NULL";
-  const priceVersion = hasColumn(db, "tool_call_audit", "price_version") ? "price_version" : "NULL";
+  // stands, and the answer decides the SELECT list below.
+  const present = columnNames(db, "tool_call_audit");
+  // A column the old table does not have is selected as `NULL`, which is what
+  // "no such figure exists" already reads as on every row that predates it. So
+  // the copy loses nothing and invents nothing — the check
+  // `AUDIT_SCHEMA_VERSION` asks a new version to make for itself. It is aliased
+  // back to the column's name so the loop below can read the row by name in
+  // either case.
+  const sourceList = CHAINED_COLUMNS.map(column =>
+    present.has(column) ? column : `NULL AS ${column}`
+  ).join(", ");
+  // **A file that is already chained keeps its hashes rather than being given
+  // new ones**, and the case is real: `schema_version` carries no triggers, so
+  // an operator — or an attacker — can delete the stamp from a version 5 file
+  // and make the next open rebuild it. Recomputing there would quietly re-bless
+  // every row, including any that had been edited, which is precisely the
+  // outcome the chain exists to prevent. This is the same hazard the no-stamp
+  // case already had with `ticket`, one column later.
+  const chained = present.has("prev_hash") && present.has("row_hash");
 
   db.exec("BEGIN IMMEDIATE");
   try {
     db.exec(auditTableDdl("tool_call_audit_rebuilt", false));
-    db.exec(`
-      INSERT INTO tool_call_audit_rebuilt
-        (id, at, channel, requesting_user, task, request_id, call_id, server, tool,
-         arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
-         price_version, result_bytes, result_is_error, approver, ticket)
-      SELECT
-         id, at, channel, requesting_user, task, request_id, call_id, server, tool,
-         arguments_sha256, outcome, refusal_reason, ${budgetLimit}, ${daySpend},
-         ${priceVersion}, result_bytes, result_is_error, approver, ${ticket}
-        FROM tool_call_audit
-       ORDER BY id
-    `);
+    // Row at a time rather than one `INSERT … SELECT`, because each row's hash
+    // depends on the row before it and SQLite cannot compute one. `iterate`
+    // rather than `all` so a large log is not held in memory at startup; the
+    // source and destination are different tables, so reading one while writing
+    // the other is safe, and the loop is consumed to exhaustion before the DROP
+    // below — an early return would leave a cursor open on a table about to go.
+    const copy = db.prepare(
+      `INSERT INTO tool_call_audit_rebuilt (id, ${CHAINED_COLUMNS.join(", ")}, prev_hash, row_hash)
+       VALUES (?, ${CHAINED_COLUMNS.map(() => "?").join(", ")}, ?, ?)`
+    );
+    const source = db.prepare(
+      `SELECT id, ${sourceList}${chained ? ", prev_hash, row_hash" : ""}
+         FROM tool_call_audit
+        ORDER BY id`
+    );
+
+    let tip = AUDIT_CHAIN_GENESIS;
+    for (const row of source.iterate() as Iterable<Record<string, unknown>>) {
+      const values = Object.fromEntries(
+        CHAINED_COLUMNS.map(column => [column, row[column] as string | number | null])
+      ) as AuditRowValues;
+      const prevHash = chained ? (row["prev_hash"] as string) : tip;
+      const rowHash = chained ? (row["row_hash"] as string) : auditRowHash(tip, values);
+      copy.run(
+        row["id"] as number,
+        ...CHAINED_COLUMNS.map(column => values[column]),
+        prevHash,
+        rowHash
+      );
+      tip = rowHash;
+    }
+
     db.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_update");
     db.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_delete");
     db.exec("DROP TABLE tool_call_audit");
@@ -747,8 +1122,9 @@ function rebuildAuditTable(db: DatabaseSync): void {
  * does and for the same reason. What changes is that the versions we *do*
  * recognise have a way forward — and they all take the same one, because
  * `rebuildAuditTable` asks the table what it can give rather than being told by
- * a version number. Adding version 4 to this list is the whole of adding a
- * migration from it, provided that version is a widening.
+ * a version number. Adding version 5 to this list is the whole of adding a
+ * migration from it, provided the rebuild can give every row a value for
+ * everything the new table demands.
  *
  * **The absent-row case runs the rebuild too**, which is deliberate rather than
  * lazy. `db.exec(SCHEMA)` and the version stamp are two commits, so a process
@@ -769,7 +1145,13 @@ function rebuildAuditTable(db: DatabaseSync): void {
 function migrate(db: DatabaseSync, file: string): void {
   const row = db.prepare("SELECT version FROM schema_version").get() as { version: number } | undefined;
   if (row !== undefined && row.version === AUDIT_SCHEMA_VERSION) return;
-  if (row === undefined || row.version === 1 || row.version === 2 || row.version === 3) {
+  if (
+    row === undefined ||
+    row.version === 1 ||
+    row.version === 2 ||
+    row.version === 3 ||
+    row.version === 4
+  ) {
     rebuildAuditTable(db);
     return;
   }
