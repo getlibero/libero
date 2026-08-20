@@ -42,10 +42,19 @@ them; `node_modules` stays excluded (#107).
 ## Current state
 
 Phases 1, 1.5, 2, 3 and 4 are shipped and their milestones closed. Phase 5
-(hardening, milestone 6) is open: the audit tamper-evidence workstream (#352)
-and the proxy hardening pass (#353). It was first written as "breadth"; the
-roadmap records why Discord and Temporal were dropped rather than deferred, and
-advanced scheduling is parked as #358 beside #348.
+(hardening, milestone 6) is open, and half of it is done: the audit
+tamper-evidence workstream (#352) is closed and the proxy hardening pass (#353)
+is what remains. It was first written as "breadth"; the roadmap records why
+Discord and Temporal were dropped rather than deferred, and advanced scheduling
+is parked as #358 beside #348.
+
+#352 hash-chained the audit log (#354), gave an operator a walk over it (#355),
+and attacked it in the suite (#356). Its decisions are argued where the code is;
+the table below says which file. One belongs here because it is a decision *not*
+to build, and the next person to have the idea will not find it otherwise:
+**#122's argument capture was designed and declined**, so "store the arguments
+and redact the secrets" is settled rather than open. #364 holds the gap it
+leaves.
 
 The phase 4 record, kept because its decisions are load-bearing for anything
 touching ambient: #316 gave `[ambient]` its real shape —
@@ -290,13 +299,13 @@ code is a paragraph the next reader will not find.
 | Question | Read |
 | --- | --- |
 | What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes, what the skill-author turn sees of a task that curation deliberately does not, and why the merge turn takes no handler | `packages/agent/README.md` |
-| Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, why the budget read is advisory rather than a second enforcement point, approvals, the audit log's write discipline | `packages/proxy/README.md` |
+| Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, why the budget read is advisory rather than a second enforcement point, approvals, the audit log's write discipline, what the hash chain catches and the four things it does not, why the unique index on `prev_hash` does more than the chain alone, and why argument capture was declined rather than deferred | `packages/proxy/README.md` |
 | Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for, why the proactive post surface is minted in the composition, why its window is four hours, why its two sources are named for the wake reason, and what the heartbeat's pregate asks in what order, why its watermark makes a finding say-once, and why a shut window defers rather than loses | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, why the channel-post verb is a second exception to the `CardPoster` narrowing and a different kind of one, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why `idleThreads` is not `staleThreads` with another argument, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
-| Operator commands and the vault CLI | `apps/proxy-server/README.md` |
+| Operator commands and the vault CLI, and what `audit verify`'s four exit codes are a contract for | `apps/proxy-server/README.md` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
-| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
+| The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |
