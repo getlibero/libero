@@ -14,7 +14,7 @@ only as itself, under admin-provisioned service credentials, through an allowlis
 every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
 model self-restraint.
 
-<Aside type="caution" title="Pre-release — no numbered release yet">
+<Aside type="caution" title="Early — pre-1.0">
 The specification is ahead of the implementation on purpose — treat these pages as the design of
 record, not a description of running software.
 
@@ -30,8 +30,9 @@ the MCP path streams through redaction rather than buffering behind it (phase 5)
 suite attacks all of it. `npx @getlibero/cli init` through `docker compose up` stands the stack
 up from a clean checkout.
 
-Every phase is shipped, and there is still no numbered release: the work that makes one — the
-service images, the changelog, and the release procedure — is what `v0.3.0` is.
+Every phase is shipped, and releases are numbered: `v0.3.0` is current, with the CLI on npm,
+both service images on GHCR, and a [changelog](/docs/changelog/) an operator can upgrade by.
+Delivery is milestone-gated per release now, and the open milestone is what lands next.
 
 What is not here: no sandbox, so `[egress]` is validated and enforced nowhere; a fired scheduled
 check runs one bounded turn and can look nothing up; certificate rotation is two commands and a

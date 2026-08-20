@@ -11,7 +11,7 @@ repository. This page is the short form.
 
 [Discord](https://discord.gg/7JXpyBa6ZJ) is for questions, design discussion, and checking whether
 anyone is already on something. [GitHub issues](https://github.com/getlibero/libero/issues) are for
-bugs and feature requests, so they stay searchable and can be scheduled into a phase. Neither is
+bugs and feature requests, so they stay searchable and can be scheduled into a release. Neither is
 for vulnerabilities — use private reporting, described in the
 [security model](/docs/security).
 
@@ -41,24 +41,26 @@ written before you asked.
 
 ## What the project most needs
 
-The [roadmap](/docs/roadmap) is phase-gated, and the priority is the governed core: vault,
-team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that
-attacks them. Features that outpace the proxy will be politely parked.
+The [roadmap](/docs/roadmap) records the phases, and every phase is shipped: delivery is
+milestone-gated per release now, and the open milestone says what lands next. The priority is
+still the governed core — vault, team-sheet enforcement, approval broker, budget meter, audit
+log, and the e2e security suite that attacks them — and features that outpace it will be
+politely parked.
 
 ## Following along
 
 Work is planned in [public GitHub issues](https://github.com/getlibero/libero/issues); there is
-no separate tracker. One milestone per phase carries the phase's definition of done, and the open
-milestone is the current phase. Each workstream is a `tracking` issue holding PR-sized
+no separate tracker. One milestone per release carries its definition of done, and the open
+milestone is the next release. Each workstream is a `tracking` issue holding PR-sized
 sub-issues; ordering is expressed with blocked-by relationships, so filtering out blocked issues
-shows what is workable now. Valid work that belongs to a later phase is labeled `parked` rather
-than closed, and picked up when its phase opens.
+shows what is workable now. Valid work that belongs to a later release is labeled `parked` rather
+than closed, and picked up when a milestone schedules it.
 
 New issues arrive labeled `needs-triage`; triage — within a week — either assigns the open
 milestone, parks, or closes. An issue is ready to build against when it is in the open milestone
 and not blocked; `help wanted` and `good first issue` mark the ones we would most like a hand
-with. A pull request for an untriaged or parked issue may wait until its phase opens, so check
-before writing code.
+with. A pull request for an untriaged or parked issue may wait until a milestone schedules it, so
+check before writing code.
 
 The assignee is the in-progress signal — there is no board and no `status:*` label, so an issue
 with nobody assigned is free and an assigned one is being worked on. Comment on an issue before

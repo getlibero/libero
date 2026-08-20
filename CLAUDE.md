@@ -42,10 +42,11 @@ them; `node_modules` stays excluded (#107).
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
-last one, so delivery is no longer phase-gated: work is now milestone-gated on
-`v0.3.0`, the release that makes releases real — the service images on GHCR
-(#313), a changelog (#377), a written release procedure (#378), and four
-correctness and doc-drift items beside them. There is no phase 6, and inventing
+last one, so delivery is no longer phase-gated: `v0.3.0` — the release that made
+releases real (#313, #377, #378) — shipped in August 2026, and work is now
+milestone-gated on `v0.4.0`, code execution governed: the sandbox built-in
+(#368 is the tracker), `[egress]`'s first live caller (#219), and the
+correctness items milestoned beside them. There is no phase 6, and inventing
 one to hold ordinary work would be the wrong move; the roadmap's phase list is
 complete rather than paused.
 
@@ -212,9 +213,9 @@ Work is planned in GitHub issues on `getlibero/libero`. The roadmap
 (`site/src/content/docs/docs/roadmap.md`) defines phase scope; issues are the
 execution plan, not the spec.
 
-- **One milestone per phase**, created when the phase starts. Its description
-  carries the phase's definition of done. An issue goes in the milestone only
-  if the phase gates on it.
+- **One milestone per release**, created when work on it starts. Its
+  description carries the release's definition of done. An issue goes in the
+  milestone only if the release gates on it.
 - **Where something landed differently from the roadmap's own wording, the
   roadmap records the difference** rather than the definition of done being
   ticked as though it had not happened. Phase 3 has three of these and phase 5
@@ -223,14 +224,14 @@ execution plan, not the spec.
 - **One tracking issue per workstream** (label `tracking`), holding native
   sub-issues. Sub-issues are sized to roughly one PR and state their own
   acceptance criteria.
-- **A tracking issue is scoped to the phase that opened it, and closes with
+- **A tracking issue is scoped to the milestone that opened it, and closes with
   it.** Follow-on work accumulates under a tracker because there is nowhere else
   to file it, so before the tracker closes that work is **re-homed**: a new
   `parked` tracker where the group is a real workstream, a standalone `parked`
   issue where it is not — a tracker for one issue is overhead. The rule this
   enforces is that **a closed parent must never be the only place open work is
   grouped**, because nobody opens closed issues and the grouping is then lost to
-  whoever picks the phase up. Phase 1 is the worked example: #34, #38 and #39
+  whoever picks the work up. Phase 1 is the worked example: #34, #38 and #39
   each named a deliverable and got it, their eleven parked children went to #210
   and #211, and #118 and #62 were detached to stand alone beside #122 and #202,
   which already did.
@@ -239,9 +240,9 @@ execution plan, not the spec.
 - **Labels:** `area:*` says where in the tree (agent, proxy, schema, cli, e2e,
   site, infra); GitHub's default type labels say what kind of change;
   `security` marks issues load-bearing for the security property or part of
-  the attack suite; `parked` marks valid work that belongs to a later phase —
-  parked issues stay open, carry no milestone, and are picked up when their
-  phase opens; `needs-triage` marks community issues not yet looked at (the
+  the attack suite; `parked` marks valid work that belongs to a later release —
+  parked issues stay open, carry no milestone, and are picked up when a
+  milestone schedules them; `needs-triage` marks community issues not yet looked at (the
   issue templates apply it).
 - **Triage is removing `needs-triage`** by doing exactly one of: assign the
   open milestone (plus `area:*`, attached to a tracking issue where one fits),

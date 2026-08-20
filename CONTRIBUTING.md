@@ -5,7 +5,7 @@ Thanks for considering a contribution. A few things to know before your first PR
 ## Where to ask
 
 - **[Discord](https://getlibero.com/discord)** — questions, design discussion, and checking whether anyone is already on something.
-- **[GitHub issues](https://github.com/getlibero/libero/issues)** — bugs and feature requests, so they stay searchable and can be scheduled into a phase.
+- **[GitHub issues](https://github.com/getlibero/libero/issues)** — bugs and feature requests, so they stay searchable and can be scheduled into a release.
 - **Neither, for vulnerabilities.** Use private reporting; see [SECURITY.md](SECURITY.md).
 
 A decision only counts once it is written down in an issue or a PR. Discord is for working things out, not for recording them.
@@ -24,27 +24,27 @@ A Contributor License Agreement (Apache-style) is required from your first PR; a
 
 ## What we most need
 
-The roadmap is phase-gated (see [the roadmap](https://getlibero.com/docs/roadmap), sourced from `site/src/content/docs/docs/roadmap.md`), and the priority is the governed core: vault, team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that attacks them. Features that outpace the proxy will be politely parked.
+The roadmap (see [the roadmap](https://getlibero.com/docs/roadmap), sourced from `site/src/content/docs/docs/roadmap.md`) records the phases, and every phase is shipped: delivery is milestone-gated per release now, and the open milestone says what lands next. The priority is still the governed core — vault, team-sheet enforcement, approval broker, budget meter, audit log, and the e2e security suite that attacks them — and features that outpace it will be politely parked.
 
 ## How work is planned
 
 Everything is planned in public GitHub issues; there is no separate tracker.
 
-- **One milestone per roadmap phase**, opened when the phase starts. Its
-  description is the phase's definition of done, and the open milestone is the
-  current phase — watch it to follow along.
+- **One milestone per release**, opened when work on it starts. Its
+  description is the release's definition of done, and the open milestone is
+  the next release — watch it to follow along.
 - **One tracking issue per workstream** (label `tracking`), broken into
   sub-issues sized to roughly one PR. Ordering is expressed with GitHub's
   blocked-by relationships, so filtering out blocked issues shows what is
-  workable right now. A tracker is scoped to the phase that opened it and closes
-  with it; work that surfaced underneath but belongs to a later phase is moved to
+  workable right now. A tracker is scoped to the milestone that opened it and closes
+  with it; work that surfaced underneath but belongs to a later release is moved to
   a new tracker or left to stand alone, so a closed issue is never the only place
   open work is grouped. If a tracker you were watching closes, its remaining
   sub-issues will say where they went.
-- **Out-of-phase work is parked, not rejected.** A valid bug report or feature
-  that belongs to a later phase gets the `parked` label and no milestone, and
-  is picked up when its phase opens. "X from a later phase does not exist yet"
-  is parked on sight.
+- **Out-of-milestone work is parked, not rejected.** A valid bug report or
+  feature that belongs to a later release gets the `parked` label and no
+  milestone, and is picked up when a milestone schedules it. "X from later
+  work does not exist yet" is parked on sight.
 - **The assignee is the in-progress signal.** There is no board and no
   `status:*` label: an issue with no assignee is free, an assigned issue is
   being worked on. Maintainers assign themselves before their first commit and
@@ -64,8 +64,8 @@ removes that label by doing exactly one of three things:
 
 - **Accept:** assign the open milestone and `area:*` labels, and attach the
   issue as a sub-issue of the workstream it belongs to, where one fits.
-- **Park:** apply `parked` — valid, but belongs to a later phase. Kept open,
-  no milestone, picked up when its phase starts.
+- **Park:** apply `parked` — valid, but belongs to a later release. Kept open,
+  no milestone, picked up when a milestone schedules it.
 - **Close:** duplicate, invalid, or a question that belongs in
   [Discord](https://getlibero.com/discord) — with a comment saying which.
 
@@ -76,7 +76,7 @@ ask you to refile it through private vulnerability reporting (see
 
 **An issue is ready to build against when it is in the open milestone and not
 blocked.** An issue that is untriaged or `parked` is not yet accepted — a PR
-for one may sit until its phase opens, however good the code is. Check before
+for one may sit until a milestone schedules it, however good the code is. Check before
 writing code; `help wanted` and `good first issue` mark the issues we would
 most like a hand with.
 
