@@ -41,20 +41,35 @@ them; `node_modules` stays excluded (#107).
 
 ## Current state
 
-Phases 1, 1.5, 2, 3 and 4 are shipped and their milestones closed. Phase 5
-(hardening, milestone 6) is open, and half of it is done: the audit
-tamper-evidence workstream (#352) is closed and the proxy hardening pass (#353)
-is what remains. It was first written as "breadth"; the roadmap records why
-Discord and Temporal were dropped rather than deferred, and advanced scheduling
-is parked as #358 beside #348.
+**Every phase is shipped and every phase milestone is closed.** Phase 5 was the
+last one, so delivery is no longer phase-gated: work is now milestone-gated on
+`v0.3.0`, the release that makes releases real — the service images on GHCR
+(#313), a changelog (#377), a written release procedure (#378), and four
+correctness and doc-drift items beside them. There is no phase 6, and inventing
+one to hold ordinary work would be the wrong move; the roadmap's phase list is
+complete rather than paused.
 
-#352 hash-chained the audit log (#354), gave an operator a walk over it (#355),
-and attacked it in the suite (#356). Its decisions are argued where the code is;
-the table below says which file. One belongs here because it is a decision *not*
-to build, and the next person to have the idea will not find it otherwise:
-**#122's argument capture was designed and declined**, so "store the arguments
-and redact the secrets" is settled rather than open. #364 holds the gap it
-leaves.
+Phase 5 was two workstreams and both are closed. #352 hash-chained the audit
+log (#354), gave an operator a walk over it (#355), and attacked it in the suite
+(#356). #353 streamed MCP responses through redaction (#156), gave the client
+pool and the catalog cache a lifetime (#158, #374), and fixed the sheet-store's
+torn-read complaint (#342). Their decisions are argued where the code is; the
+table below says which file.
+
+Two belong here rather than there. One is a decision *not* to build, which the
+next person to have the idea will not find otherwise: **#122's argument capture
+was designed and declined**, so "store the arguments and redact the secrets" is
+settled rather than open, and #364 holds the gap it leaves. The other is that
+**the milestone's own wording for #158 was wrong** — it asked for eviction
+"sized against the token lifetimes OAuth gave them", and a pooled client never
+held a token, because #256 gave it a credential *source* it asks per request.
+The roadmap records that difference. It is worth knowing here because the same
+false premise is the obvious thing to re-derive: OAuth is a reason **not** to
+evict, and what made eviction necessary was #150's session state plus key drift.
+
+It was first written as "breadth"; the roadmap records why Discord and Temporal
+were dropped rather than deferred, and advanced scheduling is parked as #358
+beside #348.
 
 What exists:
 
@@ -200,8 +215,8 @@ execution plan, not the spec.
 - **Where something landed differently from the roadmap's own wording, the
   roadmap records the difference** rather than the definition of done being
   ticked as though it had not happened. Phase 3 has three of these and phase 5
-  has two; a box ticked against a sentence that turned out to be untrue is worse
-  than no box, because the next reader has no way to tell which.
+  has three; a box ticked against a sentence that turned out to be untrue is
+  worse than no box, because the next reader has no way to tell which.
 - **One tracking issue per workstream** (label `tracking`), holding native
   sub-issues. Sub-issues are sized to roughly one PR and state their own
   acceptance criteria.

@@ -38,10 +38,12 @@ export const SITE = {
    * retyped — a status string that lives in two places is a status string that
    * is wrong in one of them.
    *
-   * Phase 5 is *in progress*, which is not the same as usable: phases 1
-   * through 4 are shipped, and the pre-release warning next to this on every
-   * page is doing the load-bearing work. Move this on when a phase opens, not
-   * when it finishes.
+   * Every phase is now shipped, which is *still* not the same as usable, and
+   * the pre-release warning next to this on every page is doing the same
+   * load-bearing work it always was. What changed is only which thing is
+   * pending: delivery was phase-gated and is now release-gated, so this names
+   * the release being cut rather than a phase in flight. Move it on when the
+   * next milestone opens, not when work starts.
    */
-  status: 'Phase 5 · pre-release',
+  status: 'v0.3.0 · pre-release',
 } as const;
