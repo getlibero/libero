@@ -39,6 +39,27 @@
 // an upstream is a `(transport, url, credential)` tuple any number of sheets
 // may name, so there is nobody to put the field on.
 //
+// **A client is kept while it is being used and dropped once it is not**
+// (#158). The issue this closes was parked on the argument that an unused entry
+// costs a map slot, which stopped being true at #150: a legacy client holds an
+// `Mcp-Session-Id`, which is state at somebody else's server, and the `DELETE`
+// that ends it used to be sent only from `close()` at shutdown. So a pool that
+// never evicted held sessions open at upstreams nobody was calling, for as long
+// as the process ran.
+//
+// **The trigger the issue named turned out to argue the other way.** #256 was
+// expected to make a client hold a token with a lifetime; instead it introduced
+// `CredentialSource`, so the client holds the *source* and asks it per request —
+// see the note in `acquire`. OAuth is a settled reason *not* to evict, and the
+// live reason is the paragraph above plus the one below.
+//
+// **Key drift is what makes this a leak rather than a preference.** Team sheets
+// are re-read when they change, and `upstreamKey` includes the url, the
+// credential name and the auth triple. Rotate a credential name, move a server,
+// retire a block — the old key is never acquired again, and nothing before this
+// removed it. That entry is not idle in the ordinary sense; it is unreachable,
+// and only a sweep over the whole map collects it.
+//
 // **The bucket is `upstreamKey`, so it includes the credential.** Two sheet
 // blocks pointing at one host under two credentials get a limit each. That is
 // the right reading of "one upstream" — they are two identities with two rate
@@ -98,17 +119,49 @@ export const QUEUE_WAIT_MS = 5_000;
  */
 export const LISTING_QUEUE_WAIT_MS = 2_000;
 
+/**
+ * How long an entry survives with nothing using it.
+ *
+ * A constant rather than an environment variable, on the argument
+ * `QUEUE_WAIT_MS` and `CATALOG_TTL_MS` already make: the operator's decisions
+ * are which upstreams exist and how many calls each tolerates, and how long
+ * this process keeps a client for one it is not calling follows from those
+ * rather than being a third thing to size.
+ *
+ * **Fifteen minutes, chosen against what eviction costs rather than what it
+ * saves.** It saves an upstream session and an SDK client; it costs the next
+ * caller the version ladder again — `server/discover`, and on a legacy upstream
+ * the handshake behind it — which is one or two round trips inside a call
+ * budget that already allows thirty seconds. So the number wants to be well
+ * clear of the gaps in ordinary traffic and no larger: a channel that goes
+ * quiet over lunch should still find its client, and one quiet overnight should
+ * not be holding a session at 03:00.
+ *
+ * **Above `CATALOG_TTL_MS`, and that ordering is deliberate.** A catalog entry
+ * is good for five minutes and is keyed on the same `upstreamKey`. Evict
+ * underneath one and a deployment calling an upstream every four minutes would
+ * re-probe on every call while its listing never expired — paying the ladder
+ * precisely where the caches were supposed to be collapsing the work. Nothing
+ * breaks if the two cross; it is just the wrong trade in the case that matters.
+ */
+export const IDLE_TTL_MS = 900_000;
+
 /** The `http` member of the schema's transport union, where `url` is a string. */
 export type HttpUpstream = Extract<McpServer, { transport: "http" }>;
 
 export interface McpPool {
   /**
-   * The client for this upstream, created on first use.
+   * The client for this upstream, created on first use and after `IDLE_TTL_MS`
+   * with nothing using it.
    *
    * `null` once closed, so a call that arrives during teardown is answered
    * rather than being served over a connection the process is dismantling.
+   *
+   * **Every call is also the pool's only chance to collect** — this is where
+   * idle entries are swept, because there is no timer. See `sweep`.
    */
   acquire(upstream: HttpUpstream, source: CredentialSource): McpClient | null;
+  /** Live entries, after whatever the last `acquire` swept. */
   readonly size: number;
   /**
    * Terminates any legacy session and drops every client. Never rejects.
@@ -140,7 +193,35 @@ export interface McpPoolOptions {
    * ends. Not an operator setting and not plumbed to one — see the constant.
    */
   readonly queueWaitMs?: number;
+  /**
+   * The clock idle eviction reads. Absent means `Date.now`.
+   *
+   * Injected for the reason `mcp-catalog.ts` injects one and with the same
+   * caveat: this clock decides when to drop a client nobody is calling, which
+   * is a resource decision and not a deadline anything is enforced against. The
+   * approval ticket's clock is the other kind, and they should not be confused.
+   */
+  readonly now?: () => number;
   readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * What the sweep reads to decide an entry is not in use.
+ *
+ * **The pool counts its own callers rather than reading the semaphore.**
+ * `Semaphore` exposes `held` and `waiting`, and both say they are read by tests
+ * and never by a decision — a line worth keeping true, but the counts are also
+ * the wrong ones. `inFlight` is incremented before the permit is asked for, so
+ * it covers a caller queued behind a saturated upstream as well as one already
+ * speaking; an entry at its limit with a queue behind it is the busiest thing
+ * in the pool, and reading `held` alone would have made it look evictable in
+ * exactly the case where evicting is worst.
+ */
+interface Usage {
+  /** Calls admitted here and not yet finished, including ones still queued. */
+  inFlight: number;
+  /** When the last call finished, or the client was handed out, or was built. */
+  lastUsed: number;
 }
 
 /** A client and the permits that bound it. One per `upstreamKey`. */
@@ -149,6 +230,7 @@ interface Entry {
   readonly limiter: Semaphore;
   /** The client every caller is handed: `client`, behind `limiter`. */
   readonly gated: McpClient;
+  readonly usage: Usage;
 }
 
 /**
@@ -188,29 +270,60 @@ interface Entry {
  * `protocol` and `close` pass straight through. Neither speaks to an upstream:
  * one is a word about a connection already settled, and the other is shutdown,
  * which is exactly when this must not be waiting for a permit.
+ *
+ * **It is also where an entry's use is recorded** (#158). Both gated methods
+ * bracket everything they do in `usage`: `inFlight` up before the permit is
+ * asked for, down in the outermost `finally`, which is the same `finally` that
+ * stamps `lastUsed`. Stamping on the way *out* rather than the way in is what
+ * makes a slow call count as use for its whole duration rather than from when
+ * it started, so a thirty-second call cannot leave an entry looking half a
+ * minute idler than it is.
+ *
+ * A refused permit takes the same path: `busy` is traffic this upstream is
+ * getting, and an upstream saturated enough to turn calls away is the last one
+ * whose client should be dropped for disuse.
  */
-function gate(client: McpClient, limiter: Semaphore, waitMs: number, listingWaitMs: number): McpClient {
+function gate(
+  client: McpClient,
+  limiter: Semaphore,
+  waitMs: number,
+  listingWaitMs: number,
+  usage: Usage,
+  now: () => number
+): McpClient {
   return {
     async callTool(tool, args, limits, definition): Promise<McpOutcome> {
-      const permit = await limiter.acquire(waitMs);
-      // `connect_failed` rather than `call_failed`, and the type is the reason
-      // as much as the truth is: nothing was sent, and this is the member that
-      // structurally has no `detail` for a later edit to put upstream bytes in.
-      if (permit === null) return { outcome: "connect_failed", failure: "busy" };
+      usage.inFlight += 1;
       try {
-        return await client.callTool(tool, args, limits, definition);
+        const permit = await limiter.acquire(waitMs);
+        // `connect_failed` rather than `call_failed`, and the type is the reason
+        // as much as the truth is: nothing was sent, and this is the member that
+        // structurally has no `detail` for a later edit to put upstream bytes in.
+        if (permit === null) return { outcome: "connect_failed", failure: "busy" };
+        try {
+          return await client.callTool(tool, args, limits, definition);
+        } finally {
+          permit.release();
+        }
       } finally {
-        permit.release();
+        usage.inFlight -= 1;
+        usage.lastUsed = now();
       }
     },
 
     async listTools(cursor, timeoutMs): Promise<McpListOutcome> {
-      const permit = await limiter.acquire(listingWaitMs);
-      if (permit === null) return { outcome: "connect_failed", failure: "busy" };
+      usage.inFlight += 1;
       try {
-        return await client.listTools(cursor, timeoutMs);
+        const permit = await limiter.acquire(listingWaitMs);
+        if (permit === null) return { outcome: "connect_failed", failure: "busy" };
+        try {
+          return await client.listTools(cursor, timeoutMs);
+        } finally {
+          permit.release();
+        }
       } finally {
-        permit.release();
+        usage.inFlight -= 1;
+        usage.lastUsed = now();
       }
     },
 
@@ -234,15 +347,74 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
   // small enough that 40% of it rounds to no wait at all, and a listing that
   // never waits is a different behaviour from one that waits briefly.
   const listingWaitMs = Math.max(1, Math.round(waitMs * (LISTING_QUEUE_WAIT_MS / QUEUE_WAIT_MS)));
+  const now = options.now ?? Date.now;
   let closed = false;
+
+  /**
+   * Drop every entry nothing is using, except the one being acquired.
+   *
+   * **Lazy, on `acquire`, and there is deliberately no timer** — the question
+   * #158 asked out loud. `mcp-catalog.ts` settled the pattern for this process:
+   * an injected clock and expiry evaluated when something reads the map. A
+   * timer would be the only recurring one in the proxy, would have to be
+   * `unref`'d not to hold the process open, and would buy the difference
+   * between collecting a dead entry now and collecting it at the next call.
+   *
+   * The cost of lazy is worth naming: **a pool that goes completely quiet keeps
+   * what it had.** Nothing sweeps a proxy nobody is calling, so the last entry
+   * to be used outlives its window until either the next `acquire` or
+   * `close()`, which ends every session anyway. That is the case least worth
+   * spending a timer on.
+   *
+   * **The whole map, not just the key being acquired**, because the entry this
+   * exists to collect is the one whose key no longer appears in any sheet.
+   * Checking only the requested key would collect exactly the entries that are
+   * still in use and none of the stranded ones. `entries` is bounded by the
+   * operator's configuration — tens, not thousands — so a linear pass per
+   * acquire costs less than the map lookup it follows.
+   *
+   * **`except` is the key on its way to being used**, and skipping it is not
+   * bookkeeping. Evicting an entry in the same breath as handing it out would
+   * make an upstream called once an hour re-run the version ladder every single
+   * time and never hold a session at all — the pathological case for a cache,
+   * reached only by the caller that proves the entry is wanted.
+   */
+  const sweep = (except: string, at: number): void => {
+    for (const [key, entry] of entries) {
+      if (key === except) continue;
+      if (entry.usage.inFlight > 0) continue;
+      if (at - entry.usage.lastUsed < IDLE_TTL_MS) continue;
+      entries.delete(key);
+      // Unawaited, and safe only because `McpClient.close` swallows every
+      // failure including a `RedactionError` — the second place in this package
+      // leaning on that, after `close()` below. `acquire` is synchronous and
+      // must stay so; the session `DELETE` is a courtesy to the upstream and
+      // nothing here reads its answer, so there is nobody to report to and
+      // nothing to wait for.
+      void entry.client.close();
+      // No `limiter.open()`, unlike shutdown: `inFlight` is zero, so there is
+      // no waiter to wake. Opening it would hand an inert permit to whatever
+      // reached a stale reference, in place of the refusal it should get.
+    }
+  };
 
   return {
     acquire(upstream, source) {
       if (closed) return null;
 
       const key = upstreamKey(upstream);
+      const at = now();
+      sweep(key, at);
+
       const existing = entries.get(key);
-      if (existing !== undefined) return existing.gated;
+      if (existing !== undefined) {
+        // Handing a client out counts as use, before any call is made with it.
+        // The catalog holds a leased client across a multi-page walk and the
+        // dispatcher across its own guards, so an entry whose caller is between
+        // requests is in use in the sense that matters.
+        existing.usage.lastUsed = at;
+        return existing.gated;
+      }
 
       // The source is only read when a client is created; a later call with
       // the same key keeps the client it has. That is correct rather than
@@ -263,7 +435,13 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
       // every channel reaching this upstream is counted against one limit. A
       // limiter built per `acquire` would count nothing.
       const limiter = createSemaphore(limit);
-      const entry: Entry = { client, limiter, gated: gate(client, limiter, waitMs, listingWaitMs) };
+      const usage: Usage = { inFlight: 0, lastUsed: at };
+      const entry: Entry = {
+        client,
+        limiter,
+        gated: gate(client, limiter, waitMs, listingWaitMs, usage, now),
+        usage
+      };
       entries.set(key, entry);
       return entry.gated;
     },

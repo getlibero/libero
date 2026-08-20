@@ -1,9 +1,15 @@
 import { type McpServer, TeamSheet as TeamSheetSchema } from "@getlibero/schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import type { McpClient, McpOutcome } from "./mcp-client.js";
-import { CATALOG_BUDGET_MS } from "./mcp-catalog.js";
-import { LISTING_QUEUE_WAIT_MS, QUEUE_WAIT_MS, type HttpUpstream, createMcpPool } from "./mcp-pool.js";
+import { CATALOG_BUDGET_MS, CATALOG_TTL_MS } from "./mcp-catalog.js";
+import {
+  IDLE_TTL_MS,
+  LISTING_QUEUE_WAIT_MS,
+  QUEUE_WAIT_MS,
+  type HttpUpstream,
+  createMcpPool
+} from "./mcp-pool.js";
 import { constantCredential } from "./outbound.js";
 import type { Secret } from "./vault.js";
 import type { CallLimits } from "./enforce.js";
@@ -53,6 +59,22 @@ function upstreamOf(block: Record<string, unknown>): HttpUpstream {
   const parsed: McpServer | undefined = sheet.mcp_server[0];
   if (parsed === undefined || parsed.transport !== "http") throw new Error("fixture is not an http upstream");
   return parsed;
+}
+
+/**
+ * Polls rather than sleeps, per the convention in team-sheet-store.test.ts.
+ *
+ * Module-scoped because idle eviction needs it too: a swept client's `close()`
+ * is deliberately unawaited, so its session `DELETE` lands a moment after the
+ * `acquire` that caused it.
+ */
+async function until(predicate: () => boolean, label: string, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 let fake: FakeMcpServer | undefined;
@@ -250,16 +272,6 @@ describe("the concurrency limit", () => {
   /** Short enough to spend, for the callers meant to give up. */
   const BRIEF = 25;
 
-  /** Polls rather than sleeps, per the convention in team-sheet-store.test.ts. */
-  async function until(predicate: () => boolean, label: string, ms = 3000): Promise<void> {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
-      if (predicate()) return;
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    throw new Error(`timed out waiting for ${label}`);
-  }
-
   /**
    * `count` concurrent calls at one upstream, collecting outcomes as they land.
    *
@@ -419,5 +431,186 @@ describe("the concurrency limit", () => {
     await fake.close();
     fake = undefined;
     await held.drain();
+  });
+});
+
+/**
+ * Idle eviction (#158).
+ *
+ * The one part of this file with a clock it controls. `now` is injected, so
+ * every case moves time by assignment and none of them sleeps — which is what
+ * lets a fifteen-minute window be tested at all.
+ *
+ * Sweeping happens on `acquire` and nowhere else, so most cases here are shaped
+ * the same way: use an upstream, move the clock past the window, then acquire
+ * *something* to give the pool its chance to collect.
+ */
+describe("idle eviction", () => {
+  let clock = 1_000_000;
+  const now = () => clock;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+  });
+
+  /** A second upstream, whose only job is to be the `acquire` that triggers a sweep. */
+  const OTHER = { name: "other", transport: "http", url: "http://elsewhere:3001" };
+
+  // The case the issue was really about: the entry holds an `Mcp-Session-Id`,
+  // which is state at somebody else's server, and before this it was released
+  // only at shutdown. Asserted on the `DELETE` rather than on `size`, because
+  // dropping the map entry while leaving the session open would satisfy the
+  // count and none of the point.
+  it("ends the session of a client nothing has used for the window", async () => {
+    const server = await startFakeMcpServer({ protocol: "legacy" });
+    try {
+      const pool = createMcpPool({ timeoutMs: 2000, now });
+      const client = pool.acquire(
+        upstreamOf({ name: "s", transport: "http", url: server.url, credential: "c" }),
+        bearer(secretOf(VALUE))
+      );
+      expect(await client?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
+      expect(server.liveSessions.size).toBe(1);
+
+      clock += IDLE_TTL_MS;
+      pool.acquire(upstreamOf(OTHER), bearer(undefined));
+
+      expect(pool.size).toBe(1);
+      // The close is unawaited by design, so the courtesy lands just after.
+      await until(() => server.liveSessions.size === 0, "the idle session to be terminated");
+      expect(server.received.filter(request => request.method === "DELETE")).toHaveLength(1);
+
+      await pool.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  // The motivating case, and the one no per-key check would reach: the operator
+  // renames the credential, so the sheet now yields a different `upstreamKey`
+  // and the old entry is never acquired again. It is not idle in the ordinary
+  // sense — nothing will ever ask for it — which is why the sweep walks the
+  // whole map rather than only the key in hand.
+  it("collects an entry whose key no sheet names any more", async () => {
+    const server = await startFakeMcpServer({ protocol: "legacy" });
+    try {
+      const pool = createMcpPool({ timeoutMs: 2000, now });
+      const before = pool.acquire(
+        upstreamOf({ name: "s", transport: "http", url: server.url, credential: "cred_a" }),
+        bearer(secretOf(VALUE))
+      );
+      expect(await before?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
+
+      clock += IDLE_TTL_MS;
+      // The same server under the sheet's new credential name: a new key, and
+      // the old one now unreachable.
+      const after = pool.acquire(
+        upstreamOf({ name: "s", transport: "http", url: server.url, credential: "cred_b" }),
+        bearer(secretOf(VALUE))
+      );
+
+      expect(after).not.toBe(before);
+      expect(pool.size).toBe(1);
+      await until(() => server.received.filter(r => r.method === "DELETE").length === 1, "the stranded session to end");
+
+      await pool.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  // Handing a client out is use, before any call is made with it. The catalog
+  // leases one across a multi-page walk and the dispatcher across its own
+  // guards, so an entry whose caller is merely between requests must survive.
+  it("never evicts the entry being acquired, however long it has been quiet", async () => {
+    fake = await startFakeMcpServer();
+    const pool = createMcpPool({ now });
+    const upstream = upstreamOf({ name: "s", transport: "http", url: fake.url });
+
+    const first = pool.acquire(upstream, bearer(undefined));
+    expect(await first?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
+
+    clock += IDLE_TTL_MS * 10;
+    const second = pool.acquire(upstream, bearer(undefined));
+
+    expect(second).toBe(first);
+    expect(pool.size).toBe(1);
+    // The claim behind the exclusion: no rebuild means no second ladder. An
+    // upstream called once an hour would otherwise re-probe on every call.
+    expect(fake.callsTo("server/discover")).toHaveLength(1);
+
+    await pool.close();
+  });
+
+  // `inFlight` counts a queued caller as well as a speaking one, so an upstream
+  // saturated enough to be turning calls away is the last thing evicted rather
+  // than the first. The hanging call here holds the only permit.
+  it("keeps a client with a call still in flight", async () => {
+    fake = await startFakeMcpServer({ hangOn: "tools/call" });
+    const pool = createMcpPool({ maxUpstreamConcurrency: 1, queueWaitMs: 30_000, now });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const held = client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+    await until(() => fake?.callsTo("tools/call").length === 1, "the call to reach the upstream");
+    const queued = client.callTool("get_issue", {}, LIMITS, NO_HEADERS);
+
+    clock += IDLE_TTL_MS * 10;
+    pool.acquire(upstreamOf(OTHER), bearer(undefined));
+
+    // Both the speaking call and the one queued behind it kept it alive.
+    expect(pool.size).toBe(2);
+
+    await pool.close();
+    await fake.close();
+    fake = undefined;
+    await Promise.allSettled([held, queued]);
+  });
+
+  // The documented limit of sweeping lazily, pinned so it is a decision rather
+  // than a surprise: nothing collects a proxy nobody is calling. `close()` ends
+  // those sessions instead, which is why this is the case worth the least.
+  it("collects nothing while the pool is quiet", async () => {
+    fake = await startFakeMcpServer();
+    const pool = createMcpPool({ now });
+    const client = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
+    expect(await client?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
+
+    clock += IDLE_TTL_MS * 100;
+
+    expect(pool.size).toBe(1);
+    await pool.close();
+  });
+
+  // A lease outliving its entry is possible — the catalog holds one across a
+  // walk — so the stale reference has to degrade to a refusal rather than to a
+  // request over a torn-down transport. It does, because `gate` closes over a
+  // client that has already flipped `closed`.
+  it("refuses a caller holding a client that was swept", async () => {
+    fake = await startFakeMcpServer();
+    const pool = createMcpPool({ now });
+    const stale = pool.acquire(upstreamOf({ name: "s", transport: "http", url: fake.url }), bearer(undefined));
+    expect(await stale?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toMatchObject({ outcome: "called" });
+    const callsBefore = fake.callsTo("tools/call").length;
+
+    clock += IDLE_TTL_MS;
+    pool.acquire(upstreamOf(OTHER), bearer(undefined));
+
+    // `closed`, not `busy`: the permit was never the reason, and nothing was
+    // sent to the upstream on the way to finding out.
+    expect(await stale?.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
+      outcome: "connect_failed",
+      failure: "closed"
+    });
+    expect(fake.callsTo("tools/call")).toHaveLength(callsBefore);
+
+    await pool.close();
+  });
+
+  // The same shape as the listing-wait inequality above, and load-bearing for
+  // the same reason: a client evicted underneath a catalog entry still citing
+  // it means re-probing on every call while the listing never expires.
+  it("outlives the catalog entry keyed on the same upstream", () => {
+    expect(IDLE_TTL_MS).toBeGreaterThan(CATALOG_TTL_MS);
   });
 });

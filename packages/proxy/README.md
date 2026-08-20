@@ -178,7 +178,22 @@ reveals a credential and the one that scrubs the reply.
   definition rather than restating it is what stops the pool from merging two
   blocks enforcement treats as distinct. It also gates that client behind
   `PROXY_MAX_UPSTREAM_CONCURRENCY` permits, so the calls every channel rides
-  through one client are counted (#159).
+  through one client are counted (#159). A client is kept while it is in use and
+  dropped after `IDLE_TTL_MS` without — fifteen minutes, above the catalog's
+  window so an entry is never evicted underneath a listing still citing it
+  (#158). What that releases is a legacy client's `Mcp-Session-Id`, which is
+  state at somebody else's server and used to be terminated only at shutdown;
+  the entry it exists to collect is the one whose key no sheet names any more,
+  since a rotated credential name or a moved url mints a new `upstreamKey` and
+  strands the old. Eviction is **lazy and on `acquire`**, with an injected clock
+  and no timer, the way `mcp-catalog.ts` expires — so a proxy that goes
+  completely quiet keeps what it had until the next call or `close()`, which is
+  the case least worth a timer. Two guards are load-bearing rather than tidy: an
+  entry with a call in flight or queued is never swept, and neither is the key
+  being acquired, or an upstream called once an hour would re-run the version
+  ladder every time and never hold a session at all. OAuth is not a reason for
+  any of this — `CredentialSource` means the client holds the source and mints
+  per request, so it already outlives a token.
 - `semaphore.ts` — FIFO permits with a bounded wait, and a waiter that gave up
   leaves the queue rather than being handed a permit nobody is waiting for.
 - `mcp-fake-server.ts` — a real `node:http` MCP server for the tests, speaking

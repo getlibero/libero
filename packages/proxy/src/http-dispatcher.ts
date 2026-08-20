@@ -111,11 +111,15 @@ export interface HttpDispatcherOptions {
   readonly queueWaitMs?: number;
   readonly logger?: Logger;
   /**
-   * The catalog cache's clock, for tests.
+   * The clock the caches keep, for tests.
    *
    * A second clock in this process, and worth one sentence: this one decides
-   * when to ask an upstream again. It is not a security deadline, which is why
-   * approval tickets deliberately share the *server's* clock and this does not.
+   * when to ask an upstream again — and, since #158, when to stop holding a
+   * client for one nothing is asking. It is not a security deadline, which is
+   * why approval tickets deliberately share the *server's* clock and this does
+   * not. One option rather than three because the token engine, the catalog and
+   * the pool are all reading the same wall clock for the same kind of reason; a
+   * test that moves time should not have to move it in three places.
    */
   readonly now?: () => number;
 }
@@ -301,6 +305,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
       ? { maxUpstreamConcurrency: options.maxUpstreamConcurrency }
       : {}),
     ...(options.queueWaitMs !== undefined ? { queueWaitMs: options.queueWaitMs } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
   });
 
