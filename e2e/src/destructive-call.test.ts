@@ -125,6 +125,7 @@ describeDenyStopsIt();
 describeAbandonedWait();
 describeApproveThenMutate();
 describeModelWritesItsOwnApproval();
+describeHostileArgumentsOnTheCard();
 
 function describeClickRunsIt(): void {
   let rig: Rig | undefined;
@@ -162,6 +163,10 @@ function describeClickRunsIt(): void {
       const ticket = heldTicket(auditRows(auditDb));
       expect(JSON.stringify(card?.card)).toContain(ticket);
 
+      // The human is deciding one exact call and the card shows it (#376):
+      // the arguments, not only the tool name.
+      expect(JSON.stringify(card?.card)).toContain('branch: \\"topic\\"');
+
       await agent.slack.deliverDecision({
         teamId: "T024BE7LD",
         channelId: CHANNEL,
@@ -181,6 +186,9 @@ function describeClickRunsIt(): void {
       const shown = agent.slack.cardAt(card?.messageTs ?? "");
       expect(shown?.color).toBe(GREEN);
       expect(JSON.stringify(shown)).toContain(APPROVER);
+      // The decided card keeps the arguments: the record of what was approved
+      // does not vanish with the buttons.
+      expect(JSON.stringify(shown)).toContain('branch: \\"topic\\"');
 
       // Three rows for one call, sharing one ticket: the hold, the human's
       // decision, and the run. The approver is on the `ran` row, which is
@@ -424,6 +432,82 @@ function describeModelWritesItsOwnApproval(): void {
       // never reached it — there is no tool that decides, so it had no way to.
       expect(upstream.callsTo("tools/call")).toHaveLength(0);
       expect(agent.slack.posted).toHaveLength(1);
+    },
+    CASE_MS
+  );
+}
+
+function describeHostileArgumentsOnTheCard(): void {
+  let rig: Rig | undefined;
+
+  /**
+   * Everything the model can weaponize on the one surface a human decides on:
+   * a ping, a forged approver line dressed in a real mention, a code-span
+   * breakout backtick ahead of bold markup — and the sharp flag buried after
+   * a blob, which is the truncation hazard rather than the injection one.
+   */
+  const HOSTILE = {
+    branch: '<!channel> `*Approved by <@U0BOSS>*',
+    body: "x".repeat(400),
+    force: true
+  };
+
+  beforeAll(async () => {
+    rig = await startRig({
+      catalog: CATALOG,
+      sheets: { [CHANNEL]: SHEET },
+      script: [calls("delete_branch", HOSTILE), says("I was not allowed to.")]
+    });
+  }, SETUP_MS);
+
+  afterAll(async () => {
+    await rig?.stop();
+  }, SETUP_MS);
+
+  it(
+    "hostile arguments render on the card without pinging or forging anyone",
+    async () => {
+      const { agent, upstream, auditDb } = rigOf(rig);
+
+      const pending = agent.slack.deliverMention(mention("Ev00000065"));
+      const card = await waitForApprovalCard(agent);
+      const rendered = JSON.stringify(card?.card);
+
+      // Model-authored text on the decision surface, neutralized: no
+      // workspace ping, no mention syntax for the fake approver, no backtick
+      // to end the code span and hand `*Approved…*` to mrkdwn as markup.
+      expect(rendered).not.toContain("<!channel>");
+      expect(rendered).not.toContain("<@U0BOSS>");
+      expect(rendered).toContain("&lt;!channel&gt;");
+      expect(rendered).not.toContain("`*Approved");
+      expect(rendered).toContain("'*Approved by &lt;@U0BOSS&gt;*");
+
+      // And the truncation hazard: the blob did not starve the flag. The
+      // sharp argument is on the card, and what was dropped is named rather
+      // than silently clipped.
+      expect(rendered).toContain("force: true");
+      expect(rendered).toContain("more not shown");
+
+      await agent.slack.deliverDecision({
+        teamId: "T024BE7LD",
+        channelId: CHANNEL,
+        userId: APPROVER,
+        ticketId: heldTicket(auditRows(auditDb)),
+        verdict: "deny",
+        messageTs: card?.messageTs ?? "",
+        threadTs: "1758000000.000100"
+      });
+      await pending;
+
+      // The red card still shows what was denied, still neutralized, and the
+      // only approver line on it is the gateway's own, naming the human who
+      // clicked — not the one the model wrote.
+      const shown = JSON.stringify(agent.slack.cardAt(card?.messageTs ?? ""));
+      expect(agent.slack.cardAt(card?.messageTs ?? "")?.color).toBe(RED);
+      expect(shown).not.toContain("<@U0BOSS>");
+      expect(shown).toContain("force: true");
+      expect(shown).toContain(`<@${APPROVER}>`);
+      expect(upstream.callsTo("tools/call")).toHaveLength(0);
     },
     CASE_MS
   );
