@@ -21,16 +21,45 @@
 // ## Why the arguments are hashed rather than stored
 //
 // #97 asked for optional argument capture behind a config flag, redacted
-// through ./redact.ts. That is not built, and the reason is structural rather
-// than a matter of effort: `redactSecrets` takes the credential *values*, and
-// the only place values exist is ./outbound.ts, inside the dispatcher. This
-// module and ./server.ts hold none — that is what their import lists are for.
+// through ./redact.ts. #122 designed it and **declined it**, so this is settled
+// rather than pending — do not read the paragraphs below as a gap waiting for
+// someone with an afternoon.
 //
-// Arguments are model-authored, and a model that has seen a secret can put it
-// in them. Redaction that cannot see every value is incomplete redaction on a
-// durable row, which is worse than storing nothing, because an operator reading
-// a column labelled redacted believes it. So: a hash, and capture becomes a
-// follow-up issue where the redaction set is designed rather than bolted on.
+// The mechanical obstacle came first: `redactSecrets` takes the credential
+// *values*, and the only place values exist is ./outbound.ts, inside the
+// dispatcher. This module and ./server.ts hold none — that is what their import
+// lists are for, and an ESLint rule now enforces it for ./redact.ts too.
+//
+// But the obstacle that decided it is not mechanical, and it would survive any
+// amount of rearranging:
+//
+//   1. **Redaction is a backstop, not a boundary**, and ./redact.ts's own header
+//      says so at length: a scan for a value finds the value, and misses a
+//      transformation of it. The threat capture exists to investigate is a
+//      prompt-injected model putting a secret into a tool call — an adversary,
+//      not a careless upstream — so the mechanism is weakest exactly where it
+//      would be leaned on. "A redaction set the design argues is complete" was
+//      the acceptance criterion, and a complete *set* is not complete
+//      *redaction*.
+//   2. **The plausible set has a side effect.** Every credential the channel's
+//      sheet names would have to be *acquired* to yield values, and acquiring an
+//      OAuth credential is a token-endpoint round trip (see `CredentialSource`
+//      in ./outbound.ts). A refused call resolves no credential today; under
+//      that design it would mint tokens over the network in order to have
+//      something to redact against.
+//   3. **A captured secret would be permanent.** Rows are hash-chained (#354),
+//      so removing one after the fact breaks the chain from that row to the tip
+//      and destroys the evidentiary value of the rest of the file. The remedy
+//      would be rotating the credential *and* the log.
+//
+// Incomplete redaction on a durable row is worse than storing nothing, because
+// an operator reading a column labelled redacted believes it. So: a hash, which
+// answers whether two calls were the same and claims nothing else.
+//
+// What the decision costs is written down rather than waved off: a call that was
+// *refused* reached no upstream, so nothing anywhere records what it attempted.
+// For a call that ran, the upstream has its own record. That gap is parked, not
+// solved.
 //
 // ## Why a hash of the arguments is not the fingerprint ./log.ts forbids
 //

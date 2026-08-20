@@ -279,12 +279,13 @@ export default tseslint.config(
     // value — that is why the record can hold a hash of the model's arguments
     // at all. A module that cannot import the vault cannot grow one by accident.
     //
-    // `redact` is deliberately *not* banned, and the reason is worth stating
-    // rather than leaving to be inferred: arguments are not stored, so nothing
-    // here has anything to redact. If the follow-up issue adds capture, it
-    // redacts on the route while building the record — where the secret set for
-    // that call is knowable — and not in the writer, which is handed a record
-    // that is already safe to persist.
+    // `redact` **is** banned here now, and the reversal is the point. It used
+    // to be left out on the ground that argument capture might one day redact
+    // while building the record. #122 designed that and declined it — the whole
+    // argument is in audit-log.ts's header — so the exception was standing on a
+    // future that is not coming, and a rule kept open for a change nobody is
+    // going to make is a rule with a hole in it. Nothing here imported it; the
+    // ban costs nothing and makes the import list say what it means.
     files: ["packages/proxy/src/audit-db.ts", "packages/proxy/src/audit-log.ts"],
     rules: {
       "no-restricted-imports": [
@@ -299,11 +300,12 @@ export default tseslint.config(
                 "**/token-engine*",
                 "**/grant-flow*",
                 "**/envelope*",
+                "**/redact*",
                 ...ATOMIC_WRITE_BAN,
                 "@getlibero/proxy"
               ],
               message:
-                "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault — or the token store beside it — would be a column that must not exist."
+                "The audit writer holds no credential value. It records names, ids, and a hash of arguments; a column that needed the vault — or the token store beside it — would be a column that must not exist. `redact` is banned with them since #122: there is nothing here to redact, and there is not going to be."
             }
           ]
         }
@@ -315,11 +317,13 @@ export default tseslint.config(
     // carries a hash rather than redacted arguments is that nothing on the
     // write path holds a credential value — and for this file that was an
     // import list a reviewer could read, where every peer claim in this config
-    // is a rule CI enforces. Now it is both. `redact` is deliberately not
-    // banned: when argument capture lands (#122) it redacts on this route,
-    // where the secret set for the call is knowable. The vault stays out either
-    // way — values reach a call in ./outbound.ts, inside the dispatcher, and
-    // nowhere upstream of it.
+    // is a rule CI enforces. Now it is both.
+    //
+    // `redact` is banned here too, since #122 decided argument capture will not
+    // be built — see audit-log.ts's header for why, and the audit writer's block
+    // above for why an exception held open for a change nobody will make is a
+    // hole rather than a courtesy. The vault stays out either way: values reach
+    // a call in ./outbound.ts, inside the dispatcher, and nowhere upstream of it.
     files: ["packages/proxy/src/server.ts"],
     rules: {
       "no-restricted-imports": [
@@ -334,11 +338,12 @@ export default tseslint.config(
                 "**/token-engine*",
                 "**/grant-flow*",
                 "**/envelope*",
+                "**/redact*",
                 ...ATOMIC_WRITE_BAN,
                 "@getlibero/proxy"
               ],
               message:
-                "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean. The token store is a second credential store, banned for the vault's reason."
+                "The tool-call route holds no credential value: values live inside the dispatcher (./outbound.ts), and the audit row's hash-not-redact argument rests on this import list staying clean. The token store is a second credential store, banned for the vault's reason; `redact` is banned because #122 declined the capture that would have needed it."
             },
             {
               // The serving surface on the meter is read/recordToolCall/

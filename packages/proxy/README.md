@@ -72,11 +72,11 @@ reveals a credential and the one that scrubs the reply.
   interface and the file's permissions are defence in depth around those rather
   than the mechanism. Rows are hash-chained on top of that, which is a different
   kind of protection and is described below. The row carries a hash of the
-  model's arguments and never
-  the arguments: nothing on the write path holds a credential value, so nothing
-  on it could redact one. A failed write refuses the call rather than serving it
-  unrecorded. No tokens column — tokens are per turn, so the row carries the
-  result's byte length instead and cost joins by task id.
+  model's arguments and never the arguments — decided in #122 rather than
+  deferred, and the argument is in `audit-log.ts`'s header. A failed write
+  refuses the call rather than serving it unrecorded. No tokens column — tokens
+  are per turn, so the row carries the result's byte length instead and cost
+  joins by task id.
 
   **Every SQL string in this package is in the module that opens the database it
   runs against** — `budget-db.ts` and `audit-db.ts`, and nowhere else — which is
@@ -1074,6 +1074,35 @@ before it — an important difference from a row written under v5, which was
 chained at the moment it was written. Refusing a v4 file and making rotation the
 answer was considered and rejected: this log's whole value is not forgetting, and
 buying evidence by discarding the evidence is a bad trade.
+
+### Why the arguments are not stored, and why that is settled
+
+#97 shipped a hash of the model's arguments and left capture-behind-a-flag as a
+follow-up. #122 designed that follow-up and **declined it**. The reasons are in
+`audit-log.ts`'s header in full; the short form, because this is the kind of
+decision someone re-opens by accident:
+
+- **Redaction is a backstop, not a boundary** — `redact.ts` says so in its own
+  header, at length. A scan for a value finds the value and misses a
+  transformation of it. The threat capture exists to investigate is a
+  prompt-injected model putting a secret into a tool call, which is an adversary
+  rather than a careless upstream, so the mechanism would be weakest exactly
+  where it was relied on. The acceptance criterion asked for "a redaction set the
+  design argues is complete", and a complete *set* is not complete *redaction*.
+- **The plausible set has a side effect.** Redacting against every credential the
+  channel's sheet names means *acquiring* them, and acquiring an OAuth credential
+  is a token-endpoint round trip. A refused call resolves none today; under that
+  design it would mint tokens over the network to have something to redact
+  against.
+- **A captured secret would be permanent**, now that rows are chained: removing
+  it breaks the chain from that row to the tip, so the remedy would be rotating
+  the credential *and* the log.
+
+What it costs, stated rather than waved off: a **refused** call reached no
+upstream, so nothing anywhere records what it attempted. A call that ran leaves
+its arguments in the upstream's own record. That narrower gap is parked rather
+than solved, and `redact` is now banned from the writer and the route by ESLint —
+the exception that kept it importable was standing on a change that is not coming.
 
 **An export is not the verification surface.** The CSV carries both columns,
 because an export that drops the chain is an export nobody can verify — but a
