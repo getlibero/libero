@@ -113,6 +113,19 @@ export interface FakeReply {
    * moment its budget goes, which is the state #252 is about.
    */
   readonly delayMs?: number;
+  /**
+   * Deliver the response and leave the event stream open, as a server MAY.
+   *
+   * The interop shape #156 is about. The spec says a server SHOULD close the
+   * stream once it has sent the response to the request that opened it; one that
+   * does not is not violating anything, and before #156 this client buffered the
+   * body to completion, so a perfectly good answer sat unread until the call's
+   * own timeout fired and was reported `timed_out`.
+   *
+   * The socket is torn down by `closeAllConnections` at the end of the test, as
+   * with `hang`.
+   */
+  readonly keepStreamOpen?: boolean;
 }
 
 /** One tool as this fake publishes it from `tools/list`. */
@@ -507,10 +520,12 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
         // test happens to be running rather than this one.
         if (outgoing.destroyed) return;
         outgoing.writeHead(reply.status ?? 200, responseHeaders);
-        // The stream is closed after the response, which is what the spec says a
-        // server SHOULD do. A server that holds it open is the interop risk this
-        // client accepts, and it fails as a timeout rather than as a wrong answer.
-        outgoing.end(framing === "sse" ? `data: ${payload}\n\n` : payload);
+        const body = framing === "sse" ? `data: ${payload}\n\n` : payload;
+        // Closed after the response by default, which is what the spec says a
+        // server SHOULD do. `keepStreamOpen` is the server that does not — the
+        // case #156 made survivable rather than merely slow.
+        if (reply.keepStreamOpen === true) outgoing.write(body);
+        else outgoing.end(body);
       };
 
       // Not unref'd, unlike the stopwatches elsewhere in this repo: this timer

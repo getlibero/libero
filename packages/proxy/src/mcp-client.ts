@@ -12,7 +12,9 @@
 // the network only through the `fetch` it is handed, and the one it is handed is
 // `createGuardedFetch` from ./outbound.ts — so the credential is still revealed
 // in exactly one file, still attached last, and every byte the SDK ever sees
-// has already been through the one redaction pass. Nothing here unwraps a
+// has already been through the one redaction pass — since #156 chunk by chunk
+// as the body arrives, which changes when the scan runs and not what it sees.
+// Nothing here unwraps a
 // secret; the credential travels as a `CredentialSource` (#256), asked per
 // request inside the guarded fetch — a vault value answers with its constant,
 // an OAuth source with the token engine's current mint — and the SDK is never
@@ -261,6 +263,113 @@ function upstreamFailure(error: unknown): UpstreamFailure | null {
   return null;
 }
 
+/**
+ * Where the guarded fetch leaves the reason it refused, for the connect path.
+ *
+ * **A `callTool` rejection carries our `UpstreamError` unwrapped, and a
+ * `connect` rejection does not.** The SDK's version-probe classifier converts
+ * anything that went wrong on the wire into its own era-negotiation error, so
+ * by the time it reaches us the fact that the host was unreachable, the answer
+ * oversized or the destination refused has been flattened into "could not
+ * agree on a version" — three different sentences for an operator collapsed
+ * into a wrong one.
+ *
+ * So the fetch records what it threw where the connect path can read it. A
+ * plain holder rather than anything cleverer because the lifetime is exactly
+ * one `connect`, and `connect` is single-flighted through `opening` and
+ * `reopening`: there is never a second one racing it on this client.
+ *
+ * **`redaction` is the same problem with a sharper edge**, and it is why the
+ * holder outlives the handshake. A `RedactionError` means this proxy could not
+ * establish that a response is free of the credential, and the only safe
+ * answer is to serve nothing — the server's handler catch turns it into a
+ * constant 500. If the SDK swallows it the way it swallows a transport
+ * failure, that fail-closed path silently becomes a cheerful `isError` result,
+ * which is the one degradation this file must not allow. Every catch below
+ * therefore consults the holder as well as the thrown value.
+ *
+ * It is read and cleared, so one failure fails one call rather than poisoning
+ * the client. Under concurrency the attribution may land on a sibling — which
+ * is the fail-closed direction, and a redaction failure is a fault about the
+ * process rather than about one call.
+ */
+type FailureSink = {
+  failure?: UpstreamFailure;
+  redaction: RedactionError | undefined;
+  /**
+   * Whether this connection is still handshaking.
+   *
+   * What restores `MAX_CONTROL_BODY_BYTES`. The hand-rolled client chose that
+   * bound per call site — the probe, the legacy `initialize`, its
+   * acknowledgement and the termination `DELETE` — and a `fetch` has no call
+   * sites to choose at. The phase does the choosing instead: a connection is
+   * control-plane until `connect` returns, and every request after that is a
+   * call and gets the deployment's bound. The termination `DELETE` is *not*
+   * this flag flipped back on — it is bounded by its verb in `build` below,
+   * because the flag is shared with every in-flight call on the session, and
+   * flipping it during `close()` would retroactively cut a legitimate
+   * response off mid-read as `too_large`.
+   */
+  controlPlane: boolean;
+};
+
+/** Put whatever this proxy raised where the catches below can read it. */
+function record(sink: FailureSink, error: unknown): void {
+  const failure = upstreamFailure(error);
+  if (failure !== null) sink.failure = failure;
+  const redaction = redactionFailure(error);
+  if (redaction !== null) sink.redaction = redaction;
+}
+
+/**
+ * The same response, with a body that reports what it failed on.
+ *
+ * **Why a wrapper and not a `catch`, since #156.** The guarded fetch used to
+ * read the body to completion before it resolved, so everything that could go
+ * wrong with a response — the byte bound, an abort part-way through, a
+ * redaction that could not be run — went wrong *inside* the call above and was
+ * caught by it. A streamed body moves those failures after the resolve, into
+ * the SDK's own read, where they are flattened into an era-negotiation error
+ * exactly as the sink's own comment describes. So the body is wrapped in the
+ * same recording the call has, which is what keeps `too_large` reported as
+ * `too_large` rather than as "does not speak a version of MCP this proxy
+ * supports".
+ *
+ * A pull-through rather than a `pipeThrough`: a `TransformStream` has no hook
+ * for an error raised by the *readable* side, which is the only kind there is
+ * here.
+ */
+function recordInto(sink: FailureSink, response: Response): Response {
+  const source = response.body;
+  if (source === null) return response;
+
+  const reader = source.getReader();
+  const observed = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        record(sink, error);
+        controller.error(error);
+        return;
+      }
+      if (chunk.done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(chunk.value);
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+    }
+  });
+
+  // Rebuilt rather than mutated: `Response.body` is a getter. The headers are
+  // the allowlist `createGuardedFetch` already narrowed to, copied as they are.
+  return new Response(observed, { status: response.status, headers: response.headers });
+}
+
 /** The SDK error's code, or `null` for anything that is not one. */
 function sdkCode(error: unknown): SdkErrorCode | null {
   return error instanceof SdkError ? error.code : null;
@@ -362,55 +471,6 @@ export function createMcpClient(options: McpClientOptions): McpClient {
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
 
-  /**
-   * Where the guarded fetch leaves the reason it refused, for the connect path.
-   *
-   * **A `callTool` rejection carries our `UpstreamError` unwrapped, and a
-   * `connect` rejection does not.** The SDK's version-probe classifier converts
-   * anything that went wrong on the wire into its own era-negotiation error, so
-   * by the time it reaches us the fact that the host was unreachable, the answer
-   * oversized or the destination refused has been flattened into "could not
-   * agree on a version" — three different sentences for an operator collapsed
-   * into a wrong one.
-   *
-   * So the fetch records what it threw where the connect path can read it. A
-   * plain holder rather than anything cleverer because the lifetime is exactly
-   * one `connect`, and `connect` is single-flighted through `opening` and
-   * `reopening`: there is never a second one racing it on this client.
-   *
-   * **`redaction` is the same problem with a sharper edge**, and it is why the
-   * holder outlives the handshake. A `RedactionError` means this proxy could not
-   * establish that a response is free of the credential, and the only safe
-   * answer is to serve nothing — the server's handler catch turns it into a
-   * constant 500. If the SDK swallows it the way it swallows a transport
-   * failure, that fail-closed path silently becomes a cheerful `isError` result,
-   * which is the one degradation this file must not allow. Every catch below
-   * therefore consults the holder as well as the thrown value.
-   *
-   * It is read and cleared, so one failure fails one call rather than poisoning
-   * the client. Under concurrency the attribution may land on a sibling — which
-   * is the fail-closed direction, and a redaction failure is a fault about the
-   * process rather than about one call.
-   */
-  type FailureSink = {
-    failure?: UpstreamFailure;
-    redaction: RedactionError | undefined;
-    /**
-     * Whether this connection is still handshaking.
-     *
-     * What restores `MAX_CONTROL_BODY_BYTES`. The hand-rolled client chose that
-     * bound per call site — the probe, the legacy `initialize`, its
-     * acknowledgement and the termination `DELETE` — and a `fetch` has no call
-     * sites to choose at. The phase does the choosing instead: a connection is
-     * control-plane until `connect` returns, and every request after that is a
-     * call and gets the deployment's bound. The termination `DELETE` is *not*
-     * this flag flipped back on — it is bounded by its verb in `build` below,
-     * because the flag is shared with every in-flight call on the session, and
-     * flipping it during `close()` would retroactively cut a legitimate
-     * response off mid-read as `too_large`.
-     */
-    controlPlane: boolean;
-  };
 
   /** A transport and a client, custody-configured. Neither has spoken yet. */
   const build = (sink: FailureSink): { client: Client; transport: StreamableHTTPClientTransport } => {
@@ -431,12 +491,9 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     const transport = new StreamableHTTPClientTransport(new URL(options.url), {
       fetch: async (url, init) => {
         try {
-          return await guarded(url, init);
+          return recordInto(sink, await guarded(url, init));
         } catch (error) {
-          const failure = upstreamFailure(error);
-          if (failure !== null) sink.failure = failure;
-          const redaction = redactionFailure(error);
-          if (redaction !== null) sink.redaction = redaction;
+          record(sink, error);
           throw error;
         }
       },
