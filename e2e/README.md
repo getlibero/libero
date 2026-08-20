@@ -675,6 +675,8 @@ outlive the run.
 - `src/harness/client.ts` — the attacker's own mutual-TLS client.
 - `src/harness/records.ts` — reading the audit log and the meter back.
 - `src/harness/budget-cli.ts` — the operator's `budget` entrypoint, spawned.
+- `src/harness/audit-cli.ts` — the operator's `audit` entrypoint, spawned, and
+  the header says why spawning is the point rather than a detail.
 - `src/harness/cleanup.ts` — the teardown stack.
 - `src/smoke.test.ts` — the rig proving itself.
 - `src/exfiltration.test.ts` — #132, over both paths a credential could come
@@ -714,6 +716,17 @@ outlive the run.
   approval hold, the second with the audit row to show for it; and the surface
   this suite had not met, a skill as a *persistent* place a credential could come
   to rest, attacked over both the elided path and the kept one.
+- `src/audit.test.ts` — #98, the read path: three real lifecycles driven through
+  the rig and then found again by the spawned `dist/audit.js`, which is the only
+  place the *connection* can be shown — a second process opening the log
+  read-only while the proxy still holds it open for writing.
+- `src/audit-tamper.test.ts` — #356, the chain: a governed run leaving a log
+  `verify` passes, the triggers refusing the very edits the attack then makes
+  with them dropped, a rewritten row and a deleted one each named by id, and the
+  limit stated as a case rather than only as a paragraph — a truncated tail
+  verifies clean, and only the tip says otherwise. Every attack runs against its
+  own `VACUUM INTO` copy, because `verify` names the first break and stops, so a
+  shared file would make each case assert about the damage the one before it did.
 - `src/deletion-derived.test.ts` — #233, Slack retention reaching derived data:
   a real `message_deleted`, `message_changed` and tombstone event through the
   gateway, each taking the thread's summary and that summary's embedding with
