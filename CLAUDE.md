@@ -122,7 +122,16 @@ attacks them — comes before features that depend on it.
 
 ## Things that span packages
 
-These have no single README to live in, which is the test for belonging here.
+The test for belonging here is that **the constraint binds code outside the
+package that documents it.** Some of these are argued at length elsewhere —
+`packages/memory/README.md` makes the leaf case, `refusal.ts`'s header draws the
+refusal/error line — and they are still restated here, because the person who
+needs them is adding an import in `apps/server` or wording an error in a route,
+and will not be reading that README first. A rule nobody meets at the moment they
+would break it is not enforced by being written down somewhere reasonable.
+
+Keep each entry to the rule and its reason. The argument belongs where the code
+is; what belongs here is enough to stop someone, and a pointer.
 
 **One credential lives in one place, and the boundary is a process.** Tool
 credentials are the proxy's and reach the agent never; the Slack tokens and the
