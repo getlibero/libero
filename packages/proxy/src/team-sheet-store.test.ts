@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -305,6 +305,71 @@ describe("an invalid edit", () => {
 
   // The sequence the issue calls out by name: good, broken, good again. The
   // channel must not be left stale once the operator fixes the file.
+  // #342. The complaint an operator gets for a *valid* sheet saved by a slow
+  // truncating writer: the watcher reads the file while it is empty, which fails
+  // the same way a typo does. It is not suppressed — the header says why, with
+  // the measurement — so what has to hold is that the reload retracts it in the
+  // log rather than leaving the operator to infer it.
+  it("retracts a complaint caused by a torn read when the write settles", { timeout: 15000 }, async () => {
+    await writeSheet("engineering", VALID);
+    const { logger, lines } = recordingLogger();
+    store = new TeamSheetStore({ root, logger });
+    await store.resolve("engineering");
+
+    await tick();
+    // The torn write itself, held open long enough that the watcher certainly
+    // reads inside it. `writeFile` is too fast to provoke this reliably, which
+    // is the point: it takes a writer that is non-atomic *and* slow.
+    const handle = await open(sheetPath("engineering"), "r+");
+    await handle.truncate(0);
+    // 5000 rather than the default, matching the two save-time watcher tests
+    // below: FSEvents can buffer notifications for seconds under load.
+    await until(
+      () => lines.some(l => l.fields.event === "team_sheet_invalid"),
+      "the torn read to be complained about",
+      5000
+    );
+    await handle.write(WIDER, 0, "utf8");
+    await handle.close();
+
+    await until(
+      () => lines.some(l => l.fields.event === "team_sheet_reloaded"),
+      "the settled write to be picked up",
+      5000
+    );
+
+    const complaint = lastComplaint(lines);
+    expect(complaint?.level).toBe("error");
+    // Empty file: `[channel]` is the only unconditionally-required top level.
+    expect(complaint?.fields.issues).toContain("channel: invalid_type");
+
+    // The retraction, which is the whole of what #342 added. Without it the
+    // operator sees an error and then an unrelated-looking info line.
+    const reload = lines.filter(l => l.fields.event === "team_sheet_reloaded").at(-1);
+    expect(reload?.fields.supersedes).toBe("team_sheet_invalid");
+
+    // And the sheet on disk really was fine.
+    const settled = await store.resolve("engineering");
+    expect(settled.status === "active" && settled.stale).toBe(false);
+  });
+
+  // The counterpart, and the reason `supersedes` is worth reading: a reload that
+  // follows no complaint does not claim to retract one.
+  it("does not claim to supersede anything when nothing was complained about", async () => {
+    await writeSheet("engineering", VALID);
+    const { logger, lines } = recordingLogger();
+    store = new TeamSheetStore({ root, logger });
+    await store.resolve("engineering");
+
+    await tick();
+    await writeSheet("engineering", WIDER);
+    await store.resolve("engineering");
+
+    const reload = lines.filter(l => l.fields.event === "team_sheet_reloaded").at(-1);
+    expect(reload).toBeDefined();
+    expect(reload?.fields.supersedes).toBeUndefined();
+  });
+
   it("recovers when the sheet becomes valid again", async () => {
     await writeSheet("engineering", VALID);
     store = new TeamSheetStore({ root, logger: createSilentLogger() });

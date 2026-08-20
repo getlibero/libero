@@ -95,6 +95,22 @@ export interface LogFields {
   /** What a rejected team sheet left in force. A code, not prose. */
   effect?: "previous_sheet_retained" | "no_sheet_in_force";
   /**
+   * That this line voids an earlier one, naming the event it voids.
+   *
+   * #342: the sheet watcher is live during a write that is not atomic, so a
+   * *valid* sheet saved by a truncating writer can be read while it is empty and
+   * complained about at `error` before the settled file is read and accepted.
+   * The complaint self-corrects, and until this field the correction was silent
+   * — an operator saw `team_sheet_invalid` followed by an `info` line with no
+   * stated relationship to it, and had to know the store's internals to tell
+   * "your edit did not land" from "your edit landed a moment ago".
+   *
+   * A field rather than a second event name, because the reload is the same
+   * fact either way; what changes is whether anything is owed to a line already
+   * written. Absent when nothing was complained about.
+   */
+  supersedes?: "team_sheet_invalid";
+  /**
    * The MCP server and tool a call named. Both are `ResourceName`s out of the
    * team sheet — names, never a URL and never a credential. A call for a server
    * the sheet does not list is logged with the name it asked for, which is how
