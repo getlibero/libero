@@ -112,6 +112,25 @@ export function auditDbFromEnv(env: Env): string {
 }
 
 /**
+ * The attempt store: `PROXY_ATTEMPTS_DB`. **Optional**, on the price table's
+ * argument (#364): not having one is a legitimate deployment — capture
+ * switched off is the design's own off switch — and absence must not invent a
+ * path. The hazard optionality carries here is the audit variable's one turned
+ * quieter: an operator who meant to capture and mistyped the name gets no
+ * records, discovered at the incident. What answers it is the startup line —
+ * the composition says once, loudly, that capture is off — and the compose
+ * file shipping the variable set, which makes "on" the deployment default and
+ * "off" an explicit edit.
+ *
+ * SQLite writes `-wal` and `-shm` beside this path, so the directory has to be
+ * writable and not just the file.
+ */
+export function attemptsDbFromEnv(env: Env): string | undefined {
+  const value = env["PROXY_ATTEMPTS_DB"];
+  return value === undefined || value === "" ? undefined : value;
+}
+
+/**
  * The price table: `PROXY_PRICE_TABLE`. **Optional**, and the only optional path
  * this file reads (#62).
  *

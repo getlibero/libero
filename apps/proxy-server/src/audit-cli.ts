@@ -34,11 +34,14 @@
 
 import { parseArgs } from "node:util";
 import { AuditOutcome } from "@getlibero/schema";
+import { existsSync } from "node:fs";
+import { openAttemptStore } from "@getlibero/proxy";
 import { openAuditReader } from "@getlibero/proxy";
+import type { AttemptStore } from "@getlibero/proxy";
 import type { AuditEntry, AuditQuery, AuditReader } from "@getlibero/proxy";
 import { csvHeader, csvRow } from "./audit-csv.js";
 import { listLines, showLines } from "./audit-format.js";
-import { auditDbFromEnv } from "./env.js";
+import { attemptsDbFromEnv, auditDbFromEnv } from "./env.js";
 import type { Env } from "./env.js";
 
 export interface AuditCliIo {
@@ -87,6 +90,8 @@ const USAGE = [
   "  ticket <id>       print every row for one approval ticket",
   "  open              print held and approved rows with no successor",
   "  verify            walk the hash chain; print the row count and the tip",
+  "  attempt <id|hash>        print what a blocked call attempted",
+  "  attempt-delete <id|hash> forget one attempt record; the audit rows stay",
   "",
   "Filters, for list and csv:",
   "",
@@ -125,10 +130,19 @@ const USAGE = [
   "call_id is model-authored, and this export records values rather than",
   "altering them.",
   "",
+  "attempt and attempt-delete take a row id from list, or the 64-hex hash a row",
+  "carries, and read PROXY_ATTEMPTS_DB — the off-chain store a blocked call's",
+  "arguments land in at refusal or at mint. Its content is model-authored and",
+  "stored raw: no redaction is claimed, and it may contain anything the model",
+  "saw, so treat it as hostile. attempt re-verifies the content against the",
+  "hash and exits 3 when it does not match. attempt-delete is the designed",
+  "remedy for a secret that landed in a record: the blob goes, the chained",
+  "rows stay byte-identical, and verify stays green.",
+  "",
   "Reads PROXY_AUDIT_DB."
 ].join("\n");
 
-const COMMANDS = ["list", "csv", "show", "ticket", "open", "verify"] as const;
+const COMMANDS = ["list", "csv", "show", "ticket", "open", "verify", "attempt", "attempt-delete"] as const;
 type Command = (typeof COMMANDS)[number];
 
 function isCommand(value: string): value is Command {
@@ -296,6 +310,56 @@ const asList = (value: string | string[] | undefined): string[] =>
 const str = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value.at(-1) : value;
 
+/**
+ * The attempt store, for the two commands that read it (#364).
+ *
+ * Opened here rather than beside the reader because most commands never touch
+ * it — and guarded by `existsSync`, because `openAttemptStore` creates a
+ * missing file and a read command must not invent an empty store under a
+ * mistyped path.
+ */
+function openAttempts(env: Env): AttemptStore {
+  const file = attemptsDbFromEnv(env);
+  if (file === undefined) {
+    throw new Error("attempt capture is off: PROXY_ATTEMPTS_DB is not set");
+  }
+  if (!existsSync(file)) {
+    throw new Error(`no attempt store at ${file} — nothing has been captured yet`);
+  }
+  return openAttemptStore({ file });
+}
+
+/**
+ * A positional that is a row id or the hash itself.
+ *
+ * Both, because the operator arrives from two directions: `list` prints row
+ * ids, and a row already in hand carries the hash.
+ */
+function attemptKeyOf(reader: AuditReader, positional: string): string {
+  if (/^[0-9a-f]{64}$/.test(positional)) return positional;
+  const entry = reader.byId(count(positional, "attempt"));
+  if (entry === undefined) {
+    throw new Error(`no row ${positional}`);
+  }
+  return entry.argumentsSha256;
+}
+
+/**
+ * C0, C1 and DEL become U+FFFD before the terminal sees them.
+ *
+ * The store's content is model-authored, and a terminal is a rendering
+ * surface: escape sequences can retitle a window, move the cursor over
+ * earlier output, or worse. The same class of hazard the approval card's
+ * mrkdwn escaping answers, for the operator's screen instead of Slack.
+ * Canonical JSON contains no raw control characters — `JSON.stringify`
+ * escapes them inside strings — so on unaltered content this replaces
+ * nothing, which is exactly when it is cheapest to keep.
+ */
+const CONTROL = /[\u0000-\u001F\u007F-\u009F]/g;
+function neutralizeControl(value: string): string {
+  return value.replace(CONTROL, "\uFFFD");
+}
+
 export function runAuditCommand(io: AuditCliIo): number {
   const [command, ...rest] = io.argv;
 
@@ -410,6 +474,54 @@ function run(io: AuditCliIo, reader: AuditReader, command: Command, parsed: Pars
     case "open": {
       requireNoPositionals(positionals, "open");
       return printOrEmpty(io, reader.openApprovals(query.channel));
+    }
+
+    case "attempt": {
+      const key = attemptKeyOf(reader, onePositional(positionals, "attempt", "a row id or a 64-hex hash"));
+      const attempts = openAttempts(io.env);
+      try {
+        const stored = attempts.read(key);
+        if (stored === undefined) {
+          io.err(`audit: no attempt record for ${key} — never captured, or deleted`);
+          return EXIT_ERROR;
+        }
+        io.out(`hash:       ${stored.argumentsSha256}`);
+        io.out(`first seen: ${new Date(stored.firstSeenAt).toISOString()}`);
+        io.out("The content below is model-authored and stored raw. Treat it as hostile.");
+        io.out("");
+        io.out(neutralizeControl(stored.argumentsJson));
+        if (!stored.verified) {
+          // The verdict the whole off-chain design leans on: the chained rows
+          // committed to this hash, and these bytes no longer produce it.
+          io.err(
+            "audit: this record does not match the hash it is stored under — it has been " +
+              "altered since capture. The audit rows carrying this hash committed to different bytes."
+          );
+          return EXIT_TAMPERED;
+        }
+        return EXIT_OK;
+      } finally {
+        attempts.close();
+      }
+    }
+
+    case "attempt-delete": {
+      const key = attemptKeyOf(
+        reader,
+        onePositional(positionals, "attempt-delete", "a row id or a 64-hex hash")
+      );
+      const attempts = openAttempts(io.env);
+      try {
+        if (!attempts.delete(key)) {
+          io.err(`audit: no attempt record for ${key} — never captured, or already deleted`);
+          return EXIT_ERROR;
+        }
+        io.out(`deleted the attempt record for ${key}`);
+        io.out("The audit rows carrying this hash are unchanged, and verify stays green.");
+        return EXIT_OK;
+      } finally {
+        attempts.close();
+      }
     }
 
     case "verify": {

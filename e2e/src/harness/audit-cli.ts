@@ -53,9 +53,19 @@ function auditEntrypoint(): string {
  * Never rejects on a non-zero exit, as `runBudgetCli` does not: the status is
  * part of what a case asserts.
  */
-export function runAuditCli(auditDb: string, args: readonly string[]): Promise<AuditCliResult> {
+export function runAuditCli(
+  auditDb: string,
+  args: readonly string[],
+  attemptsDb?: string
+): Promise<AuditCliResult> {
   const child = spawn(process.execPath, [auditEntrypoint(), ...args], {
-    env: { PATH: process.env.PATH ?? "", PROXY_AUDIT_DB: auditDb },
+    env: {
+      PATH: process.env.PATH ?? "",
+      PROXY_AUDIT_DB: auditDb,
+      // Only for the two attempt commands (#364); every other command reads
+      // one file and gets one variable, per the header's argument.
+      ...(attemptsDb === undefined ? {} : { PROXY_ATTEMPTS_DB: attemptsDb })
+    },
     stdio: ["ignore", "pipe", "pipe"]
   });
 

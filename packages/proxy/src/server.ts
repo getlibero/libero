@@ -84,6 +84,7 @@ import {
 import { createApprovalStore, type RedeemResult } from "./approvals.js";
 import { createApprovalsRoute } from "./approvals-route.js";
 import { type AuditWriter, hashArguments } from "./audit-log.js";
+import type { AttemptStore } from "./attempts-db.js";
 import {
   assertServableComposition,
   type SpendMeter,
@@ -152,6 +153,19 @@ export interface ProxyServerOptions {
    * audited" is not a correct default for anything.
    */
   audit: AuditWriter;
+  /**
+   * The attempt store (#364): what a blocked call tried to do, off-chain,
+   * bound by the hash the audit row already carries.
+   *
+   * Optional where `audit` is required, and the difference is deliberate: an
+   * absent writer is "no audit", which is never a correct deployment, where an
+   * absent attempt store is capture switched off — a legitimate deployment
+   * choice the composition makes explicitly and says once at startup. When
+   * present, a write failure fails the request exactly as an audit write
+   * failure does, so "every blocked call leaves an attempt record" holds with
+   * no exception clause rather than while nothing is wrong.
+   */
+  attempts?: AttemptStore;
   logger?: Logger;
   /** Clock, injected for tests. */
   now?: () => number;
@@ -562,6 +576,30 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       // site is immediately followed by a `return` in a mutually exclusive
       // branch, and the dispatch switch is exhaustive.
       audited = true;
+
+      // The attempt record, before the row (#364). A blocked call reached no
+      // upstream, so the arguments' only record is the one made here, keyed by
+      // the same hash the row below commits to. `held` is capture at mint,
+      // which is what covers a later deny or expiry — by then the ticket store
+      // holds only the hash. Blob first, row second: an orphaned blob is
+      // harmless and deletable, where a row whose capture then failed would
+      // claim a record that does not exist. A capture failure fails the
+      // request as an audit write failure does, and for its reason.
+      if (
+        options.attempts !== undefined &&
+        (event.outcome === "refused" || event.outcome === "held" || event.outcome === "expired")
+      ) {
+        try {
+          options.attempts.record(call.arguments, now());
+        } catch (error) {
+          logger.log("error", {
+            event: "attempt_write_failed",
+            requestId: ctx.requestId,
+            channel: ctx.channel
+          });
+          throw error;
+        }
+      }
 
       try {
         await options.audit.append({
