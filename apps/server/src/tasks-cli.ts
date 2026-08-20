@@ -16,11 +16,16 @@
 //
 //   docker compose run --rm server node dist/tasks.js list C024BE91L
 //   docker compose run --rm server node dist/tasks.js cancel C024BE91L <id>
+//   docker compose run --rm server node dist/tasks.js cancelled C024BE91L
 //
 // **It is not a route and there is no admin principal.** Nothing about this is
 // reachable from the model: a channel's checks are created through a governed,
 // approved tool call, and cancelled by a person with a shell on the host. There
 // is no verb here the agent process can invoke on itself.
+//
+// **A cancel leaves a record** (#349), because the check it calls off is one a
+// person in the channel approved — the store's schema comment carries the
+// argument, and `cancelled` is the record's read.
 //
 // **This takes effect without restarting anything.** The database is WAL, the
 // clock reads a channel's next due instant on every scan rather than caching one,
@@ -32,7 +37,7 @@
 // the real ones.
 
 import { openMessageStore } from "@getlibero/memory";
-import type { MessageStore, StoredScheduledTask } from "@getlibero/memory";
+import type { CancelledScheduledTask, MessageStore, StoredScheduledTask } from "@getlibero/memory";
 import { ChannelId } from "@getlibero/schema";
 import { storeRootFromEnv } from "./env.js";
 import type { Env } from "./env.js";
@@ -58,10 +63,11 @@ const USAGE = [
   "usage: tasks <command>",
   "",
   "  list <channel>           print the checks a channel is waiting on",
-  "  cancel <channel> <id>    forget one check that has not run yet",
+  "  cancel <channel> <id>    call off one check that has not run yet",
+  "  cancelled <channel>      print the checks that were called off, newest first",
   "",
-  "Reads AGENT_STORE_ROOT. A cancel is a delete: nothing records that it happened,",
-  "and the check simply never runs."
+  "Reads AGENT_STORE_ROOT. A cancel ends the check and leaves a record — the row",
+  "cancelled prints — because the check it calls off is one a human approved."
 ].join("\n");
 
 export interface TasksCliIo {
@@ -91,6 +97,17 @@ export interface TasksCliIo {
 function render(task: StoredScheduledTask): string {
   const due = new Date(task.dueAt).toISOString().slice(0, 19).replace("T", " ");
   return `${task.id}\t${due}Z\t${task.prompt.replace(/\s*\n\s*/g, " ")}`;
+}
+
+/**
+ * One cancellation record, as a person reads it (#349). `render`'s rules, one
+ * column wider: when it was called off first — the reader is asking "what
+ * happened lately" — then when it would have run, then the prompt whole.
+ */
+function renderCancelled(record: CancelledScheduledTask): string {
+  const cancelled = new Date(record.cancelledAt).toISOString().slice(0, 19).replace("T", " ");
+  const due = new Date(record.dueAt).toISOString().slice(0, 19).replace("T", " ");
+  return `${record.id}\t${cancelled}Z\twas due ${due}Z\t${record.prompt.replace(/\s*\n\s*/g, " ")}`;
 }
 
 export function runTasksCommand(io: TasksCliIo): number {
@@ -149,12 +166,22 @@ export function runTasksCommand(io: TasksCliIo): number {
         // already run — three things an operator would want told apart, and the
         // store cannot tell them apart without reading rows this command has no
         // reason to read. What it can say truthfully is that nothing was
-        // cancelled.
-        if (!store.cancelScheduledTask(id)) {
+        // cancelled — and nothing is recorded either, so a failed cancel
+        // cannot invent history.
+        if (!store.cancelScheduledTask(id, (io.now ?? Date.now)())) {
           io.err(`tasks: ${channel} has no waiting check with that id`);
           return EXIT_ERROR;
         }
         io.out(`cancelled ${id}`);
+        return EXIT_OK;
+      }
+      case "cancelled": {
+        const records = store.listCancelledScheduledTasks(LIST_LIMIT);
+        if (records.length === 0) {
+          io.out(`no cancelled checks recorded in ${channel}`);
+          return EXIT_OK;
+        }
+        for (const record of records) io.out(renderCancelled(record));
         return EXIT_OK;
       }
       default:

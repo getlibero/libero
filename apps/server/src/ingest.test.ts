@@ -83,6 +83,7 @@ function recordingStore(append: (message: StoredMessage) => boolean = () => true
       markScheduledTaskFired: () => {},
       listScheduledTasks: () => [],
       cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
       readThreadSummary: () => null,
       close: () => {
         closed += 1;
@@ -396,6 +397,7 @@ describe("createMessageIngest", () => {
         markScheduledTaskFired: () => {},
         listScheduledTasks: () => [],
         cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -455,6 +457,7 @@ describe("createMessageIngest", () => {
         markScheduledTaskFired: () => {},
         listScheduledTasks: () => [],
         cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -889,6 +892,7 @@ describe("createRevisionIngest", () => {
         markScheduledTaskFired: () => {},
         listScheduledTasks: () => [],
         cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
         readThreadSummary: () => null,
         close: () => {}
       }
@@ -991,6 +995,7 @@ describe("createRevisionIngest", () => {
         markScheduledTaskFired: () => {},
         listScheduledTasks: () => [],
         cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
         readThreadSummary: () => null,
         close: () => {}
       })
@@ -1050,6 +1055,7 @@ describe("createRevisionIngest", () => {
         markScheduledTaskFired: () => {},
         listScheduledTasks: () => [],
         cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
         readThreadSummary: () => null,
         close: () => {}
       })

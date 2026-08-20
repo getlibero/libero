@@ -183,6 +183,7 @@ describe("the interface", () => {
       "dueScheduledTasks",
       "forgetSkillMergeProposal",
       "idleThreads",
+      "listCancelledScheduledTasks",
       "listScheduledTasks",
       "listSkills",
       "markScheduledTaskFired",
@@ -1867,13 +1868,46 @@ describe("scheduled checks", () => {
   // A delete rather than a terminal outcome: the row's absence is unambiguous
   // where a stamp saying "fired" about a check that never ran would not be, and
   // the same act frees the pending slot.
-  it("forgets a waiting check, and says whether there was one", () => {
+  it("calls off a waiting check, and says whether there was one", () => {
     store.scheduleTask(ticket("a"));
 
-    expect(store.cancelScheduledTask("a")).toBe(true);
+    expect(store.cancelScheduledTask("a", 5_000)).toBe(true);
     expect(pending()).toBe(0);
     expect(store.listScheduledTasks(10)).toEqual([]);
-    expect(store.cancelScheduledTask("a")).toBe(false);
+    expect(store.cancelScheduledTask("a", 5_001)).toBe(false);
+  });
+
+  // The delete leaves a record (#349): the check a cancel calls off is one a
+  // human approved, and a different human with a shell undoing it with nothing
+  // left behind was a hole in the account of what happened. The whole row is
+  // carried, because the row it came from is gone by the same act.
+  it("records what a cancel called off, newest first", () => {
+    store.scheduleTask(ticket("a", { dueAt: 1_000 }));
+    store.scheduleTask(ticket("b", { dueAt: 2_000 }));
+    store.cancelScheduledTask("a", 5_000);
+    store.cancelScheduledTask("b", 6_000);
+
+    const cancelled = store.listCancelledScheduledTasks(10);
+    expect(cancelled.map(record => record.id)).toEqual(["b", "a"]);
+    expect(cancelled[1]).toEqual({
+      id: "a",
+      task: ticket("a").task,
+      prompt: ticket("a").prompt,
+      dueAt: 1_000,
+      createdAt: ticket("a").createdAt,
+      cancelledAt: 5_000
+    });
+  });
+
+  // A cancel that cancelled nothing records nothing: a wrong id, a fired
+  // check, and a second cancel of the same id must not invent history.
+  it("records nothing when there was nothing to call off", () => {
+    store.scheduleTask(ticket("a"));
+    store.markScheduledTaskFired("a", 1_100, "posted");
+
+    expect(store.cancelScheduledTask("a", 5_000)).toBe(false);
+    expect(store.cancelScheduledTask("nope", 5_000)).toBe(false);
+    expect(store.listCancelledScheduledTasks(10)).toEqual([]);
   });
 
   // A fired check is a record of something that happened; there is nothing to
@@ -1882,7 +1916,7 @@ describe("scheduled checks", () => {
     store.scheduleTask(ticket("a"));
     store.markScheduledTaskFired("a", 1_100, "posted");
 
-    expect(store.cancelScheduledTask("a")).toBe(false);
+    expect(store.cancelScheduledTask("a", 5_000)).toBe(false);
     const rows = new DatabaseSync(file, { readOnly: true })
       .prepare(`SELECT COUNT(*) AS n FROM scheduled_task WHERE id = 'a'`)
       .get() as { n: number };

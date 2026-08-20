@@ -54,8 +54,9 @@ services:
       #
       # It also holds a channel's scheduled checks. See what one is waiting on,
       # or call one off, without restarting anything:
-      # `docker compose run --rm server node dist/tasks.js list <channel>` and
-      # `... cancel <channel> <id>`. That lives here rather than in the published
+      # `docker compose run --rm server node dist/tasks.js list <channel>`,
+      # `... cancel <channel> <id>`, and `... cancelled <channel>` for the
+      # record a cancel leaves. That lives here rather than in the published
       # CLI because this is a named volume the host cannot see, and here rather
       # than on the proxy because the proxy mounts it read-only and a cancel is a
       # write.

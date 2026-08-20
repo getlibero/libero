@@ -1350,8 +1350,9 @@ to wake at a time that has passed.
 ### The operator surface, and why it is here
 
 `src/tasks-cli.ts` is this process's **first operator entrypoint** — `node
-dist/tasks.js list <channel>` and `cancel <channel> <id>` — beside the four
-`apps/proxy-server` already carries. Where it lives was forced twice over.
+dist/tasks.js list <channel>`, `cancel <channel> <id>` and `cancelled <channel>`
+— beside the four `apps/proxy-server` already carries. Where it lives was forced
+twice over.
 
 Not the published `libero` CLI, for the reason #98 gave the audit log: the store
 is a named volume, so `npx @getlibero/cli` would open a path that is not on the
@@ -1363,13 +1364,18 @@ Not the proxy's entrypoints either, even though it mounts the same volume, becau
 it mounts it `readOnly` by design. A cancel is a write, so it can only be this
 process's.
 
-**A cancel is a delete**, `forgetSkillMergeProposal`'s shape: the row's absence is
-unambiguous where a stamp saying "fired" about a check that never ran would not
-be, and the same act frees the pending slot. The cost is the one declining a
-proposal already carries and is worth stating — **nothing records that a check was
-cancelled.** If that is ever wanted it is a row somewhere else, not a value in
-`outcome`: `fired_at` means when a check ran, and widening it to mean "when it
-ended" would make every reader of that table ask which.
+**A cancel is a delete that leaves a record** (#349). The delete is
+`forgetSkillMergeProposal`'s shape: the row's absence is unambiguous where a
+stamp saying "fired" about a check that never ran would not be, and the same act
+frees the pending slot. The record is the row-somewhere-else that contract
+always said it would be — `scheduled_task_cancellation`, written in the same
+transaction, never a value in `outcome`, because `fired_at` means when a check
+ran and widening it to mean "when it ended" would make every reader of that
+table ask which. What earns a cancel the record a declined merge proposal does
+not get: the check it calls off is one **a person in the channel approved**, and
+a different person with a shell undoing it with nothing left behind is a hole in
+the account of what happened the moment approver and operator are different
+people. `cancelled` is the record's read, newest first.
 
 It needs no restart to take effect, and that is the property the clock's
 read-every-scan was chosen for.

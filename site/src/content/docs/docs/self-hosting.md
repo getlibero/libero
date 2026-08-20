@@ -26,10 +26,9 @@ is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowher
 store and its full-text index, a curated `MEMORY.md`, and semantic recall over thread summaries —
 and so are skills, though a deployment with no embedding provider retrieves them on full text alone
 and proposes no merges. Ambient mode is whole too — the heartbeat, proactive posts behind a rate
-window, and `schedule_task` — with two limits stated rather than hidden: a fired check is one
+window, and `schedule_task` — with one limit stated rather than hidden: a fired check is one
 bounded turn over the channel's recent messages and can look nothing up
-([#348](https://github.com/getlibero/libero/issues/348)), and cancelling a check leaves no record
-that it was cancelled ([#349](https://github.com/getlibero/libero/issues/349)). Point this at a
+([#348](https://github.com/getlibero/libero/issues/348)). Point this at a
 scratch workspace before a real one.
 :::
 
@@ -466,11 +465,14 @@ side's:
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm server node dist/tasks.js list C024BE91L
 docker compose -f deploy/docker-compose.yml run --rm server node dist/tasks.js cancel C024BE91L 7
+docker compose -f deploy/docker-compose.yml run --rm server node dist/tasks.js cancelled C024BE91L
 ```
 
-A cancel is a delete, and it carries an honest cost: nothing records that the check was cancelled,
-because `fired_at` means when a check ran and widening it would make every reader of that table
-ask which ([#349](https://github.com/getlibero/libero/issues/349)).
+A cancel is a delete that leaves a record: the check stops being due and can never fire, and what
+it said, when it would have run, and when it was called off land in a record `cancelled` prints,
+newest first. The record exists because the check being called off is one a human in the channel
+approved — a cancel is a person with a shell undoing a person with a click, and that deserves an
+account ([#349](https://github.com/getlibero/libero/issues/349)).
 SQLite writes `-wal` and `-shm` files beside it, so the *directory* must be writable and not just
 the file. Nothing in it is a secret.
 

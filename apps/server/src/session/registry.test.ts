@@ -175,6 +175,7 @@ describe("createSessionRegistry", () => {
           markScheduledTaskFired: () => {},
           listScheduledTasks: () => [],
           cancelScheduledTask: () => false,
+        listCancelledScheduledTasks: () => [],
           readThreadSummary: () => null,
           close: () => {
             closed += 1;
