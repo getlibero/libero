@@ -903,7 +903,8 @@ The cost is two containers per concurrent run, against a deployment guide whose
 minimum is 2 vCPU and 2 GB. Worth flagging for whoever builds it:
 **`PROXY_MAX_UPSTREAM_CONCURRENCY` does not bound this.** It bounds the MCP pool.
 There is no concurrency cap on built-ins today, and this is the built-in that
-needs one.
+needs one — #405, with the other bound that is the operator's rather than the
+channel's.
 
 **CONNECT only, which decides two things an operator will trip over.** A CONNECT
 hop reads a host and a port from the request line and never the payload: no
