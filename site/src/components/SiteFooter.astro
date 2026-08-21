@@ -40,6 +40,15 @@ const columns = [
         href: 'https://github.com/getlibero/libero/security/advisories/new',
         label: 'Report a vulnerability',
       },
+      // The analytics disclosure, and deliberately a link rather than a
+      // sentence. Every other entry in this column is evidence someone can
+      // check; "no cookies" asserted in a footer would be the one claim here
+      // that a reader has to take on trust.
+      //
+      // It is only honest while the GoatCounter dashboard is set to public. If
+      // that is ever turned off, remove this line rather than leaving a
+      // disclosure that lands on a login form.
+      { href: 'https://stats.getlibero.com', label: 'Stats' },
     ],
   },
 ];
