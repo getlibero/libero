@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Cleanup } from "./cleanup.js";
+import { mintCached } from "./cert-cache.js";
 
 /**
  * Both `src/harness/x.ts` and `dist/harness/x.js` sit three levels below the
@@ -116,9 +117,14 @@ export function mintCerts(cleanup: Cleanup, options: MintOptions): Certs {
   const dir = mkdtempSync(join(tmpdir(), "libero-e2e-certs-"));
   cleanup.add("certs", () => rmSync(dir, { recursive: true, force: true }));
 
-  const args = ["--out", dir, "--channels", options.channels.join(",")];
+  // Cached, because eighty-one of this suite's calls ask for the same thing and
+  // each one is five RSA keys. `cert-cache.ts` has the argument, including why
+  // `rotate` and `promote` below are deliberately not routed through it.
+  const args = ["--channels", options.channels.join(",")];
   for (const raw of options.rawCns ?? []) args.push("--raw-cn", raw);
-  devCerts(args);
+  mintCached(REPO_ROOT, join(REPO_ROOT, "scripts", "dev-certs.sh"), args, dir, () =>
+    devCerts(["--out", dir, ...args])
+  );
 
   const fingerprint = (label: string): string =>
     new X509Certificate(readFileSync(join(dir, "agent", `client-${label}.pem`))).fingerprint256;
