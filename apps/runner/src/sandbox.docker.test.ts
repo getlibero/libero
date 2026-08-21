@@ -30,6 +30,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createDockerClient, type DockerClient } from "./docker.js";
 import { runInSandbox, SANDBOX_PIDS_LIMIT, SANDBOX_TMPFS_BYTES, SANDBOX_WORKDIR } from "./run.js";
@@ -42,6 +43,8 @@ import { runInSandbox, SANDBOX_PIDS_LIMIT, SANDBOX_TMPFS_BYTES, SANDBOX_WORKDIR 
  * mean this file names a specific published layer and stops working when it is
  * garbage-collected, to prove nothing these cases are about.
  */
+const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
 const IMAGE = "python:3.13-alpine";
 const COMMAND = ["python3", "-c"] as const;
 
@@ -250,6 +253,34 @@ describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
   // host running these tests.
   const EGRESS_NETWORK = "bridge";
 
+  /**
+   * The hop runs *this repository's* runner image, so the image has to exist.
+   *
+   * Built here rather than assumed, and that is the second thing CI taught this
+   * file. The `images` job builds it; the `build` job that runs the tests does
+   * not, so the first run of these cases failed with "No such image" — a
+   * dependency on another job's side effect, which is the kind of coupling that
+   * works until somebody reorders a workflow.
+   *
+   * A bind mount of `dist` would have been faster and is the thing to refuse:
+   * `ContainerSpec` deliberately has no `Binds`, because a spec field that
+   * reaches the host filesystem is exactly what #393 designed the request shape
+   * to make impossible. A test is not a reason to add one.
+   */
+  const RUNNER_IMAGE = process.env["RUNNER_IMAGE"] ?? "ghcr.io/getlibero/runner:latest";
+
+  beforeAll(() => {
+    try {
+      execFileSync("docker", ["image", "inspect", RUNNER_IMAGE], { stdio: "pipe" });
+    } catch {
+      execFileSync("docker", ["build", "-f", "apps/runner/Dockerfile", "-t", RUNNER_IMAGE, "."], {
+        cwd: REPO_ROOT,
+        stdio: "pipe",
+        timeout: 900_000
+      });
+    }
+  }, 900_000);
+
   const withEgress = (code: string, allow: readonly string[]) =>
     runInSandbox(
       { code, caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 60 }, egressAllow: [...allow] },
@@ -258,11 +289,10 @@ describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
         config: {
           image: IMAGE,
           command: [...COMMAND],
-          // The hop runs *this repository's* runner image, built by the compose
-          // file. Falling back to a plain `node` image would test a hop that is
-          // not the one that ships.
+          // The hop runs *this repository's* runner image. A plain `node` image
+          // would test a hop that is not the one that ships.
           egress: {
-            image: process.env["RUNNER_IMAGE"] ?? "ghcr.io/getlibero/runner:latest",
+            image: RUNNER_IMAGE,
             command: ["node", "dist/hop.js"],
             network: EGRESS_NETWORK,
             port: 8080
