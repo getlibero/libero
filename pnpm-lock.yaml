@@ -43,6 +43,12 @@ importers:
         specifier: ^24.13.3
         version: 24.13.3
 
+  apps/runner:
+    dependencies:
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+
   apps/server:
     dependencies:
       '@getlibero/agent':

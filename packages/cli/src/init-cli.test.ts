@@ -36,7 +36,14 @@ const VARIABLES = [
   "AGENT_EMBEDDING_API_KEY",
   "AGENT_EMBEDDING_BASE_URL",
   "PROXY_VAULT_KEY",
-  "PROXY_PRICE_TABLE"
+  "PROXY_PRICE_TABLE",
+  // The sandbox (#395). Three, and they arrive together: an image nobody chose,
+  // a pin nobody can guess, and a group id that differs between hosts. Each is
+  // blank in the scaffold on purpose — the runner refuses to start without them,
+  // which is the intended failure rather than an oversight.
+  "RUNNER_SANDBOX_IMAGE",
+  "RUNNER_CLIENT_PIN",
+  "DOCKER_GID"
 ];
 
 let dir: string;

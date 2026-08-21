@@ -239,6 +239,43 @@ export default tseslint.config(
     // second process; `approvals*` mints and spends tickets. Neither has any
     // business behind a read, and the meter's own write half is already kept out
     // by the `SpendReader` the handler closes over rather than by this list.
+    // The sandbox arm, and the first block written for what a module must *not*
+    // gain rather than for what it currently lacks (#395). It talks to a runner
+    // that holds the Docker socket, so the property #393 hangs the whole
+    // topology on — the process with host-root privilege and the process with
+    // the credentials are different ones — is a property of what this module can
+    // reach. Nothing here is a credential today; this is what keeps it that way
+    // when somebody wants to pass an upstream token through to a run.
+    files: ["packages/proxy/src/sandbox-dispatcher.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            MCP_SDK_BAN,
+            {
+              group: [
+                "**/vault*",
+                "**/token-store*",
+                "**/token-engine*",
+                "**/grant-flow*",
+                "**/envelope*",
+                "**/outbound*",
+                "**/mcp-pool*",
+                "**/mcp-client*",
+                "**/http-dispatcher*",
+                "**/builtin-dispatcher*",
+                "@getlibero/memory"
+              ],
+              message:
+                "The sandbox arm sends code to a runner that holds the Docker socket, and holds no credential itself. It may not reach a vault, a token store, the grant flow, the sender that attaches a credential, a pool, a client, or a channel's messages. See packages/proxy/README.md, 'Reaching a runtime'."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     files: ["packages/proxy/src/budget-route.ts"],
     rules: {
       "no-restricted-imports": [

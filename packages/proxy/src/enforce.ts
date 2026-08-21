@@ -31,6 +31,7 @@ import type {
   McpServer,
   PermittedTool,
   ResolvedToolCall,
+  SandboxCaps,
   TeamSheet,
   ToolEntry,
   ToolRefusal
@@ -191,13 +192,41 @@ export type Decision =
  * not a server would be a claim the code makes and a reader has to check,
  * whereas this one the dispatcher has to handle.
  *
- * `builtin` carries the tool name and nothing else, because there is nothing
- * else: the provider is this process, there is one of it, and the channel comes
- * from the client certificate rather than from anything on the decision.
+ * `builtin` carried the tool name and nothing else until #395, because there was
+ * nothing else: the provider is this process, there is one of it, and the
+ * channel comes from the client certificate rather than from anything on the
+ * decision. `run_code` is the exception, and it is one member rather than a
+ * widening of the other — a sandbox run needs the caps its sheet set, and the
+ * two built-ins that read a local file have no use for them.
+ *
+ * **The caps ride here rather than being read at dispatch**, for the reason
+ * `upstream` and `limits` do, and the failure it avoids is concrete: sheets
+ * reload on file change, so a dispatcher that resolved its own would size a
+ * container against a sheet that changed after the call was authorized — or
+ * after a human approved it, since a held call comes back and is decided again.
+ * What a run may spend is settled by the same `decide` that said it may run.
+ *
+ * Both built-in members keep `kind: "builtin"`, and the split is on `tool`.
+ * Making the sandbox a third `kind` would say it is a different sort of thing to
+ * `decide`, which it is not: it is granted, refused, metered and audited by
+ * exactly the same code as the other two.
  */
 export type Target =
   | { readonly kind: "mcp"; readonly upstream: McpServer }
-  | { readonly kind: "builtin"; readonly tool: BuiltinToolName };
+  | { readonly kind: "builtin"; readonly tool: StoreBuiltinName }
+  | { readonly kind: "builtin"; readonly tool: "run_code"; readonly caps: SandboxCaps };
+
+/**
+ * The built-ins served by the arm that reads a local file: every one but the
+ * sandbox.
+ *
+ * An `Exclude` rather than a second hand-written list, so the set is defined by
+ * subtraction from the enum and cannot fall out of step with it. It lives here
+ * beside `Target` rather than in ./dispatch.ts, because what it really describes
+ * is which shape of target a decision produces; the dispatcher is a consumer.
+ * ./dispatch.ts re-exports it and its `BuiltinDispatcher` explains what it buys.
+ */
+export type StoreBuiltinName = Exclude<BuiltinToolName, "run_code">;
 
 /**
  * What a served call may spend of the channel's context.
@@ -797,7 +826,15 @@ function decideBuiltin(
     return refuse(overspent);
   }
 
-  const target: Target = { kind: "builtin", tool: first.name };
+  // The sandbox is the one built-in whose target carries more than a name, and
+  // the narrowing is on the entry rather than on `call.tool` because the entry
+  // is what the sheet parsed — `first.name` and the union member travel
+  // together, so there is no cast here and no second opinion about which shape
+  // the block had.
+  const target: Target =
+    first.name === "run_code"
+      ? { kind: "builtin", tool: "run_code", caps: resolveSandboxCaps(entries.filter(isSandboxEntry)) }
+      : { kind: "builtin", tool: first.name };
   const limits = resolveLimits(sheet, entries);
   const warning = crossedThreshold(sheet, spend, prices);
 
@@ -829,6 +866,39 @@ function decideBuiltin(
  * numbers leave this module on a `Decision` and the rule that produced them
  * does not.
  */
+/**
+ * How much machine a sandbox run may have, resolved from the blocks naming it.
+ *
+ * The same most-restrictive-wins rule `resolveLimits` and `resolveApproval`
+ * apply, for the same reason: two blocks naming one tool are an operator slip
+ * rather than a policy, and the safe reading of a slip is the narrow one. Here
+ * that is the minimum of each cap independently — a sheet that says two cpus in
+ * one block and thirty seconds in another gets both of the smaller numbers, not
+ * whichever block happened to be first.
+ *
+ * The caps themselves are never absent: `BuiltinEntry`'s sandbox member defaults
+ * each one, so a block naming the tool and nothing else already carries the
+ * small box. This function therefore has no fallback branch, unlike
+ * `resolveLimits`, whose field is genuinely optional.
+ */
+export function resolveSandboxCaps(entries: readonly SandboxEntry[]): SandboxCaps {
+  return {
+    cpus: Math.min(...entries.map(entry => entry.cpus)),
+    memoryMb: Math.min(...entries.map(entry => entry.memory_mb)),
+    timeoutSeconds: Math.min(...entries.map(entry => entry.timeout_seconds))
+  };
+}
+
+/** The sandbox member of `BuiltinEntry`, named so the narrowing above reads. */
+type SandboxEntry = Extract<TeamSheet["builtin"][number], { name: "run_code" }>;
+
+/**
+ * A type predicate rather than a bare comparison, for `resolveLimits`'s reason:
+ * a `filter` on `entry.name === "run_code"` does not narrow the array's element
+ * type, and `resolveSandboxCaps` will not take the un-narrowed one.
+ */
+const isSandboxEntry = (entry: TeamSheet["builtin"][number]): entry is SandboxEntry => entry.name === "run_code";
+
 export function resolveLimits(sheet: TeamSheet, entries: readonly ToolEntry[]): CallLimits {
   // The type predicate is required rather than decorative: a bare
   // `!== undefined` in a filter does not narrow, and `Math.min` over
@@ -939,7 +1009,10 @@ export function permittedToolSources(sheet: TeamSheet): PermittedToolSource[] {
         tool: entry.name,
         approval: resolveBuiltinApproval(named, entry.name)
       },
-      target: { kind: "builtin", tool: entry.name }
+      target:
+        entry.name === "run_code"
+          ? { kind: "builtin", tool: "run_code", caps: resolveSandboxCaps(named.filter(isSandboxEntry)) }
+          : { kind: "builtin", tool: entry.name }
     });
   }
 

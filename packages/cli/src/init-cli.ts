@@ -361,6 +361,34 @@ function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
         "metered at zero."
       ],
       vars: [{ name: "PROXY_PRICE_TABLE", value: "" }]
+    },
+    {
+      comment: [
+        "Optional: the code-execution sandbox (#368), which is off unless you",
+        "start it — `docker compose --profile runner up -d`. All three are needed",
+        "together and none has a usable default, because each names something",
+        "only you know.",
+        "",
+        "RUNNER_SANDBOX_IMAGE must be pinned by digest and the runner refuses to",
+        "start otherwise: which language the sandbox has is a property of this",
+        "deployment, and a floating tag makes it a property of whenever the daemon",
+        "last pulled. Resolve one with:",
+        "  docker buildx imagetools inspect python:3.13-alpine",
+        "",
+        "RUNNER_CLIENT_PIN is the fingerprint of the proxy's client certificate,",
+        "printed by `sh scripts/dev-certs.sh`. It is what stops a compromised",
+        "agent — which holds certificates the same CA signed — from calling the",
+        "runner directly, around the team sheet and the audit log.",
+        "",
+        "DOCKER_GID is the HOST's docker group id, which differs between",
+        "distributions:",
+        "  getent group docker | cut -d: -f3"
+      ],
+      vars: [
+        { name: "RUNNER_SANDBOX_IMAGE", value: "" },
+        { name: "RUNNER_CLIENT_PIN", value: "" },
+        { name: "DOCKER_GID", value: "" }
+      ]
     }
   ];
 }

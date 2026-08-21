@@ -360,3 +360,43 @@ export function upstreamTimeoutMsFromEnv(env: Env): number | undefined {
   }
   return parsed;
 }
+
+/**
+ * Where the sandbox runner listens, or absent (#395).
+ *
+ * **Optional, and absent is a supported deployment.** A deployment whose
+ * channels never grant `run_code` has no reason to run a runner, and requiring
+ * the variable would make the sandbox a thing every operator has to opt out of.
+ * Absent composes the unavailable arm, so a channel that does grant it gets
+ * `not_implemented` — the sheet is right and this deployment did not build the
+ * service — rather than a refusal, which would say the channel was denied.
+ *
+ * The `https:` check is in `createSandboxDispatcher` rather than here, because
+ * it is a property of what that module will do with the value.
+ */
+export function runnerUrlFromEnv(env: Env): string | undefined {
+  const raw = env.RUNNER_URL;
+  return raw === undefined || raw === "" ? undefined : raw;
+}
+
+/**
+ * The client certificate the proxy presents to the runner.
+ *
+ * Required **only when `RUNNER_URL` is set**, which is why these are three
+ * separate reads rather than one bundle with defaults: a deployment that named
+ * a runner and forgot its client material should fail at boot, and one that
+ * named no runner should not be asked for material it will never use.
+ *
+ * This is the proxy's *second* certificate and its only client one. It is not
+ * an agent channel certificate and must not be pointed at one: the runner
+ * authorizes on this file's exact fingerprint, which is what stops a compromised
+ * agent — holding certificates the same CA signed — from calling the runner
+ * itself. See scripts/dev-certs.sh, which prints the pin when it mints this.
+ */
+export function runnerTlsFromEnv(env: Env): { cert: string; key: string; ca: string } {
+  return {
+    cert: requiredEnv(env, "RUNNER_CLIENT_CERT"),
+    key: requiredEnv(env, "RUNNER_CLIENT_KEY"),
+    ca: requiredEnv(env, "RUNNER_CLIENT_CA")
+  };
+}

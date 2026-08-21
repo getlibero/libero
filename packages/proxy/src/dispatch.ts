@@ -19,13 +19,13 @@
 // against a recording dispatcher — that a refused or held call leaves no trace
 // there — by putting listing traffic on the same seam.
 
-import type { BudgetSpend, CallLimits, Target } from "./enforce.js";
+import type { BudgetSpend, CallLimits, StoreBuiltinName, Target } from "./enforce.js";
 import type { XMcpHeaderDeclaration } from "./vendor/mcp-param-headers.js";
 import type {
   BudgetLimit,
-  BuiltinToolName,
   McpServer,
   ResolvedToolCall,
+  SandboxCaps,
   TokenUsageReport,
   ToolInputSchema,
   ToolRefusal,
@@ -191,7 +191,7 @@ export type Dispatch =
    */
   | {
       readonly outcome: "unavailable";
-      readonly reason?: "no_grant" | "grant_dead" | "mint_failed";
+      readonly reason?: "no_grant" | "grant_dead" | "mint_failed" | "runner_unreachable" | "runner_error";
     };
 
 /**
@@ -267,18 +267,21 @@ export interface BuiltinDispatcher {
 /**
  * The built-ins this arm serves: every one except the sandbox.
  *
- * An `Exclude` rather than a second hand-written list, so the set is defined by
- * subtraction from the enum and cannot fall out of step with it. This is what
- * makes the paragraph above structural instead of advisory — the store-backed
- * arm cannot be handed `run_code`, in the same way `McpToolDispatcher` cannot be
- * handed a built-in, and `createToolDispatcher` is again the only thing that
- * narrows.
+ * Defined in ./enforce.ts beside `Target`, because what it really describes is
+ * which shape of target a decision produces, and re-exported here because this
+ * is where it does its work. An `Exclude` rather than a second hand-written
+ * list, so the set is defined by subtraction from the enum and cannot fall out
+ * of step with it.
  *
- * The practical effect is on the executor's `switch (tool)`: it stays exhaustive
- * over two names, so adding the sandbox to it is a type error rather than a case
- * that would quietly give the arm holding a directory path a network client.
+ * This is what makes the paragraph above structural instead of advisory — the
+ * store-backed arm cannot be handed `run_code`, in the same way
+ * `McpToolDispatcher` cannot be handed a built-in, and `createToolDispatcher` is
+ * again the only thing that narrows. The practical effect is on the executor's
+ * `switch (tool)`: it stays exhaustive over two names, so adding the sandbox to
+ * it is a type error rather than a case that would quietly give the arm holding
+ * a directory path a network client.
  */
-export type StoreBuiltinName = Exclude<BuiltinToolName, "run_code">;
+export type { StoreBuiltinName } from "./enforce.js";
 
 /**
  * Serves `run_code`: model-written code in an ephemeral container (#368).
@@ -294,14 +297,17 @@ export type StoreBuiltinName = Exclude<BuiltinToolName, "run_code">;
  * start is I/O by definition, so it belongs on the side that says so in its type.
  *
  * It holds no credential, and an ESLint block on the module that implements it
- * is what keeps that true rather than this sentence. What it does hold is the
- * run-spec that rode in on the `Decision` — the channel's caps and its `[egress]`
- * allow list — for `ToolDispatcher`'s reason: an arm that resolved the sheet
- * itself could size a container against a sheet that reloaded after the call was
- * authorized.
+ * is what keeps that true rather than this sentence.
+ *
+ * `caps` arrives the way `upstream` and `limits` do — resolved by the decision
+ * that authorized the call — for `ToolDispatcher`'s stated reason: sheets reload
+ * on file change, so an arm that resolved its own would size a container against
+ * a sheet that changed after the call was approved. `limits` is beside it and is
+ * a different person's number: `caps` is what the *run* may spend, `limits` is
+ * what its output may spend of the model's context.
  */
 export interface SandboxDispatcher {
-  run(call: ResolvedToolCall, limits: CallLimits): Dispatch | Promise<Dispatch>;
+  run(call: ResolvedToolCall, caps: SandboxCaps, limits: CallLimits): Dispatch | Promise<Dispatch>;
 }
 
 /**
@@ -363,7 +369,7 @@ export function createToolDispatcher(arms: {
           // compiler checks rather than a convention: drop this branch and the
           // call below stops type-checking.
           return target.tool === "run_code"
-            ? sandbox.run(call, limits)
+            ? sandbox.run(call, target.caps, limits)
             : builtin.run(call, target.tool, limits);
       }
     }

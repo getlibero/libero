@@ -1546,9 +1546,13 @@ describe("a built-in tool", () => {
       spend: NO_SPEND
     });
 
+    // The target gained `caps` in #395 — the sheet's cpu, memory and wall-time
+    // numbers ride on the decision that authorized the call. Kept as `toEqual`
+    // rather than loosened to `toMatchObject`, so a field appearing on a
+    // built-in target is a test somebody has to edit.
     expect(decision).toEqual({
       outcome: "allow",
-      target: { kind: "builtin", tool: "run_code" },
+      target: { kind: "builtin", tool: "run_code", caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30 } },
       limits: { maxResultChars: expect.any(Number) },
       warning: null
     });
@@ -1562,6 +1566,64 @@ describe("a built-in tool", () => {
     expect(
       decide({ sheet: withBuiltin([{ name: "run_code" }]), call: callBuiltin("run_code"), spend: NO_SPEND })
     ).toMatchObject({ outcome: "hold" });
+  });
+
+  // The caps ride on the decision (#395), for the reason `upstream` and
+  // `limits` do: sheets reload on file change, so a runner sized against a
+  // second lookup could get a different answer than the decision that
+  // authorized the call — or than the human who approved it.
+  it("carries the sheet's caps on the target", () => {
+    const decision = decide({
+      sheet: withBuiltin([
+        { name: "run_code", approval: "none", cpus: 2, memory_mb: 1024, timeout_seconds: 90 }
+      ]),
+      call: callBuiltin("run_code"),
+      spend: NO_SPEND
+    });
+
+    expect(decision).toMatchObject({
+      outcome: "allow",
+      target: { kind: "builtin", tool: "run_code", caps: { cpus: 2, memoryMb: 1024, timeoutSeconds: 90 } }
+    });
+  });
+
+  it("gives the small box to a block that names no caps", () => {
+    expect(
+      decide({
+        sheet: withBuiltin([{ name: "run_code", approval: "none" }]),
+        call: callBuiltin("run_code"),
+        spend: NO_SPEND
+      })
+    ).toMatchObject({ target: { caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30 } } });
+  });
+
+  // Two blocks naming one tool are an operator slip rather than a policy, and
+  // the safe reading of a slip is the narrow one — the same rule `resolveLimits`
+  // and `resolveApproval` already apply. Each cap resolves independently, so a
+  // sheet does not get the looser number for one just because another block was
+  // tighter overall.
+  it("takes the smallest of each cap independently when blocks disagree", () => {
+    expect(
+      decide({
+        sheet: withBuiltin([
+          { name: "run_code", approval: "none", cpus: 4, memory_mb: 256, timeout_seconds: 600 },
+          { name: "run_code", approval: "none", cpus: 1, memory_mb: 2048, timeout_seconds: 60 }
+        ]),
+        call: callBuiltin("run_code"),
+        spend: NO_SPEND
+      })
+    ).toMatchObject({ target: { caps: { cpus: 1, memoryMb: 256, timeoutSeconds: 60 } } });
+  });
+
+  // A held call comes back as a re-submission and is decided again, so the caps
+  // an approved run gets are whatever the sheet says at redemption — not what it
+  // said when the human clicked. That is the freshness `upstream` already has,
+  // and it is the behaviour wanted: an operator tightening a cap during a hold
+  // should win.
+  it("carries caps on a hold too, so a redeemed call is sized by the current sheet", () => {
+    expect(
+      decide({ sheet: withBuiltin([{ name: "run_code" }]), call: callBuiltin("run_code"), spend: NO_SPEND })
+    ).toMatchObject({ outcome: "hold", target: { tool: "run_code", caps: { cpus: 1 } } });
   });
 
   it("refuses run_code when the sheet grants a different built-in", () => {

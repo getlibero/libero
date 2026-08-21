@@ -88,6 +88,7 @@ What exists:
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, the proactive post surface and its rate window, the heartbeat evaluation and its pregate, approvals and checklist clients, lifecycle |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
+| `apps/runner` | The sandbox runner (#395) — an mTLS listener with one route, one pinned peer, and the Docker Engine API spoken over a unix socket with no client library. Builds every container spec itself, so no field of a request reaches `Image`, `Binds` or `Privileged`. Holds no credential; its only dependency is `@getlibero/schema` |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes and the ambient clock |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |
 | `site/` | getlibero.com — Astro + Starlight, outside the workspace |
@@ -126,7 +127,8 @@ code is a paragraph the next reader will not find.
 | The shapes both services agree on. No README — each file's own header is the record, `src/skill.ts` and `src/audit.ts` most of all | `packages/schema/src/*.ts` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, and the one fake embedder's shape and the rule it carries | `e2e/README.md` |
-| Images, mounts, `.dockerignore` as an allowlist | `deploy/README.md` |
+| Images, mounts, `.dockerignore` as an allowlist, and the sandbox runner's service, networks and the one variable an operator gets wrong | `deploy/README.md` |
+| The runner's own modules: why the Docker Engine API is spoken with no client library, what builds a container spec and what may not reach it, and the two-sided gate on the tests that need a daemon | `apps/runner/src/*.ts` headers |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |
 
@@ -270,12 +272,21 @@ sync when the convention changes.
 
 ## Architecture invariants
 
-Two services. **gateway + agent** (`apps/server`) talks to Slack over Socket
-Mode and runs the model loop. **tool proxy** (`apps/proxy-server`) holds every
-tool credential and enforces what each channel may do. The security property the
-whole design hangs on: tool credentials live only in the proxy, and the agent
-reaches tools only through it, so compromising the agent process yields no tool
-credentials.
+Two services, and since #395 an optional third. **gateway + agent**
+(`apps/server`) talks to Slack over Socket Mode and runs the model loop. **tool
+proxy** (`apps/proxy-server`) holds every tool credential and enforces what each
+channel may do. The security property the whole design hangs on: tool credentials
+live only in the proxy, and the agent reaches tools only through it, so
+compromising the agent process yields no tool credentials.
+
+The third is the **sandbox runner** (`apps/runner`), behind a compose profile and
+absent from most deployments. It inverts the pairing rather than repeating it: it
+holds the Docker socket — equivalent to root on the host — and holds no
+credential at all, so the process with the privilege and the process with the
+secrets are different ones. That is #393's decision and the reason the socket did
+not simply come back to the proxy. Compromising the runner is host root, which is
+a real cost stated rather than hidden; what makes it the better trade is argued
+in `packages/proxy/README.md` under "Reaching a runtime".
 
 The agent process is not credential-free, and the docs say so rather than
 overstating the property (#100). It holds the Slack app and bot tokens — the

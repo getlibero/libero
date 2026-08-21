@@ -75,6 +75,7 @@ COPY packages/memory/package.json       packages/memory/
 COPY packages/cli/package.json          packages/cli/
 COPY apps/server/package.json           apps/server/
 COPY apps/proxy-server/package.json     apps/proxy-server/
+COPY apps/runner/package.json           apps/runner/
 COPY e2e/package.json                   e2e/
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
