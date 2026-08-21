@@ -193,12 +193,13 @@ Ships last, disabled by default, and only behind the budget meter. A per-channel
 
 ## Sandbox
 
-Designed, not built — the one section of this page a reader is most likely to take as shipped, so
-it carries the marker the [security model](/docs/security) and [self-hosting](/docs/self-hosting)
-already do. The build is tracked in
-[#368](https://github.com/getlibero/libero/issues/368).
+The built-in `run_code` tool runs model-written code in an ephemeral container: a read-only rootfs, a tmpfs workdir, cpu/memory/wall-time caps the channel sets, and **no network at all** unless the team sheet grants an egress allowlist. The container is gone when the call returns. The runtime is whatever the host's daemon defaults to, so gVisor is a deployment choice — see [self-hosting](/docs/self-hosting) for what that costs and what is untested.
 
-The built-in code-execution tool runs in an ephemeral container (Docker by default; gVisor documented for hardened deployments) with no network unless the team sheet grants an egress allowlist, a read-only rootfs, cpu/mem/time limits, and a tmpfs workdir. The runner is invoked *by the proxy*, not the agent, so code execution is audited and budgeted like any other tool.
+It is a built-in, so it is granted by a `[[builtin]]` block, refused when the sheet omits it, held for a human by default, metered, and audited under the reserved server name — the same path every other tool takes. The proxy invokes it; the agent never does.
+
+**The proxy does not hold the container runtime.** A separate runner service holds the Docker socket — which is equivalent to root on the host — and holds no credential at all, so the process with the privilege and the process with the secrets are different ones. The proxy reaches it over mutual TLS on an internal network the agent has no route to, and the request it sends has no field that names an image, a mount, or a capability: the runner builds every container spec itself.
+
+**It is opt-in twice.** A channel's sheet must grant the built-in, *and* the operator must have started a runner. A deployment that did neither is unchanged, and a channel that asks for `run_code` where no runner exists is told the call is permitted and this proxy has nothing to serve it — not that it was denied.
 
 ## Threat model
 

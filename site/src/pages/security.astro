@@ -35,8 +35,8 @@ const attempts = [
   },
   {
     attack: 'Generated code tries to POST your data to an external host.',
-    result: 'No surface to run it.',
-    body: 'There is no code-execution tool today, so this attack has nowhere to start. The design of record for when one lands: an ephemeral container with a read-only rootfs, cpu/memory/time limits, and no network unless the team sheet grants an egress allowlist — invoked by the proxy, so it is audited and budgeted like any other tool call.',
+    result: 'The host is not on the list. The run ends.',
+    body: 'Code runs in an ephemeral container with a read-only rootfs, cpu/memory/time limits, and no network at all unless the team sheet grants an egress allowlist. When it does, the container sits on a network with no route out whose only exit is a filter checking that list per host — so ignoring the proxy settings, or dialling a raw address, reaches nothing. A host outside the list does not merely fail: the run is killed and the call is refused, naming the host on the audit row. The suite proves it by sending a payload to a host the sheet allows first, then watching the same code reach nothing at one it does not.',
     tone: 'blocked',
   },
 ];
@@ -62,8 +62,8 @@ const attempts = [
         <h2 class="lb-h2">What an attacker gets</h2>
         <p class="feature__body" style="font-size:15px;">
           These are the cases the e2e suite is written to attack. It has grown with every phase —
-          memory, skills, and ambient mode are attacked the same way — and it passes against every
-          change. The last card is design rather than code: no execution surface exists yet.
+          memory, skills, and ambient mode are attacked the same way, and the sandbox is attacked
+          with real containers on a real container runtime — and it passes against every change.
         </p>
       </div>
 
@@ -119,8 +119,9 @@ const attempts = [
           it, the budget meter in calls and in dollars, the append-only audit log, and the approval
           broker with its Slack card — and the layers built on it since: curated memory, skills,
           and ambient mode, each attacked by the same suite. The end-to-end suite runs against
-          every change. The sandbox does not exist, so <code>[egress]</code> is validated and
-          enforced nowhere, and certificate rotation is two commands with a human edit between
+          every change, including the sandbox: real containers, a real runner, and a real egress
+          filter. Code execution is off unless an operator starts the runner, its allowlist grants
+          HTTP and HTTPS only, and certificate rotation is two commands with a human edit between
           them. Point it at a scratch workspace before a real one. The
           <a href="/docs/roadmap">roadmap</a> was gated so that nothing depending on the proxy
           shipped before the proxy could be attacked and hold.

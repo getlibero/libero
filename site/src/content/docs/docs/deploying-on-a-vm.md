@@ -73,6 +73,12 @@ deployment needs the machinery, that is the issue to open.
 | AWS | `t3.small` | `t3.medium` |
 | Data disk | 20 GB | 50 GB |
 
+**If you turn the code-execution sandbox on, size up.** Every concurrent run puts two more
+containers on this machine — the sandbox itself, capped by the channel's `[[builtin]]` block, and
+the egress filter beside it — and the sandbox's memory cap is memory the host has to have. The
+minimum row above is for a deployment without it; with it, start at the comfortable row and add
+whatever the busiest channel's `memory_mb` is times the runs you expect at once.
+
 Memory is what the proxy's own bounds multiply out to. `PROXY_MAX_RESPONSE_BYTES` is 4 MiB, an
 upstream answer costs three to five times that while it is being decoded, redacted and parsed, and
 `PROXY_MAX_UPSTREAM_CONCURRENCY` is 8 — so the worst case against one misbehaving upstream is

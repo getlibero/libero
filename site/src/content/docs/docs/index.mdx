@@ -34,9 +34,10 @@ Every phase is shipped, and releases are numbered: `v0.3.0` is current, with the
 both service images on GHCR, and a [changelog](/docs/changelog/) an operator can upgrade by.
 Delivery is milestone-gated per release now, and the open milestone is what lands next.
 
-What is not here: no sandbox, so `[egress]` is validated and enforced nowhere; a fired scheduled
-check runs one bounded turn and can look nothing up; certificate rotation is two commands and a
-human edit rather than anything automated. Point it at a scratch workspace before a real one. The
+What is not here: a fired scheduled check runs one bounded turn and can look nothing up;
+certificate rotation is two commands and a human edit rather than anything automated. Code
+execution exists but is off unless an operator starts the runner, and its `[egress]` allowlist
+grants HTTP and HTTPS only. Point it at a scratch workspace before a real one. The
 [roadmap](/docs/roadmap) says what lands when, and [self-hosting](/docs/self-hosting) says what a
 deployment does today.
 </Aside>
@@ -62,8 +63,8 @@ full account.
 
 One TOML file per channel, kept in your own git repo. It declares which MCP servers the channel
 may reach, which tools on them exist as far as that channel is concerned, which of those need a
-human click, and what the daily budget is. An `[egress]` block is validated today and enforced
-when code execution lands.
+human click, and what the daily budget is. An `[egress]` block says where sandboxed code may
+reach, and no block means nowhere.
 
 Nothing in it is a secret — credentials appear as names, resolved only inside the proxy's vault.
 

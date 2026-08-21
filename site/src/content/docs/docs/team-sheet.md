@@ -367,12 +367,11 @@ name = "schedule_task"
 
 # Where traffic may go when this sheet does not already say.
 #
-# PARSED BUT NOT YET ENFORCED. Nothing in the deployment reaches a destination
-# this sheet has not already pinned, so nothing consults this list — entries are
-# validated when the sheet loads and permit nothing and forbid nothing. The
-# surface that needs it is a code-execution sandbox, which is later work (#219).
-# Write the list as though it were enforced; it is the contract it will be
-# enforced against.
+# ENFORCED, for run_code — the one surface that reaches a destination this sheet
+# has not already pinned. No block at all means no network at all, not an
+# unfiltered one, and a host outside the list ends the run rather than failing
+# one call. HTTP and HTTPS only: git://, postgres and ssh have no route however
+# this list reads.
 #
 # The MCP servers above are NOT listed here: declaring a url in [[mcp_server]]
 # is what authorizes it. This list is for the destinations nothing pinned.
@@ -969,15 +968,19 @@ created and from the channel's own file when it fires.
 Where traffic may go when the sheet does not already say — the code-execution sandbox, and
 anything later that takes a URL as an argument.
 
-:::note[Validated today, enforced when its first caller lands]
-Nothing in the deployment consults this list yet, because nothing in it reaches a destination the
-sheet has not already pinned. Entries are still parsed and checked when the sheet loads, so a
-malformed one is rejected where you can see it rather than sitting inert in a list you believe
-grants something — but a channel's `[egress]` block currently permits and forbids nothing. The
-surface that needs it is a code-execution sandbox, which is later work; the matcher and its
-adversarial tests are [#73](https://github.com/getlibero/libero/issues/73), and wiring the first
-caller is [#219](https://github.com/getlibero/libero/issues/219). Write the block as though it
-were enforced — everything below is the contract it will be enforced against.
+:::caution[HTTP and HTTPS only, and a host outside the list ends the run]
+This list is enforced for `run_code`, which is the one surface that reaches a destination the
+sheet has not already pinned. A run sits on a network with no route out whose only exit is a
+filter that checks this list per host — so code that ignores its proxy settings, or dials a raw
+address, reaches nothing at all.
+
+Two things it does not do, both of which the block reads as though it did. It grants **HTTP and
+HTTPS only**: `git://`, postgres, ssh and bare TCP have no route whatever is listed here, and
+plain `http://` does not work either, because the filter reads a host and never a payload. And a
+host outside the list is **not a failed connection the program can catch and carry on from** — the
+run is killed, the call is refused naming the host, and the refused call still counted against the
+channel's budget. That is fail-closed on purpose; write the list before you need it rather than by
+watching runs fail.
 :::
 
 **A server's own `url` does not go here.** Declaring it under `[[mcp_server]]` is what authorizes

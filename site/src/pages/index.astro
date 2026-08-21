@@ -211,7 +211,7 @@ credential = <span>"github_service_account"</span>
   approval = <span>"required"</span>
 
 <b>[egress]</b>
-<i># Validated at load; enforced when code execution lands.</i>
+<i># Where sandboxed code may reach. No block, no network.</i>
 allow = [<span>"api.github.com"</span>]
 
 <b>[ambient]</b>
