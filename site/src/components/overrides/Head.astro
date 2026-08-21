@@ -1,0 +1,20 @@
+---
+/**
+ * Starlight's Head with one tag added: the markdown sibling this page has.
+ *
+ * It is an override rather than a `head` entry in astro.config.mjs because that
+ * list is static for the whole site and this href is per page. GitHub Pages
+ * cannot do content negotiation — the same reason /discord is a meta-refresh
+ * rather than a 301 — so this tag and /llms.txt are the entire discovery story
+ * for the siblings. Without them a reader has to guess the URL scheme.
+ */
+import Default from '@astrojs/starlight/components/Head.astro';
+import { markdownPath } from '../../lib/page-markdown';
+
+const href = markdownPath(`/${Astro.locals.starlightRoute.entry.id}/`);
+---
+
+{/* Starlight's Head renders no slot of its own, so this is a sibling tag
+    rather than a wrapper — passing children would silently drop them. */}
+<Default />
+<link rel="alternate" type="text/markdown" href={href} />

@@ -5,6 +5,7 @@ import sitemap from '@astrojs/sitemap';
 import { SITE } from './src/consts';
 import { liberoDark, liberoLight, styleOverrides } from './src/lib/code-theme.mjs';
 import { lastModified } from './src/lib/last-modified.mjs';
+import { docsNav } from './src/lib/docs-nav';
 
 // getlibero.com. Static output, deployed to GitHub Pages from
 // .github/workflows/pages.yml. Docs live under /docs/ because the marketing
@@ -79,35 +80,13 @@ export default defineConfig({
         ThemeProvider: './src/components/overrides/ThemeProvider.astro',
         ThemeSelect: './src/components/overrides/ThemeSelect.astro',
         SiteTitle: './src/components/overrides/SiteTitle.astro',
+        // Adds this page's markdown sibling as rel=alternate. Per page, so it
+        // cannot be a `head` entry above.
+        Head: './src/components/overrides/Head.astro',
       },
-      sidebar: [
-        {
-          label: 'Start here',
-          items: [
-            { label: 'What Libero is', slug: 'docs' },
-            { label: 'Self-hosting', slug: 'docs/self-hosting' },
-            { label: 'Deploying on a VM', slug: 'docs/deploying-on-a-vm' },
-            { label: 'Connecting GitHub', slug: 'docs/github' },
-          ],
-        },
-        {
-          label: 'Concepts',
-          items: [
-            { label: 'Architecture', slug: 'docs/architecture' },
-            { label: 'Team sheets', slug: 'docs/team-sheet' },
-            { label: 'The price table', slug: 'docs/price-table' },
-            { label: 'Security model', slug: 'docs/security' },
-          ],
-        },
-        {
-          label: 'Project',
-          items: [
-            { label: 'Roadmap', slug: 'docs/roadmap' },
-            { label: 'Changelog', slug: 'docs/changelog' },
-            { label: 'Contributing', slug: 'docs/contributing' },
-          ],
-        },
-      ],
+      // Shared with /llms.txt, which groups its link list by these headings —
+      // see src/lib/docs-nav.ts for why the order is worth not duplicating.
+      sidebar: docsNav,
       lastUpdated: true,
       // src/pages/404.astro covers the whole site, docs included.
       disable404Route: true,
@@ -122,6 +101,10 @@ export default defineConfig({
     }),
 
     sitemap({
+      // The markdown siblings are alternates of pages already listed here, not
+      // pages of their own. Listing both would put the same content in the
+      // sitemap twice and contradict the canonical each HTML page declares.
+      filter: (page) => !page.endsWith('.md'),
       // Dates come from git, not the build clock — see src/lib/last-modified.mjs.
       serialize: (item) => {
         const lastmod = lastModified(new URL(item.url).pathname);

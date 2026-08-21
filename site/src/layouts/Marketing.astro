@@ -10,6 +10,7 @@ import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import { SITE } from '../consts';
 import { themeScript } from '../lib/theme-script';
+import { markdownPath } from '../lib/page-markdown';
 
 interface Props {
   title: string;
@@ -20,6 +21,12 @@ interface Props {
   ogType?: 'website' | 'article';
   /** Required for og:type="article" — the post's publication date. */
   publishedTime?: Date;
+  /**
+   * Set on pages that have a markdown sibling, which on this surface is blog
+   * posts and nothing else — the marketing pages are .astro rather than
+   * collection entries, so there is no body to serve.
+   */
+  markdown?: boolean;
 }
 
 const {
@@ -28,6 +35,7 @@ const {
   bareTitle = false,
   ogType = 'website',
   publishedTime,
+  markdown = false,
 } = Astro.props;
 
 const pageTitle = bareTitle ? title : `${title} — ${SITE.name}`;
@@ -53,6 +61,7 @@ const social = new URL('/og.png', Astro.site ?? SITE.url);
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="sitemap" href="/sitemap-index.xml" />
     <link rel="alternate" type="application/rss+xml" title={`${SITE.name} blog`} href="/rss.xml" />
+    {markdown && <link rel="alternate" type="text/markdown" href={markdownPath(path)} />}
 
     <meta property="og:type" content={ogType} />
     <meta property="og:site_name" content={SITE.name} />
