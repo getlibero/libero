@@ -19,7 +19,7 @@ them because it cannot pull either in.
 
 ## What is here, and what deliberately is not
 
-`each` and `waitFor`. Nothing else.
+`each`, `waitFor`, and the suite's reporter. Nothing else.
 
 There is **no re-export of `describe`, `it`, `expect` or the lifecycle hooks**.
 A test file names `node:test` and `expect` directly, so it says which runner and
@@ -46,6 +46,45 @@ rule enforced by the type system, which is why that grep is gone.
 
 On timeout it throws the last failure rather than a bare deadline message, so
 the answer to "waiting for what?" is in the error.
+
+### The reporter
+
+`--test-reporter=@getlibero/test-kit/reporter`, which every package's `test`
+script names. Dots while it runs — `node:test`'s `spec` is a line per test and
+four thousand lines of CI log for a run whose durable signal is an exit code —
+and four things at the end that `dot` does not say, two of which turn a silent
+green state into a failure:
+
+| | |
+| --- | --- |
+| Counts | `dot` prints none at all, not even on a clean run. |
+| Nothing collected → **fail** | `node --test` over a glob matching nothing exits 0. This is the stronger half of `test-scripts.test.ts`'s guard: that catches a mistyped glob, this catches a `tsconfig` `include` that stopped matching, a build that emitted nothing, a renamed directory. |
+| A file that registered nothing → **fail** | The same failure one level down: the glob found it, it loaded, it declared no case. |
+| Every skip named, with its file | The repository's own rule, which `apps/runner/src/sandbox.docker.test.ts` records being bitten by — thirteen cases skipped and a green build. Under `dot` a skip is an invisible character. |
+| An unallowed skip → **fail** | `ALLOWED_SKIPS` lists the cases entitled to skip and why. A flaky test quieted with `{ skip: true }` fails here instead of passing. |
+
+`ALLOWED_SKIPS` says a case *may* skip, not that it *does*: the Docker suites run
+in CI and skip on a laptop, which is the arrangement it exists to permit. That
+also means a stale entry is undetectable — nothing in a run where Docker is
+present distinguishes "no longer skips" from "did not skip today" — so a stale
+entry is not treated as an error.
+
+Two things the runner does that the reporter has to work around, both recorded
+where they bite:
+
+- **A skipped `describe` is one event and its children are never events at
+  all.** It appears in neither `counts.tests` nor `counts.skipped`, so skips are
+  tallied here rather than read off `test:summary`. It is also why a file that is
+  one skipped suite reports zero tests and must not be called silent.
+- **A test's file is the call site of `it`,** so every case `each` registers is
+  attributed to `each.js` rather than to the file that asked for it. A failure's
+  stack still names the real file; an `ALLOWED_SKIPS` entry has to spell it the
+  runner's way.
+
+The decision and the printing are separate functions — `problems` and
+`summaryLines` — because a module whose job is setting `process.exitCode` cannot
+otherwise be tested from inside a test run without failing it.
+`src/reporter.test.ts` exercises every guard in both directions.
 
 ## Running the suite
 

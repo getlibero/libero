@@ -108,6 +108,9 @@ importers:
         specifier: workspace:*
         version: link:../apps/server
     devDependencies:
+      '@getlibero/test-kit':
+        specifier: workspace:*
+        version: link:../packages/test-kit
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
@@ -142,6 +145,9 @@ importers:
 
   packages/atomic-write:
     devDependencies:
+      '@getlibero/test-kit':
+        specifier: workspace:*
+        version: link:../test-kit
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3

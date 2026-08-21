@@ -17,6 +17,13 @@
 //     placeholders. `node:util`'s `format` would otherwise append the leftovers
 //     to the title, and the common shape in this suite is a two-element case
 //     whose second element is the input and whose name names only the first.
+//
+// One thing it cannot do anything about: `node:test` takes a test's file from
+// the call site of `it`, so every case registered here is reported as belonging
+// to *this* file rather than to the one that asked for it. A failure's stack
+// still names the real file, because the callback is declared there — but the
+// reporter's file column will say `each.js`, and `ALLOWED_SKIPS` has to spell an
+// entry that way.
 
 import { it } from "node:test";
 import { format } from "node:util";

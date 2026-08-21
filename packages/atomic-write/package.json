@@ -13,9 +13,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test --test-reporter=dot 'dist/**/*.test.js'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "devDependencies": {
+    "@getlibero/test-kit": "workspace:*",
     "@types/node": "^24.13.3",
     "expect": "^30.4.1"
   }
