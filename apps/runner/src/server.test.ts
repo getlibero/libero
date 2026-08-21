@@ -59,7 +59,10 @@ beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   port = typeof address === "object" && address !== null ? address.port : 0;
-});
+  // Minting two client certificates and the runner's server certificate, from
+  // the real script. Slower than vitest's 10s default allows on a loaded CI
+  // runner — see the note in packages/agent/src/proxy/transport.test.ts.
+}, 60_000);
 
 afterAll(() => {
   server?.close();
