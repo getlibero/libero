@@ -41,7 +41,7 @@ src/layouts/          the frame for everything outside the docs
 src/components/       brand mark, header, footer, theme toggle
   overrides/          Starlight component overrides (see below)
 src/styles/           the bridge between the design system and both surfaces
-src/lib/              design-token parser, code theme, theme bootstrap
+src/lib/              design-token parser, code theme, theme bootstrap, docs nav, markdown siblings
 scripts/              build-assets.mjs — favicon and social card
 ```
 
@@ -111,6 +111,57 @@ become load-bearing again if the site ever moved back to a branch source. Change
 The social card renders text with [satori](https://github.com/vercel/satori), which converts
 glyphs to paths using the `.woff` files in `node_modules`. That is deliberate: rasterising an SVG
 with sharp would require IBM Plex to be installed on the machine running CI.
+
+## Markdown for agent readers
+
+Every collection page is served twice: `/docs/security/` is the HTML, `/docs/security.md` is the
+same prose without the frame. The rule is one line — canonical path, trailing slash off, `.md` on
+— so `/docs/` is `/docs.md` and there is no special case for an index to know about.
+
+The reason is bytes. Starlight's sidebar, the expressive-code spans and the Pagefind markup are
+most of what a docs page weighs: `/docs/team-sheet/` is 210 kB of HTML against 72 kB of markdown,
+`/docs/security/` is 63 kB against 21 kB. A reader that only wants the words should not pay three
+times over for the frame.
+
+Three files do it, and none of them adds a dependency:
+
+- `src/pages/[...slug].md.ts` — the siblings. `getStaticPaths` over the `docs` and `blog`
+  collections.
+- `src/pages/llms.txt.ts` — [llms.txt](https://llmstxt.org): the annotated link list, grouped by
+  `src/lib/docs-nav.ts` so the reading order is the sidebar's rather than a second one kept here.
+  Nearly free, because every doc already carries the one-line `description` the format wants.
+- `src/lib/page-markdown.ts` — the URL rule, the MDX reduction, and link absolutisation.
+
+There is deliberately **no `llms-full.txt`**. The docs are ~277 kB of markdown, and a file that
+inlines all of it is least useful exactly where size matters; per-page siblings and an index let a
+reader fetch the two pages it needs. The `starlight-llms-txt` plugin would have given us that file
+in five lines of config, and not the siblings, which are the half that pays.
+
+Three things are easy to break here.
+
+**The header carries the status string.** On the site, "pre-release" is in the chrome — a banner in
+the layout, an `<Aside>` on the docs index — and none of that survives extraction. The
+architecture document is the design of record and runs well ahead of the implementation, so a
+reader who arrives at `architecture.md` alone and has no reason to doubt it will describe features
+that do not exist. `SITE.status` goes in every sibling's header and at the top of `llms.txt`.
+
+**Links are made absolute, and retargeted only where a sibling exists.** A `.md` file is read
+detached from the site, so `/docs/team-sheet` resolves against nothing. Retargeting to `.md` could
+have been a guess and is not one — the set of paths is what the build actually emitted, so a link
+to a marketing page stays pointed at the HTML.
+
+**The MDX reduction fails the build on anything it does not recognise.** `index.mdx` is the one MDX
+page and it uses three components; `mdxToMarkdown` handles those three and throws on a fourth. It
+is string replacement rather than a real parse, and the guard is what makes that safe: a
+`<LinkCard>` left in a `.md` file is a reader being handed source code and told it is
+documentation, which is silent at every point where someone might catch it.
+
+Discovery is `rel="alternate"` plus `llms.txt`, and it has to be, because GitHub Pages cannot do
+content negotiation — the same constraint that makes `/discord` a meta-refresh rather than a 301.
+The tag is per page, so the docs side needs `src/components/overrides/Head.astro` rather than an
+entry in the config's static `head` array; the marketing side passes `markdown` to the layout, and
+only blog posts do, because only they have a sibling. The siblings are filtered out of the
+sitemap: they are alternates of pages already listed, not pages of their own.
 
 ## Why HTML compression is off
 
