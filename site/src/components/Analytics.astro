@@ -1,0 +1,33 @@
+---
+/**
+ * GoatCounter, on our own subdomain.
+ *
+ * Chosen for what it does not do: no cookies, no cross-site identifier, no
+ * personal data, and nothing to consent to. A project whose pitch is that
+ * credentials stay in one process should not be the one shipping a tracker.
+ *
+ * Two hosts rather than one, and not by preference. The collection endpoint is
+ * stats.getlibero.com, a CNAME onto GoatCounter — but the custom domain serves
+ * only /count, not /count.js, which 404s there. So the script comes from
+ * GoatCounter's CDN and the data goes to our subdomain. If they ever serve the
+ * script from custom domains, moving it here removes the third-party request
+ * entirely and nothing else changes.
+ *
+ * `is:inline` because Astro otherwise takes ownership of a <script> tag and
+ * bundles it; this one has to reach the page exactly as written.
+ */
+---
+
+{
+  /* Production only — dev pages make no request to the CDN at all. count.js
+     also refuses to count localhost, 127.* and the private ranges on its own,
+     so `pnpm preview` exercises the real tag without polluting the numbers. */
+  import.meta.env.PROD && (
+    <script
+      is:inline
+      data-goatcounter="https://stats.getlibero.com/count"
+      async
+      src="https://gc.zgo.at/count.js"
+    />
+  )
+}

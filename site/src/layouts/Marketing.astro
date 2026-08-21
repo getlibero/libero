@@ -6,6 +6,7 @@
 import '../styles/fonts.css';
 import '../styles/site.css';
 
+import Analytics from '../components/Analytics.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import { SITE } from '../consts';
@@ -78,6 +79,8 @@ const social = new URL('/og.png', Astro.site ?? SITE.url);
     {/* Inlined so the theme is settled before first paint. Shared verbatim
         with the docs — see src/lib/theme-script.ts. */}
     <script is:inline set:html={themeScript} />
+
+    <Analytics />
   </head>
 
   <body>
