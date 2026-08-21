@@ -151,11 +151,29 @@ function isProvisional(value: object): boolean {
  * (#51). That is a refusal discovered while serving, not a permission denied
  * before it.
  *
- * `egress_denied` is **not** one of these, though an earlier note here guessed
- * it would be. The destination of an MCP call comes from the `[[mcp_server]]`
- * block that authorized the tool, so nothing about it is discovered at dispatch
- * time; `[egress]` governs the destinations the sheet does not pin, and its
- * first caller is the sandbox runner. See packages/schema/src/egress.ts.
+ * `egress_denied` **joins it** as of #393, and the earlier note here that said
+ * it would not is the one being corrected. Nothing changed about MCP: the
+ * destination of an MCP call comes from the `[[mcp_server]]` block that
+ * authorized the tool, so nothing about it is discovered at dispatch time and
+ * ./http-dispatcher.ts still constructs no such refusal. What changed is that
+ * `[egress]`'s first caller now exists. Sandboxed code opens sockets nobody
+ * declared, so the check cannot sit at a call site: the sandbox runs on a
+ * routeless network whose only exit is a CONNECT hop that calls
+ * `isEgressAllowed` per host. A denied host **terminates the run**, and the
+ * denial comes back here — which makes it exactly what `credential_unresolved`
+ * is, a refusal discovered while serving rather than a permission denied before
+ * it, and for the same structural reason: the team sheet alone could not have
+ * answered it, because which host the code would dial was not knowable until it
+ * dialled.
+ *
+ * Terminal rather than best-effort, and the reason is the audit log rather than
+ * the model: one row per call is an invariant (see ./server.ts's audit
+ * closure), so a mid-run denial has no second row to live in, and a run
+ * that continued would bury an attempted exfiltration in a `ran` row's log
+ * line. Killing it makes the attempt a refusal a human reads. The whole
+ * argument, with the shapes rejected to get here, is in packages/proxy/README.md
+ * under "Enforcing [egress]"; the matcher and what the list means are in
+ * packages/schema/src/egress.ts.
  */
 export type Dispatch =
   | { readonly outcome: "ran"; readonly result: ToolResult }
@@ -228,6 +246,16 @@ export interface McpToolDispatcher {
  * It takes a `BuiltinToolName` rather than a `Target`, so it structurally cannot
  * be handed an upstream; and it is synchronous, because every built-in so far
  * reads a local SQLite file and a promise here would invite one that does not.
+ *
+ * **The code-execution built-in (#368) is that one, and it gets its own arm
+ * rather than this one.** It is a built-in by every governance measure — granted
+ * by a `[[builtin]]` block, refused when the sheet omits it, metered, audited
+ * under `libero` — and it still talks to a runner over the network, which is
+ * exactly what the sentence above says this arm may not do. #393 decided the
+ * seam rather than the widening: `Target` stays `{kind:"builtin", tool}` and the
+ * switch in `createToolDispatcher` branches on the name, so the arm that reads
+ * SQLite keeps holding a directory path and a clock and this doc stays literally
+ * true. Widening this interface to return a promise is the edit to reject.
  *
  * It lives behind `createToolDispatcher` rather than being wired into the server
  * directly, so `ToolDispatcher` stays the one seam the server holds.

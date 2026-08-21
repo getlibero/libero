@@ -127,6 +127,57 @@ volume too, and the scheduled checks in it are read and cancelled through
 entrypoint. It is the server's rather than the proxy's because the proxy mounts
 that volume `readOnly` by design and a cancel is a write.
 
+## The sandbox runner (#368)
+
+Decided in #393, landed by #397 — this section is the topology, not a description
+of a service that exists. The argument for both decisions is in
+`packages/proxy/README.md` under "Reaching a runtime" and "Enforcing `[egress]`";
+what follows is what it means for this directory.
+
+**One new service, holding the one privilege.** `runner` mounts the Docker socket
+and its own certificate slice, **and nothing else** — no channels, no prices, no
+vault, no store, no audit, no budget. It holds no credential, and the list of what
+it does not mount is how that stays true. The proxy still does not get the socket;
+the compose file says so where the mount would be, and that line does not change
+when the runner arrives.
+
+Four networks, and what each can reach:
+
+| Network | Members | Reaches |
+| --- | --- | --- |
+| `libero` (existing bridge) | `server`, `proxy` | Each other, and out. Unchanged. |
+| `runner-control` (new, `internal: true`) | `proxy`, `runner` | Each other, nothing else. **The agent has no route to the runner at all** — the mTLS fingerprint pin is the second wall, not the only one. |
+| `sandbox-egress` (new bridge, has a default route) | egress hops only | Out. Deliberately **not** `libero`, so an allowed host cannot become a path to `proxy:8443`. |
+| `sandbox-<runid>` (per run, ephemeral, `internal: true`) | one sandbox, one hop | Each other. No route out, which is what enforces `[egress]` — see the proxy's README for why that is topological rather than a check. |
+
+A sheet with no `[egress]` block gets `network: none` and no hop.
+
+**The one line an operator will get wrong.** The runner runs non-root, like both
+existing images and asserted by `scripts/image-checks.sh`, and the Docker socket
+is root-owned. Reaching it therefore needs `group_add` with the **host's** docker
+group id — which differs between Debian on GCP and AL2023 on AWS. That makes it an
+operator variable (`DOCKER_GID`) with a `:?` guard, like the other required ones,
+rather than a number this file can hardcode.
+
+**The sandbox image is the runner's, and the runner never pulls.** The run request
+has no image field — that is most of what makes it narrow — so the image is named
+in the runner's own environment, pinned by digest, and pulled at deploy time. A
+runner that pulled at call time would put a network dependency, a latency cliff
+and a supply-chain surface inside the call path.
+
+Two things this hands to whoever lands the service. The hop and the runner are
+**one image with two entrypoints**, the pattern `apps/proxy-server` already uses
+for `vault`, `audit`, `grant` and `tasks` — so the image count goes to three, not
+four, and the hop inherits the assertions for free. That third image has to be
+named in `scripts/image-checks.sh`'s argument list in `ci.yml`, in
+`release-images.yml`, and in `.dockerignore`, which is an allowlist and will
+otherwise silently exclude it.
+
+One assumption worth stating rather than discovering: the isolation between these
+networks rests on Docker's default iptables rules. A deployment running the daemon
+with `--iptables=false` has removed a wall this design leans on, and nothing here
+would report it.
+
 ## Upgrading across #62: proxy first
 
 **Upgrade the proxy before the agent.** The spend report gained a `model` field,
