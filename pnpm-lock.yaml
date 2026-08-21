@@ -85,6 +85,9 @@ importers:
       '@getlibero/proxy-server':
         specifier: workspace:*
         version: link:../apps/proxy-server
+      '@getlibero/runner':
+        specifier: workspace:*
+        version: link:../apps/runner
       '@getlibero/schema':
         specifier: workspace:*
         version: link:../packages/schema

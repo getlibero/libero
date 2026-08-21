@@ -16,6 +16,21 @@ import { join } from "node:path";
 import type { Cleanup } from "./cleanup.js";
 
 /** One tool as a sheet names it. Tools not listed do not exist for the channel. */
+/**
+ * A `[[builtin]]` entry, which since #394 is not the same shape as a tool.
+ *
+ * `run_code` carries sandbox caps the other two have no use for, and the schema
+ * makes that a discriminated union so a cap on the wrong block is an issue
+ * naming the field rather than a key zod quietly strips. Here the caps are
+ * simply optional, because this writer is producing TOML for the schema to
+ * judge — writing a bad sheet on purpose is a thing a case may want to do.
+ */
+export interface SheetBuiltin extends SheetTool {
+  readonly cpus?: number;
+  readonly memoryMb?: number;
+  readonly timeoutSeconds?: number;
+}
+
 export interface SheetTool {
   readonly name: string;
   /** Omitted lets the proxy's destructive-name heuristic decide. */
@@ -103,7 +118,19 @@ export interface SheetSpec {
    * which is also the "a channel whose sheet omits it is refused" fixture,
    * obtained by writing nothing rather than by writing an exclusion.
    */
-  readonly builtins?: readonly SheetTool[];
+  readonly builtins?: readonly SheetBuiltin[];
+  /**
+   * The `[egress]` block: where sandboxed code may reach (#219).
+   *
+   * **Absent and empty are the same grant and it is "nowhere".** A run whose
+   * channel lists no hosts gets no network at all — not a filtered one — so a
+   * case proving that needs to write nothing, and a case proving the opposite
+   * needs an entry here and a `run_code` builtin beside it.
+   *
+   * Patterns, not hosts: `isEgressAllowed` decides and it takes what an operator
+   * wrote, wildcard and all.
+   */
+  readonly egress?: readonly string[];
   /**
    * The `[memory]` block: whether this channel curates a `MEMORY.md` (#227).
    *
@@ -368,8 +395,17 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
                 ``,
                 `[[builtin]]`,
                 `name = "${builtin.name}"`,
-                ...(builtin.approval !== undefined ? [`approval = "${builtin.approval}"`] : [])
-              ]))
+                ...(builtin.approval !== undefined ? [`approval = "${builtin.approval}"`] : []),
+                ...(builtin.cpus !== undefined ? [`cpus = ${builtin.cpus}`] : []),
+                ...(builtin.memoryMb !== undefined ? [`memory_mb = ${builtin.memoryMb}`] : []),
+                ...(builtin.timeoutSeconds !== undefined ? [`timeout_seconds = ${builtin.timeoutSeconds}`] : [])
+              ])),
+          // Written only when a case asks for it, so every sheet in this suite
+          // that says nothing keeps granting nothing — which is the default an
+          // operator gets and the fixture the no-network case needs.
+          ...(spec.egress === undefined
+            ? []
+            : [``, `[egress]`, `allow = [${spec.egress.map(pattern => `"${pattern}"`).join(", ")}]`])
         ].join("\n")
       );
     }

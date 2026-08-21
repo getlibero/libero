@@ -63,6 +63,14 @@ export interface ProxyEnv {
    */
   readonly port?: number;
   /**
+   * Where a sandbox runner is listening, or absent (#395, #396).
+   *
+   * Off by default for the reason ambient is: a rig that started a runner would
+   * make every case pay for a Docker daemon, and the suite has to run on a
+   * machine that has none.
+   */
+  readonly runner?: { readonly url: string; readonly clientCert: string; readonly clientKey: string };
+  /**
    * `PROXY_UPSTREAM_TIMEOUT_MS`. Optional, as the variable is: absent keeps
    * the package's thirty seconds, which every case not about a hanging token
    * endpoint wants — a rig that quietly shortened it would put a clock inside
@@ -172,7 +180,20 @@ export async function spawnProxy(
       ...(env.upstreamTimeoutMs === undefined ? {} : { PROXY_UPSTREAM_TIMEOUT_MS: String(env.upstreamTimeoutMs) }),
       PROXY_TLS_CERT: env.tlsCert,
       PROXY_TLS_KEY: env.tlsKey,
-      PROXY_TLS_CA: env.tlsCa
+      PROXY_TLS_CA: env.tlsCa,
+      // The sandbox runner (#395), and absent unless a case stood one up.
+      // Absent is not a degraded rig: it is the deployment most operators run,
+      // and a channel granting `run_code` in it is answered `not_implemented`
+      // rather than refused. Only the cases that attack the sandbox pay for a
+      // runner, which is the same rule ambient and the background passes follow.
+      ...(env.runner === undefined
+        ? {}
+        : {
+            RUNNER_URL: env.runner.url,
+            RUNNER_CLIENT_CERT: env.runner.clientCert,
+            RUNNER_CLIENT_KEY: env.runner.clientKey,
+            RUNNER_CLIENT_CA: env.tlsCa
+          })
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

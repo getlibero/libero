@@ -15,6 +15,7 @@
     "@getlibero/gateway": "workspace:*",
     "@getlibero/proxy": "workspace:*",
     "@getlibero/proxy-server": "workspace:*",
+    "@getlibero/runner": "workspace:*",
     "@getlibero/schema": "workspace:*",
     "@getlibero/server": "workspace:*",
     "@getlibero/memory": "workspace:*"
