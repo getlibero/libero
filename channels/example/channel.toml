@@ -411,6 +411,18 @@ name = "schedule_task"
 # Default deny. "*." stands for one or more subdomain labels, so
 # *.internal.example.com covers build.internal.example.com but not
 # internal.example.com itself. There is no allow-all.
+#
+# A COMMON RECIPE: letting run_code install Python packages. A package index and
+# the file host it redirects to are different names, so one is not enough.
+#
+#   [egress]
+#   allow = ["pypi.org", "files.pythonhosted.org"]
+#
+# npm's equivalent is registry.npmjs.org; Debian's is deb.debian.org. Add only
+# the index you use. Raise memory_mb and timeout_seconds on the run_code block
+# to match — the workdir is a tmpfs sized to memory_mb, and 30 seconds does not
+# fetch and unpack a wheel. The rootfs is read-only, so install into the
+# workdir: pip install --target /work/pkgs, then put it on sys.path.
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 

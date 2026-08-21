@@ -382,6 +382,18 @@ name = "schedule_task"
 # Default deny. "*." stands for one or more subdomain labels, so
 # *.internal.example.com covers build.internal.example.com but not
 # internal.example.com itself. There is no allow-all.
+#
+# A COMMON RECIPE: letting run_code install Python packages. A package index and
+# the file host it redirects to are different names, so one is not enough.
+#
+#   [egress]
+#   allow = ["pypi.org", "files.pythonhosted.org"]
+#
+# npm's equivalent is registry.npmjs.org; Debian's is deb.debian.org. Add only
+# the index you use. Raise memory_mb and timeout_seconds on the run_code block
+# to match — the workdir is a tmpfs sized to memory_mb, and 30 seconds does not
+# fetch and unpack a wheel. The rootfs is read-only, so install into the
+# workdir: pip install --target /work/pkgs, then put it on sys.path.
 [egress]
 allow = ["api.github.com", "*.internal.example.com"]
 
@@ -982,6 +994,20 @@ run is killed, the call is refused naming the host, and the refused call still c
 channel's budget. That is fail-closed on purpose; write the list before you need it rather than by
 watching runs fail.
 :::
+
+**Letting code install packages** is the common case, and it takes two hosts: a
+package index and the file host it redirects to are different names.
+
+```toml
+[egress]
+allow = ["pypi.org", "files.pythonhosted.org"]
+```
+
+npm's equivalent is `registry.npmjs.org`; Debian's is `deb.debian.org`. Raise the
+`run_code` block's `memory_mb` and `timeout_seconds` to match — the workdir is a
+tmpfs sized to `memory_mb`, and the default 30 seconds does not fetch and unpack
+a wheel. [Self-hosting](/docs/self-hosting) has the worked example, including
+where to install to given the rootfs is read-only.
 
 **A server's own `url` does not go here.** Declaring it under `[[mcp_server]]` is what authorizes
 it — that block also carries the tool allowlist and the credential name, so the destination has

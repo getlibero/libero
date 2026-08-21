@@ -329,6 +329,10 @@ services:
       # daemon last pulled. Resolve one you have reviewed —
       # `docker buildx imagetools inspect python:3.13-alpine` prints it — and
       # pull it at deploy time. The runner never pulls.
+      #
+      # Prefer a glibc image — python:3.13-slim — over Alpine if channels will
+      # install packages: most projects publish manylinux wheels and some do not
+      # publish the musllinux ones Alpine needs.
       RUNNER_SANDBOX_IMAGE: "${RUNNER_SANDBOX_IMAGE:-}"
       # The interpreter and its flags; the model's code is appended as the final
       # argument. This is what keeps the tool language-neutral, and it is why the

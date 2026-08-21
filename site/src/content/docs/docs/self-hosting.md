@@ -438,15 +438,15 @@ language the sandbox has is a property of your deployment, and a tag makes it a 
 whenever the daemon last pulled.
 
 ```bash
-docker buildx imagetools inspect python:3.13-alpine   # prints the digest
-docker pull python:3.13-alpine@sha256:...             # the runner never pulls
+docker buildx imagetools inspect python:3.13-slim   # prints the digest
+docker pull python:3.13-slim@sha256:...             # the runner never pulls
 ```
 
 **3. Fill in three values in `.env`.** `libero init` scaffolds them blank with the command that
 prints each:
 
 ```bash
-RUNNER_SANDBOX_IMAGE=python:3.13-alpine@sha256:...
+RUNNER_SANDBOX_IMAGE=python:3.13-slim@sha256:...
 RUNNER_CLIENT_PIN=...                 # sh scripts/dev-certs.sh prints it
 DOCKER_GID=...                        # getent group docker | cut -d: -f3
 ```
@@ -479,6 +479,57 @@ allow = ["api.github.com"]
 Omit `[egress]` and the run gets no network at all, which is the safe default rather than an
 oversight. See [the team sheet reference](/docs/team-sheet) for what a list does and does not
 grant — in particular that it covers HTTP and HTTPS only, and that a host outside it ends the run.
+
+### Letting it install packages
+
+The common case, and it takes two hosts. A package index and the file host it
+redirects to are different names, so one is not enough:
+
+```toml
+[[builtin]]
+name            = "run_code"
+approval        = "none"      # or omit the line, and every run waits for a click
+memory_mb       = 2048
+timeout_seconds = 300
+
+[egress]
+allow = ["pypi.org", "files.pythonhosted.org"]
+```
+
+The npm equivalent is `registry.npmjs.org`; Debian's is `deb.debian.org`. Add
+only the index you use — a list is a grant, and each entry is a host sandboxed
+code may reach with whatever it has.
+
+Three things about the caps, because the defaults are sized for arithmetic and
+not for installing a package tree:
+
+- **`memory_mb` is also the workdir's size.** The scratch directory is a tmpfs,
+  and a tmpfs is memory — so the two are one bound rather than two, and a
+  program that fills the workdir is killed for exceeding the memory cap. The
+  default 512 MB installs `requests`; `numpy` needs more like 2 GB while pip
+  unpacks it.
+- **`timeout_seconds` covers the install too.** 30 seconds is not enough to
+  fetch and unpack a wheel over a filtered connection.
+- **The rootfs is read-only, so install somewhere writable.** `pip install`
+  with no target writes to the interpreter's own `site-packages` and fails.
+  Point it at the workdir and put that on the path:
+
+```python
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "--target", "/work/pkgs", "numpy"], check=True)
+sys.path.insert(0, "/work/pkgs")
+import numpy
+```
+
+Nothing persists between calls, so each run that needs a package installs it
+again. That is the sandbox working as designed rather than a limit to route
+around: a warm cache is state, and state is the thing an ephemeral container
+exists not to have.
+
+**Pick a glibc image if you want native wheels.** `python:3.13-slim` is the
+straightforward choice — most projects publish `manylinux` wheels and some do
+not publish the `musllinux` ones Alpine needs, so `python:3.13-alpine` will
+build from source or fail where slim just works.
 
 ### Hardening it further with gVisor
 
