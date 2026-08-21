@@ -43,6 +43,7 @@ import type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
 import { plantGrants } from "./grant.js";
 import type { GrantSpec } from "./grant.js";
 import { spawnProxy } from "./proxy-process.js";
+import { EGRESS_NETWORK, spawnRunner } from "./runner-process.js";
 import type { ProxyEnv, ProxyProcess } from "./proxy-process.js";
 import { startAgent } from "./agent.js";
 import type { AgentSide } from "./agent.js";
@@ -150,6 +151,21 @@ export interface RigOptions {
    * suite's other fixtures keep the deployment default.
    */
   readonly upstreamTimeoutMs?: number;
+  /**
+   * Stand a real sandbox runner up beside the proxy (#396).
+   *
+   * Off everywhere else, and that absence is the rule the background passes and
+   * `ambient` follow: a rig that quietly started a runner would make every file
+   * in this suite need a Docker daemon, and the suite has to run on a machine
+   * that has none.
+   *
+   * `"egress"` is the same runner with a route out for its hops — the only
+   * difference is `RUNNER_EGRESS_NETWORK`, which is what turns a sheet's
+   * `[egress]` list from "no network at all" into "these hosts and nothing
+   * else". Without it a granted `[egress]` block is honoured in the safe
+   * direction and logged, which is a deployment state worth having a case for.
+   */
+  readonly runner?: "none" | "egress";
   /**
    * The model's turns, in order. Running past the end throws.
    *
@@ -527,7 +543,33 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       tlsKey: certs.serverKey,
       tlsCa: certs.caPath
     };
-    let proxy = await spawnProxy(cleanup, proxyEnv, options.nodeArgs ?? []);
+
+    // Before the proxy, because the proxy needs its url. A runner that will not
+    // start should fail here rather than as a 501 several assertions later.
+    const runner =
+      options.runner === undefined
+        ? undefined
+        : await spawnRunner(cleanup, {
+            tlsCert: certs.runnerServerCert,
+            tlsKey: certs.runnerServerKey,
+            tlsCa: certs.caPath,
+            // One CA signs this and every channel certificate in the rig, so the
+            // pin is the whole of what stops a compromised agent calling the
+            // runner directly. See `Certs.runnerClientPin`.
+            clientPin: certs.runnerClientPin,
+            ...(options.runner === "egress" ? { egressNetwork: EGRESS_NETWORK } : {})
+          });
+
+    let proxy = await spawnProxy(
+      cleanup,
+      {
+        ...proxyEnv,
+        ...(runner === undefined
+          ? {}
+          : { runner: { url: runner.url, clientCert: certs.proxyClientCert, clientKey: certs.proxyClientKey } })
+      },
+      options.nodeArgs ?? []
+    );
 
     const wrapper = transportWrapper(options);
     // Built here rather than inside startAgent so a case can read what reached
@@ -569,7 +611,17 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
         // The old process's cleanup entry stays on the stack and is harmless —
         // stopping an exited child is a no-op — while the successor registers
         // its own. The pinned port is what keeps the agent's captured url live.
-        proxy = await spawnProxy(cleanup, { ...proxyEnv, port }, options.nodeArgs ?? []);
+        proxy = await spawnProxy(
+          cleanup,
+          {
+            ...proxyEnv,
+            port,
+            ...(runner === undefined
+              ? {}
+              : { runner: { url: runner.url, clientCert: certs.proxyClientCert, clientKey: certs.proxyClientKey } })
+          },
+          options.nodeArgs ?? []
+        );
       },
       agent,
       model,

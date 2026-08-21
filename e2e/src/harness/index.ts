@@ -20,11 +20,21 @@ export type { Surface } from "./canary.js";
 export { createCleanup, guarded } from "./cleanup.js";
 export type { Cleanup, Disposer } from "./cleanup.js";
 
+export {
+  EGRESS_NETWORK,
+  RUNNER_IMAGE,
+  SANDBOX_IMAGE,
+  dockerSocketPath,
+  prepareSandboxFixtures,
+  spawnRunner
+} from "./runner-process.js";
+export type { RunnerEnv, RunnerProcess } from "./runner-process.js";
+
 export { mintCerts } from "./certs.js";
 export type { Certs, MintOptions } from "./certs.js";
 
 export { tempChannelsRoot } from "./channels.js";
-export type { ChannelsRoot, SheetSpec, SheetTool } from "./channels.js";
+export type { ChannelsRoot, SheetBuiltin, SheetSpec, SheetTool } from "./channels.js";
 
 export { breakCredentialInjection, breakRedaction } from "./mutate.js";
 

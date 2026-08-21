@@ -29,6 +29,21 @@ is only a local concern.
 
 `openssl` must be on `PATH` — `scripts/dev-certs.sh` mints the certificates.
 
+**One file needs a Docker daemon**, and only one: `sandbox-attack.test.ts`, which
+is #396's half of the code-execution sandbox. Everything else runs on a machine
+that has none. That file's gate is two-sided and deliberately asymmetric — no
+daemon and not CI skips it, no daemon and `CI=true` fails at import — because CI
+has one and quietly reporting green on a security acceptance is the thing this
+repository's "a test that encodes a gap" rule forbids. The gate is probed
+synchronously at module load: `describe.skipIf` is evaluated at collection, so a
+flag set in a `beforeAll` is still false when the decision is made.
+
+It builds the runner's image if it is absent and leaves a `libero-e2e-egress`
+network behind, which holds nothing and is reused. The sandbox half that needs no
+daemon — a channel that never granted the built-in, and a deployment with no
+runner — is `sandbox-grant.test.ts`, so the strongest claim about the feature is
+checked everywhere.
+
 **The files run in parallel, and the absence of `--no-file-parallelism` is a
 decision rather than an omission.** The flag was here from the rig's first
 commit with no stated reason, and it cost 49 of the build job's 73 seconds:

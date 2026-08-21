@@ -42,6 +42,11 @@ export interface AuditRow {
   readonly approver: string | null;
   readonly ticket: string | null;
   /**
+   * The host a sandbox run was killed for reaching (#219). Null on every row
+   * that is not an `egress_denied` refusal, which is almost all of them.
+   */
+  readonly destination: string | null;
+  /**
    * #354. The chain. `prev_hash` is the previous row's `row_hash`, and the first
    * row's is a stated genesis constant; neither is null, because the migration
    * gives every row it copies one.

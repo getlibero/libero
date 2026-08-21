@@ -52,6 +52,29 @@ export interface Certs {
   /** `PROXY_CLIENT_CERT_DIR`: holds `client-<channel>.pem` and `.key`. */
   readonly clientCertDir: string;
   /**
+   * The sandbox runner's own listener, and the proxy's client half (#219, #395).
+   *
+   * The same script mints these, so the suite gets them whether or not a case
+   * uses them — which is the right default: they are deployment-lifetime
+   * material like the proxy's server certificate, not a per-case fixture.
+   *
+   * `runnerClientPin` is what `RUNNER_CLIENT_PIN` is set to, and it is read out
+   * of the file for `fingerprint`'s reason: the value the runner compares
+   * against is Node's `fingerprint256`, so computing it the same way here means
+   * the harness cannot agree with the script and disagree with the runner.
+   *
+   * It matters more here than anywhere else in the suite. One CA signs this
+   * *and* every channel certificate in `clientCertDir`, so a runner that
+   * trusted the CA alone would serve a compromised agent directly — the pin is
+   * the whole of what stops that, and a case that wanted to attack it would
+   * present one of those channel certificates.
+   */
+  readonly runnerServerCert: string;
+  readonly runnerServerKey: string;
+  readonly proxyClientCert: string;
+  readonly proxyClientKey: string;
+  readonly runnerClientPin: string;
+  /**
    * The SHA-256 digest of a minted certificate, by label — a channel id, or a
    * `--raw-cn` label. This is what a team sheet pins (#79), and it is read out
    * of the file rather than parsed out of the script's output: the value the
@@ -106,6 +129,11 @@ export function mintCerts(cleanup: Cleanup, options: MintOptions): Certs {
     serverCert: join(dir, "proxy", "server.pem"),
     serverKey: join(dir, "proxy", "server.key"),
     clientCertDir: join(dir, "agent"),
+    runnerServerCert: join(dir, "runner", "server.pem"),
+    runnerServerKey: join(dir, "runner", "server.key"),
+    proxyClientCert: join(dir, "proxy", "client.pem"),
+    proxyClientKey: join(dir, "proxy", "client.key"),
+    runnerClientPin: new X509Certificate(readFileSync(join(dir, "proxy", "client.pem"))).fingerprint256,
     fingerprint,
     rotate(channelId: string): string {
       devCerts(["--out", dir, "--rotate", channelId]);
