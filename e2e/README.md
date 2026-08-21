@@ -28,6 +28,11 @@ fails with a message telling you to run it. CI builds before it tests, so this
 is only a local concern.
 
 `openssl` must be on `PATH` — `scripts/dev-certs.sh` mints the certificates.
+That material is cached under `node_modules/.cache/libero-e2e-certs`, keyed on
+the request and on the script's own contents, because eighty-one of this suite's
+calls ask for exactly the same thing and each one is five RSA keys.
+`src/harness/cert-cache.ts` argues it, including why a rotation is never served
+from the cache. Deleting the directory costs time and nothing else.
 
 **One file needs a Docker daemon**, and only one: `sandbox-attack.test.ts`, which
 is #396's half of the code-execution sandbox. Everything else runs on a machine
