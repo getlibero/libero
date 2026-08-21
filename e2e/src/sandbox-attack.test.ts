@@ -159,6 +159,9 @@ function startSink(): void {
       "python3", "-u", "-c",
       // Prints every byte it is sent and answers 200. Unbuffered, so `docker
       // logs` has the payload the moment it arrives rather than at exit.
+      // Prints READY before serving so `startSink` can wait for a listening
+      // socket rather than for the daemon to have started a container — the
+      // same race the runner hit between its hop and its sandbox.
       "import socketserver\n" +
         "class H(socketserver.StreamRequestHandler):\n" +
         "    def handle(self):\n" +
@@ -166,10 +169,19 @@ function startSink(): void {
         "        print('GOT', data.decode('utf8', 'replace'), flush=True)\n" +
         "        self.request.sendall(b'HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n')\n" +
         "socketserver.TCPServer.allow_reuse_address = True\n" +
-        "socketserver.TCPServer(('0.0.0.0', 8080), H).serve_forever()\n"
+        "srv = socketserver.TCPServer(('0.0.0.0', 8080), H)\n" +
+        "print('READY', flush=True)\n" +
+        "srv.serve_forever()\n"
     ],
     { stdio: "pipe" }
   );
+
+  const until = Date.now() + 60_000;
+  for (;;) {
+    if (sinkLog().includes("READY")) return;
+    if (Date.now() > until) throw new Error(`e2e: the sink did not start. Log:\n${sinkLog()}`);
+    execFileSync("sleep", ["0.25"]);
+  }
 }
 
 function stopSink(): void {
@@ -234,7 +246,7 @@ function describeReachesTheAllowedHost(): void {
   }, SETUP_MS);
 
   it("carries the payload to a host the sheet allows", async () => {
-    const { agent, auditDb, budgetDb } = rigOf(rig);
+    const { agent, auditDb, budgetDb, model } = rigOf(rig);
     await agent.slack.deliverMention(mention("Ev00000910"));
 
     // The call first, then its effect. A sink assertion that failed because the
@@ -243,6 +255,12 @@ function describeReachesTheAllowedHost(): void {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ server: "libero", tool: "run_code", outcome: "ran" });
     expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(1);
+
+    // The program's own account, before the sink's. `ran` says the call was
+    // served and says nothing about whether the code worked — so without this a
+    // hop that refused the tunnel and a hop that was not there both look like a
+    // silent sink, which is exactly how this failed on CI once.
+    expect(JSON.stringify(model.seen)).toContain("200 Connection Established");
 
     // The byte really left the container and arrived at the far end. Read out of
     // the listener rather than out of our own result, because a result is this

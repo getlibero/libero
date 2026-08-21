@@ -12,7 +12,7 @@
 // it serves. It holds no credential and never had one to hold: its whole
 // configuration is a port and a list of host patterns.
 
-import { createHop, DENIED_EVENT } from "./hop-server.js";
+import { createHop, DENIED_EVENT, HOP_LISTENING_EVENT } from "./hop-server.js";
 import { hopAllowFromEnv, hopPortFromEnv } from "./env.js";
 
 const allow = hopAllowFromEnv(process.env);
@@ -32,7 +32,7 @@ const server = createHop({
 // anywhere except the sandbox that shares it, so there is nothing else that
 // could reach the port.
 server.listen(port, "0.0.0.0", () => {
-  process.stdout.write(`${JSON.stringify({ event: "hop_listening", port, allow: allow.length })}\n`);
+  process.stdout.write(`${JSON.stringify({ event: HOP_LISTENING_EVENT, port, allow: allow.length })}\n`);
 });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {

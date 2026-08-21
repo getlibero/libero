@@ -25,7 +25,7 @@
 import type { SandboxCaps, SandboxRunRequest, SandboxRunResult } from "@getlibero/schema";
 import { SANDBOX_MAX_OUTPUT_BYTES } from "@getlibero/schema";
 import type { DockerClient } from "./docker.js";
-import { DENIED_EVENT } from "./hop-server.js";
+import { DENIED_EVENT, HOP_LISTENING_EVENT } from "./hop-server.js";
 
 /**
  * The scratch directory, and the only writable path in the container.
@@ -74,6 +74,8 @@ export interface RunnerConfig {
     /** A network with a default route. The hop joins it; the sandbox never does. */
     readonly network: string;
     readonly port: number;
+    /** How long the hop gets to bind. Injected only so a test can shorten it. */
+    readonly readyTimeoutMs?: number;
   };
 }
 
@@ -117,6 +119,42 @@ export const HOP_ALIAS = "hop";
 
 /** Where the runner image puts its code, and so where the hop has to run from. */
 const HOP_WORKDIR = "/app";
+
+/**
+ * How long a hop gets to bind its port.
+ *
+ * Generous, because the cost of being wrong in each direction is asymmetric: a
+ * few seconds of a slow start is invisible beside a container pull, and giving
+ * up early turns a working deployment into one that reports connection failures
+ * a channel cannot act on.
+ */
+const HOP_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * Resolve when the hop says it is listening, or throw.
+ *
+ * Its own log stream, which is the same mechanism the denial watch uses and for
+ * the same reason: it is the one channel the runner already has to a container
+ * it started, and it needs no second network path between the two.
+ */
+async function waitForHop(options: RunOptions, hop: string, timeoutMs: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const follow = options.docker.followLogs(hop, line => {
+      try {
+        if ((JSON.parse(line) as { event?: unknown }).event !== HOP_LISTENING_EVENT) return;
+      } catch {
+        return;
+      }
+      clearTimeout(timer);
+      follow.stop();
+      resolve();
+    });
+    const timer = setTimeout(() => {
+      follow.stop();
+      reject(new Error(`runner: the egress hop did not listen within ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+}
 
 /**
  * Everything one run created, so a `finally` can undo it in the right order.
@@ -255,6 +293,14 @@ async function build(
     // back to anything else in the deployment.
     await options.docker.connectNetwork(egress.network, hop.id);
     await options.docker.start(hop.id);
+    // **Wait for it to bind before the sandbox can dial it**, and this is a
+    // correctness fix rather than a nicety. Starting a container returns when
+    // the daemon has started it, not when the process inside has a listening
+    // socket — so without this the sandbox races a hop that is still booting,
+    // gets a connection refused, and reports a program that failed rather than
+    // a destination that was denied. It passed on a fast machine and failed on
+    // a loaded CI runner, which is the shape of every race.
+    await waitForHop(options, hop.id, egress.readyTimeoutMs ?? HOP_READY_TIMEOUT_MS);
 
     const proxy = `http://${HOP_ALIAS}:${egress.port}`;
     const sandbox = await options.docker.create({

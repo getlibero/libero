@@ -53,6 +53,15 @@ import { isEgressAllowed } from "@getlibero/schema";
 /** The key the runner watches for. Changing it is changing a wire contract. */
 export const DENIED_EVENT = "egress_denied";
 
+/**
+ * The line the runner waits for before it starts the sandbox.
+ *
+ * Also a wire contract, and the one that stops the sandbox racing a hop that has
+ * not bound yet. Starting a container returns when the daemon started it, not
+ * when the process inside is listening.
+ */
+export const HOP_LISTENING_EVENT = "hop_listening";
+
 /** How long to wait for an allowed upstream to accept the connection. */
 const DIAL_TIMEOUT_MS = 10_000;
 
