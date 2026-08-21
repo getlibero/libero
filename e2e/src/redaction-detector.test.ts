@@ -14,7 +14,8 @@
 // it; gutted must be caught. A change that made `expectNoCanary` vacuous would
 // fail the second half here long before it made #132 pass for nothing.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY,
   CHANNEL,
@@ -55,14 +56,15 @@ function asShipped(): void {
 
   beforeAll(async () => {
     rig = await startRig({ upstream: ECHOES_ITS_AUTH, script: SCRIPT });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "an upstream that echoes its auth header is scrubbed before the model sees it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, surfaces } = rigOf(rig);
       await agent.slack.deliverMention(mention("Ev00000030"));
@@ -78,9 +80,7 @@ function asShipped(): void {
       const transcript = JSON.stringify(model.seen);
       expect(transcript).toContain("[redacted:e2e_canary]");
       expectNoCanary(surfaces());
-    },
-    CASE_MS
-  );
+    });
 }
 
 function withRedactionGutted(): void {
@@ -96,15 +96,16 @@ function withRedactionGutted(): void {
       upstream: ECHOES_ITS_AUTH,
       script: SCRIPT
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
     await cleanup?.drain();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "with the proxy's redaction pass gutted, the suite's own assertion fails",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, surfaces } = rigOf(rig);
       await agent.slack.deliverMention(mention("Ev00000031"));
@@ -116,7 +117,5 @@ function withRedactionGutted(): void {
       // And the check every #132 case will lean on catches it. This is the
       // assertion the file exists for — the others describe the setup.
       expect(() => expectNoCanary(surfaces())).toThrow(/agent-visible surface/);
-    },
-    CASE_MS
-  );
+    });
 }

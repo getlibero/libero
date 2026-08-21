@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import type { AuditRecord } from "@getlibero/schema";
 import type { ApprovalDecider, ApprovalTicketRecord, DecideResult } from "./approvals.js";
 import { createApprovalsRoute } from "./approvals-route.js";
@@ -270,7 +271,13 @@ describe("the status", () => {
 
     for (const answer of answers) {
       const { handler } = routeFor(answer);
-      expect((await handler(ctx(APPROVE))).status, answer.outcome).toBe(200);
+      // The outcome travels with the status so a failure names which of the
+      // four it was, which is what the second argument to vitest's `expect`
+      // used to carry.
+      expect({ outcome: answer.outcome, status: (await handler(ctx(APPROVE))).status }).toEqual({
+        outcome: answer.outcome,
+        status: 200
+      });
     }
   });
 });

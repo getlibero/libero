@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { VERSION, runCli } from "./cli.js";
 
@@ -31,7 +33,7 @@ describe("dispatch", () => {
     expect(result.err).toEqual([]);
   });
 
-  it.each(["--help", "-h", "help"])("prints usage on stdout and exits 0 for %s", async word => {
+  each(["--help", "-h", "help"])("prints usage on stdout and exits 0 for %s", async word => {
     const result = await run([word]);
 
     expect(result.code).toBe(EXIT_OK);
@@ -78,7 +80,7 @@ describe("the boundary #98 settled", () => {
   // host cannot open, so they are the proxy's own entrypoints and not commands
   // here. Asserted rather than only written down, because the failure mode is
   // someone adding one and nothing objecting.
-  it.each([
+  each([
     ["vault", "node dist/vault.js"],
     ["budget", "node dist/budget.js"],
     ["audit", "node dist/audit.js"]

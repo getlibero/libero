@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   BuiltinToolName,
   MAX_TOOL_DESCRIPTION,
@@ -21,7 +23,7 @@ describe("the built-in definitions", () => {
   // ends a task with "the tool proxy could not be reached" rather than costing
   // it a sentence. ./builtins.ts throws at module load for the same reason;
   // this is the version that names the tool in a test report.
-  it.each(Object.entries(BUILTIN_TOOLS))("publishes %s within the schema's bounds", (tool, definition) => {
+  each(Object.entries(BUILTIN_TOOLS))("publishes %s within the schema's bounds", (tool, definition) => {
     expect(definition.description.length).toBeLessThanOrEqual(MAX_TOOL_DESCRIPTION);
     expect(ToolInputSchema.safeParse(definition.inputSchema).success).toBe(true);
     expect(
@@ -82,7 +84,7 @@ describe("search_channel_history's arguments", () => {
     expect(JSON.stringify(schema.properties["limit"])).toContain(String(READ_MAX_LIMIT));
   });
 
-  it.each([
+  each([
     ["an empty query", { query: "" }],
     ["a missing query", {}],
     ["a fractional limit", { query: "v", limit: 1.5 }],

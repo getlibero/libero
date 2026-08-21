@@ -20,7 +20,9 @@ import type {
 } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { budgetWarningMessage } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
@@ -123,7 +125,7 @@ describe("replyFor", () => {
     });
   });
 
-  it.each([
+  each([
     ["tool_call_cap", /tool call cap/],
     ["wall_time_cap", /time limit/],
     ["token_cap", /token cap/],

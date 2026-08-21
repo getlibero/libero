@@ -3,7 +3,9 @@
 // does with what the model asks for, and what it reports — none of which is a
 // provider's wire format.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { SKILL_BODY_MAX_CHARS, SKILL_DESCRIPTION_MAX_CHARS, SkillToolName } from "@getlibero/schema";
 import type { SkillOp, SkillOpResult } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
@@ -387,7 +389,7 @@ describe("a model that emits garbage", () => {
   // The acceptance criterion, stated the way curation's suite states it: this
   // turn cannot invoke a proxied tool, because a name that is not one of the two
   // is answered by the parser and dispatched nowhere.
-  it.each([["search_channel_history"], ["merge_pull_request"], ["memory_append"]])(
+  each([["search_channel_history"], ["merge_pull_request"], ["memory_append"]])(
     "refuses %s without reaching the store",
     async name => {
       const handler = recordingHandler();
@@ -404,7 +406,7 @@ describe("a model that emits garbage", () => {
     }
   );
 
-  it.each([
+  each([
     ["a missing field", { name: "cut-a-release", description: "d" }],
     ["a wrong type", { name: "cut-a-release", description: "d", body: 7 }],
     ["an unknown key", { ...createArgs(), colour: "green" }],
@@ -441,7 +443,7 @@ describe("a model that emits garbage", () => {
     expect(handler.seen).toHaveLength(1);
   });
 
-  it.each([
+  each([
     ["a body", { ...createArgs(), body: "x".repeat(SKILL_BODY_MAX_CHARS + 1) }],
     ["a description", { ...createArgs(), description: "d".repeat(SKILL_DESCRIPTION_MAX_CHARS + 1) }]
   ])("refuses an oversize %s before the store is asked", async (_case, args) => {
@@ -544,7 +546,7 @@ describe("what the turn reports", () => {
 describe("the author prompt", () => {
   // Three clauses carry what a library is worth, and each is here rather than
   // only in the tool descriptions because this is the text framing the decision.
-  it.each([
+  each([
     ["most tasks produce nothing", /Most tasks produce nothing worth writing down/u],
     ["extend rather than duplicate", /extend that one with\nskill_revise/u],
     ["a revision replaces the body whole", /replaces\nthe description and the body outright/u],

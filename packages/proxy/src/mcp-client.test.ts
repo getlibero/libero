@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { type McpClient, createMcpClient } from "./mcp-client.js";
 import { type FakeMcpServer, type FakeReply, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 // Written down here rather than imported from the client, for the reason
@@ -134,7 +136,7 @@ describe("the credential", () => {
     expect(content).not.toContain("ghp_");
   });
 
-  it.each([['a value with "quotes"', 'ghp_"quoted"_token'], ["a value with \\ backslashes", "ghp_\\back\\slash"]])(
+  each([['a value with "quotes"', 'ghp_"quoted"_token'], ["a value with \\ backslashes", "ghp_\\back\\slash"]])(
     "survives %s",
     async (_label, value) => {
       fake = await startFakeMcpServer({ echoHeaders: "text" });
@@ -320,7 +322,7 @@ describe("version negotiation", () => {
   // with a wrong word at the end. The hand-rolled client failed closed on
   // exactly this list; `supportedProtocolVersions` is what keeps the SDK doing
   // the same, and this is the test that fails without it.
-  it.each(["2024-11-05", "2024-10-07"])("fails closed on the HTTP+SSE era (%s) rather than calling into a void", async version => {
+  each(["2024-11-05", "2024-10-07"])("fails closed on the HTTP+SSE era (%s) rather than calling into a void", async version => {
     const client = await clientFor({ protocol: "legacy", legacyVersion: version });
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
@@ -369,7 +371,7 @@ describe("the ladder", () => {
   // does with an unrouted method, and no one of those shapes is reliably the
   // signal. A test that only ever saw one of them would let a code check creep
   // back in unnoticed.
-  it.each(["rpc_error", "http_400", "http_404"] as const)("falls back whatever shape the refusal took (%s)", async refusal => {
+  each(["rpc_error", "http_400", "http_404"] as const)("falls back whatever shape the refusal took (%s)", async refusal => {
     const client = await clientFor({ protocol: "legacy", discoverRefusal: refusal });
 
     expect((await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
@@ -743,7 +745,7 @@ describe("what is never retried", () => {
   // a `tools/call` is how one write becomes two. Run on both dialects, because
   // the legacy path is the one that now has a replay at all — and the point is
   // that it is the *only* signal that gets one.
-  it.each([
+  each([
     ["a 500", { status: 500, raw: "" }],
     ["a malformed body", { raw: "not json" }],
     ["a JSON-RPC error", { message: { jsonrpc: "2.0", id: 2, error: { code: -1, message: "x" } } }]
@@ -998,7 +1000,7 @@ describe("listing an upstream's catalog", () => {
   // an id nobody asked about is not a malformed *result* — it is no answer at
   // all, which this suite would see as a timeout rather than as the refusal it
   // is testing for.
-  it.each<[string, (id: number | undefined) => FakeReply]>([
+  each<[string, (id: number | undefined) => FakeReply]>([
     ["a body that is not MCP", () => ({ raw: "not json" })],
     [
       "a result with no tools array",

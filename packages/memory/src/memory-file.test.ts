@@ -14,7 +14,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "@getlibero/schema";
 import type { MemoryOpResult } from "@getlibero/schema";
 import { openMemoryFile } from "./memory-file.js";
@@ -82,7 +84,7 @@ describe("the file", () => {
     );
   });
 
-  it.each([
+  each([
     ["a parent traversal", ".."],
     ["a separator", "a/b"],
     ["empty", ""],
@@ -130,7 +132,7 @@ describe("the cap at open", () => {
     ).not.toThrow();
   });
 
-  it.each([
+  each([
     ["fractional", 8_192.5],
     ["NaN", Number.NaN],
     ["infinite", Number.POSITIVE_INFINITY],
@@ -333,7 +335,7 @@ describe("the per-operation ceiling", () => {
     expect(onDisk()).toBeNull();
   });
 
-  it.each([
+  each([
     ["find", { op: "memory_replace" as const, find: oversize, replace: "x" }],
     ["replace", { op: "memory_replace" as const, find: "x", replace: oversize }]
   ])("refuses an oversize %s", (_name, op) => {
@@ -343,7 +345,7 @@ describe("the per-operation ceiling", () => {
     expect(onDisk()).toBe("x");
   });
 
-  it.each([
+  each([
     ["an empty append", { op: "memory_append" as const, text: "" }],
     ["an empty find", { op: "memory_replace" as const, find: "", replace: "x" }]
   ])("refuses %s as malformed", (_name, op) => {
@@ -464,7 +466,7 @@ describe("a reader never sees a torn file", () => {
 
   // Root ignores the directory mode, and a test that silently passed as root
   // would be one that proved nothing in the environment where it ran.
-  it.skipIf(process.getuid?.() === 0)("leaves the old file intact when a write fails", () => {
+  it("leaves the old file intact when a write fails", { skip: process.getuid?.() === 0 }, () => {
     append("alpha");
     const before = onDisk();
     const directory = join(root, CHANNEL);

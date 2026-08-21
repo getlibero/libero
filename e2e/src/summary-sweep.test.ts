@@ -28,7 +28,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
 import { SWEEP_INTERVAL_MS, toSlackTs } from "@getlibero/server";
 import {
@@ -162,7 +163,7 @@ describe("the quiescence sweep", () => {
         }
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -170,6 +171,7 @@ describe("the quiescence sweep", () => {
 
   it(
     "summarizes a thread that went quiet, charges it to the channel, and writes no vector",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, budgetDb, channelsRoot } = rigOf(rig);
 
@@ -213,12 +215,11 @@ describe("the quiescence sweep", () => {
 
       // The sweep writes into the agent's state root and nowhere else.
       expect(existsSync(join(channelsRoot.path, CHANNEL, "store.db"))).toBe(false);
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "keeps a summarization turn that reaches for a proxied tool away from every gate",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, auditDb, upstream } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -246,7 +247,5 @@ describe("the quiescence sweep", () => {
       // no upstream request, and no audit row, because the proxy never saw it.
       expect(upstream.callsTo("tools/call")).toHaveLength(upstreamBefore);
       expect(auditRows(auditDb)).toHaveLength(before);
-    },
-    CASE_MS
-  );
+    });
 });

@@ -17,7 +17,8 @@
 // five minutes — so cases sharing a rig would be coupled through two things
 // neither of them mentions.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import { CHANNEL, auditRows, calls, rigOf, says, startRig } from "./harness/index.js";
 import type { Rig } from "./harness/index.js";
 
@@ -54,14 +55,15 @@ function describeRefusedBeforeTheProxy(): void {
     rig = await startRig({
       script: [calls("delete_everything", { repo: "getlibero/libero" }), says("I could not do that.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a name the listing never carried is refused before the proxy, and leaves no row",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
       const listed = upstream.received.length;
@@ -90,9 +92,7 @@ function describeRefusedBeforeTheProxy(): void {
         "tools/call"
       );
       expect(auditRows(auditDb)).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeRefusedByTheProxy(): void {
@@ -116,14 +116,15 @@ function describeRefusedByTheProxy(): void {
         });
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a name the listing did carry is refused at the gate, relayed, and audited",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -158,9 +159,7 @@ function describeRefusedByTheProxy(): void {
       // and the task answered the thread rather than dying.
       expect(JSON.stringify(model.seen[1]?.messages)).toContain("merge_pr");
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeAmbiguousServer(): void {
@@ -170,14 +169,15 @@ function describeAmbiguousServer(): void {
     rig = await startRig({
       script: [calls("list_prs", { repo: "getlibero/libero" }), says("I could not do that.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a tool two blocks disagree about is listed, then refused, and never dialled",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, channelsRoot, certs } = rigOf(rig);
 
@@ -249,7 +249,5 @@ function describeAmbiguousServer(): void {
       // the whole task opened no connection at all.
       expect(upstream.received).toHaveLength(0);
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }

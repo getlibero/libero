@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { parseTeamSheet } from "@getlibero/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_MEMORY_SETTINGS,
@@ -340,7 +342,7 @@ describe("createSheetResolver", () => {
     });
   });
 
-  it.each([
+  each([
     ["toml that does not parse", TOML_INVALID, "toml_syntax"],
     ["a sheet the schema rejects", SCHEMA_INVALID, "schema_invalid"]
   ])("falls back and names the reason for %s", async (_label, text, reason) => {
@@ -402,7 +404,7 @@ describe("createSheetResolver", () => {
     );
   });
 
-  it.each(["../../etc", "..", "a/b", ".hidden", ""])(
+  each(["../../etc", "..", "a/b", ".hidden", ""])(
     "refuses %s as a channel id without touching the filesystem",
     async channel => {
       // The id becomes a path segment. Asserting on the log is not enough on its

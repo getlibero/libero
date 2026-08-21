@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   SKILL_MERGE_TOOL,
   SKILL_MERGE_TOOL_DEFINITION,
@@ -89,7 +91,7 @@ describe("what a merge call may carry", () => {
     expect(SkillMergeArguments.safeParse(ARGS).success).toBe(true);
   });
 
-  it.each([
+  each([
     ["a description at the cap", { description: "d".repeat(SKILL_DESCRIPTION_MAX_CHARS) }, true],
     ["a description over it", { description: "d".repeat(SKILL_DESCRIPTION_MAX_CHARS + 1) }, false],
     ["a body at the cap", { body: "b".repeat(SKILL_BODY_MAX_CHARS) }, true],
@@ -130,7 +132,7 @@ describe("parsing a merge call", () => {
     });
   });
 
-  it.each([
+  each([
     ["a missing field", { body: undefined }, "malformed_arguments"],
     ["a wrong type", { body: 42 }, "malformed_arguments"],
     ["an unknown key", { channel: "C0OTHER" }, "malformed_arguments"],
@@ -161,7 +163,7 @@ describe("parsing a merge call", () => {
   // Gate order: "that is not a name" is the more specific and more actionable of
   // the two true statements, and it is also what keeps the alphabet check ahead
   // of everything downstream.
-  it.each([
+  each([
     ["a traversal", "../../etc/passwd"],
     ["a separator", "deploy/runbook"],
     ["an absolute path", "/etc/shadow"],

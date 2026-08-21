@@ -6,7 +6,8 @@
 // option that silently no-ops is worse than one that does not exist: the case
 // still passes.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import { CHANNEL, auditRows, calls, rigOf, says, spendFor, startRig } from "./harness/index.js";
 import type { Rig } from "./harness/index.js";
 
@@ -40,14 +41,15 @@ function describeSpendDropped(): void {
       spendReports: "dropped",
       script: [calls("list_prs", { repo: "getlibero/libero" }), says("Done.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "spendReports: dropped moves the proxy's own count and not the reported one",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, budgetDb } = rigOf(rig);
       await agent.slack.deliverMention(mention("Ev00000010"));
@@ -63,9 +65,7 @@ function describeSpendDropped(): void {
       // Counted from what the agent reported, and it reported nothing.
       expect(spend.inputTokens).toBe(0);
       expect(spend.outputTokens).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeNoCards(): void {
@@ -77,14 +77,15 @@ function describeNoCards(): void {
       sheets: { [CHANNEL]: HELD_SHEET },
       script: [calls("merge_pr", { number: 42 }), says("I could not do that.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "approvals: none degrades a held call to a refusal, and nothing runs",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
       await agent.slack.deliverMention(mention("Ev00000011"));
@@ -106,9 +107,7 @@ function describeNoCards(): void {
       const rows = auditRows(auditDb);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ channel: CHANNEL, tool: "merge_pr", outcome: "held" });
-    },
-    CASE_MS
-  );
+    });
 }
 
 /**
@@ -130,7 +129,7 @@ function describeAmbient(): void {
       script: [],
       sheets: { [CHANNEL]: { tools: [], ambient: { enabled: true } } }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await off?.stop();
@@ -139,23 +138,21 @@ function describeAmbient(): void {
 
   it(
     "composes no clock without it, and says so rather than doing nothing",
+    { timeout: CASE_MS },
     async () => {
       // The failure mode this file exists for: a case that forgot the knob must
       // fail as itself, not pass because a scan silently found no channels.
       await expect(rigOf(off).heartbeat(Date.now())).rejects.toThrow(/composed no ambient clock/);
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "composes one with it, and the scan reaches an enabled channel",
+    { timeout: CASE_MS },
     async () => {
       // No script entry is consumed: the channel has no material, so the pregate
       // stops before any model call. What this pins is that the clock ran and
       // found the channel — `fired` counts channels acted on.
       expect(await rigOf(on).heartbeat(Date.now())).toBe(1);
       expect(rigOf(on).model.seen).toEqual([]);
-    },
-    CASE_MS
-  );
+    });
 }

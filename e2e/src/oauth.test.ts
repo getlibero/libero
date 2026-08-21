@@ -15,7 +15,8 @@
 // control — which is what makes every negative below evidence rather than a
 // scan that never saw a token.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   OAUTH_CREDENTIAL,
@@ -81,15 +82,16 @@ function asShipped(): void {
     cleanup = createCleanup();
     issuer = await startIssuer(cleanup, { refreshToken: REFRESH_CANARY });
     rig = await startRig(oauthRig(issuer.url));
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
     await cleanup?.drain();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a token minted at the issuer reaches the upstream, and neither token reaches any agent surface",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, proxy, auditDb, surfaces } = rigOf(rig);
       const as = issuer as FakeTokenIssuer;
@@ -119,9 +121,7 @@ function asShipped(): void {
 
       // The task itself completed: this was a served call, not a survived one.
       expect(agent.slack.posted[0]).toMatchObject({ text: "Done." });
-    },
-    CASE_MS
-  );
+    });
 }
 
 function withInjectionGutted(): void {
@@ -136,15 +136,16 @@ function withInjectionGutted(): void {
       ...oauthRig(issuer.url),
       nodeArgs: ["--import", breakCredentialInjection(cleanup)]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
     await cleanup?.drain();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "with credential injection gutted, the positive control fails",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream } = rigOf(rig);
       const as = issuer as FakeTokenIssuer;
@@ -164,7 +165,5 @@ function withInjectionGutted(): void {
       expect(() => expectSecretReachedUpstream(upstream, as.accessTokens.at(-1) as string, "the access token")).toThrow(
         /never reached the upstream/
       );
-    },
-    CASE_MS
-  );
+    });
 }

@@ -5,7 +5,8 @@
 // they are about — a provider that fails, one that reports no usage, a question
 // with nothing in it — is this file's behaviour and neither retriever's.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import type { CompletedTurn, EmbeddingClient } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { createQueryEmbedder } from "./embed.js";

@@ -4,7 +4,9 @@
 // because the question it runs is model-authored text coming back into a model's
 // context, and where that text goes is this turn's central decision.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
 import type {
   CompletionClient,
@@ -174,7 +176,7 @@ describe("what it answers", () => {
 
   // Silence by construction rather than by a branch: no sentinel to recognize,
   // so an invented name, a malformed shape and prose are all no finding.
-  it.each([
+  each([
     ["an invented tool name", response({ toolCalls: [call({ text: "hi" }, "post_message")] })],
     ["arguments that do not parse", response({ toolCalls: [call({ body: "hi" })] })],
     ["prose instead of a call", response({ text: "I checked and it is fine" })]

@@ -15,7 +15,8 @@
 import type { CompletionResponse, ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/agent";
 import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,

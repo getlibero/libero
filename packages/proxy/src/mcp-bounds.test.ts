@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { MAX_TOOL_DESCRIPTION, PermittedTool } from "@getlibero/schema";
 import {
   boundedToolDescription,
@@ -48,7 +50,7 @@ describe("mapping a tool result to text", () => {
     expect(mapped?.content).not.toContain("AAAA");
   });
 
-  it.each([
+  each([
     [{ type: "audio", data: "AAAA", mimeType: "audio/wav" }, "[audio omitted: audio/wav, 3 bytes]"],
     [{ type: "resource", resource: { uri: "file:///x", text: "inline text" } }, "inline text"],
     [
@@ -83,7 +85,7 @@ describe("mapping a tool result to text", () => {
     expect(toolResultText({ content: [] }, ROOMY)).toEqual({ content: "", isError: false });
   });
 
-  it.each([
+  each([
     ["content that is not an array", { content: "text" }],
     ["a block that is not an object", { content: ["text"] }],
     ["a text block with no text", { content: [{ type: "text" }] }],
@@ -241,7 +243,7 @@ describe("bounding what an upstream says about a tool", () => {
     expect(bounded.ok && bounded.schema).toBe(schema);
   });
 
-  it.each([
+  each([
     ["a schema that is not an object", "nope", "not_an_object"],
     ["an array", [], "not_an_object"],
     ["nothing at all", undefined, "not_an_object"],

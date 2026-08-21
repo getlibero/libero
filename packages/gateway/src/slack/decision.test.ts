@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { APPROVE_ACTION_ID, DENY_ACTION_ID } from "./approval-ids.js";
 import { toDecision } from "./decision.js";
 import { blockActionsEnvelope } from "./stub-slack.js";
@@ -141,7 +142,10 @@ describe("toDecision", () => {
     ];
 
     for (const [name, overrides] of broken) {
-      expect(ignoredOf(toDecision(wellFormed(overrides))), name).toBe("missing_field");
+      expect({ name, ignored: ignoredOf(toDecision(wellFormed(overrides))) }).toEqual({
+        name,
+        ignored: "missing_field"
+      });
     }
   });
 

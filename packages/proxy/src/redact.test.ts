@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   RedactionError,
   StreamingRedactor,
@@ -149,7 +151,7 @@ describe("the property", () => {
 describe("the encodings", () => {
   const SECRET = "ghp_live_token_9c7e42f2";
 
-  it.each([
+  each([
     ["raw", (s: string) => s],
     ["base64", (s: string) => Buffer.from(s).toString("base64")],
     ["base64 unpadded", (s: string) => Buffer.from(s).toString("base64").replace(/=+$/, "")],
@@ -317,7 +319,7 @@ describe("the marker", () => {
 describe("values that are not ordinary tokens", () => {
   // The input a pattern-based implementation breaks on. There is no RegExp
   // here, so metacharacters are just bytes.
-  it.each([
+  each([
     ["regex metacharacters", ".*+?^${}()|[]\\"],
     ["a newline", "line-one\nline-two"],
     ["a quote and a backslash", 'say "hi"\\'],
@@ -409,9 +411,13 @@ describe("StreamingRedactor", () => {
     const body = 'a s3cr3t {"k":"s3cr3t"} s3c s3cr3t';
     const whole = redactSecrets(body, secrets);
 
+    // The split travels with the value rather than beside it as a message:
+    // jest's `expect` takes no second argument, and a fuzz failure that does
+    // not say which split it was is a failure nobody can reproduce.
     for (const parts of [2, 3, 4]) {
       for (const pieces of splits(body, parts)) {
-        expect(stream(body, pieces, secrets), `split ${JSON.stringify(pieces)}`).toBe(whole);
+        const split = JSON.stringify(pieces);
+        expect({ split, out: stream(body, pieces, secrets) }).toEqual({ split, out: whole });
       }
     }
   });
@@ -427,9 +433,11 @@ describe("StreamingRedactor", () => {
         .map((encoding, position) => plant(encoding, randomNoise(rng), position))
         .join("|");
       const pieces = [...body];
-      expect(stream(body, pieces, secrets), `seed 156 case ${i} secret ${JSON.stringify(secret)}`).toBe(
-        redactSecrets(body, secrets)
-      );
+      const at = `seed 156 case ${i} secret ${JSON.stringify(secret)}`;
+      expect({ at, out: stream(body, pieces, secrets) }).toEqual({
+        at,
+        out: redactSecrets(body, secrets)
+      });
     }
   });
 
@@ -448,7 +456,11 @@ describe("StreamingRedactor", () => {
         pieces.push(body.slice(at, at + size));
         at += size;
       }
-      expect(stream(body, pieces, secrets), `seed 157 case ${i}`).toBe(redactSecrets(body, secrets));
+      const at = `seed 157 case ${i}`;
+      expect({ at, out: stream(body, pieces, secrets) }).toEqual({
+        at,
+        out: redactSecrets(body, secrets)
+      });
     }
   });
 
@@ -485,7 +497,8 @@ describe("StreamingRedactor", () => {
       const body = plant(secret, randomNoise(rng), i) + secret + randomNoise(rng) + secret;
       const pieces = [...body];
       const out = stream(body, pieces, [{ name: "cred", value: secret }]);
-      expect(out.includes(secret), `seed 158 case ${i} secret ${JSON.stringify(secret)}`).toBe(false);
+      const at = `seed 158 case ${i} secret ${JSON.stringify(secret)}`;
+      expect({ at, leaked: out.includes(secret) }).toEqual({ at, leaked: false });
     }
   });
 

@@ -4,14 +4,16 @@
   "private": true,
   "description": "Per-channel memory for Libero. One SQLite file of messages with an FTS5 index and a sqlite-vec embeddings table, and one size-capped MEMORY.md the agent curates; the file-per-channel layout is the isolation boundary.",
   "license": "MIT",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude '**/dist/**'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=spec 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@getlibero/atomic-write": "workspace:*",
@@ -19,6 +21,8 @@
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@getlibero/test-kit": "workspace:*",
+    "@types/node": "^24.13.3",
+    "expect": "^30.4.1"
   }
 }

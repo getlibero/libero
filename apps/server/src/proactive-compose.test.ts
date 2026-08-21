@@ -17,7 +17,8 @@ import type { CompletionResponse } from "@getlibero/agent";
 import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/agent";
 import { STUB_WORKSPACE_ID, createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import {
   DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -144,7 +145,7 @@ describe("the proactive post surface, composed", () => {
     // stub's channel verb, which is the one Slack call with no thread on it.
     await handed[0]?.post({ channel: CHANNEL, text: "a finding", source: "heartbeat" });
     expect(slack.channelPosts).toEqual([
-      { channelId: CHANNEL, text: expect.stringContaining("a finding") as string }
+      { channelId: CHANNEL, text: expect.stringContaining("a finding") as unknown as string }
     ]);
     // Not a reply, and not a card. The three are different verbs on purpose.
     expect(slack.posted).toHaveLength(0);

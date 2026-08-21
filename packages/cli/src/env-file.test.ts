@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { assignedNames, mergeEnvFile, renderEnvFile } from "./env-file.js";
 import type { EnvBlock } from "./env-file.js";
 

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { parse } from "smol-toml";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { SKILL_BODY_MAX_CHARS } from "./skill.js";
 import { TeamSheet } from "./team-sheet.js";
@@ -432,7 +434,7 @@ describe("the memory block", () => {
     ]);
   });
 
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["fractional", 8_192.5],
@@ -486,7 +488,7 @@ describe("the memory block", () => {
     expect(paths(memorySheet({ summarize_after_idle_minutes: 10_080 }))).toBeNull();
   });
 
-  it.each([
+  each([
     ["a fraction", 30.5],
     ["a string", "60"],
     ["null", null]
@@ -611,7 +613,7 @@ describe("the skills block", () => {
     expect(paths(skillsSheet({ max_skills: 1_000 }))).toBeNull();
   });
 
-  it.each([
+  each([
     ["a fraction", 3.5],
     ["a string", "3"],
     ["null", null],
@@ -656,7 +658,7 @@ describe("the skills block", () => {
   });
 
   // Zero is the clocks turned off said a second way, which is `top_k`'s call.
-  it.each([["stale_after_days"], ["archive_after_days"]])("refuses a %s of zero", field => {
+  each([["stale_after_days"], ["archive_after_days"]])("refuses a %s of zero", field => {
     expect(paths(skillsSheet({ [field]: 0 }))).toContain(`skills.${field}: too_small`);
   });
 
@@ -740,7 +742,7 @@ describe("the ambient block", () => {
     expect(paths(ambientSheet({ answer_after_idle_minutes: 10_080 }))).toBeNull();
   });
 
-  it.each([
+  each([
     ["a fraction", 15.5],
     ["a string", "15"],
     ["null", null]
@@ -748,7 +750,7 @@ describe("the ambient block", () => {
     expect(TeamSheet.safeParse(ambientSheet({ heartbeat_every_minutes })).success).toBe(false);
   });
 
-  it.each([
+  each([
     ["a fraction", 60.5],
     ["a string", "60"],
     ["null", null]
@@ -1144,7 +1146,7 @@ describe("rejections", () => {
   // bound, deliberately — the deployment's PROXY_MAX_RESPONSE_BYTES already
   // bounds the string this can describe, so a large number here buys nothing
   // rather than costing something.
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["fractional", 1.5],
@@ -1155,7 +1157,7 @@ describe("rejections", () => {
   // The per-tool override takes the same shape as the channel's, and is checked
   // separately because it is a different schema object: a rule added to one and
   // forgotten on the other is a hole the override walks straight through.
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["fractional", 1.5],

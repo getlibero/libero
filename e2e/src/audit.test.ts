@@ -25,7 +25,8 @@
 // claim — the audit table holds no credential value, and the reader does not
 // reconstruct one.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY,
   CHANNEL,
@@ -163,11 +164,11 @@ beforeAll(async () => {
     threadTs: card?.threadTs ?? ""
   });
   await pending;
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 /** The command, run as an operator runs it, against the log the proxy is writing. */
 async function audit(...args: string[]) {
@@ -186,6 +187,7 @@ async function audit(...args: string[]) {
 // walks it and #356 is the case that attacks it.
 it(
   "chains every row it wrote",
+  { timeout: CASE_MS },
   () => {
     const { auditDb } = rigOf(rig);
     const written = auditRows(auditDb, start);
@@ -208,12 +210,11 @@ it(
     // Distinct, which is what says these are links rather than a constant the
     // writer stamped on every row — a mistake every assertion above would pass.
     expect(new Set(written.map(row => row.row_hash)).size).toBe(written.length);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "finds the call that ran, the call that was refused, and the call a human approved",
+  { timeout: CASE_MS },
   async () => {
     const { model } = rigOf(rig);
 
@@ -235,12 +236,11 @@ it(
     expect(listed).toContain("held");
     expect(listed).toContain("approved");
     expect(listed).toContain(APPROVER);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "reads the log while the proxy is still writing it",
+  { timeout: CASE_MS },
   async () => {
     const { agent } = rigOf(rig);
 
@@ -256,12 +256,11 @@ it(
     // a separate process, with no restart and no checkpoint.
     const after = (await audit("csv")).trimEnd().split("\n").length;
     expect(after).toBeGreaterThan(before);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "filters compose, and an empty result is an empty result",
+  { timeout: CASE_MS },
   async () => {
     expect(await audit("list", "--outcome", "refused")).toContain("merge_pr");
     expect(await audit("list", "--outcome", "refused")).not.toContain("list_prs");
@@ -274,12 +273,11 @@ it(
     // Nothing matched is success with a sentence, not an error — asserted
     // through `audit`, which already requires status 0 and an empty stderr.
     expect(await audit("list", "--channel", "C0NOBODY")).toContain("no rows matched");
-  },
-  CASE_MS
-);
+  });
 
 it(
   "exports a CSV carrying every lifecycle, and no credential",
+  { timeout: CASE_MS },
   async () => {
     const csv = await audit("csv");
     const [header, ...records] = csv.trimEnd().split("\n");
@@ -315,12 +313,11 @@ it(
       .filter((ticket): ticket is string => ticket !== undefined && ticket !== "");
     expect(new Set(tickets).size).toBe(1);
     expect(tickets.length).toBeGreaterThanOrEqual(3);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "cannot write to the log it reads",
+  { timeout: CASE_MS },
   async () => {
     const { auditDb } = rigOf(rig);
     const before = await audit("csv");
@@ -334,6 +331,4 @@ it(
     }
 
     expect(await audit("csv")).toBe(before);
-  },
-  CASE_MS
-);
+  });

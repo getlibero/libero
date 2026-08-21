@@ -3,32 +3,37 @@
 //
 // The README has said since the suite existed that everything here runs on real
 // time — the loop's wall clock is `AbortSignal.timeout`, which no fake timer can
-// drive — and that vitest's defaults are too short, so timeouts are passed
-// explicitly. Both were true of the two defaults the paragraph named. There is a
-// third, `vi.waitFor`'s 1000 ms, and six call sites took it: in files whose
-// `SETUP_MS` is a minute because the same rig mints certificates and spawns a
-// process. One of them failed a CI run on nothing but a loaded runner, and a
-// re-run of the same commit passed (#329).
+// drive — and that a runner's defaults are too short, so timeouts are passed
+// explicitly. Under vitest there were three of those defaults, not the two the
+// paragraph named: 5 s per test, 10 s per hook, and 1 s for `vi.waitFor`. Six
+// call sites took the third, in files whose `SETUP_MS` is a minute because the
+// same rig mints certificates and spawns a process. One of them failed a CI run
+// on nothing but a loaded runner, and a re-run of the same commit passed (#329).
 //
-// So the rule is now a grep, for the reason `packages/proxy/src/outbound.test.ts`
-// gives about its own: the claim is about the whole tree and a grep cannot be
-// routed around. It is also the *right* enforcement for this particular failure,
-// which a reviewer will not catch — a wait with no timeout argument is not a
-// suspicious line. It looks like ordinary code, and it is ordinary code
-// everywhere except in a suite whose other waits are measured in minutes.
+// **The grep that guarded the third is gone, and its rule is stronger than it
+// was.** #202 replaced vitest with `node:test`, which has no `waitFor` at all,
+// and the harness's own waits — `proxy.waitForLog`, `agent.waitForLog`,
+// `waitForApprovalCard` — are what this suite uses instead. Where a case needs
+// something more general, `@getlibero/test-kit`'s `waitFor` takes its timeout as
+// a **required argument**. A wait that inherits a bound nobody chose is now a
+// type error rather than a line that reads as ordinary code, which is the only
+// enforcement strong enough for a failure a reviewer will not catch.
 //
-// Waiting belongs to the harness: `proxy.waitForLog` (woken, across a pipe),
-// `agent.waitForLog` (polled, counted, in-process) and `waitForApprovalCard`.
-// All three default to ten seconds and all three say what they were waiting for
-// when they give up, which is the half `expected undefined to be defined` was
-// missing.
+// What still needs a grep is the other claim. `node:test` does ship fake timers
+// — `mock.timers.enable()` — and a case that installed one would be a case whose
+// task can never time out, passing for a reason unrelated to what it asserts.
+// That is not visible in an assertion, so it is checked here.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { expect } from "expect";
 
-const SRC = fileURLToPath(new URL(".", import.meta.url));
+// The source tree, read from either side of the build: `../src/` resolves to
+// `e2e/src/` from a module in `e2e/src` and from its compiled twin in
+// `e2e/dist`, and the suite now runs from the second.
+const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
 /** Every `.ts` under `src/`, harness included, this file excluded. */
 function sources(directory: string): string[] {
@@ -42,26 +47,20 @@ function sources(directory: string): string[] {
 }
 
 describe("the suite's clock", () => {
-  // Matched on the import rather than on `vi.` — the lesson the proxy's greps
-  // already teach is that a module explaining why something is confined has to
-  // be able to name it, and this file's own header names `vi.waitFor` four
-  // times. An import is the thing that would actually reintroduce it.
-  it("imports vi nowhere, so no wait can inherit a default nobody chose", () => {
-    const importers = sources(SRC).filter(path => {
-      const text = readFileSync(path, "utf8");
-      return /^import\s*\{[^}]*\bvi\b[^}]*\}\s*from\s*"vitest"/m.test(text);
-    });
-
-    expect(importers.map(path => path.slice(SRC.length))).toEqual([]);
+  it("reads the source tree rather than the build output", () => {
+    // The grep below is worth nothing if `sources` is walking `dist`, where
+    // there are no `.ts` files to fail it. This is that file list's own control.
+    expect(sources(SRC).map(path => path.slice(SRC.length))).toContain("harness/agent.ts");
   });
 
-  // The companion, and the reason the first one is not merely tidiness. A fake
-  // timer cannot drive `AbortSignal.timeout`, which is the loop's wall clock, so
-  // a case that installed one would be a case whose task can never time out —
-  // passing for a reason that has nothing to do with what it asserts.
   it("installs no fake timers", () => {
     for (const path of sources(SRC)) {
-      expect(readFileSync(path, "utf8")).not.toContain("useFakeTimers");
+      const text = readFileSync(path, "utf8");
+      // Both spellings: the one `node:test` has now, and the one vitest had, so
+      // a case carried over from an older branch fails here rather than passing
+      // against a clock the loop cannot see.
+      expect(text).not.toContain("mock.timers");
+      expect(text).not.toContain("useFakeTimers");
     }
   });
 });

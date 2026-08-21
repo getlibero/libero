@@ -26,7 +26,8 @@
 // The positive control is the content assertion itself: a case that only
 // checked the record *exists* would pass against an empty blob.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import type { Scheduler } from "@getlibero/gateway";
 import type { FakeTokenIssuer } from "@getlibero/proxy";
 import {
@@ -113,12 +114,12 @@ beforeAll(async () => {
     scheduler: clock.scheduler,
     script: [calls("delete_branch", ATTEMPTED), says("Nobody approved it.")]
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
   await cleanup?.drain();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 // Ordered: this runs before any mention, so the deployment has served nothing
 // and the issuer count starts — and must stay — at zero. An agent-driven
@@ -126,6 +127,7 @@ afterAll(async () => {
 // credential legitimately before the call is ever decided.
 it(
   "a refused call is captured and resolves no credential",
+  { timeout: CASE_MS },
   async () => {
     const { proxy, certs, auditDb, attemptsDb } = rigOf(rig);
     const as = issuer as FakeTokenIssuer;
@@ -159,12 +161,11 @@ it(
     const read = await runAuditCli(auditDb, ["attempt", String(row?.arguments_sha256)], attemptsDb);
     expect(read.status).toBe(0);
     expect(read.stdout).toContain('"reason":"raw attempt"');
-  },
-  CASE_MS
-);
+  });
 
 it(
   "the operator reads what a blocked call attempted, and can delete the record",
+  { timeout: CASE_MS },
   async () => {
     const { agent, upstream, auditDb, attemptsDb } = rigOf(rig);
 
@@ -204,6 +205,4 @@ it(
       "held",
       "refused"
     ]);
-  },
-  CASE_MS
-);
+  });

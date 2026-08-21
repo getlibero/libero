@@ -35,7 +35,8 @@
 
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import { CANARY, CHANNEL, auditRows, calls, rigOf, runAuditCli, says, startRig } from "./harness/index.js";
 import type { Rig } from "./harness/index.js";
 
@@ -80,11 +81,11 @@ beforeAll(async () => {
       eventId: `Ev0000000${n}`
     });
   }
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 /**
  * A copy of the log as it stands, triggers and row ids intact.
@@ -141,6 +142,7 @@ const idOf = (file: string, index: number): number => {
 
 it(
   "a governed run leaves a log that verifies",
+  { timeout: CASE_MS },
   async () => {
     const { auditDb } = rigOf(rig);
     const result = await verify(auditDb);
@@ -165,12 +167,11 @@ it(
     // table holds no credential value and this does not reconstruct one.
     expect(result.stdout).not.toContain(CANARY);
     expect(result.stderr).not.toContain(CANARY);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "the triggers refuse the same edits while they are still there",
+  { timeout: CASE_MS },
   async () => {
     const file = snapshot();
     const raw = new DatabaseSync(file);
@@ -184,9 +185,7 @@ it(
     // And the copy is still a log that verifies, so the refusals above left it
     // exactly as `VACUUM INTO` produced it.
     expect((await verify(file)).status).toBe(0);
-  },
-  CASE_MS
-);
+  });
 
 // ---------------------------------------------------------------------------
 // The attacks.
@@ -194,6 +193,7 @@ it(
 
 it(
   "a rewritten row is named by verify",
+  { timeout: CASE_MS },
   async () => {
     const file = snapshot();
     const target = idOf(file, 1);
@@ -212,12 +212,11 @@ it(
     // because the second row was the one edited.
     expect(result.stderr).toContain("1 row(s) before it verify");
     expect(result.stdout).not.toContain("tip:");
-  },
-  CASE_MS
-);
+  });
 
 it(
   "a deleted mid-chain row is detected",
+  { timeout: CASE_MS },
   async () => {
     const file = snapshot();
     const removed = idOf(file, 1);
@@ -234,12 +233,11 @@ it(
     expect(result.stderr).toContain(`broken at row ${successor}`);
     expect(result.stderr).toContain("does not follow the row before it");
     expect(result.stderr).not.toContain(`broken at row ${removed}`);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "names only the first break, however many there are",
+  { timeout: CASE_MS },
   async () => {
     const file = snapshot();
     const first = idOf(file, 1);
@@ -255,9 +253,7 @@ it(
     // the later one would present a guess as a finding.
     expect(result.stderr).not.toContain(`broken at row ${later}`);
     expect(result.stderr).toContain("unverified, not vouched for");
-  },
-  CASE_MS
-);
+  });
 
 // ---------------------------------------------------------------------------
 // The limit, stated as a case rather than only as a paragraph.
@@ -265,6 +261,7 @@ it(
 
 it(
   "a truncated tail verifies clean, and only the tip says otherwise",
+  { timeout: CASE_MS },
   async () => {
     const file = snapshot();
     const last = idOf(file, -1);
@@ -285,12 +282,11 @@ it(
     const tip = /^tip: {2}([0-9a-f]{64})$/m.exec(result.stdout)?.[1];
     expect(cleanTip).toMatch(/^[0-9a-f]{64}$/);
     expect(tip).not.toBe(cleanTip);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "the log the proxy is still writing was never touched",
+  { timeout: CASE_MS },
   async () => {
     const { auditDb } = rigOf(rig);
 
@@ -304,6 +300,4 @@ it(
     // merely that the log still verifies, but that it verifies to the same
     // value — so nothing was appended to it either.
     expect(result.stdout).toContain(`tip:  ${cleanTip}`);
-  },
-  CASE_MS
-);
+  });

@@ -15,7 +15,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ApprovalTicket } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { renderApprovalCard } from "./approval-card.js";
 
 const TOKENS_CSS = join(dirname(fileURLToPath(import.meta.url)), "../../../../design/tokens.css");

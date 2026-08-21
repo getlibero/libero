@@ -8,7 +8,8 @@
 // silence — a wrong tool name, a shape that does not parse, prose instead of a
 // call. Fail-closed is the whole design, so it is what most of this file checks.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { AMBIENT_FINDING_MAX_CHARS, AMBIENT_FINDING_TOOL } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
 import type {

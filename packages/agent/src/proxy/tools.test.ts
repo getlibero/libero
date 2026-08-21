@@ -6,7 +6,9 @@
 // refusal path, the name mapping, and the request body live.
 
 import { ToolCall as WireToolCall, type BudgetWarning } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import type { ToolCall } from "../completion/types.js";
 import type { ToolCallAttribution } from "../loop/types.js";
 import {
@@ -950,7 +952,7 @@ describe("recording a scheduled check", () => {
 
   // The three ways a check does not get recorded, and the model is told the same
   // thing for all of them — its remedy is identical and none of it is its fault.
-  it.each([
+  each([
     ["a sink that could not write", { sink: () => false }],
     ["no sink at all", { sink: undefined }]
   ])("tells the model the check will not run: %s", async (_label, options) => {

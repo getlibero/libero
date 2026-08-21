@@ -28,7 +28,8 @@ import { join } from "node:path";
 import type { TLSSocket } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { SpendReport } from "@getlibero/schema";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { createProxySpendClient } from "./spend.js";
 import { ProxyClientError, createProxyTransport, type ProxyTransport } from "./transport.js";
 
@@ -88,8 +89,10 @@ function transportTo(dir: string, port: number, url?: string): ProxyTransport {
 // Cert minting is the slow part of this hook and it got slower in #395, which
 // added the runner's server certificate and the proxy's client certificate to
 // `dev-certs.sh` — two more RSA keypairs per mint, on a script this hook runs
-// twice. Vitest's 10s default is enough on a developer's machine and was not on
-// a loaded CI runner, where the whole file failed with "Hook timed out".
+// twice. That outran vitest's 10s hook default on a loaded CI runner, where the
+// whole file failed with "Hook timed out". `node:test` supplies no default, so
+// what this number does now is bound a hang rather than raise a ceiling — and it
+// still has to be larger than the worst honest case.
 //
 // A timeout rather than a faster script: the cases are about mutual TLS, not
 // about how long a keypair takes, and the script mints what the deployment
@@ -137,7 +140,7 @@ beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   port = (server.address() as AddressInfo).port;
   // See the note above `mint`: two mints of a script that got slower in #395.
-}, 60_000);
+}, { timeout: 60_000 });
 
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));

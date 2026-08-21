@@ -19,7 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { after as afterAll, afterEach, before as beforeAll, beforeEach, describe, it } from "node:test";
+import { each, waitFor } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   ProxyError,
   type ResolvedToolCall,
@@ -363,7 +365,7 @@ beforeAll(() => {
   });
   // Six RSA keypairs. Slower than the tests themselves, and still under the
   // default timeout on CI; raised here so a loaded runner does not flake.
-}, 120_000);
+}, { timeout: 120_000 });
 
 beforeEach(() => {
   // Several tests below edit or delete the sheet mid-run — that is the point of
@@ -379,9 +381,11 @@ beforeEach(() => {
   // Not a truncate. Nothing can truncate this table — see `auditCursor`.
   auditCursor = lastAuditId();
 // Cert minting dominates this hook and grew in #395, which added two more
-// keypairs to `dev-certs.sh`. Vitest's 10s default is enough locally and was not
-// on a loaded CI runner. See the same note in packages/agent's transport test.
-}, 60_000);
+// keypairs to `dev-certs.sh`. It outran vitest's 10s hook default on a loaded CI
+// runner; `node:test` has no default at all, so this number is now the only
+// bound there is rather than a raised one. See the same note in packages/agent's
+// transport test.
+}, { timeout: 60_000 });
 
 afterAll(() => {
   server.close();
@@ -405,11 +409,17 @@ describe("mutual TLS", () => {
   async function expectRefusedAtHandshake(client?: ClientCert): Promise<void> {
     logLines = [];
     await expect(call("/health", client)).rejects.toThrow();
-    await vi.waitFor(() => {
-      expect(logLines.map(line => JSON.parse(line) as { event: string })).toContainEqual(
-        expect.objectContaining({ event: "tls_client_rejected" })
-      );
-    });
+    // The log line is written on the socket's error path, a tick or two after
+    // the call rejects. A hang bound rather than a budget: `waitFor` takes no
+    // default, so the number is chosen here rather than inherited.
+    await waitFor(
+      () => {
+        expect(logLines.map(line => JSON.parse(line) as { event: string })).toContainEqual(
+          expect.objectContaining({ event: "tls_client_rejected" })
+        );
+      },
+      { timeout: 10_000 }
+    );
   }
 
   it("refuses a client that presents no certificate", async () => {
@@ -724,7 +734,7 @@ describe("the tool listing", () => {
     expect(tools.every(tool => tool.server === "github")).toBe(true);
   });
 
-  it("resolves approval rather than copying the sheet's optional field", () => {
+  it("resolves approval rather than copying the sheet's optional field", async () => {
     // The listing has to answer the question the sheet only sometimes answers,
     // and it has to answer it the way the call-time gate will.
     const approval = async (tool: string): Promise<string> => {
@@ -733,7 +743,7 @@ describe("the tool listing", () => {
       return found?.approval ?? "missing";
     };
 
-    return Promise.all([
+    await Promise.all([
       expect(approval("list_prs")).resolves.toBe("none"),
       // Explicit in the sheet.
       expect(approval("merge_pr")).resolves.toBe("required"),
@@ -2688,7 +2698,7 @@ describe("a permitted call with no upstream", () => {
   // nothing was denied in any of them — but the sentence names what the
   // operator does next, because "no upstream" is the wrong diagnosis for a
   // grant problem.
-  it.each([
+  each([
     ["no_grant", "the call is permitted, and this proxy holds no grant for its upstream; run the grant flow"],
     ["grant_dead", "the call is permitted, and the grant for its upstream is dead; re-run the grant flow"],
     ["mint_failed", "the call is permitted, and no live access token could be minted for its upstream"]

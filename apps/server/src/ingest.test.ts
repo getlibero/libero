@@ -10,7 +10,8 @@ import type {
   SlackRevision
 } from "@getlibero/gateway";
 import type { MessageStore, StoredMessage } from "@getlibero/memory";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createMessageIngest, createRevisionIngest } from "./ingest.js";
 import { createSessionRegistry } from "./session/registry.js";
 import type { SessionRegistry } from "./session/registry.js";

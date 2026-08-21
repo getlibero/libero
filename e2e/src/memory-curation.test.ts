@@ -31,7 +31,8 @@ import { join } from "node:path";
 import type { CompletionResponse } from "@getlibero/agent";
 import { CURATION_SYSTEM_PROMPT } from "@getlibero/agent";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "@getlibero/schema";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY_CREDENTIAL,
   CHANNEL,
@@ -106,14 +107,15 @@ describe("a curated fact, end to end", () => {
         says("Nothing worth recording.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "lands on disk, is read back into the next task, and is charged to the channel",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, storeRoot, channelsRoot, budgetDb } = rigOf(rig);
 
@@ -153,9 +155,7 @@ describe("a curated fact, end to end", () => {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(3 * TURN_TOKENS + CURATION_TOKENS);
       expect(spend.inputTokens).toBeGreaterThanOrEqual(CURATION_USAGE.inputTokens);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a curation turn that tries to blow the size cap", () => {
@@ -173,14 +173,15 @@ describe("a curation turn that tries to blow the size cap", () => {
         ops({ name: "memory_append", arguments: { text: "x".repeat(MEMORY_OP_MAX_TEXT_CHARS) } })
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "is refused, and the file it attacked is byte-identical",
+    { timeout: CASE_MS },
     async () => {
       const { agent } = rigOf(rig);
 
@@ -200,9 +201,7 @@ describe("a curation turn that tries to blow the size cap", () => {
       expect(
         agent.log().filter(line => line.fields.event === "curated")
       ).toHaveLength(2);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a curation turn emitting operations the schema does not admit", () => {
@@ -232,14 +231,15 @@ describe("a curation turn emitting operations the schema does not admit", () => 
         )
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "writes nothing, reaches no proxied tool, and leaves no audit row",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb } = rigOf(rig);
 
@@ -272,9 +272,7 @@ describe("a curation turn emitting operations the schema does not admit", () => 
       // The turn was answered rather than skipped, which is what makes the
       // three assertions above about a refusal rather than about silence.
       expect(agent.log().filter(line => line.fields.event === "curated")).toHaveLength(2);
-    },
-    CASE_MS
-  );
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -300,11 +298,11 @@ describe("a curation turn persisting an instruction", () => {
         says("Nothing worth recording.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   // This case demonstrates an exposure rather than a defence, and it is written
   // that way on purpose: the assertions that the poison *landed* and *was read*
@@ -312,6 +310,7 @@ describe("a curation turn persisting an instruction", () => {
   // asserted the refusal would be claiming a mitigation that does not exist.
   it(
     "is persisted and re-read, and changes nothing about what the channel may do",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb, model } = rigOf(rig);
 
@@ -349,7 +348,5 @@ describe("a curation turn persisting an instruction", () => {
 
       expect(upstream.callsTo("tools/call")).toHaveLength(callsBefore);
       expect(auditRows(auditDb, rowsBefore)).toEqual([]);
-    },
-    CASE_MS
-  );
+    });
 });

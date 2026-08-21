@@ -4,7 +4,9 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   DEFAULT_UPSTREAM_RESPONSE_BYTES,
   DEFAULT_UPSTREAM_TIMEOUT_MS,
@@ -41,10 +43,10 @@ function secretOf(value: string): Secret {
 /** A `fetch` that records what it was called with and answers 200. */
 function recordingFetch(body = "{}", status = 200, responseHeaders?: Record<string, string>) {
   const calls: { url: string; init: RequestInit }[] = [];
-  const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+  const fetch = async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
     return new Response(body, { status, ...(responseHeaders ? { headers: responseHeaders } : {}) });
-  });
+  };
   return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
 }
 
@@ -223,7 +225,7 @@ describe("the outbound call", () => {
   // it carries no content-type. Absent rather than empty, so a caller can tell
   // "the upstream said nothing" from "the upstream said the empty string".
   it("omits a header the upstream did not send", async () => {
-    const fetch = vi.fn(async () => new Response(null, { status: 202 })) as unknown as typeof globalThis.fetch;
+    const fetch = (async () => new Response(null, { status: 202 })) as unknown as typeof globalThis.fetch;
     const response = await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(response.headers["content-type"]).toBeUndefined();
     expect("content-type" in response.headers).toBe(false);
@@ -233,17 +235,15 @@ describe("the outbound call", () => {
   // timeout usually fires there rather than on the headers. Reporting that as
   // `unreachable` would tell an operator the upstream was down when it was slow.
   it("reports a body-read abort as a timeout, not as unreachable", async () => {
-    const fetch = vi.fn(
-      async () =>
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode("data: par"));
-              controller.error(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
-            }
-          })
-        )
-    ) as unknown as typeof globalThis.fetch;
+    const fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: par"));
+            controller.error(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+          }
+        })
+      )) as unknown as typeof globalThis.fetch;
 
     const thrown = await callUpstream({
       url: "http://u:1",
@@ -260,7 +260,7 @@ describe("the outbound call", () => {
   // A bodiless response has no stream at all, which the bounded read has to
   // answer for explicitly now that it no longer goes through `response.text()`.
   it("reads a bodiless response as the empty string", async () => {
-    const fetch = vi.fn(async () => new Response(null, { status: 204 })) as unknown as typeof globalThis.fetch;
+    const fetch = (async () => new Response(null, { status: 204 })) as unknown as typeof globalThis.fetch;
     const response = await callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: undefined, fetch });
     expect(response.body).toBe("");
   });
@@ -389,7 +389,7 @@ describe("the bounded body read", () => {
     ragged[bytes.byteLength] = 0x80;
 
     const expected = await new Response(ragged).text();
-    const fetch = vi.fn(async () => new Response(chunked(ragged, 3))) as unknown as typeof globalThis.fetch;
+    const fetch = (async () => new Response(chunked(ragged, 3))) as unknown as typeof globalThis.fetch;
 
     const response = await callUpstream({
       url: "http://u:1",
@@ -457,7 +457,7 @@ describe("the bounded body read", () => {
         cancelled = true;
       }
     });
-    const fetch = vi.fn(async () => new Response(endless)) as unknown as typeof globalThis.fetch;
+    const fetch = (async () => new Response(endless)) as unknown as typeof globalThis.fetch;
 
     const thrown = await callUpstream({
       url: "http://u:1",
@@ -517,7 +517,7 @@ describe("a redirecting upstream", () => {
     expect(calls[0]?.init.redirect).toBe("manual");
   });
 
-  it.each([301, 302, 303, 307, 308])("refuses a %i rather than following it", async (status) => {
+  each([301, 302, 303, 307, 308])("refuses a %i rather than following it", async (status) => {
     const { fetch } = recordingFetch("", status);
     await expect(
       callUpstream({ url: "http://u:1", body: "{}", scheme: "bearer", secret: secretOf(VALUE), fetch })
@@ -528,7 +528,7 @@ describe("a redirecting upstream", () => {
   // identical path, so a redirect is refused on either. Cheaper to assert than
   // to argue in a comment, and it is what stops a second verb quietly acquiring
   // a second set of rules on the one function that holds a credential.
-  it.each(["POST", "DELETE"] as const)("refuses a redirect on a %s alike", async method => {
+  each(["POST", "DELETE"] as const)("refuses a redirect on a %s alike", async method => {
     const { fetch } = recordingFetch("", 307);
     await expect(
       callUpstream({ url: "http://u:1", method, body: "{}", scheme: "bearer", secret: secretOf(VALUE), fetch })
@@ -608,7 +608,7 @@ describe("the secret does not come back", () => {
     expect(response.body).toContain("[redacted:github_token]");
   });
 
-  it.each([
+  each([
     ["base64", (s: string) => Buffer.from(s).toString("base64")],
     ["base64url", (s: string) => Buffer.from(s).toString("base64url")],
     ["percent-encoded", (s: string) => encodeURIComponent(s)]
@@ -708,7 +708,7 @@ describe("the secret does not come back", () => {
 });
 
 describe("the destination host", () => {
-  it.each([
+  each([
     ["http://mcp-github:3001/rpc", "mcp-github"],
     ["https://api.github.com/v3?token=leaked", "api.github.com"],
     ["https://USER:PASS@internal.example.com/x", "internal.example.com"]
@@ -1007,7 +1007,7 @@ describe("the session id", () => {
   // an outbound request header, on the one path that also carries a credential.
   // A CR or LF in it is request smuggling; the spec's own rule — visible ASCII,
   // 0x21 to 0x7E — is the character set, so nothing here is invented.
-  it.each([
+  each([
     ["nothing at all", null],
     ["an empty string", ""],
     ["a header injection", "a\r\nX-Injected: 1"],
@@ -1045,10 +1045,10 @@ describe("the one retry on a 401", () => {
 
   const fetch401Then200 = () => {
     const calls: { init: RequestInit }[] = [];
-    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
       calls.push({ init: init ?? {} });
       return calls.length === 1 ? new Response("{}", { status: 401 }) : new Response("{}", { status: 200 });
-    });
+    };
     return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
   };
 
@@ -1127,12 +1127,12 @@ describe("the refresh-token exchange", () => {
   /** A fetch answering discovery first, then the token endpoint. */
   const fetchSequence = (...responses: (() => Response)[]) => {
     const calls: { url: string; init: RequestInit }[] = [];
-    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const fetch = async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const answer = responses[Math.min(calls.length - 1, responses.length - 1)];
       if (answer === undefined) throw new Error("fetch sequence exhausted");
       return answer();
-    });
+    };
     return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
   };
 
@@ -1297,12 +1297,12 @@ describe("the authorization-code exchange", () => {
 
   const fetchSequence = (...responses: (() => Response)[]) => {
     const calls: { url: string; init: RequestInit }[] = [];
-    const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const fetch = async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const answer = responses[Math.min(calls.length - 1, responses.length - 1)];
       if (answer === undefined) throw new Error("fetch sequence exhausted");
       return answer();
-    });
+    };
     return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
   };
 

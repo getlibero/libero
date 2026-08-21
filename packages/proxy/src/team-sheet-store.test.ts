@@ -1,7 +1,8 @@
 import { mkdtemp, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { type LogFields, type LogLevel, createSilentLogger } from "./log.js";
 import { SHEET_FILENAME, TeamSheetStore } from "./team-sheet-store.js";
 

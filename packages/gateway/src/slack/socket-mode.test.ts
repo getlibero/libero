@@ -2,11 +2,12 @@
 //
 // No test here constructs a real SocketModeClient: `start()` opens a WebSocket,
 // and its ping timers and retry queue keep the event loop alive whether or not
-// the connection succeeds, so vitest would hang or report open handles. The
-// client is injected instead.
+// the connection succeeds, so the runner's process would never exit. The client
+// is injected instead.
 
 import { WebAPIPlatformError } from "@slack/web-api";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createSilentLogger } from "../log.js";
 import { createSocketModeSource, socketModeOptions } from "./socket-mode.js";
 import type { SocketModeClientLike } from "./socket-mode.js";

@@ -58,8 +58,8 @@ await esbuild.build({
   legalComments: "eof",
   // A bundled single file cannot read its own package.json off disk, so the
   // version it reports has to be substituted here. ./src/cli.ts declares it and
-  // falls back, so the source stays runnable under plain tsc output and under
-  // vitest, where nothing defines it.
+  // falls back, so the source stays runnable under plain tsc output, which is
+  // what the tests run against and where nothing defines it.
   define: {
     __LIBERO_VERSION__: JSON.stringify(version),
     __LIBERO_NODE_FLOOR__: JSON.stringify(nodeFloor)

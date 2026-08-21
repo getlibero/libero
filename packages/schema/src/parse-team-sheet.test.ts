@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { parseTeamSheet } from "./parse-team-sheet.js";
 
 const examplePath = new URL("../../../channels/example/channel.toml", import.meta.url);

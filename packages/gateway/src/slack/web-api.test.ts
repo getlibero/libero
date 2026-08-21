@@ -1,5 +1,7 @@
 import { WebAPIHTTPError, WebAPIPlatformError } from "@slack/web-api";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { createSilentLogger } from "../log.js";
 import type { LogFields, LogLevel, Logger } from "../log.js";
 import { GatewayError } from "./types.js";
@@ -449,7 +451,7 @@ describe("createWebApiSurface", () => {
       });
     });
 
-    it.each(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"])(
+    each(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"])(
       "refuses to retry a bot token Slack will never accept: %s",
       async slackError => {
         const fake = fakeClient(undefined, undefined, () =>

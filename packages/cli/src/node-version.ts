@@ -8,7 +8,8 @@
 //
 // The floor is substituted by ../build.mjs from this package's own `engines`,
 // so there is one place it is written down. The fallback keeps the source
-// runnable under plain tsc output and under vitest, where nothing defines it.
+// runnable under plain tsc output, which is what the tests run against and where
+// nothing defines it.
 
 declare const __LIBERO_NODE_FLOOR__: string;
 

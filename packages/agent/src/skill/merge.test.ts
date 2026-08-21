@@ -2,7 +2,9 @@
 // test is what the turn offers, what it does with what the model asks for, and
 // what it reports — none of which is a provider's wire format.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { SKILL_BODY_MAX_CHARS, SKILL_MERGE_TOOL } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
 import type {
@@ -182,7 +184,7 @@ describe("what the merge turn answers", () => {
     expect(result.unusable).toBeUndefined();
   });
 
-  it.each([
+  each([
     ["a name that is neither of the two", { ...DRAFT, keep: "something-else" }, "keep_not_nominated"],
     ["a traversal for a name", { ...DRAFT, keep: "../../etc/passwd" }, "name_invalid"],
     ["an oversize body", { ...DRAFT, body: "b".repeat(SKILL_BODY_MAX_CHARS + 1) }, "body_too_long"],
@@ -223,7 +225,7 @@ describe("what the merge turn costs", () => {
   // A turn that was paid for is counted even when what it produced is unusable —
   // otherwise the cheapest way to spend a channel's budget invisibly would be to
   // emit nonsense.
-  it.each([
+  each([
     ["declined", response()],
     ["unusable", response({ toolCalls: [call({ ...DRAFT, keep: "elsewhere" })] })]
   ])("reports its spend on a %s turn too", async (_label, answer) => {

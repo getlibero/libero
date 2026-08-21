@@ -21,7 +21,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import { CHANNEL, OTHER_CHANNEL, rigOf, says, startRig } from "./harness/index.js";
 import type { Rig } from "./harness/index.js";
 
@@ -67,14 +68,15 @@ beforeAll(async () => {
     },
     script: [says("Noted.")]
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "keeps each channel's messages in its own file, with no way to read across",
+  { timeout: CASE_MS },
   async () => {
     const { agent, storeRoot } = rigOf(rig);
 
@@ -100,12 +102,11 @@ it(
     expect(storedIn(storeRoot, OTHER_CHANNEL).map(row => row.text)).toEqual([
       "the incident is closed"
     ]);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "writes nothing into the channels root, which is the proxy's authorization source",
+  { timeout: CASE_MS },
   async () => {
     // The reason `AGENT_STORE_ROOT` exists. Both services mount the channels
     // directory and the proxy re-reads a sheet per call, so an agent able to
@@ -126,12 +127,11 @@ it(
     expect(existsSync(join(channelsRoot.path, CHANNEL, "store.db"))).toBe(false);
     // And the sheet the proxy reads is exactly what the harness wrote.
     expect(existsSync(join(channelsRoot.path, CHANNEL, "channel.toml"))).toBe(true);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "gives a channel with no team sheet no file at all",
+  { timeout: CASE_MS },
   async () => {
     // The app is in most channels of a workspace and provisioned for few. A
     // store created for an unprovisioned channel would be a conversation logged
@@ -150,6 +150,4 @@ it(
 
     expect(existsSync(join(storeRoot, UNPROVISIONED))).toBe(false);
     expect(storedIn(storeRoot, UNPROVISIONED)).toEqual([]);
-  },
-  CASE_MS
-);
+  });

@@ -4,14 +4,16 @@
   "private": true,
   "description": "Agent loop for Libero: provider-agnostic completion layer and ReAct loop with loop-side caps. Reaches tools only over the network.",
   "license": "MIT",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude '**/dist/**'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=spec 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
@@ -19,6 +21,8 @@
     "openai": "^7.4.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@getlibero/test-kit": "workspace:*",
+    "@types/node": "^24.13.3",
+    "expect": "^30.4.1"
   }
 }

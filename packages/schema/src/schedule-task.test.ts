@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   SCHEDULED_TASK_MAX_HORIZON_MINUTES,
   SCHEDULED_TASK_MAX_PENDING,
@@ -40,7 +42,7 @@ describe("the arguments", () => {
   // The whole of "no argument the model controls can widen this beyond the
   // calling channel", in executable form: there is no channel field, and an
   // unknown key is a rejection rather than a silently dropped one.
-  it.each(["channel", "dueAt", "due_at", "id", "task"])("rejects %s as an unknown key", key => {
+  each(["channel", "dueAt", "due_at", "id", "task"])("rejects %s as an unknown key", key => {
     const parsed = ScheduleTaskArguments.safeParse({
       prompt: "check the deploy",
       due_in_minutes: 60,
@@ -119,7 +121,7 @@ describe("the instant", () => {
   // A zoneless instant is read as the host's time by whatever parses it next, and
   // the two processes that read this one are configured separately. An offset
   // form is a second spelling of one instant.
-  it.each([
+  each([
     "2026-08-19T09:30:00",
     "2026-08-19T09:30:00+01:00",
     "2026-08-19 09:30:00Z",
@@ -131,7 +133,7 @@ describe("the instant", () => {
 
   // The pattern admits these and `Date.UTC` would roll them forward silently,
   // which is `SkillCreated`'s reason for having the same check.
-  it.each(["2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "2026-01-01T25:00:00Z"])(
+  each(["2026-02-30T00:00:00Z", "2026-13-01T00:00:00Z", "2026-01-01T25:00:00Z"])(
     "refuses %s, which does not exist",
     value => {
       expect(ScheduledInstant.safeParse(value).success).toBe(false);
@@ -171,7 +173,7 @@ describe("the ticket", () => {
   // The three fields whose absence is the design. A channel here would be a
   // second answer to which store the ticket belongs in; the certificate and the
   // file are the only two that may answer.
-  it.each(["channel", "requestingUser", "thread", "status"])("declares no %s", key => {
+  each(["channel", "requestingUser", "thread", "status"])("declares no %s", key => {
     expect(ScheduledTask.safeParse({ ...ticket, [key]: "C0OTHER" }).success).toBe(false);
   });
 

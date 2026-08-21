@@ -14,7 +14,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { VaultError, openVault, parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
 import {
@@ -72,7 +74,7 @@ describe("editing an entry set", () => {
     expect(removeEntry(new Map([[NAME, VALUE]]), "not_loaded")).toBeNull();
   });
 
-  it.each([
+  each([
     ["empty", "", "invalid_name"],
     ["too long", "a".repeat(65), "invalid_name"],
     ["a traversal", "../etc/passwd", "invalid_name"],
@@ -85,7 +87,7 @@ describe("editing an entry set", () => {
     );
   });
 
-  it.each([
+  each([
     ["an empty value", "", "empty_value"],
     ["a value with a NUL", "abc\0def", "value_has_nul"],
     ["a value over the cap", "a".repeat(MAX_SECRET_BYTES + 1), "value_too_large"]
@@ -148,8 +150,9 @@ describe("reading a vault for editing", () => {
   // The failure this guards against is total: a vault owned by another user,
   // read as empty and then written back, is every stored credential gone.
   // Root reads through mode 000, so the test is meaningless there.
-  it.runIf(process.getuid?.() !== 0)(
+  it(
     "refuses a vault it cannot read rather than treating it as empty",
+    { skip: process.getuid?.() === 0 },
     () => {
       const k = key();
       writeVaultEntries(file, k, new Map([[NAME, VALUE]]));

@@ -8,7 +8,8 @@
 
 import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createSessionRegistry } from "./registry.js";
 import type { SessionRegistry } from "./registry.js";
 import { createChannelRouter } from "./router.js";

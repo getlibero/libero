@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteSpendMeter, openBudgetDb } from "@getlibero/proxy";
 import type { BudgetDb } from "@getlibero/proxy";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, runBudgetCommand } from "./budget-cli.js";
 
 const CHANNEL = "C024BE91L";

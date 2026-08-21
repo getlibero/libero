@@ -3,7 +3,9 @@
 // file is where the edge cases live, because they are cheap to state here.
 
 import type { TLSSocket } from "node:tls";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { channelFromCommonName, matchesPin, resolveChannel } from "./identity.js";
 
 describe("channelFromCommonName", () => {
@@ -40,7 +42,7 @@ describe("channelFromCommonName", () => {
   // sheet at channels/<id>/channel.toml, the per-channel SQLite file — and the
   // file-per-channel layout is the isolation boundary. Traversal has to die
   // here, not at the first place someone remembers to sanitize.
-  it.each([
+  each([
     "channel:..",
     "channel:.",
     "channel:../../etc",

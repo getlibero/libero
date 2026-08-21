@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { BUILTIN_APPROVAL_DEFAULT, BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { ResourceName } from "./names.js";
 
@@ -33,7 +35,7 @@ describe("the built-in tool names", () => {
 
   // Every member needs a ResourceName spelling too, for the same round trip the
   // server name makes.
-  it.each(BuiltinToolName.options)("parses %s as a ResourceName", name => {
+  each(BuiltinToolName.options)("parses %s as a ResourceName", name => {
     expect(ResourceName.safeParse(name).success).toBe(true);
   });
 });

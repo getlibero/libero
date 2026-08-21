@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseTeamSheet } from "@getlibero/schema";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { fingerprintOf } from "./dev-certs.js";
 import type { CertRun } from "./dev-certs.js";
@@ -206,7 +208,7 @@ describe("rotation stays two acts", () => {
 });
 
 describe("what it refuses before minting anything", () => {
-  it.each([
+  each([
     [["add", "../escape"], "not a channel id"],
     [["add", "example"], "documented starter sheet"],
     [["add"], "takes one channel id"],
@@ -215,7 +217,7 @@ describe("what it refuses before minting anything", () => {
     [["pins", "C0X"], "takes no arguments"],
     [["add", "C0X", "--chanels-root", "x"], "unknown option"]
   ])("%s exits 2 and runs nothing", (argv, expected) => {
-    const { run: result, calls } = withRunner(argv as string[], dir, OK);
+    const { run: result, calls } = withRunner([...argv], dir, OK);
 
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.err.join("\n")).toContain(expected as string);

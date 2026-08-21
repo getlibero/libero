@@ -17,7 +17,8 @@
 // shipped agent rather than a raw client, which is the only way to say
 // "without a restart" and mean the deployment rather than the socket.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY_CREDENTIAL,
   CHANNEL,
@@ -75,14 +76,15 @@ beforeAll(async () => {
     script: [calls("list_prs", { repo: "getlibero/libero" }), says("Two are open.")]
   });
   client = rawClient({ url: rig.proxy.url, certs: rig.certs });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "serves the pinned certificate, so the refusals below mean something",
+  { timeout: CASE_MS },
   async () => {
     const { certs, upstream, auditDb } = rigOf(rig);
     pin(certs.fingerprint(CHANNEL));
@@ -104,12 +106,11 @@ it(
     expect(answer.body).toMatchObject({ outcome: "ran", id: "pin-control" });
     expect(upstream.callsTo("tools/call")).toHaveLength(served + 1);
     expect(auditRows(auditDb, since)).toMatchObject([{ channel: CHANNEL, outcome: "ran" }]);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "refuses the leaked certificate while the channel goes on working",
+  { timeout: CASE_MS },
   async () => {
     const { certs, upstream, auditDb } = rigOf(rig);
     pin(certs.fingerprint(CHANNEL));
@@ -144,12 +145,11 @@ it(
     });
     expect(served_ok.status).toBe(200);
     expect(served_ok.body).toMatchObject({ outcome: "ran" });
-  },
-  CASE_MS
-);
+  });
 
 it(
   "gives the leaked certificate nothing else on the listener either",
+  { timeout: CASE_MS },
   async () => {
     const { certs } = rigOf(rig);
     pin(certs.fingerprint(CHANNEL));
@@ -173,12 +173,11 @@ it(
     ]);
 
     expect(responses.map(r => r.status)).toEqual([401, 401, 401, 401]);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "accepts both certificates while two are pinned, which is the rotation's overlap",
+  { timeout: CASE_MS },
   async () => {
     const { certs } = rigOf(rig);
     pin(certs.fingerprint(CHANNEL), certs.fingerprint(LEAKED));
@@ -193,12 +192,11 @@ it(
     // CN still decides for whom.
     expect(first).toMatchObject({ status: 200, body: { channel: CHANNEL } });
     expect(second).toMatchObject({ status: 200, body: { channel: CHANNEL } });
-  },
-  CASE_MS
-);
+  });
 
 it(
   "rotates through the real script, with no restart of either process",
+  { timeout: CASE_MS },
   async () => {
     const { agent, certs, channelsRoot, upstream, auditDb } = rigOf(rig);
     pin(certs.fingerprint(CHANNEL));
@@ -246,6 +244,4 @@ it(
     pin(replacement);
     expect((await clientOf().send({ method: "GET", path: "/v1/whoami", as: LEAKED })).status).toBe(401);
     expect((await clientOf().send({ method: "GET", path: "/v1/whoami", as: CHANNEL })).status).toBe(200);
-  },
-  CASE_MS
-);
+  });

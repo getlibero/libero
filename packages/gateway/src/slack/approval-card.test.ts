@@ -1,5 +1,6 @@
 import type { ApprovalTicket } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { renderApprovalCard, renderHeldCallArguments } from "./approval-card.js";
 import type { ApprovalCardStatus } from "./approval-card.js";
 import { APPROVE_ACTION_ID, DENY_ACTION_ID } from "./approval-ids.js";

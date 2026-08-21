@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { CompletionError, type CompletionClient, type CompletionRequest } from "./types.js";
 
 /**

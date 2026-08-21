@@ -6,7 +6,8 @@
 // every certificate, every team sheet, and every session key drifts with it.
 
 import type { SlackMention } from "@getlibero/gateway";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createMentionHandler } from "./handler.js";
 import type { TaskReply, TaskRequest } from "./session/types.js";
 

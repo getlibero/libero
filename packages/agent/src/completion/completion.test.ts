@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createAnthropicCompletionClient } from "./anthropic.js";
 import { runCompletionConformance, stubTransport } from "./conformance.js";
 import { createCompletionClient } from "./factory.js";

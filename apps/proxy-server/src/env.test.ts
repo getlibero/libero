@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { DEFAULT_UPSTREAM_CONCURRENCY, DEFAULT_UPSTREAM_RESPONSE_BYTES } from "@getlibero/proxy";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
@@ -64,7 +66,7 @@ describe("portFromEnv", () => {
     expect(portFromEnv({ PROXY_PORT: "0" })).toBe(0);
   });
 
-  it.each(["65536", "-1", "8443.5", "https"])("refuses %j", raw => {
+  each(["65536", "-1", "8443.5", "https"])("refuses %j", raw => {
     expect(() => portFromEnv({ PROXY_PORT: raw })).toThrow(/PROXY_PORT/);
   });
 });
@@ -85,7 +87,7 @@ describe("maxResponseBytesFromEnv", () => {
   // Zero is not "no limit" here, it is every call refused — unlike PROXY_PORT,
   // where zero is a real request. And no upper bound: the operator setting this
   // is the one who owns the heap it spends, so a ceiling would be advice.
-  it.each(["0", "-1", "4194304.5", "4mb", "unlimited"])("refuses %j", raw => {
+  each(["0", "-1", "4194304.5", "4mb", "unlimited"])("refuses %j", raw => {
     expect(() => maxResponseBytesFromEnv({ PROXY_MAX_RESPONSE_BYTES: raw })).toThrow(/PROXY_MAX_RESPONSE_BYTES/);
   });
 
@@ -114,7 +116,7 @@ describe("maxUpstreamConcurrencyFromEnv", () => {
   // Zero is every call refused rather than "no limit", per the bound above. No
   // ceiling either — the operator who knows what their upstream tolerates is the
   // only one who could set one.
-  it.each(["0", "-4", "8.5", "eight", "unlimited"])("refuses %j", raw => {
+  each(["0", "-4", "8.5", "eight", "unlimited"])("refuses %j", raw => {
     expect(() => maxUpstreamConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: raw })).toThrow(
       /PROXY_MAX_UPSTREAM_CONCURRENCY/
     );
@@ -137,7 +139,7 @@ describe("upstreamTimeoutMsFromEnv", () => {
   // Zero is every call timed out rather than "no timeout", the same reading
   // its neighbours give a blanked-out zero. No ceiling — a patient operator is
   // spending their own sockets.
-  it.each(["0", "-1", "1.5", "abc"])("refuses %j", raw => {
+  each(["0", "-1", "1.5", "abc"])("refuses %j", raw => {
     expect(() => upstreamTimeoutMsFromEnv({ PROXY_UPSTREAM_TIMEOUT_MS: raw })).toThrow(
       /PROXY_UPSTREAM_TIMEOUT_MS/
     );

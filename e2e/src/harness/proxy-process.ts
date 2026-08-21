@@ -198,7 +198,7 @@ export async function spawnProxy(
     stdio: ["ignore", "pipe", "pipe"]
   });
 
-  // A crashed vitest worker never runs `afterAll`. Without this, a proxy
+  // A test process that dies never runs `afterAll`. Without this, a proxy
   // holding an open vault outlives the run that started it.
   const killOnExit = (): void => {
     child.kill("SIGKILL");

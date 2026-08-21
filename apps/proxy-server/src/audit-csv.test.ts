@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openAuditDb } from "@getlibero/proxy";
 import type { AuditEntry } from "@getlibero/proxy";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { AUDIT_CSV_COLUMNS, csvField, csvHeader, csvRow, isoTime } from "./audit-csv.js";
 
 const NOON = Date.UTC(2026, 7, 4, 12, 0, 0);
@@ -131,7 +133,7 @@ describe("escaping", () => {
   // constrains only its length, so these are values the proxy will faithfully
   // record if it is sent them. Every other text column is an identifier or a
   // certificate subject and can carry none of this.
-  it.each([
+  each([
     ["a comma", "a,b"],
     ["a double quote", 'he said "no"'],
     ["both", 'a,"b"'],

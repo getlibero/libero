@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createMutex } from "./mutex.js";
 
 /** A promise the test resolves when it wants the work under test to proceed. */

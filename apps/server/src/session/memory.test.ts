@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "@getlibero/schema";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { createMemoryFileOpener } from "./memory.js";
 
 const CHANNEL = "C024BE91L";
@@ -87,7 +89,7 @@ describe("createMemoryFileOpener", () => {
     expect(lines[0]?.level).toBe("info");
   });
 
-  it.each([
+  each([
     ["a parent traversal", "../../etc"],
     ["a separator", "a/b"],
     ["a leading dot", ".hidden"],

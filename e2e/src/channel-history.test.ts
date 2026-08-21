@@ -15,7 +15,8 @@
 // does: an assertion that another channel's text is missing passes just as well
 // on a search that returned nothing at all.
 
-import { afterEach, expect, it } from "vitest";
+import { afterEach, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   OTHER_CHANNEL,
@@ -42,7 +43,7 @@ let rig: Rig | undefined;
 afterEach(async () => {
   await rig?.stop();
   rig = undefined;
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 /**
  * Every tool result the model was handed, as text.
@@ -74,6 +75,7 @@ async function say(active: Rig, text: string, ts: string, channelId = CHANNEL): 
 
 it(
   "answers from the channel's own store, and is metered and audited like any tool",
+  { timeout: CASE_MS },
   async () => {
     rig = await startRig({
       sheets: { [CHANNEL]: GRANTED },
@@ -133,12 +135,11 @@ it(
     // And the meter counted it. This is the narrow claim: a built-in draws on
     // the channel's own budget, so it is not a way to do work for free.
     expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(1);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "is refused, structurally, in a channel whose sheet does not grant it",
+  { timeout: CASE_MS },
   async () => {
     rig = await startRig({
       // The default sheet grants an upstream tool and no built-in — obtained by
@@ -176,12 +177,11 @@ it(
     const results = toolResults(model.seen);
     expect(results).toContain("not a tool this channel permits");
     expect(results).not.toContain("ship the vault");
-  },
-  CASE_MS
-);
+  });
 
 it(
   "cannot be pointed at another channel, because there is no argument for it",
+  { timeout: CASE_MS },
   async () => {
     rig = await startRig({
       sheets: { [CHANNEL]: GRANTED, [OTHER_CHANNEL]: GRANTED },
@@ -233,6 +233,4 @@ it(
     expect(rows).toHaveLength(2);
     expect(rows.every(row => row.channel === CHANNEL)).toBe(true);
     expect(rows.every(row => row.server === "libero")).toBe(true);
-  },
-  CASE_MS
-);
+  });

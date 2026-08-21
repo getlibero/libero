@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,9 +61,10 @@ beforeAll(async () => {
   const address = server.address();
   port = typeof address === "object" && address !== null ? address.port : 0;
   // Minting two client certificates and the runner's server certificate, from
-  // the real script. Slower than vitest's 10s default allows on a loaded CI
-  // runner — see the note in packages/agent/src/proxy/transport.test.ts.
-}, 60_000);
+  // the real script. Slow enough on a loaded CI runner to need a bound chosen
+  // rather than inherited — see the note in
+  // packages/agent/src/proxy/transport.test.ts.
+}, { timeout: 60_000 });
 
 afterAll(() => {
   server?.close();

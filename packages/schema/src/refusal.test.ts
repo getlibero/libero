@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { RefusalReason, ToolRefusal, refusalMessage } from "./refusal.js";
 
 /** One well-formed refusal per reason, keyed so the totality test can check

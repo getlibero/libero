@@ -24,7 +24,8 @@
 // script cursor for a rig's whole life, so cases sharing a rig would be coupled
 // through something neither of them mentions.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   SERVED_MODEL,
@@ -97,14 +98,15 @@ function describeToolCallCapAndReset(): void {
         says("Two are open.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a loop past daily_tool_calls is refused at the boundary, and an operator's reset lifts it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -155,9 +157,7 @@ function describeToolCallCapAndReset(): void {
       // The same process throughout, which is the half of "no restart" that an
       // outcome assertion cannot show.
       expect(rigOf(rig).proxy.log().filter(line => line.includes(`"listening"`))).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeTokenCapAtTheBoundary(): void {
@@ -178,14 +178,15 @@ function describeTokenCapAtTheBoundary(): void {
       },
       script: [call("call-1"), call("call-2"), says("I have run out of budget.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "daily_tokens refuses the call whose turn reached the limit",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -205,9 +206,7 @@ function describeTokenCapAtTheBoundary(): void {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBeGreaterThanOrEqual(2 * TURN_TOKENS);
       expect(spend.toolCalls).toBe(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeReportingNothing(): void {
@@ -227,14 +226,15 @@ function describeReportingNothing(): void {
       },
       script: [call("call-1"), call("call-2"), says("I have run out of budget.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "an agent that reports no tokens at all still exhausts daily_tool_calls",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -253,9 +253,7 @@ function describeReportingNothing(): void {
       expect(spend.outputTokens).toBe(0);
       expect(spend.cacheReadTokens).toBe(0);
       expect(spend.cacheWriteTokens).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeReplayedTurnIds(): void {
@@ -268,14 +266,15 @@ function describeReplayedTurnIds(): void {
       spendReports: "replayed",
       script: [call("call-1"), says("Two are open.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a replayed turn id is answered duplicate and charged once",
+    { timeout: CASE_MS },
     async () => {
       const { agent, proxy, budgetDb } = rigOf(rig);
 
@@ -292,9 +291,7 @@ function describeReplayedTurnIds(): void {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(2 * TURN_TOKENS);
       expect(spend.toolCalls).toBe(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeCacheWeighting(): void {
@@ -323,14 +320,15 @@ function describeCacheWeighting(): void {
         says("I have run out of budget.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "cache reads are charged at the sheet's ratio, and exhaust the budget at it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -357,9 +355,7 @@ function describeCacheWeighting(): void {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.cacheReadTokens).toBeGreaterThanOrEqual(2 * CACHE_READS);
       expect(spend.inputTokens + spend.outputTokens).toBeLessThan(100);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // The dimension #62 added to the meter, end to end. Nothing here enforces a
@@ -398,14 +394,15 @@ function describeServedModel(): void {
         says("Three checked.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "meters each turn against the model that served it, and names the unreported ones",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, budgetDb } = rigOf(rig);
 
@@ -449,9 +446,7 @@ function describeServedModel(): void {
         channel: CHANNEL,
         model: ROUTED
       });
-    },
-    CASE_MS
-  );
+    });
 }
 
 // The other half of the meter (#99): the soft limit, which warns rather than
@@ -490,14 +485,15 @@ function describeSoftLimitWarning(): void {
         says("One more.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "warns in the thread once a day and serves the call that crossed",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -530,7 +526,5 @@ function describeSoftLimitWarning(): void {
       const [, second] = agent.slack.posted;
       expect(second?.text).toBe("One more.");
       expect(agent.slack.posted.filter(post => post.text.includes("Budget:"))).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }

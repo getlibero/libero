@@ -5,7 +5,8 @@
 import type { ToolCallStep } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger, Scheduler } from "@getlibero/gateway";
 import { createStubSlack } from "@getlibero/gateway";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createChecklistReporter, MIN_EDIT_INTERVAL_MS } from "./checklist.js";
 
 const CHANNEL = "C024BE91L";

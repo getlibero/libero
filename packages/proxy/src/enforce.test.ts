@@ -8,7 +8,9 @@ import {
   type TeamSheet,
   TeamSheet as TeamSheetSchema
 } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   type BudgetSpend,
   type Decision,
@@ -223,39 +225,42 @@ describe("names that only look allowed", () => {
     "github."
   ];
 
-  it("refuses a server whose name is not byte-for-byte on the list", () => {
-    for (const server of nearMisses) {
-      const decision = decide({ sheet, call: callTo(server, "list_prs"), spend: NO_SPEND });
-      expect(decision.outcome, server).toBe("refuse");
-      expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("server_not_allowed");
-    }
+  each(nearMisses)("refuses the server name %j, which is not byte-for-byte on the list", server => {
+    const decision = decide({ sheet, call: callTo(server, "list_prs"), spend: NO_SPEND });
+    expect(decision.outcome).toBe("refuse");
+    expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("server_not_allowed");
   });
 
-  it("refuses a tool whose name is not byte-for-byte on the list", () => {
-    for (const suffix of ["List_PRs", "LIST_PRS", "list_prs ", "list​prs", "lіst_prs"]) {
+  each(["List_PRs", "LIST_PRS", "list_prs ", "list​prs", "lіst_prs"])(
+    "refuses the tool name %j, which is not byte-for-byte on the list",
+    suffix => {
       const decision = decide({ sheet, call: callTo("github", suffix), spend: NO_SPEND });
-      expect(decision.outcome, suffix).toBe("refuse");
+      expect(decision.outcome).toBe("refuse");
       expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("tool_not_allowed");
     }
-  });
+  );
 
   // Belt to that braces: most of the above cannot reach the decision at all,
   // because ResourceName is ASCII-only and rejects whitespace. Two layers, and
   // this test says so rather than leaving it to be rediscovered.
-  it("cannot even be expressed as a parsed call", () => {
-    for (const name of nearMisses.filter(n => n !== "GitHub" && n !== "GITHUB" && n !== "github.")) {
-      expect(TeamSheetSchema.safeParse({
-        // Pinned, and the url below is present, so the *only* thing left for
-        // this sheet to fail on is the server name. A fixture missing either
-        // would fail for a reason this test is not about and pass anyway.
-        channel: CHANNEL_BLOCK,
-        // The url is here so the sheet is otherwise valid. Without it the block
-        // would fail on the missing address (#89) and this test would pass
-        // while proving nothing about the name.
-        mcp_server: [{ name, transport: "http", url: UPSTREAM }]
-      }).success, name).toBe(false);
+  each(nearMisses.filter(n => n !== "GitHub" && n !== "GITHUB" && n !== "github."))(
+    "cannot even be expressed as a parsed call: %j",
+    name => {
+      expect(
+        TeamSheetSchema.safeParse({
+          // Pinned, and the url below is present, so the *only* thing left
+          // for this sheet to fail on is the server name. A fixture missing
+          // either would fail for a reason this test is not about and pass
+          // anyway.
+          channel: CHANNEL_BLOCK,
+          // The url is here so the sheet is otherwise valid. Without it the
+          // block would fail on the missing address (#89) and this test would
+          // pass while proving nothing about the name.
+          mcp_server: [{ name, transport: "http", url: UPSTREAM }]
+        }).success
+      ).toBe(false);
     }
-  });
+  );
 
   // An approval-required tool must not become approvable by renaming it.
   it("does not let a near-miss reach a more permissive entry", () => {
@@ -276,20 +281,16 @@ describe("names that only look allowed", () => {
 describe("names that exist on Object.prototype", () => {
   const inherited = ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf"];
 
-  it("refuses a server named after an inherited property", () => {
-    for (const server of inherited) {
-      const decision = decide({ sheet, call: callTo(server, "list_prs"), spend: NO_SPEND });
-      expect(decision.outcome, server).toBe("refuse");
-      expect(decision.outcome !== "allow" && decision.refusal.reason, server).toBe("server_not_allowed");
-    }
+  each(inherited)("refuses a server named after the inherited property %s", server => {
+    const decision = decide({ sheet, call: callTo(server, "list_prs"), spend: NO_SPEND });
+    expect(decision.outcome).toBe("refuse");
+    expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("server_not_allowed");
   });
 
-  it("refuses a tool named after an inherited property", () => {
-    for (const tool of inherited) {
-      const decision = decide({ sheet, call: callTo("github", tool), spend: NO_SPEND });
-      expect(decision.outcome, tool).toBe("refuse");
-      expect(decision.outcome !== "allow" && decision.refusal.reason, tool).toBe("tool_not_allowed");
-    }
+  each(inherited)("refuses a tool named after the inherited property %s", tool => {
+    const decision = decide({ sheet, call: callTo("github", tool), spend: NO_SPEND });
+    expect(decision.outcome).toBe("refuse");
+    expect(decision.outcome !== "allow" && decision.refusal.reason).toBe("tool_not_allowed");
   });
 
   // And the same names on the sheet are ordinary entries. The defence is that
@@ -316,19 +317,18 @@ describe("names that exist on Object.prototype", () => {
 });
 
 describe("the destructive-verb heuristic", () => {
-  it("fires on every documented verb", () => {
-    for (const verb of DESTRUCTIVE_VERBS) {
-      expect(isDestructiveName(`${verb}_thing`), verb).toBe(true);
-      expect(isDestructiveName(`do_${verb}`), verb).toBe(true);
-      expect(isDestructiveName(verb.toUpperCase()), verb).toBe(true);
-    }
+  each(DESTRUCTIVE_VERBS)("fires on the documented verb %s", verb => {
+    expect(isDestructiveName(`${verb}_thing`)).toBe(true);
+    expect(isDestructiveName(`do_${verb}`)).toBe(true);
+    expect(isDestructiveName(verb.toUpperCase())).toBe(true);
   });
 
-  it("leaves ordinary read tools alone", () => {
-    for (const tool of ["list_prs", "get_issue", "search_code", "read_file"]) {
-      expect(isDestructiveName(tool), tool).toBe(false);
+  each(["list_prs", "get_issue", "search_code", "read_file"])(
+    "leaves the ordinary read tool %s alone",
+    tool => {
+      expect(isDestructiveName(tool)).toBe(false);
     }
-  });
+  );
 
   // Documented over-firing. `get_dropdown_options` contains "drop" and is held.
   // Cheaper than the alternative, and one line in the sheet turns it off.
@@ -432,7 +432,7 @@ describe("the result bound a decision carries", () => {
   // good a reason to want more as a tool that returns listings is to want less,
   // and the channel's number is a default rather than a ceiling — the ceiling
   // that matters is the deployment's, and it bounds the bytes rather than this.
-  it.each([
+  each([
     ["below", 500],
     ["above", 90_000]
   ])("takes an entry's override %s the channel's bound", (_label, max_result_chars) => {
@@ -559,7 +559,7 @@ describe("which upstream an allow names", () => {
   // There is no "a url against no url" case among http blocks any more. That
   // disagreement needed one http block with no address, which the schema no
   // longer admits; across transports it is the third case below.
-  it.each([
+  each([
     [
       "url",
       { transport: "http", url: "http://a:3001" },
@@ -1285,7 +1285,7 @@ describe("which upstream a listed tool would be described by", () => {
   // The same tools `decide` refuses as `server_ambiguous`. They stay listed —
   // an upstream fills the describing fields, it does not decide the row — and
   // there is simply no single server to ask about them.
-  it.each([
+  each([
     ["a differing url", { url: "http://a:3001" }, { url: "http://b:3001" }],
     ["a differing credential", { url: UPSTREAM, credential: "cred_a" }, { url: UPSTREAM, credential: "cred_b" }]
   ])("has no upstream for a tool whose blocks disagree by %s", (_label, left, right) => {
@@ -1347,7 +1347,7 @@ describe("the upstream key", () => {
       ]
     });
 
-  it.each([
+  each([
     [
       "identical blocks",
       { transport: "http", url: UPSTREAM, credential: "c" },
@@ -1818,7 +1818,7 @@ describe("a built-in tool", () => {
   // one. Two resolvers would let them disagree in the one place a channel can
   // see both, so this asserts they are the same answer for every built-in and
   // every way a sheet can leave the field.
-  it.each([
+  each([
     [undefined, "search_channel_history"],
     [undefined, "schedule_task"],
     ["none", "schedule_task"],

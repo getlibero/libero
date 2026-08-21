@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { EgressPattern, isEgressAllowed, normalizeHost } from "./egress.js";
 
 // The matcher is the whole security value of the egress list, so these are
@@ -20,11 +22,12 @@ describe("exact entries", () => {
     expect(isEgressAllowed("github.com", ALLOW)).toBe(false);
   });
 
-  it("does not admit a host that merely contains it", () => {
-    for (const host of ["api.github.com.attacker.com", "notapi.github.com", "api.github.computer"]) {
-      expect(isEgressAllowed(host, ALLOW), host).toBe(false);
+  each(["api.github.com.attacker.com", "notapi.github.com", "api.github.computer"])(
+    "does not admit a host that merely contains it: %s",
+    host => {
+      expect(isEgressAllowed(host, ALLOW)).toBe(false);
     }
-  });
+  );
 });
 
 describe("the wildcard label", () => {
@@ -35,25 +38,20 @@ describe("the wildcard label", () => {
 
   // The one a plain endsWith() gets wrong: no dot boundary, so the pattern is
   // matching the tail of a longer label rather than a label of its own.
-  it("does not admit a host whose label merely ends with the suffix", () => {
-    for (const host of [
-      "evil-internal.example.com",
-      "notinternal.example.com",
-      "xinternal.example.com"
-    ]) {
-      expect(isEgressAllowed(host, ALLOW), host).toBe(false);
+  each(["evil-internal.example.com", "notinternal.example.com", "xinternal.example.com"])(
+    "does not admit a host whose label merely ends with the suffix: %s",
+    host => {
+      expect(isEgressAllowed(host, ALLOW)).toBe(false);
     }
-  });
+  );
 
   // The one an unanchored match gets wrong.
-  it("does not admit a host that continues past the suffix", () => {
-    for (const host of [
-      "internal.example.com.attacker.com",
-      "build.internal.example.com.attacker.com",
-      "internal.example.command.example.org"
-    ]) {
-      expect(isEgressAllowed(host, ALLOW), host).toBe(false);
-    }
+  each([
+    "internal.example.com.attacker.com",
+    "build.internal.example.com.attacker.com",
+    "internal.example.command.example.org"
+  ])("does not admit a host that continues past the suffix: %s", host => {
+    expect(isEgressAllowed(host, ALLOW)).toBe(false);
   });
 
   // Granting a subtree does not grant its root.
@@ -121,12 +119,13 @@ describe("default deny", () => {
 
   // The schema rejects these, but the matcher is reachable without it and
   // decides for itself rather than assuming its input was parsed.
-  it("treats a malformed entry as matching nothing rather than as a wildcard", () => {
-    for (const entry of ["*", "*.", "**.example.com", "api*.example.com", "*.*.com", ""]) {
-      expect(isEgressAllowed("api.example.com", [entry]), entry).toBe(false);
-      expect(isEgressAllowed("anything.example.com", [entry]), entry).toBe(false);
+  each(["*", "*.", "**.example.com", "api*.example.com", "*.*.com", ""])(
+    "treats a malformed entry as matching nothing rather than as a wildcard: %j",
+    entry => {
+      expect(isEgressAllowed("api.example.com", [entry])).toBe(false);
+      expect(isEgressAllowed("anything.example.com", [entry])).toBe(false);
     }
-  });
+  );
 
   it("still reads the rest of a list containing a malformed entry", () => {
     expect(isEgressAllowed("api.github.com", ["*", "api.github.com"])).toBe(true);
@@ -134,11 +133,12 @@ describe("default deny", () => {
 });
 
 describe("EgressPattern", () => {
-  it("accepts a host and a leftmost wildcard", () => {
-    for (const entry of ["api.github.com", "*.internal.example.com", "mcp-github", "127.0.0.1"]) {
-      expect(EgressPattern.safeParse(entry).success, entry).toBe(true);
+  each(["api.github.com", "*.internal.example.com", "mcp-github", "127.0.0.1"])(
+    "accepts a host and a leftmost wildcard: %s",
+    entry => {
+      expect(EgressPattern.safeParse(entry).success).toBe(true);
     }
-  });
+  );
 
   // A bare `*` would be an allow-all, which default deny does not have.
   it("rejects a bare wildcard", () => {
@@ -146,15 +146,17 @@ describe("EgressPattern", () => {
     expect(EgressPattern.safeParse("*.").success).toBe(false);
   });
 
-  it("rejects a wildcard that is not the whole leftmost label", () => {
-    for (const entry of ["api*.example.com", "*.*.com", "ex*ample.com", "example.*"]) {
-      expect(EgressPattern.safeParse(entry).success, entry).toBe(false);
+  each(["api*.example.com", "*.*.com", "ex*ample.com", "example.*"])(
+    "rejects a wildcard that is not the whole leftmost label: %s",
+    entry => {
+      expect(EgressPattern.safeParse(entry).success).toBe(false);
     }
-  });
+  );
 
-  it("rejects a scheme, a path, or a query", () => {
-    for (const entry of ["https://api.github.com", "api.github.com/v3", "api.github.com?a=b", ""]) {
-      expect(EgressPattern.safeParse(entry).success, entry).toBe(false);
+  each(["https://api.github.com", "api.github.com/v3", "api.github.com?a=b", ""])(
+    "rejects a scheme, a path, or a query: %j",
+    entry => {
+      expect(EgressPattern.safeParse(entry).success).toBe(false);
     }
-  });
+  );
 });
