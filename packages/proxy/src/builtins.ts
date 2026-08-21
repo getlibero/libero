@@ -59,6 +59,57 @@ export const SearchChannelHistoryArguments = z
   .strict();
 
 /**
+ * The most source a single `run_code` call may carry.
+ *
+ * A bound rather than none, for the reason every other bound in this package
+ * exists: an argument the model writes is an argument a prompt injection can
+ * write. 64k is far past any script worth sending and far short of a body worth
+ * buffering in the process that holds every tool credential.
+ *
+ * It bounds the *argument*, not the run. What the run may spend is the sheet's
+ * `cpus`, `memory_mb` and `timeout_seconds`, and what its output may spend is
+ * `max_result_chars` — three different people's decisions, and this is none of
+ * them.
+ */
+export const RUN_CODE_MAX_CHARS = 65_536;
+
+/**
+ * What the model may send to the sandbox, parsed strictly.
+ *
+ * One field. There is deliberately no `language`, no `image` and no `timeout`:
+ * the toolchain is the deployment's (#393 pinned the image in the runner's own
+ * environment) and the caps are the channel's (`[[builtin]]`'s sandbox fields).
+ * Both would be a model argument reaching a decision somebody else made, which
+ * is the shape `.strict()` exists to make loud — a model that sends
+ * `{"code": "...", "image": "ubuntu"}` gets an error naming the key rather than
+ * a silently dropped one.
+ */
+export const RunCodeArguments = z
+  .object({
+    code: z.string().min(1).max(RUN_CODE_MAX_CHARS)
+  })
+  .strict();
+
+/**
+ * The JSON Schema the model is given, beside the zod parser that enforces it.
+ *
+ * Same two-spellings-of-one-contract hazard as the search schema below, closed
+ * the same way in `builtins.test.ts`.
+ */
+const RUN_CODE_SCHEMA = {
+  type: "object",
+  properties: {
+    code: {
+      type: "string",
+      maxLength: RUN_CODE_MAX_CHARS,
+      description: "The program to run. It is written to the container's tmpfs workdir and executed."
+    }
+  },
+  required: ["code"],
+  additionalProperties: false
+} as const satisfies ToolInputSchema;
+
+/**
  * The JSON Schema the model is given, beside the zod parser that enforces it.
  *
  * Two spellings of one contract, which is a drift hazard — `builtins.test.ts`
@@ -140,6 +191,45 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, BuiltinDefinition> = {
       "for, and there is no argument for naming another. If the thing needs doing now, do it now " +
       "instead.",
     inputSchema: SCHEDULE_TASK_INPUT_SCHEMA
+  },
+  // The sandbox (#368). Named `run_code` rather than `code_execution` or
+  // `code_interpreter` — the two spellings the wider ecosystem uses — because
+  // both existing built-ins are verb_noun and this enum is what a team sheet
+  // writes. It is deliberately **not** `run_python`: #393 put the image in the
+  // runner's environment, so which language exists is a deployment fact, and a
+  // name that pinned one would be a sheet-level claim about a host-level choice
+  // that an operator swapping the image would silently falsify.
+  //
+  // Three clauses below are load-bearing because a model would assume each the
+  // other way. **That there is no network unless the sheet grants one**, or
+  // generated code will reach for a package index and lose the run. **That a
+  // denied host ends the run rather than failing one call**, which is #393's
+  // decision and the reason the allow list has to be visible rather than
+  // discovered. And **that nothing survives**, or a model will write the first
+  // half of a job and assume it can pick the file up next call.
+  //
+  // TWO THINGS #395 OWES THIS DESCRIPTION. The language sentence is a placeholder
+  // until the image is pinned — it says the deployment decides, which is true and
+  // not actionable, and the concrete toolchain should replace it. And the
+  // channel's `[egress] allow` list should be *enumerated* here rather than
+  // referred to; that needs the sheet at listing time, and it is worth nothing
+  // until the hop exists to enforce what it promises. Enumerating an unenforced
+  // list would be a description that lies, which is worse than one that is vague.
+  run_code: {
+    description:
+      "Run a program in a throwaway container and get back what it printed. " +
+      "Which language is available is set by this deployment's sandbox image, not by you — " +
+      "there is no argument for choosing one. " +
+      "The container has a read-only filesystem apart from a scratch working directory, " +
+      "a cpu, memory and wall-time budget this channel set, and it is destroyed when the call " +
+      "returns: nothing you write survives to the next call, so do the whole job in one program. " +
+      "A run that outlives its time budget is killed and you are told so. " +
+      "There is normally no network at all. If this channel allows some hosts, reaching any " +
+      "other one does not merely fail — it ends the run immediately and you lose the output, " +
+      "so do not try a host to find out whether it is allowed. " +
+      "Output comes back bounded, and you are told when it was cut. " +
+      "Running code normally needs a person here to approve it, so it is not free.",
+    inputSchema: RUN_CODE_SCHEMA
   }
 };
 

@@ -36,28 +36,111 @@ export const ToolEntry = z.object({
 });
 
 /**
- * One entry in `[[builtin]]` — a tool the proxy implements itself (#64).
+ * What every `[[builtin]]` block carries, whichever tool it names (#64).
  *
  * The same two optional fields `ToolEntry` carries, resolved by the same two
  * functions in packages/proxy/src/enforce.ts on the same most-restrictive-wins
  * rule. That is deliberate rather than convenient: a built-in is not a bypass,
  * so it earns its approval and its result bound the way every other tool does.
- * It is structurally assignable to `ToolEntry` — `name` is narrower — which is
- * what lets `resolveApproval` and `resolveLimits` take it unchanged.
  *
- * `name` is the one difference, and it is why this block exists at all: a closed
- * enum, so a misspelled tool is an issue at `builtin.<n>.name` rather than an
- * entry that parses, lists as permitted, and is refused at dispatch. See
- * ./builtin.ts for the argument in full.
+ * `name` is not here because it is the discriminator — see `BuiltinEntry` below,
+ * where each member declares its own literal. It is still the reason this block
+ * exists at all: a closed set, so a misspelled tool is an issue at
+ * `builtin.<n>.name` rather than an entry that parses, lists as permitted, and
+ * is refused at dispatch. See ./builtin.ts for the argument in full.
  *
  * There is no `server` field. The provider is the proxy, there is one of it, and
  * the name it answers to is `BUILTIN_SERVER`.
  */
-export const BuiltinEntry = z.object({
-  name: BuiltinToolName,
+const builtinEntryBase = {
   approval: ApprovalMode.optional(),
   max_result_chars: z.number().int().positive().optional(),
-});
+};
+
+/**
+ * How much machine one `run_code` call may have.
+ *
+ * Three caps, each with a default at the tight end, so a block that lists the
+ * tool and says nothing gets the small box and loosening it is a line somebody
+ * wrote. That is the same direction as the approval default and for the same
+ * reason: the sheet is a grant, and the grant should be the narrow reading of
+ * what an operator typed.
+ *
+ * Sheet-settable rather than deployment-only because the thing being sized is a
+ * channel's work — one channel doing numerical work and another asking for a
+ * date calculation should not have to share a number. What is *not* here is the
+ * image: #393 put that in the runner's own environment, pinned by digest, so a
+ * sheet cannot choose a toolchain and a channel cannot reach a container this
+ * deployment did not build. A field here would be a channel naming what runs on
+ * the host, which is the whole shape that decision refused.
+ *
+ * `cpus` is fractional because the runtime's own limit is (`--cpus=0.5` is a
+ * real answer and a common one); the other two are integers because a
+ * half-megabyte and a half-second are not units anybody means.
+ *
+ * A deployment ceiling over these — an operator capping what any sheet may ask
+ * for — is a real thing to want and is not here. It belongs with the runner that
+ * would enforce it (#395), because a bound this file cannot check is a promise
+ * this file cannot keep.
+ */
+const sandboxLimits = {
+  cpus: z.number().positive().max(64).default(1),
+  memory_mb: z.number().int().positive().max(65_536).default(512),
+  timeout_seconds: z.number().int().positive().max(3_600).default(30),
+};
+
+/**
+ * A `[[builtin]]` block, discriminated on the tool it grants.
+ *
+ * A union rather than one object with optional sandbox fields, for the reason
+ * `McpServer` above is one: a flat shape admits a sheet that parses and means
+ * something other than it says. `cpus` on a `search_channel_history` block would
+ * be stripped in silence by zod and the operator would read the sheet as having
+ * sized something. Declared `undefined` on the members that have no sandbox, a
+ * stray cap is an issue at `builtin.<n>.cpus` — which names the field, where
+ * `.strict()` would report `unrecognized_keys` against the block and name
+ * nothing.
+ *
+ * The two store-backed members share a shape and are still written out
+ * separately, because the discriminator is what makes the error message name the
+ * block's own tool.
+ *
+ * **`BuiltinToolName.extract` rather than `z.literal`**, and that is the drift
+ * guard rather than a style. A discriminator has to be a literal, so this file
+ * became a second place every built-in's name is spelled — and two lists of the
+ * same names in two files is the thing ./builtin.ts's enum exists to avoid.
+ * `extract` narrows the enum instead of restating it, so a member renamed or
+ * removed there is a type error here rather than a block shape for a tool that
+ * no longer exists. It does not catch the other direction — a new enum member
+ * with no block shape here — but that one is already loud: `BUILTIN_TOOLS` and
+ * the executor's switch both fail the build, and a sheet could not grant it.
+ *
+ * Every member stays structurally assignable to `ToolEntry` — `name` is
+ * narrower and the extra fields are additions — which is what lets
+ * `resolveApproval` and `resolveLimits` in packages/proxy/src/enforce.ts take
+ * one unchanged.
+ */
+export const BuiltinEntry = z.discriminatedUnion("name", [
+  z.object({
+    ...builtinEntryBase,
+    name: BuiltinToolName.extract(["search_channel_history"]),
+    cpus: z.undefined().optional(),
+    memory_mb: z.undefined().optional(),
+    timeout_seconds: z.undefined().optional(),
+  }),
+  z.object({
+    ...builtinEntryBase,
+    name: BuiltinToolName.extract(["schedule_task"]),
+    cpus: z.undefined().optional(),
+    memory_mb: z.undefined().optional(),
+    timeout_seconds: z.undefined().optional(),
+  }),
+  z.object({
+    ...builtinEntryBase,
+    name: BuiltinToolName.extract(["run_code"]),
+    ...sandboxLimits,
+  }),
+]);
 
 /**
  * One OAuth scope token, RFC 6749's charset: printable ASCII minus space,

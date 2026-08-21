@@ -261,21 +261,68 @@ export interface McpToolDispatcher {
  * directly, so `ToolDispatcher` stays the one seam the server holds.
  */
 export interface BuiltinDispatcher {
-  run(call: ResolvedToolCall, tool: BuiltinToolName, limits: CallLimits): Dispatch;
+  run(call: ResolvedToolCall, tool: StoreBuiltinName, limits: CallLimits): Dispatch;
 }
 
 /**
- * The two arms, as the one seam the server holds.
+ * The built-ins this arm serves: every one except the sandbox.
+ *
+ * An `Exclude` rather than a second hand-written list, so the set is defined by
+ * subtraction from the enum and cannot fall out of step with it. This is what
+ * makes the paragraph above structural instead of advisory — the store-backed
+ * arm cannot be handed `run_code`, in the same way `McpToolDispatcher` cannot be
+ * handed a built-in, and `createToolDispatcher` is again the only thing that
+ * narrows.
+ *
+ * The practical effect is on the executor's `switch (tool)`: it stays exhaustive
+ * over two names, so adding the sandbox to it is a type error rather than a case
+ * that would quietly give the arm holding a directory path a network client.
+ */
+export type StoreBuiltinName = Exclude<BuiltinToolName, "run_code">;
+
+/**
+ * Serves `run_code`: model-written code in an ephemeral container (#368).
+ *
+ * Its own arm rather than a case in `BuiltinDispatcher`, decided in #393 — the
+ * argument is in packages/proxy/README.md under "Reaching a runtime", and the
+ * short form is that this one talks to a runner over the network and the other
+ * one must never hold anything that can.
+ *
+ * **Async, where `BuiltinDispatcher` is synchronous**, and the asymmetry is the
+ * point rather than an inconvenience: that interface is synchronous *so that* a
+ * built-in doing I/O cannot be added to it without someone noticing. A container
+ * start is I/O by definition, so it belongs on the side that says so in its type.
+ *
+ * It holds no credential, and an ESLint block on the module that implements it
+ * is what keeps that true rather than this sentence. What it does hold is the
+ * run-spec that rode in on the `Decision` — the channel's caps and its `[egress]`
+ * allow list — for `ToolDispatcher`'s reason: an arm that resolved the sheet
+ * itself could size a container against a sheet that reloaded after the call was
+ * authorized.
+ */
+export interface SandboxDispatcher {
+  run(call: ResolvedToolCall, limits: CallLimits): Dispatch | Promise<Dispatch>;
+}
+
+/**
+ * The three arms, as the one seam the server holds.
  *
  * A composite rather than a branch inside `HttpDispatcher`, and the reason is
  * what each arm is allowed to hold. `HttpDispatcher` owns a vault and a client
- * pool; the built-in owns a path to a directory of channel stores. Neither
- * should be able to reach the other's, and a single object implementing both
- * would hold both. Here the switch is the only thing that holds either, and it
- * is four lines with no I/O.
+ * pool; the built-in owns a path to a directory of channel stores; the sandbox
+ * owns a client for the runner and no credential at all. None should be able to
+ * reach another's, and a single object implementing all three would hold all
+ * three. Here the switch is the only thing that holds any of them, and it is a
+ * handful of lines with no I/O.
  *
- * **Provisional iff both arms are.** `assertServableComposition` asks whether a
- * dispatcher can really serve a call; this one can if either arm can, so a real
+ * It was two arms until #394. The third is the sandbox, and it is a second
+ * branch *inside* the `builtin` case rather than a third `Target.kind`, because
+ * `run_code` is a built-in everywhere the team sheet and the audit log can see —
+ * splitting it at the `Target` would have made it a different kind of thing to
+ * `decide`, which it is not. See `StoreBuiltinName`.
+ *
+ * **Provisional iff every arm is.** `assertServableComposition` asks whether a
+ * dispatcher can really serve a call; this one can if any arm can, so a real
  * built-in beside the unavailable MCP dispatcher still demands a real meter —
  * which is right, because a built-in draws on the same budget.
  */
@@ -291,8 +338,19 @@ export function createToolDispatcher(arms: {
    * process is not finished. `apps/proxy-server` always passes a real one.
    */
   readonly builtin?: BuiltinDispatcher;
+  /**
+   * Optional, defaulting to the unavailable arm, exactly as `builtin` is (#394).
+   *
+   * A deployment with no runner reachable is every composition today: the schema
+   * member and the sheet block landed with #394 and the runner itself is #395.
+   * A channel whose sheet grants `run_code` therefore gets `not_implemented`
+   * rather than a refusal, which is the honest pair of words — the sheet is
+   * right and the process is unfinished.
+   */
+  readonly sandbox?: SandboxDispatcher;
 }): ToolDispatcher {
   const builtin = arms.builtin ?? createUnavailableBuiltinDispatcher();
+  const sandbox = arms.sandbox ?? createUnavailableSandboxDispatcher();
 
   const dispatcher: ToolDispatcher = {
     dispatch(call, target, limits) {
@@ -300,14 +358,30 @@ export function createToolDispatcher(arms: {
         case "mcp":
           return arms.mcp.dispatch(call, target.upstream, limits);
         case "builtin":
-          return builtin.run(call, target.tool, limits);
+          // The only place `run_code` is separated from the built-ins that read
+          // a local file. `StoreBuiltinName` is what makes this a narrowing the
+          // compiler checks rather than a convention: drop this branch and the
+          // call below stops type-checking.
+          return target.tool === "run_code"
+            ? sandbox.run(call, limits)
+            : builtin.run(call, target.tool, limits);
       }
     }
   };
 
-  return isProvisional(arms.mcp) && isProvisional(builtin)
+  return isProvisional(arms.mcp) && isProvisional(builtin) && isProvisional(sandbox)
     ? markProvisional(dispatcher)
     : dispatcher;
+}
+
+/**
+ * A sandbox arm with nothing behind it.
+ *
+ * The counterpart to `createUnavailableBuiltinDispatcher`, and today the only
+ * implementation there is: #395 builds the runner this stands in for.
+ */
+export function createUnavailableSandboxDispatcher(): Provisional<SandboxDispatcher> {
+  return markProvisional({ run: () => ({ outcome: "unavailable" }) as Dispatch });
 }
 
 /**

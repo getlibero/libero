@@ -275,9 +275,51 @@ describe("the built-in block", () => {
   // file, so a typo parses, lists as permitted, and is refused at dispatch — a
   // sheet saying a tool is allowed and a proxy saying it is not. Here the
   // operator is told at edit time, and told which field.
+  //
+  // The code moved from `invalid_value` to `invalid_union` in #394, when this
+  // became a discriminated union so `run_code` could carry sandbox caps the
+  // other two have no use for. **The property this case exists for is the path,
+  // not the code** — an operator is still told `builtin.0.name`, and the union's
+  // message now enumerates the three valid names where the enum's did not. The
+  // old assertion was pinning zod's issue vocabulary rather than the guarantee.
   it("rejects a tool it does not implement, naming the field", () => {
     expect(paths(builtinSheet([{ name: "serch_channel_histry" }]))).toEqual([
-      "builtin.0.name: invalid_value",
+      "builtin.0.name: invalid_union",
+    ]);
+  });
+
+  // #394. The sandbox block, and the reason the union exists.
+  it("gives a sandbox block caps at the tight end when it names none", () => {
+    const sheet = TeamSheet.parse(builtinSheet([{ name: "run_code" }]));
+    expect(sheet.builtin[0]).toEqual({
+      name: "run_code",
+      cpus: 1,
+      memory_mb: 512,
+      timeout_seconds: 30,
+    });
+  });
+
+  it("takes caps a sandbox block sets", () => {
+    const sheet = TeamSheet.parse(
+      builtinSheet([{ name: "run_code", cpus: 0.5, memory_mb: 2048, timeout_seconds: 120 }])
+    );
+    expect(sheet.builtin[0]).toMatchObject({ cpus: 0.5, memory_mb: 2048, timeout_seconds: 120 });
+  });
+
+  it("rejects a cap that is not a positive quantity", () => {
+    expect(paths(builtinSheet([{ name: "run_code", memory_mb: 0 }]))).toEqual([
+      "builtin.0.memory_mb: too_small",
+    ]);
+  });
+
+  // The whole point of the union rather than one flat object with optional
+  // sandbox fields: zod strips a key it does not know, so on a flat shape this
+  // sheet would parse and the operator would read it as having sized a search.
+  // Declared `undefined` on the members that have no sandbox, it is an issue
+  // that names the field.
+  it("refuses a sandbox cap on a built-in that has no sandbox", () => {
+    expect(paths(builtinSheet([{ name: "search_channel_history", cpus: 4 }]))).toEqual([
+      "builtin.0.cpus: invalid_type",
     ]);
   });
 

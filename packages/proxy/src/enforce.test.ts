@@ -1535,6 +1535,48 @@ describe("a built-in tool", () => {
     });
   });
 
+  // #394's acceptance, both halves, for the third member. Nothing about the gate
+  // is special-cased for the sandbox: it is granted by a block, refused when the
+  // sheet omits it, and held by the declared default — the same three sentences
+  // the other two answer to.
+  it("allows run_code when the sheet names it and a person has approved", () => {
+    const decision = decide({
+      sheet: withBuiltin([{ name: "run_code", approval: "none" }]),
+      call: callBuiltin("run_code"),
+      spend: NO_SPEND
+    });
+
+    expect(decision).toEqual({
+      outcome: "allow",
+      target: { kind: "builtin", tool: "run_code" },
+      limits: { maxResultChars: expect.any(Number) },
+      warning: null
+    });
+    expect(upstreamOf(decision)).toBeUndefined();
+  });
+
+  // The declared default doing its work. A block naming the tool and nothing
+  // else is the sheet an operator most plausibly writes, and it holds — where a
+  // guess from the verb "run" would have let it straight through.
+  it("holds run_code when the block says nothing about approval", () => {
+    expect(
+      decide({ sheet: withBuiltin([{ name: "run_code" }]), call: callBuiltin("run_code"), spend: NO_SPEND })
+    ).toMatchObject({ outcome: "hold" });
+  });
+
+  it("refuses run_code when the sheet grants a different built-in", () => {
+    expect(
+      decide({
+        sheet: withBuiltin([{ name: "search_channel_history" }]),
+        call: callBuiltin("run_code"),
+        spend: NO_SPEND
+      })
+    ).toEqual({
+      outcome: "refuse",
+      refusal: { reason: "tool_not_allowed", server: "libero", tool: "run_code" }
+    });
+  });
+
   // The narrow claim the issue asks for: a built-in draws on the channel's
   // meter like any other tool, so an exhausted channel does not get a free one.
   it("is refused when the channel's budget is spent", () => {
