@@ -242,6 +242,50 @@ jobs:
           done
           exit $failed
 
+  base-guard:
+    # Pull requests target main, and CodeQL is the reason.
+    #
+    # It runs here as GitHub's *default setup*, which only analyzes pull
+    # requests aimed at the default branch. Aim one somewhere else and no
+    # analysis happens, the code_scanning rule on main has no result to judge,
+    # and the merge blocks with every status check green and nothing to point
+    # at. Neither of the two things that look like fixes is one: retargeting
+    # when the parent merges fires no pull_request event, and reopening re-runs
+    # every workflow in this repository while CodeQL stays quiet. Only a
+    # synchronize with the base already on main triggers it. #417 hit this and
+    # needed a rebase to get out.
+    #
+    # pages.yml states the rule this enforces, about site-build: a gate has to
+    # run everywhere to be able to gate anywhere. CodeQL is the one gate that
+    # cannot be made to, because default setup decides when it runs — so this
+    # forbids the case rather than covering it.
+    #
+    # The cost is that stacked pull requests are not possible here. Work is
+    # sequenced with issue dependencies rather than branch stacking, so there is
+    # nothing to give up; if that ever changes, the alternative is advanced
+    # CodeQL setup, and its price is a hardcoded language matrix that goes quiet
+    # when a language is added. That fails open. This fails closed.
+    runs-on: ubuntu-latest
+    steps:
+      # No `if:` on the job. A required status check that skips is one that can
+      # go quiet, which is the failure being fixed — so it runs on every event
+      # this workflow handles and decides inside the step.
+      - name: Pull requests target main
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "$EVENT is not a pull request; nothing to check."
+            exit 0
+          fi
+          if [ "$BASE" = "main" ]; then
+            echo "base is main"
+            exit 0
+          fi
+          echo "::error::This pull request targets '$BASE' rather than main. CodeQL runs as GitHub's default setup, which only analyzes pull requests targeting the default branch, so this one would get no analysis and the code_scanning rule on main would block the merge with every other check green. Rebase onto main and retarget the pull request. Sequencing between pieces of work is expressed with issue dependencies, not by stacking branches."
+          exit 1
+
 # The CLA lives in its own workflow (cla.yml): it needs issue_comment and
 # pull_request_target triggers, which would otherwise fire every job here on
 # every PR comment.
