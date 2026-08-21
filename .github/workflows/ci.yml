@@ -98,7 +98,48 @@ jobs:
             }
           done
       - name: Tests
-        run: pnpm test
+        # Every package except `e2e`, which has its own job below for the
+        # reason stated there. The exclusion is a filter here rather than a
+        # change to the root `test` script, so `pnpm test` on a contributor's
+        # machine still runs everything.
+        run: pnpm -r --filter '!@getlibero/e2e' test
+
+  e2e:
+    # `e2e` declares every other workspace package as a dependency, so
+    # `pnpm -r` sorts it last and it runs by itself at the tail of the build
+    # job: 103 seconds of a 191-second test step, with three of the runner's
+    # four vCPUs idle. Nothing about that ordering is load-bearing once the
+    # build has run — it is just how `pnpm -r` sorts — so the suite moves to a
+    # runner of its own and overlaps the other ten packages instead.
+    #
+    # The cost is a second `pnpm -r build`. It is the same trade
+    # `lint-and-license` makes below, and it is paid in parallel; the build is
+    # 20 seconds against a suite that is five times that.
+    #
+    # `pnpm -r build` and not a narrower filter: the suite spawns the proxy as
+    # its built entrypoint (`e2e/src/harness/proxy-process.ts` resolves
+    # `@getlibero/proxy-server` and fails loudly if `dist` is not there), and
+    # every workspace package it imports resolves through `dist` too.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          # The same floor as the build job, for the same FTS5 reason — this
+          # one does open databases, through `packages/memory`.
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: Security suite
+        # This job needs a Docker daemon, which is not obvious from the step and
+        # is not optional: `e2e/src/sandbox-attack.test.ts` throws at module load
+        # when `CI` is true and no socket is present, rather than skipping, so
+        # that #396's acceptance cases cannot quietly report green. A
+        # `runs-on` without a daemon fails this job — which is the intent, not a
+        # fragility to route around.
+        run: pnpm --filter @getlibero/e2e test
 
   lint-and-license:
     # Lint and the license gate read the source tree and node_modules, never
