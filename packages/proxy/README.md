@@ -581,11 +581,26 @@ this sentence.
 
 ## Built-in tools
 
-Not every permitted call goes to an upstream. Two are served by this process:
+Not every permitted call goes to an upstream. Three are served by this process:
 `search_channel_history`, which reads the calling channel's message store
-(`@getlibero/memory`, opened read-only), and `schedule_task`, which creates one
-future check. `builtins.ts` holds the definitions and the strict argument parser;
-`builtin-dispatcher.ts` is the executor.
+(`@getlibero/memory`, opened read-only), `schedule_task`, which creates one
+future check, and `run_code` (#394), which is the sandbox. `builtins.ts` holds
+every definition and the strict argument parsers; `builtin-dispatcher.ts` is the
+executor for the first two only.
+
+**`run_code` is a built-in that this arm does not serve**, and the split is
+#393's. Everything the team sheet cares about is identical — a `[[builtin]]`
+block grants it, an omitted block refuses it, the meter is charged, the row is
+written under `libero` — and the thing that differs is that serving it means
+talking to a runner over the network, which is the one capability
+`builtin-dispatcher.ts` promises it does not have. So it gets a third arm on
+`createToolDispatcher`, and `StoreBuiltinName` in `dispatch.ts` makes putting it
+in the wrong one a type error rather than a review question. Its sheet block is
+also the only one carrying caps (`cpus`, `memory_mb`, `timeout_seconds`), which
+is why `BuiltinEntry` is a discriminated union rather than one flat object — see
+"Reaching a runtime" above, and the shape's own header in
+`@getlibero/schema`. The runner behind the arm is #395; until it lands, a
+granted call answers `not_implemented`.
 
 **`schedule_task` is governed here and recorded elsewhere.** The create is a
 served tool call like any other — the sheet lists it, a human clicks, the meter is
@@ -711,13 +726,20 @@ One thing that makes the hold worth having rather than ceremonial: the approval
 card renders the call's arguments, so the human clicking Approve has read the
 question and the offset before either becomes a ticket.
 
-Adding a built-in is four parts that fail the build separately: a member on
+Adding a built-in is five parts that fail the build separately: a member on
 `BuiltinToolName` in `@getlibero/schema`, an entry in `BUILTIN_APPROVAL_DEFAULT`
-beside it, a definition in `BUILTIN_TOOLS`, and a case in the executor's
-exhaustive switch. Two `Record`s over the enum and one switch, so there is no
-order in which a half-added built-in compiles — and the approval entry is in that
-list because a built-in with no declared default would silently inherit a guess
-about somebody else's naming.
+beside it, a block shape in `BuiltinEntry`, a definition in `BUILTIN_TOOLS`, and
+somewhere for the call to go. Two `Record`s over the enum, a union whose members
+narrow it, and a switch, so there is no order in which a half-added built-in
+compiles — and the approval entry is in that list because a built-in with no
+declared default would silently inherit a guess about somebody else's naming.
+
+That last part became two places in #394. A built-in reading a local file is a
+case in the executor's exhaustive switch; `run_code` is a branch in
+`createToolDispatcher` instead, for the reason above. Deciding which one a new
+built-in belongs in is the question "does serving it need the network", and the
+type answers it: `BuiltinDispatcher` takes `StoreBuiltinName`, so a built-in that
+needs a client cannot be added to the arm that has none.
 
 ## Reaching a runtime
 

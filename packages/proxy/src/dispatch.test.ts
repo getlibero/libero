@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { BuiltinToolName, McpServer, ResolvedToolCall } from "@getlibero/schema";
+import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
 import {
   type Dispatch,
   type SpendMeter,
+  type StoreBuiltinName,
   type ToolDispatcher,
   assertServableComposition,
   createToolDispatcher,
@@ -78,7 +79,7 @@ describe("createToolDispatcher", () => {
   const upstream: McpServer = { name: "github", transport: "http", url: "http://u:1", tool: [] };
 
   const arms = () => {
-    const seen = { mcp: [] as McpServer[], builtin: [] as string[] };
+    const seen = { mcp: [] as McpServer[], builtin: [] as string[], sandbox: 0 };
     return {
       seen,
       mcp: {
@@ -88,9 +89,15 @@ describe("createToolDispatcher", () => {
         }
       },
       builtin: {
-        run: (_call: ResolvedToolCall, tool: BuiltinToolName): Dispatch => {
+        run: (_call: ResolvedToolCall, tool: StoreBuiltinName): Dispatch => {
           seen.builtin.push(tool);
           return { outcome: "ran", result: { content: "builtin", isError: false } };
+        }
+      },
+      sandbox: {
+        run: (): Dispatch => {
+          seen.sandbox += 1;
+          return { outcome: "ran", result: { content: "sandbox", isError: false } };
         }
       }
     };
@@ -125,6 +132,49 @@ describe("createToolDispatcher", () => {
     const { mcp } = arms();
     expect(
       createToolDispatcher({ mcp }).dispatch(call, { kind: "builtin", tool: "search_channel_history" }, LIMITS)
+    ).toEqual({ outcome: "unavailable" });
+  });
+
+  // #393's seam, asserted rather than trusted to the type. `run_code` is a
+  // built-in by every governance measure and still must not reach the arm that
+  // reads a local SQLite file, because that arm's header promises it holds no
+  // network client and the sandbox needs one.
+  it("sends run_code to the sandbox arm, and never to the builtin one", async () => {
+    const { seen, mcp, builtin, sandbox } = arms();
+    const result = await createToolDispatcher({ mcp, builtin, sandbox }).dispatch(
+      call,
+      { kind: "builtin", tool: "run_code" },
+      LIMITS
+    );
+
+    expect(result).toEqual({ outcome: "ran", result: { content: "sandbox", isError: false } });
+    expect(seen.sandbox).toBe(1);
+    // The store-backed arm and the credential-holding arm both saw nothing.
+    expect(seen.builtin).toEqual([]);
+    expect(seen.mcp).toEqual([]);
+  });
+
+  // The converse, so the branch is pinned in both directions: a store-backed
+  // built-in must not start a container.
+  it("does not send a store-backed builtin to the sandbox arm", () => {
+    const { seen, mcp, builtin, sandbox } = arms();
+    createToolDispatcher({ mcp, builtin, sandbox }).dispatch(
+      call,
+      { kind: "builtin", tool: "schedule_task" },
+      LIMITS
+    );
+
+    expect(seen.builtin).toEqual(["schedule_task"]);
+    expect(seen.sandbox).toBe(0);
+  });
+
+  // #394 ships the name and the sheet block; #395 ships the runner. Until then a
+  // granted `run_code` is `not_implemented` — the sheet is right and the process
+  // is unfinished — rather than a refusal, which would say the channel was denied.
+  it("answers run_code 501 when no sandbox arm was composed", () => {
+    const { mcp, builtin } = arms();
+    expect(
+      createToolDispatcher({ mcp, builtin }).dispatch(call, { kind: "builtin", tool: "run_code" }, LIMITS)
     ).toEqual({ outcome: "unavailable" });
   });
 

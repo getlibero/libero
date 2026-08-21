@@ -12,8 +12,16 @@ describe("the built-in server name", () => {
 });
 
 describe("the built-in tool names", () => {
+  // Moved for #394, which added `run_code` — the sandbox (#368). This assertion
+  // is a deliberate tripwire rather than a description: it exists so that adding
+  // a member is a diff somebody reads, because a built-in's name is a
+  // compatibility surface a team sheet writes and an audit row records.
   it("is a closed set", () => {
-    expect(BuiltinToolName.options).toEqual(["search_channel_history", "schedule_task"]);
+    expect(BuiltinToolName.options).toEqual([
+      "search_channel_history",
+      "schedule_task",
+      "run_code"
+    ]);
   });
 
   // The reason this block exists rather than `transport = "builtin"` under
@@ -48,5 +56,21 @@ describe("the default approval mode", () => {
   // to default the other way without this failing.
   it("makes forgetting the line the safe direction for scheduling", () => {
     expect(BUILTIN_APPROVAL_DEFAULT.schedule_task).not.toBe("none");
+  });
+
+  // #394. Stated as its own case rather than folded into the pinned pair above,
+  // because the reason is different: scheduling defaults to the hold because it
+  // creates unbidden future work, and this one does because it executes
+  // arbitrary code. Either could change without the other.
+  it("holds code execution", () => {
+    expect(BUILTIN_APPROVAL_DEFAULT.run_code).toBe("required");
+  });
+
+  // The property, not the value — and the one the destructive-verb heuristic
+  // would get wrong if it were ever allowed to answer for a built-in. "run" is
+  // not a destructive verb, so a guess from the name would return `"none"` for
+  // the only member of this enum that runs arbitrary code.
+  it("makes forgetting the line the safe direction for code execution", () => {
+    expect(BUILTIN_APPROVAL_DEFAULT.run_code).not.toBe("none");
   });
 });

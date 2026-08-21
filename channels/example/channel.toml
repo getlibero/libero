@@ -345,6 +345,39 @@ max_result_chars = 8000                       # whole messages come back; a chan
 [[builtin]]
 name = "schedule_task"
 
+# Model-written code, run in a throwaway container the proxy starts (#368).
+#
+# COMMENTED OUT, AND NOT ONLY BECAUSE IT IS OPT-IN. There is no runner in this
+# deployment yet: uncomment this and a call is answered `not_implemented`, which
+# says the sheet is right and the process is unfinished. The runner is #395.
+#
+# THE APPROVAL LINE IS MISSING HERE FOR THE SAME REASON IT IS MISSING FROM
+# schedule_task, and it matters more. A built-in's default is declared rather
+# than guessed, and this one's is "required" — so no line is the hold. If it
+# were guessed, the destructive-verb heuristic would look at "run", find no
+# destructive verb, and answer "none" for the one tool here that executes
+# arbitrary code. Loosening it is writing approval = "none", which is this
+# channel deciding that code needs no click before it runs.
+#
+# THE CAPS ARE THE SMALL BOX BY DEFAULT. Omit them and a run gets one cpu, 512 MB
+# and 30 seconds. They are the only fields here, and what is deliberately absent
+# is the image: which language the sandbox has is this deployment's choice, made
+# in the runner's environment and pinned by digest, so a sheet cannot ask for a
+# container the operator did not build. That is also why the tool is not called
+# "run_python".
+#
+# THE NETWORK IS THE [egress] BLOCK BELOW, AND NOTHING ELSE. With no [egress]
+# block a run has no network at all — not a filtered one. With one, reaching a
+# host outside it does not fail the connection and carry on: it ends the run,
+# and the refusal names the host. That is fail-closed on purpose and it is worth
+# knowing before you write a program that expects a package index to be there.
+#
+# [[builtin]]
+# name            = "run_code"
+# cpus            = 1        # fractional is allowed, e.g. 0.5
+# memory_mb       = 512
+# timeout_seconds = 30       # a run past this is killed, and the answer says so
+
 # Where traffic may go when this sheet does not already say.
 #
 # PARSED BUT NOT YET ENFORCED. Nothing in the deployment reaches a destination
