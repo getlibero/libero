@@ -44,7 +44,7 @@
     "@getlibero/schema": "workspace:*",
     "@getlibero/test-kit": "workspace:*",
     "@types/node": "^24.13.3",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "expect": "^30.4.1"
   }
 }

@@ -16,9 +16,9 @@
     "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.116.0",
+    "@anthropic-ai/sdk": "^0.117.1",
     "@getlibero/schema": "workspace:*",
-    "openai": "^7.4.0"
+    "openai": "^7.5.0"
   },
   "devDependencies": {
     "@getlibero/test-kit": "workspace:*",

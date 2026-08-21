@@ -26,6 +26,6 @@
     "eslint": "^10.8.1",
     "license-checker-rseidelsohn": "^5.0.1",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.66.0"
+    "typescript-eslint": "^8.67.0"
   }
 }
