@@ -27,7 +27,8 @@ import {
   createSilentLogger,
   createStubSlack
 } from "@getlibero/gateway";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import {
   DEFAULT_HISTORY_BOUNDS,
   DEFAULT_MEMORY_SETTINGS,

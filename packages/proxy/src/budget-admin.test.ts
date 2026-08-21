@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { channelDays, pruneTurnReports, readChannelSpend, resetChannel } from "./budget-admin.js";
 import { NO_SPEND, openBudgetDb } from "./budget-db.js";
 import { createSqliteSpendMeter } from "./budget-meter.js";

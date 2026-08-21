@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 import { createHop, isForbiddenAddress, parseAuthority } from "./hop-server.js";
@@ -54,7 +56,7 @@ describe("parsing a CONNECT authority", () => {
 
   // Refused rather than defaulted. A CONNECT with no port is not a request this
   // hop knows how to serve, and picking 443 would be inventing the destination.
-  it.each([["api.github.com"], ["api.github.com:"], ["api.github.com:0"], ["api.github.com:99999"], [""]])(
+  each([["api.github.com"], ["api.github.com:"], ["api.github.com:0"], ["api.github.com:99999"], [""]])(
     "refuses %s",
     target => {
       expect(parseAuthority(target)).toBeNull();
@@ -66,7 +68,7 @@ describe("parsing a CONNECT authority", () => {
 // names structurally cannot see: a listed name that resolves to the metadata
 // address.
 describe("addresses no sheet may reach", () => {
-  it.each([
+  each([
     ["127.0.0.1"],
     ["127.1.2.3"],
     ["localhost"],
@@ -83,7 +85,7 @@ describe("addresses no sheet may reach", () => {
   // Deliberately NOT refused. `*.internal.example.com` is the worked example the
   // team-sheet docs ship, and a blanket private-range denial would break the
   // documented case — so the asymmetry is a decision, not an oversight.
-  it.each([["10.0.0.5"], ["192.168.1.10"], ["172.16.0.1"], ["api.github.com"], ["build.internal.example.com"]])(
+  each([["10.0.0.5"], ["192.168.1.10"], ["172.16.0.1"], ["api.github.com"], ["build.internal.example.com"]])(
     "allows %s to reach the allowlist",
     host => {
       expect(isForbiddenAddress(host)).toBe(false);

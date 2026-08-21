@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { NODE_FLOOR, nodeTooOld } from "./node-version.js";
 
 describe("nodeTooOld", () => {
-  it.each(["24.0.0", "24.13.3", "26.7.0", "v26.7.0"])("accepts %s", version => {
+  each(["24.0.0", "24.13.3", "26.7.0", "v26.7.0"])("accepts %s", version => {
     expect(nodeTooOld(version, ">=24.0.0")).toBeNull();
   });
 
-  it.each(["22.20.0", "20.11.1", "v18.0.0"])("refuses %s, naming both versions", version => {
+  each(["22.20.0", "20.11.1", "v18.0.0"])("refuses %s, naming both versions", version => {
     const complaint = nodeTooOld(version, ">=24.0.0");
 
     expect(complaint).toContain("needs Node 24");

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { demultiplex } from "./docker.js";
 
 /** One Docker log frame: [stream, 0,0,0, length big-endian], then the payload. */

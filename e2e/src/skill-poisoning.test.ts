@@ -47,7 +47,8 @@ import type { CompletionResponse } from "@getlibero/agent";
 import { completeResult } from "@getlibero/proxy";
 import { SKILL_AUTHOR_SYSTEM_PROMPT } from "@getlibero/agent";
 import { SKILL_BODY_MAX_CHARS } from "@getlibero/schema";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY_CREDENTIAL,
   CHANNEL,
@@ -160,11 +161,11 @@ describe("a skill, end to end", () => {
       sheets: { [CHANNEL]: SKILLED_SHEET() },
       script: [...TOOL_HEAVY_TASK, writes(BENIGN), says("Tag it, then watch the workflow.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   // **#293's first acceptance criterion, and the control every other case in
   // this file depends on.** Three separate facts, and all three are needed:
@@ -173,6 +174,7 @@ describe("a skill, end to end", () => {
   // below would pass on a deployment where skills never load at all.
   it(
     "is authored, lands on disk, reaches a later task's opening context, and is charged to the channel",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, storeRoot, channelsRoot, budgetDb } = rigOf(rig);
 
@@ -211,9 +213,7 @@ describe("a skill, end to end", () => {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(4 * TURN_TOKENS + AUTHOR_TOKENS);
       expect(spend.inputTokens).toBeGreaterThanOrEqual(AUTHOR_USAGE.inputTokens);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("an author turn emitting operations the schema does not admit", () => {
@@ -244,16 +244,17 @@ describe("an author turn emitting operations the schema does not admit", () => {
         )
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   // **#293's third acceptance criterion.** Traversal and oversize authoring
   // attempts leave `skills/` and the rest of the filesystem untouched.
   it(
     "writes nothing, escapes no directory, reaches no proxied tool, and leaves no audit row",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb, storeRoot, channelsRoot } = rigOf(rig);
 
@@ -297,9 +298,7 @@ describe("an author turn emitting operations the schema does not admit", () => {
       // The turn was answered rather than skipped, which is what makes the
       // assertions above about a refusal rather than about silence.
       expect(agent.log().filter(line => line.fields.event === "authored")).toHaveLength(2);
-    },
-    CASE_MS
-  );
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -351,11 +350,11 @@ describe("a planted hostile skill", () => {
         says("I could not do either of those.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   // **#293's second acceptance criterion, and the exposure it sits on.** The
   // assertions that the poison landed and was read are as load-bearing as the
@@ -363,6 +362,7 @@ describe("a planted hostile skill", () => {
   // claiming a mitigation that does not exist.
   it(
     "is persisted and re-read, and changes nothing about what the channel may do",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb, model } = rigOf(rig);
 
@@ -406,9 +406,7 @@ describe("a planted hostile skill", () => {
 
       // Held means held: nothing was executed, so the upstream saw neither call.
       expect(upstream.callsTo("tools/call")).toHaveLength(callsBefore);
-    },
-    CASE_MS
-  );
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -445,11 +443,11 @@ describe("an author turn writing whatever the task saw into a skill", () => {
         says("Tag it, then watch the workflow.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   // **The surface this suite had not met.** Every other leak case asks whether
   // the credential reached a transcript, a card or a log — all of which are
@@ -463,6 +461,7 @@ describe("an author turn writing whatever the task saw into a skill", () => {
   // assertion, and the assertion did not exist for this surface.
   it(
     "cannot put a credential in the file, because there was never one in the transcript",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, surfaces } = rigOf(rig);
 
@@ -506,9 +505,7 @@ describe("an author turn writing whatever the task saw into a skill", () => {
         ...surfaces(),
         { what: "a later task's opening context", text: openingContexts(model).join("\n") }
       ]);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("an author turn writing a failed call's text into a skill", () => {
@@ -546,11 +543,11 @@ describe("an author turn writing a failed call's text into a skill", () => {
           })
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   // **The path the case above does not reach.** `skillTranscript` keeps a failed
   // call's text on purpose — a refusal or a 404 is the warning a playbook should
@@ -560,6 +557,7 @@ describe("an author turn writing a failed call's text into a skill", () => {
   // the result crosses the boundary at all.
   it(
     "keeps the failure and still carries no credential, because the proxy scrubbed it first",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, surfaces } = rigOf(rig);
 
@@ -617,7 +615,5 @@ describe("an author turn writing a failed call's text into a skill", () => {
         { what: "the authored skill", text: authored ?? "" },
         { what: "every task's opening context", text: openingContexts(model).join("\n") }
       ]);
-    },
-    CASE_MS
-  );
+    });
 });

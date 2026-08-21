@@ -1,5 +1,6 @@
 import type { PermittedTool } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { mapPermittedTools } from "./tool-names.js";
 
 const listed = (server: string, tool: string, approval: "none" | "required" = "none"): PermittedTool => ({

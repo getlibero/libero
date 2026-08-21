@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { servedModel } from "./served-model.js";
 
 // The one rule both adapters read a provider's echoed model id through (#62).

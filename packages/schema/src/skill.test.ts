@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   SKILL_BODY_MAX_CHARS,
   SKILL_DESCRIPTION_MAX_CHARS,
@@ -40,7 +42,7 @@ const VALID_FILE = file(
 );
 
 describe("a skill's name", () => {
-  it.each([
+  each([
     ["one word", "deploy"],
     ["several words", "rotate-a-channel-certificate"],
     ["digits", "postgres-15-upgrade"],
@@ -53,7 +55,7 @@ describe("a skill's name", () => {
   // The name becomes a path segment and an index key, so each of these would
   // either climb out of `skills/`, collide with a sibling, or arrive as two
   // spellings of one skill.
-  it.each([
+  each([
     ["a parent traversal", ".."],
     ["a separator", "deploy/runbook"],
     ["a backslash", "deploy\\runbook"],
@@ -106,7 +108,7 @@ describe("a skill's created date", () => {
 
   // The three ways `Date.parse` is lenient, each refused. Without the round-trip
   // the first two of these become other dates rather than errors.
-  it.each([
+  each([
     ["a date that rolls over", "2026-02-30"],
     ["a leap day that does not exist", "2027-02-29"],
     ["a thirteenth month", "2026-13-01"],
@@ -134,7 +136,7 @@ describe("a skill's status", () => {
     expect([...SkillStatus.options]).toEqual(["active", "stale", "archived"]);
   });
 
-  it.each([["pinned"], ["deprecated"], ["ACTIVE"], [""]])("refuses %s", value => {
+  each([["pinned"], ["deprecated"], ["ACTIVE"], [""]])("refuses %s", value => {
     expect(SkillStatus.safeParse(value).success).toBe(false);
   });
 });
@@ -155,7 +157,7 @@ describe("a skill's frontmatter", () => {
     expect(parsed.success && parsed.data.status).toBe("active");
   });
 
-  it.each([["name"], ["description"], ["created"]])("requires %s", field => {
+  each([["name"], ["description"], ["created"]])("requires %s", field => {
     const without: Record<string, unknown> = skill();
     delete without[field];
     expect(codes(SkillFrontmatter.safeParse(without))).toEqual([`${field}: invalid_type`]);
@@ -243,7 +245,7 @@ describe("parsing a skill file", () => {
     expect(parsed.ok && parsed.skill.body).not.toContain("\r");
   });
 
-  it.each([
+  each([
     ["text with no fence at all", "just some markdown\n"],
     ["a fence that never closes", "---\nname: deploy\n"],
     ["prose before the fence", "hello\n---\nname: deploy\n---\n\nbody\n"],

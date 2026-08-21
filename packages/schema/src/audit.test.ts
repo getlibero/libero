@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { AuditOutcome, auditRefusalMessage } from "./audit.js";
 import { RefusalReason, refusalMessage } from "./refusal.js";
 import { ToolCallResponse } from "./tool-call.js";

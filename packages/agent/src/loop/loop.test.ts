@@ -6,7 +6,9 @@
 // case — which is exactly the coupling the completion layer exists to remove.
 // Keep the two apart.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { CompletionError } from "../completion/types.js";
 import type {
   CompletionClient,
@@ -850,7 +852,7 @@ describe("the agent loop, caps", () => {
 });
 
 describe("the agent loop, non-cap terminations", () => {
-  it.each([
+  each([
     ["refusal", "refusal"],
     ["max_tokens", "max_tokens"],
     ["other", "stopped_other"]

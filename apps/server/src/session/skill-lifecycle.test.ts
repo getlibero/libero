@@ -19,7 +19,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { openMessageStore, openSkillFiles } from "@getlibero/memory";
 import type { MessageStore, SkillClock, SkillFiles } from "@getlibero/memory";
@@ -162,7 +164,7 @@ describe("planSkillLifecycle", () => {
     ...over
   });
 
-  it.each([
+  each([
     ["under the stale threshold", 29 * DAY, null],
     ["at the stale threshold", 30 * DAY, "stale"],
     ["under the archive threshold", 89 * DAY, "stale"],
@@ -201,7 +203,7 @@ describe("planSkillLifecycle", () => {
 
   // The two ways somebody else's word reaches the job: it has never spoken here,
   // or what it last said is not what the file says now.
-  it.each([
+  each([
     ["a skill it has never spoken about", { statusByJob: null, statusByJobAt: null }],
     ["a status somebody else wrote", { status: "stale" as const, statusByJob: "active" as const }]
   ])("adopts rather than moves for %s", (_label, over) => {
@@ -224,7 +226,7 @@ describe("planSkillLifecycle", () => {
   // Ageing needs only time; freshening needs a use. "Not idle" is evidence of
   // nothing — a skill archived by hand this morning is not idle, and reading that
   // as freshness would un-archive it.
-  it.each([
+  each([
     ["never used", { lastUsedAt: null }],
     ["not used since the job last heard from anyone", { lastUsedAt: 1 * DAY }]
   ])("does not freshen a skill %s", (_label, over) => {
@@ -623,7 +625,7 @@ describe("createSkillLifecyclePass", () => {
     expect(await runPast(passWith({ files: () => null }))).toBe(0);
   });
 
-  it.each([
+  each([
     [
       "the sheet cannot be read",
       { settings: () => Promise.reject(new Error("EACCES")) } as Partial<SkillLifecycleOptions>

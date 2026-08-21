@@ -5,7 +5,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { startFakeTokenIssuer } from "./fake-token-issuer.js";
 import type { FakeTokenIssuer } from "./fake-token-issuer.js";
 import { createHttpDispatcher } from "./http-dispatcher.js";
@@ -694,7 +696,7 @@ describe("what the proxy writes down", () => {
   // question an operator asks when an upstream misbehaves — did the proxy fall
   // back? — and a fleet-wide count of `legacy` is how this fallback's eventual
   // removal gets scheduled.
-  it.each(["stateless", "legacy"] as const)("names %s as the protocol it served the call over", async protocol => {
+  each(["stateless", "legacy"] as const)("names %s as the protocol it served the call over", async protocol => {
     fake = await startFakeMcpServer({ protocol });
     const { lines, logger } = capturingLogger();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }), logger });

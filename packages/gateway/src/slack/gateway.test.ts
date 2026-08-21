@@ -7,7 +7,8 @@
 // seam exists to remove. Keep the two apart.
 
 import type { ApprovalTicket } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import type { LogFields, Logger, LogLevel } from "../log.js";
 import { renderApprovalCard } from "./approval-card.js";
 import { createGateway } from "./gateway.js";

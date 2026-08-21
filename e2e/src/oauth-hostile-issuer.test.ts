@@ -20,7 +20,8 @@
 //   default hour would be minted once in the warm-up and never again, and
 //   every hostile case would assert against a hook nothing consulted.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   OAUTH_CREDENTIAL,
@@ -95,15 +96,16 @@ beforeAll(async () => {
     grants: { [OAUTH_CREDENTIAL]: { issuer: issuer.url, refreshToken: REFRESH_CANARY } },
     script: SCRIPT
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
   await cleanup?.drain();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "the path works before the attacks",
+  { timeout: CASE_MS },
   async () => {
     const { agent, upstream } = rigOf(rig);
     const as = issuer as FakeTokenIssuer;
@@ -114,9 +116,7 @@ it(
     // hook's doing and not the fixture's.
     expectSecretReachedUpstream(upstream, as.accessTokens.at(-1) as string, "the access token");
     expect(agent.slack.posted.at(-1)).toMatchObject({ text: "Warm." });
-  },
-  CASE_MS
-);
+  });
 
 /** One hostile shape, asserted the same way each time. */
 function attacked(
@@ -127,6 +127,7 @@ function attacked(
 ): void {
   it(
     name,
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb } = rigOf(rig);
       const as = issuer as FakeTokenIssuer;
@@ -156,9 +157,7 @@ function attacked(
 
       // Failed before connecting: no bare call reached the upstream.
       expect(upstream.callsTo("tools/call")).toHaveLength(callsBefore);
-    },
-    CASE_MS
-  );
+    });
 }
 
 attacked("a hanging token endpoint is unavailable within the budget", "Ev00000071", () => ({ hang: true }), "timed_out");
@@ -179,6 +178,7 @@ attacked(
 
 it(
   "the pool is not wedged: the next call after the issuer recovers is served",
+  { timeout: CASE_MS },
   async () => {
     const { agent, upstream, auditDb, surfaces } = rigOf(rig);
     const as = issuer as FakeTokenIssuer;
@@ -199,6 +199,4 @@ it(
     for (const token of as.accessTokens) {
       expectNoSecret(everywhere, token, "the access token");
     }
-  },
-  CASE_MS
-);
+  });

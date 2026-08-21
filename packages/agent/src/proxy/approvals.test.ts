@@ -6,7 +6,8 @@
 // behalf.
 
 import { ApprovalDecision } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createProxyApprovalsClient } from "./approvals.js";
 import { ProxyClientError, type ProxyRequest, type ProxyResponse, type ProxyTransport } from "./transport.js";
 

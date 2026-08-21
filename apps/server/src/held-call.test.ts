@@ -17,7 +17,9 @@ import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import type { ProxyRequest, ProxyResponse, ProxyTransport } from "@getlibero/agent";
 import type { Scheduler } from "@getlibero/gateway";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
-import { describe, expect, it, vi } from "vitest";
+import { describe, it } from "node:test";
+import { waitFor } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
@@ -33,6 +35,13 @@ const THREAD = "1758000000.000100";
 const TICKET = "tk-7f3a";
 const NOW = Date.UTC(2026, 7, 4, 12, 0);
 const EXPIRES = NOW + 15 * 60 * 1000;
+
+/**
+ * How long to wait for the amber card to appear. Everything here is in-process
+ * and the card is posted within a turn, so this is a hang bound rather than a
+ * budget — `waitFor` has no default, which is #329's lesson made structural.
+ */
+const CARD_MS = 10_000;
 
 const AMBER = "#F5B544";
 const GREEN = "#1BA85A";
@@ -223,9 +232,9 @@ describe("hold → card → decision → run", () => {
 
     // The amber card is up while the task waits — the model has seen one turn
     // and the thread has no reply yet.
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(approvalCard(slack)).toBeDefined();
-    });
+    }, { timeout: CARD_MS });
     const card = approvalCard(slack);
     expect(card?.card.color).toBe(AMBER);
     expect(card?.threadTs).toBe(THREAD);
@@ -260,9 +269,9 @@ describe("hold → card → decision → run", () => {
     await gateway.start();
 
     const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev002"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(approvalCard(slack)).toBeDefined();
-    });
+    }, { timeout: CARD_MS });
 
     await slack.deliverDecision({
       teamId: TEAM,
@@ -289,9 +298,9 @@ describe("hold → card → decision → run", () => {
     await gateway.start();
 
     const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev003"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(approvalCard(slack)).toBeDefined();
-    });
+    }, { timeout: CARD_MS });
 
     // Nobody clicks. The deadline is the ticket's own expiresAt.
     expect(clock.pending()).toEqual([EXPIRES - NOW]);
@@ -314,9 +323,9 @@ describe("hold → card → decision → run", () => {
     await gateway.start();
 
     const pending = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev005"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(approvalCard(slack)).toBeDefined();
-    });
+    }, { timeout: CARD_MS });
     const messageTs = approvalCard(slack)?.messageTs ?? "";
 
     await slack.deliverDecision({
@@ -354,9 +363,9 @@ describe("hold → card → decision → run", () => {
     await gateway.start();
 
     const first = slack.deliverMention(mentionFields("<@U0BOT> merge pr 42", "Ev004"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(approvalCard(slack)).toBeDefined();
-    });
+    }, { timeout: CARD_MS });
 
     const second = slack.deliverMention(
       mentionFields("<@U0BOT> what is the deploy window?", "Ev005", "1758000000.000200")

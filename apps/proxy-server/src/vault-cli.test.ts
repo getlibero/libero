@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openVault, parseVaultKey } from "@getlibero/proxy";
 import type { VaultKey } from "@getlibero/proxy";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, runVaultCommand } from "./vault-cli.js";
 
 const VALUE = "ghp_leaked_value_16C7e42F292c6912E7710c838347Ae178B4a";
@@ -75,8 +77,9 @@ describe("set", () => {
   // A vault this cannot read must not be read as empty and then replaced —
   // that is every stored credential gone on a permissions mistake. Root reads
   // through mode 000, so the test is meaningless there.
-  it.runIf(process.getuid?.() !== 0)(
+  it(
     "refuses to touch a vault it cannot read",
+    { skip: process.getuid?.() === 0 },
     async () => {
       await run(["set", NAME], VALUE);
       const before = readFileSync(file);
@@ -92,7 +95,7 @@ describe("set", () => {
   );
 
   // `echo secret |` and `printf secret |` must store the same thing.
-  it.each([
+  each([
     ["a trailing newline", `${VALUE}\n`, VALUE],
     ["a trailing CRLF", `${VALUE}\r\n`, VALUE],
     ["no trailing newline", VALUE, VALUE],
@@ -135,19 +138,19 @@ describe("set", () => {
     expect(existsSync(file)).toBe(false);
   });
 
-  it.each([
+  each([
     ["no name", ["set"]],
     ["two names", ["set", NAME, "other"]]
   ])("refuses %s", async (_label, argv) => {
-    expect((await run(argv, VALUE)).code).toBe(EXIT_USAGE);
+    expect((await run([...argv], VALUE)).code).toBe(EXIT_USAGE);
   });
 
-  it.each([
+  each([
     ["an invalid name", ["set", "../etc/passwd"], VALUE],
     ["an empty value", ["set", NAME], ""],
     ["a value with a NUL", ["set", NAME], "abc\0def"]
   ])("refuses %s without writing", async (_label, argv, stdin) => {
-    const result = await run(argv, stdin);
+    const result = await run([...argv], stdin);
     expect(result.code).toBe(EXIT_ERROR);
     expect(existsSync(file)).toBe(false);
   });
@@ -219,7 +222,7 @@ describe("remove", () => {
 
 describe("the command surface", () => {
   // The one command that must never exist.
-  it.each(["get", "show", "cat", "print", "reveal", "export", "dump"])(
+  each(["get", "show", "cat", "print", "reveal", "export", "dump"])(
     "has no %j command",
     async command => {
       const result = await run([command, NAME]);
@@ -248,7 +251,7 @@ describe("the command surface", () => {
 });
 
 describe("the environment", () => {
-  it.each([
+  each([
     ["no vault file", { PROXY_VAULT_KEY: "placeholder" }, /PROXY_VAULT_FILE/],
     ["no key", { PROXY_VAULT_FILE: "/tmp/vault.enc" }, /PROXY_VAULT_KEY/]
   ])("refuses to run with %s", async (_label, env, pattern) => {

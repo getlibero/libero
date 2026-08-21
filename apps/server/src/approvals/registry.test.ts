@@ -3,7 +3,8 @@
 // the shape: a lookup is scoped by channel, so another channel's entry is not
 // reachable at all, rather than reachable and then rejected.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createApprovalRegistry } from "./registry.js";
 
 const CHANNEL = "C024BE91L";

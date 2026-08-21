@@ -3,7 +3,8 @@
 
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createSessionRegistry } from "./registry.js";
 import type { SessionKey } from "./types.js";
 

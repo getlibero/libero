@@ -5,7 +5,8 @@
 // The clock is a number passed in, so there are no fake timers here and no
 // wall-clock waits.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createThreadActivity } from "./threads.js";
 
 const T = "1758000000.000100";

@@ -8,7 +8,9 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { openMessageStore } from "@getlibero/memory";
 import type { MessageStore } from "@getlibero/memory";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, runTasksCommand } from "./tasks-cli.js";
@@ -183,11 +185,11 @@ describe("cancelled", () => {
 describe("what it refuses", () => {
   // The id becomes a path segment and this one comes off a command line, which
   // is the case `openMessageReader`'s own check exists for.
-  it.each(["../../etc", ".", "has/slash", ""])("refuses %s as a channel id", channel => {
+  each(["../../etc", ".", "has/slash", ""])("refuses %s as a channel id", channel => {
     expect(run("list", channel).code).toBe(EXIT_USAGE);
   });
 
-  it.each([[[]], [["list"]], [["wat", CHANNEL]], [["list", CHANNEL, "extra", "more"]]])(
+  each([[[]], [["list"]], [["wat", CHANNEL]], [["list", CHANNEL, "extra", "more"]]])(
     "prints usage for %s",
     argv => {
       const { code, err } = run(...argv);

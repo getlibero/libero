@@ -3,7 +3,9 @@
 // what the model asks for, and what it reports — none of which is a provider's
 // wire format.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { MEMORY_OP_MAX_TEXT_CHARS, MemoryToolName } from "@getlibero/schema";
 import type { MemoryOp, MemoryOpResult } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
@@ -293,7 +295,7 @@ describe("a model that emits garbage", () => {
     ]);
   });
 
-  it.each([
+  each([
     ["a missing field", "memory_append", {}],
     ["a wrong type", "memory_append", { text: 42 }],
     ["an unknown key", "memory_append", { text: "x", path: "../other/MEMORY.md" }],

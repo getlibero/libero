@@ -13,7 +13,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
 import { openMessageStore } from "@getlibero/memory";

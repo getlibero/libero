@@ -9,7 +9,7 @@ pnpm install                          # Node 24+, pnpm 9+
 pnpm -r build                         # tsc per package
 pnpm typecheck                        # tsc --noEmit per package
 pnpm lint                             # eslint . (includes the agent→proxy import ban)
-pnpm test                             # vitest run per package
+pnpm test                             # tsc, then node --test over dist, per package
 pnpm license-check                    # allowlisted licenses only; fails on copyleft
 pnpm boundary-check                   # grep gate: the agent side names no proxy
 ```
@@ -18,26 +18,48 @@ pnpm boundary-check                   # grep gate: the agent side names no proxy
 prose and `package.json` too, and a raw string match belongs in a script rather
 than in a rule.
 
-Scoping to one package or test:
+Scoping to one package or test — note that the paths are the **built** ones,
+because that is what the runner takes:
 
 ```bash
 pnpm --filter @getlibero/schema test
-pnpm --filter @getlibero/schema exec vitest run src/<file>.test.ts
-pnpm --filter @getlibero/schema exec vitest run --exclude '**/dist/**' -t "<test name>"
+pnpm --filter @getlibero/schema exec node --test dist/<file>.test.js
+pnpm --filter @getlibero/schema exec node --test --test-name-pattern "<test name>" 'dist/**/*.test.js'
 ```
+
+The last two run whatever `dist` currently holds, so compile first — the `test`
+script does it for you (`tsc -p tsconfig.json`), and `tsc -w` covers a loop.
 
 Root scripts are `pnpm -r` fan-outs, so a new workspace package is invisible to
 CI until it has a `package.json` with `build`, `typecheck`, and `test` scripts
-(use `vitest run --exclude '**/dist/**' --passWithNoTests` while it has no
-tests) and a `tsconfig.json` extending `../../tsconfig.base.json`.
+and a `tsconfig.json` extending `../../tsconfig.base.json`. Give it a test in the
+same breath: a `test` script over an empty `dist` fails, on purpose (below).
 
-**Every `test` script carries `--exclude '**/dist/**'`, and a new one must
-too.** Vitest's default excludes are `node_modules` and `.git` only, so without
-it each test file is collected twice — once from `src`, once from its compiled
-copy — and CI builds before it tests, so `dist` is always there. That doubles
-every reported count and keeps running tests that were deleted from `src` until
-someone does a clean build. The flag adds to the defaults rather than replacing
-them; `node_modules` stays excluded (#107).
+**The suite runs `node:test` over the compiled output, and every `test` script
+is the same string** — `tsc -p tsconfig.json && node --test
+--test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'` (#202).
+Assertions are Jest's standalone `expect`, which runs under any runner;
+`it.each`, a polling `waitFor`, and the reporter are `@getlibero/test-kit`.
+
+That inverted #107 rather than repeating it. Vitest collected each test twice —
+once from `src`, once from its compiled copy — so every `test` script carried
+`--exclude '**/dist/**'`; running *from* `dist` retires that flag outright. What
+it does not retire is the class of bug: **`node --test` over a glob that matches
+nothing exits 0**, so a script that said `dist/*.test.js` where it meant
+`dist/**/*.test.js` would stop running a whole subdirectory and report green.
+That is why the script is one string checked by
+`packages/test-kit/src/test-scripts.test.ts`, and why **the reporter fails a run
+that collected nothing** — the script check catches a mistyped glob, the reporter
+catches every other way a suite can go quiet. A new package therefore needs a
+test before it needs a `test` script.
+
+**The reporter also fails a run on a skip nothing accounts for.** A skip is a
+case that is not being run, and this repository has been bitten by that
+specifically — `apps/runner/src/sandbox.docker.test.ts` records thirteen cases
+skipping and a green build. The cases entitled to skip are `ALLOWED_SKIPS` in
+`packages/test-kit/src/reporter.ts`, each with its reason; adding a skip means
+adding an entry, which is a reviewable line in a diff rather than a character
+nobody sees.
 
 ## Current state
 
@@ -80,6 +102,7 @@ What exists:
 | Package | What it is |
 | --- | --- |
 | `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
+| `packages/test-kit` | What `node:test` does not have and the suite needs: `it.each`, a `waitFor` whose timeout is a required argument, and the reporter — which fails a run that collected nothing, or that skipped something `ALLOWED_SKIPS` does not account for. Private, never published, no dependencies at all — which is what lets `packages/memory` import it across the leaf rule (#202) |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
@@ -129,6 +152,7 @@ code is a paragraph the next reader will not find.
 | The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, the one fake embedder's shape and the rule it carries, and why exactly one file needs a Docker daemon and fails rather than skips in CI | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist, and the sandbox runner's service, networks and the one variable an operator gets wrong | `deploy/README.md` |
 | The runner's own modules: why the Docker Engine API is spoken with no client library, what builds a container spec and what may not reach it, and the two-sided gate on the tests that need a daemon | `apps/runner/src/*.ts` headers |
+| Why the test helpers are a package rather than a copied file, what is deliberately not re-exported from it, why `waitFor`'s timeout has no default, what the reporter fails a run for, and the two things `node:test` does that it has to work around | `packages/test-kit/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |
 
@@ -171,9 +195,10 @@ image through an edge that exists today.
 
 **What a leaf may import is a package with nothing under it.** The ban is on the
 two services, not on dependencies, and the test is whether the edge would put
-either service's code into the other's image. `@getlibero/schema` passes and
-`@getlibero/atomic-write` passes — the second declares no dependencies at all,
-which is its charter rather than a fact about today. That is the difference
+either service's code into the other's image. `@getlibero/schema` passes,
+`@getlibero/atomic-write` passes, and `@getlibero/test-kit` passes — the last two
+declare no dependencies at all, which is their charter rather than a fact about
+today. That is the difference
 between the two duplications this repository has carried: the durable-replace
 recipe was copied because a leaf could not import the proxy, and #272 removed the
 copy by giving the recipe a package instead; `Logger` stays duplicated because an

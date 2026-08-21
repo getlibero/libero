@@ -5,7 +5,9 @@
 // SQLite file would only slow that down. store-db.test.ts drives the read;
 // context.test.ts (in src/) drives the whole path against real files.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import type { StoredMessage } from "@getlibero/memory";
 import { MAX_MESSAGE_CHARS, assembleContext } from "./context.js";
 import type { HistorySource } from "./context.js";
@@ -504,7 +506,7 @@ describe("the curated memory block", () => {
   // The rule the empty history block already keeps. An empty `<channel-memory>`
   // asserts that this team has established nothing, and the file may simply not
   // have been reachable.
-  it.each([
+  each([
     ["an absent file", undefined],
     ["an empty file", ""]
   ])("contributes nothing at all for %s", async (_name, memory) => {

@@ -1,5 +1,6 @@
 import type { ChannelPoster } from "@getlibero/gateway";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { HEARTBEAT_POST_WINDOW_MS, createProactivePoster } from "./proactive.js";
 
 /** Records what reached Slack, and can be made to fail. */

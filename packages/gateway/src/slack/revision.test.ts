@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { toRevision } from "./revision.js";
 import { revisionEnvelope } from "./stub-slack.js";
 import type { SlackEnvelope } from "./types.js";

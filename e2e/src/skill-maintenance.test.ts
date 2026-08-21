@@ -26,7 +26,8 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
 import { openMessageStore } from "@getlibero/memory";
 import { serializeSkillFile } from "@getlibero/schema";
@@ -191,7 +192,7 @@ describe("the skill-embedding pass", () => {
       storeRoot,
       skillFile("rotate-a-cert", "When a channel certificate has to be rotated.", "1. Run the script.")
     );
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -199,6 +200,7 @@ describe("the skill-embedding pass", () => {
 
   it(
     "embeds a channel's descriptions and never its bodies",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, budgetDb, channelsRoot, embeddings } = rigOf(rig);
       if (embeddings === null) throw new Error("the rig composed no embedding provider");
@@ -230,9 +232,7 @@ describe("the skill-embedding pass", () => {
       // where the proxy reads its authorization from.
       expect(existsSync(join(channelsRoot.path, CHANNEL, "skills"))).toBe(false);
       expect(skillsDirectory(storeRoot, OTHER_CHANNEL)).toEqual([]);
-    },
-    CASE_MS
-  );
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -268,7 +268,7 @@ describe("the skill lifecycle job", () => {
         skillFile("retired-runbook", "An old way of doing it.", "Do not.", "archived")
       )
     };
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -276,6 +276,7 @@ describe("the skill lifecycle job", () => {
 
   it(
     "writes nothing on its first sight of a directory, then moves exactly one line",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, channelsRoot } = rigOf(rig);
 
@@ -314,9 +315,7 @@ describe("the skill lifecycle job", () => {
       // It never deletes, and it never writes where the proxy reads.
       expect(skillsDirectory(storeRoot)).toEqual(["cut-a-release.md", "retired-runbook.md"]);
       expect(existsSync(join(channelsRoot.path, CHANNEL, "skills"))).toBe(false);
-    },
-    CASE_MS
-  );
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -368,7 +367,7 @@ describe("the merge curator", () => {
         skillFile("ship-a-release", "When somebody asks how a release is shipped.", "1. Push the tag.")
       )
     };
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -376,6 +375,7 @@ describe("the merge curator", () => {
 
   it(
     "writes a proposal beside the skills, rewrites none of them, and never reads it back",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, budgetDb, channelsRoot, model } = rigOf(rig);
 
@@ -455,7 +455,5 @@ describe("the merge curator", () => {
       const contexts = openingContexts(model).join("\n");
       expect(contexts).toContain("cut-a-release");
       expect(contexts).not.toContain("THE MERGED DRAFT SENTINEL");
-    },
-    CASE_MS
-  );
+    });
 });

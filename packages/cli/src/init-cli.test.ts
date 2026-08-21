@@ -10,7 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { assignedNames } from "./env-file.js";
 import { runCli } from "./cli.js";
@@ -337,13 +339,13 @@ describe("bad arguments", () => {
     compose("deploy");
   });
 
-  it.each([
+  each([
     [["init", "--provider", "gemini"], "not a provider"],
     [["init", "--model", "(unreported)"], "not a model id"],
     [["init", "extra"], "takes no arguments"],
     [["init", "--fil", "x"], "unknown option"]
   ])("%s exits 2 and writes nothing", async (argv, expected) => {
-    const result = await run(argv as string[]);
+    const result = await run([...argv]);
 
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.err.join("\n")).toContain(expected as string);

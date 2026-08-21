@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { serializeScheduledTask } from "@getlibero/schema";
 import type { LogFields } from "@getlibero/gateway";
 import type { MessageStore, StoredScheduledTask } from "@getlibero/memory";

@@ -1,5 +1,7 @@
 import { type McpServer, TeamSheet as TeamSheetSchema } from "@getlibero/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
 import type { McpClient, McpOutcome } from "./mcp-client.js";
 import { CATALOG_BUDGET_MS, CATALOG_TTL_MS } from "./mcp-catalog.js";
@@ -110,7 +112,7 @@ describe("one client per upstream", () => {
     expect(fake.callsTo("server/discover")).toHaveLength(1);
   });
 
-  it.each([
+  each([
     [
       "a differing url",
       { name: "github", transport: "http", url: "http://a:3001", credential: "c" },

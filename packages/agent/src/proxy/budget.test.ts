@@ -4,7 +4,8 @@
 // this file is about what the client does with an answer, what it puts on the
 // wire, and the two ways a question can end early.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createProxyBudgetClient } from "./budget.js";
 import { ProxyClientError, type ProxyRequest, type ProxyResponse, type ProxyTransport } from "./transport.js";
 

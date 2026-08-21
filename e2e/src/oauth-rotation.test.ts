@@ -14,7 +14,8 @@
 // process and read back by another, through the same startup path a deployment
 // takes.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   OAUTH_CREDENTIAL,
@@ -74,15 +75,16 @@ beforeAll(async () => {
     grants: { [OAUTH_CREDENTIAL]: { issuer: issuer.url, refreshToken: REFRESH_CANARY } },
     script: SCRIPT
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
   await cleanup?.drain();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "the issuer invalidates the used refresh token, and the restarted proxy succeeds on the rotated one",
+  { timeout: CASE_MS },
   async () => {
     const { agent, upstream, auditDb, surfaces } = rigOf(rig);
     const as = issuer as FakeTokenIssuer;
@@ -146,6 +148,4 @@ it(
     for (const token of as.accessTokens) {
       expectNoSecret(everywhere, token, "the access token");
     }
-  },
-  CASE_MS
-);
+  });

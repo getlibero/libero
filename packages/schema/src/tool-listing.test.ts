@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { PermittedTool, ToolInputSchema, ToolListing } from "./tool-listing.js";
 
 const entry = { server: "github", tool: "list_prs", approval: "none" };

@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import type { Logger } from "./log.js";
 import {
   GrantEntryError,

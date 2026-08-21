@@ -2,7 +2,8 @@
 // lookups rather than as a count of names — the two are indistinguishable in
 // the output, and only one of them is the acceptance criterion.
 
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { NAME_CACHE_MAX, createNameCache } from "./names.js";
 import type { DisplayNameLookup } from "./names.js";
 

@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude '**/dist/**'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@getlibero/agent": "workspace:*",
@@ -21,7 +21,9 @@
     "@getlibero/memory": "workspace:*"
   },
   "devDependencies": {
+    "@getlibero/test-kit": "workspace:*",
     "@types/node": "^24.13.3",
+    "expect": "^30.4.1",
     "sqlite-vec": "^0.1.9"
   }
 }

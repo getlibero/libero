@@ -4,7 +4,7 @@
 // asserted", and there is no way to honour that against a fake: a stub that
 // records `ReadonlyRootfs: true` proves this file sent the flag, not that the
 // kernel enforced it. So these run real containers, and the repository gains its
-// first vitest suite that needs a Docker daemon.
+// first suite that needs a Docker daemon.
 //
 // ## The gate, and why it is not a plain skip
 //
@@ -27,7 +27,8 @@
 // all, which is asserted below; the filtering hop that would make `[egress]`
 // mean something is #219, and a case for it now would be a case against nothing.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -69,9 +70,10 @@ function guessSocket(): string {
  * The gate is probed **synchronously, at module load**, and that is not a style
  * choice — it is the whole difference between a gate and a lie.
  *
- * `describe.skipIf` is evaluated when the file is collected, which is before any
- * `beforeAll` has run. A first version of this asked the daemon inside
- * `beforeAll` and set a flag; the flag was still `false` at collection time, so
+ * `describe`'s `skip` option is read when the file is collected, which is
+ * before any `beforeAll` has run. A first version of this asked the daemon
+ * inside `beforeAll` and set a flag; the flag was still `false` at collection
+ * time, so
  * the suite skipped itself in CI as cheerfully as it did on a laptop, and the
  * loud CI failure below never ran. It reported thirteen skipped cases and a
  * green build. That is precisely the test-that-encodes-a-gap this repository has
@@ -101,7 +103,7 @@ beforeAll(async () => {
   // image fails with a 404 that reads as a bug in this file rather than as a
   // missing image.
   execFileSync("docker", ["pull", "--quiet", IMAGE], { stdio: "pipe", timeout: 300_000 });
-}, 300_000);
+}, { timeout: 300_000 });
 
 afterAll(() => {
   // Nothing to clean: `runInSandbox` removes each container in a `finally`, and
@@ -118,8 +120,8 @@ const run = (
     { docker, config: { image: IMAGE, command: [...COMMAND] }, newRunId: () => randomUUID() }
   );
 
-describe.skipIf(!socketPresent)("a real sandbox container", () => {
-  it("runs the code and gives back what it printed", async () => {
+describe("a real sandbox container", { skip: !socketPresent }, () => {
+  it("runs the code and gives back what it printed", { timeout: 120_000 }, async () => {
     const result = await run("import sys; print('out'); print('err', file=sys.stderr)");
 
     expect(result.outcome).toBe("completed");
@@ -128,54 +130,58 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
     // ask for a TTY.
     expect(result.stdout).toBe("out\n");
     expect(result.stderr).toBe("err\n");
-  }, 120_000);
+  });
 
   // A program that failed is a normal answer to a question, not an error of
   // ours: it is `completed` with a non-zero status, and the proxy renders it.
-  it("reports a non-zero exit as a completed run", async () => {
+  it("reports a non-zero exit as a completed run", { timeout: 120_000 }, async () => {
     const result = await run("import sys; sys.exit(3)");
     expect(result.outcome).toBe("completed");
     expect(result.exitCode).toBe(3);
-  }, 120_000);
+  });
 
-  it("has a read-only rootfs", async () => {
+  it("has a read-only rootfs", { timeout: 120_000 }, async () => {
     // Written against a path outside the workdir, so this cannot pass because
     // of where it wrote rather than because the rootfs refused.
     const result = await run("open('/root-write-probe','w').write('x')");
     expect(result.outcome).toBe("completed");
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toMatch(/Read-only file system|OSError|PermissionError/);
-  }, 120_000);
+  });
 
-  it("has a writable tmpfs workdir, which is the positive control for the case above", async () => {
-    // Without this, "the write failed" would also pass on a container where
-    // nothing is writable and the sandbox is useless.
-    const result = await run(
-      `open('${SANDBOX_WORKDIR}/probe','w').write('x'); print(open('${SANDBOX_WORKDIR}/probe').read())`
-    );
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("x\n");
-  }, 120_000);
+  it(
+    "has a writable tmpfs workdir, which is the positive control for the case above",
+    { timeout: 120_000 },
+    async () => {
+        // Without this, "the write failed" would also pass on a container where
+        // nothing is writable and the sandbox is useless.
+        const result = await run(
+          `open('${SANDBOX_WORKDIR}/probe','w').write('x'); print(open('${SANDBOX_WORKDIR}/probe').read())`
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toBe("x\n");
+      }
+  );
 
-  it("gives each run its own workdir, so nothing survives between them", async () => {
+  it("gives each run its own workdir, so nothing survives between them", { timeout: 120_000 }, async () => {
     await run(`open('${SANDBOX_WORKDIR}/left-behind','w').write('x')`);
     const second = await run(
       `import os; print(os.path.exists('${SANDBOX_WORKDIR}/left-behind'))`
     );
     expect(second.stdout).toBe("False\n");
-  }, 120_000);
+  });
 
-  it("mounts the workdir as tmpfs rather than as part of the image", async () => {
+  it("mounts the workdir as tmpfs rather than as part of the image", { timeout: 120_000 }, async () => {
     const result = await run(
       `import subprocess; print(subprocess.run(['sh','-c','df -PT ${SANDBOX_WORKDIR} 2>/dev/null || mount'],capture_output=True,text=True).stdout)`
     );
     expect(result.stdout).toMatch(/tmpfs/);
-  }, 120_000);
+  });
 
   // The workdir is sized to the memory cap rather than fixed, so a program
   // cannot use it to spend that cap sideways — filling it is the same bound as
   // allocating, and it stops at the same number.
-  it("bounds the workdir at the channel's memory cap", async () => {
+  it("bounds the workdir at the channel's memory cap", { timeout: 120_000 }, async () => {
     const result = await run(`open('${SANDBOX_WORKDIR}/big','wb').write(b'x' * 192 * 1024 * 1024)`, {
       memoryMb: 64
     });
@@ -185,19 +191,19 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
     // spending the memory cap, because they are the same cap.
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain("wrote");
-  }, 120_000);
+  });
 
   // The other half, and the reason the fixed 64 MiB had to go: a cap big enough
   // to hold a package tree gets a workdir big enough to hold it.
-  it("gives a bigger cap a bigger workdir", async () => {
+  it("gives a bigger cap a bigger workdir", { timeout: 120_000 }, async () => {
     const result = await run(`open('${SANDBOX_WORKDIR}/big','wb').write(b'x' * 192 * 1024 * 1024)\nprint("wrote")`, {
       memoryMb: 512
     });
     expect(result.stdout).toContain("wrote");
     expect(result.exitCode).toBe(0);
-  }, 120_000);
+  });
 
-  it("has no network at all", async () => {
+  it("has no network at all", { timeout: 120_000 }, async () => {
     // Not "cannot resolve a name" — no route, no interface but loopback. A DNS
     // failure alone would also pass on a container that had a network and a
     // broken resolver, which is a different and much weaker property.
@@ -207,17 +213,17 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain("reached");
     expect(result.stderr).toMatch(/Network is unreachable|OSError|timed out/);
-  }, 120_000);
+  });
 
-  it("enforces the memory cap", async () => {
+  it("enforces the memory cap", { timeout: 120_000 }, async () => {
     const result = await run("x = bytearray(400 * 1024 * 1024); print(len(x))", { memoryMb: 64 });
     // The kernel's OOM killer ends the process rather than the program raising,
     // so what is asserted is that it did not succeed — not the mechanism.
     expect(result.stdout).not.toMatch(/419430400/);
     expect(result.exitCode).not.toBe(0);
-  }, 120_000);
+  });
 
-  it("kills a run at its wall-time cap and says so", async () => {
+  it("kills a run at its wall-time cap and says so", { timeout: 120_000 }, async () => {
     const started = Date.now();
     const result = await run("import time\nprint('before', flush=True)\ntime.sleep(120)", { timeoutSeconds: 5 });
 
@@ -227,16 +233,16 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
     expect(result.stdout).toContain("before");
     expect(result.exitCode).toBeNull();
     expect(Date.now() - started).toBeLessThan(90_000);
-  }, 120_000);
+  });
 
-  it("bounds the number of processes", async () => {
+  it("bounds the number of processes", { timeout: 120_000 }, async () => {
     const result = await run(
       `import subprocess; subprocess.run(['sh','-c','i=0; while [ $i -lt ${SANDBOX_PIDS_LIMIT + 200} ]; do sleep 5 & i=$((i+1)); done; echo spawned'],capture_output=True,text=True,timeout=20)`
     );
     expect(result.stdout).not.toContain("spawned");
-  }, 120_000);
+  });
 
-  it("removes the container, so nothing is left holding a tmpfs", async () => {
+  it("removes the container, so nothing is left holding a tmpfs", { timeout: 120_000 }, async () => {
     await run("print('done')");
     // `docker ps -a` over the whole daemon rather than a recorded id, because
     // the property is "none are left", and a leak would most likely be a
@@ -245,12 +251,12 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
       encoding: "utf8"
     }).trim();
     expect(listed).toBe("");
-  }, 120_000);
+  });
 
-  it("runs as a non-root user", async () => {
+  it("runs as a non-root user", { timeout: 120_000 }, async () => {
     const result = await run("import os; print(os.getuid())");
     expect(result.stdout.trim()).not.toBe("0");
-  }, 120_000);
+  });
 });
 
 // #219's acceptance, against real containers on real networks. Nothing here is
@@ -262,7 +268,7 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
 // pass every denial assertion below, and the suite's standing rule is that a
 // "reached nothing" claim is worth nothing without proof the surface reaches
 // something.
-describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
+describe("a sandbox with an egress grant", { skip: !socketPresent }, () => {
   // Docker's default bridge, which has a route out. In a deployment this is the
   // compose file's `sandbox-egress`; here it is the network that exists on any
   // host running these tests.
@@ -294,7 +300,7 @@ describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
         timeout: 900_000
       });
     }
-  }, 900_000);
+  }, { timeout: 900_000 });
 
   const withEgress = (
     code: string,
@@ -325,14 +331,14 @@ describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
     `import urllib.request
 print(urllib.request.urlopen("https://${host}/", timeout=25).status)`;
 
-  it("reaches a host the sheet allows", async () => {
+  it("reaches a host the sheet allows", { timeout: 180_000 }, async () => {
     const result = await withEgress(FETCH("example.com"), ["example.com"]);
 
     expect(result.outcome).toBe("completed");
     expect(result.stdout.trim()).toBe("200");
-  }, 180_000);
+  });
 
-  it("is denied a host the sheet does not allow, and the run ends", async () => {
+  it("is denied a host the sheet does not allow, and the run ends", { timeout: 180_000 }, async () => {
     const result = await withEgress(
       `${FETCH("example.org")}
 print("kept going")`,
@@ -344,26 +350,30 @@ print("kept going")`,
     // Terminal, not best-effort (#393): the program does not get to carry on
     // after the denial and print its next line.
     expect(result.stdout).not.toContain("kept going");
-  }, 180_000);
+  });
 
-  it("has no route out except the hop, so ignoring the proxy reaches nothing", async () => {
-    // Dials an address directly, with no proxy involved. This is the case that
-    // proves enforcement is topological rather than a convention the code could
-    // decline to follow: there is no default route on the per-run network.
-    const result = await withEgress(
-      "import socket; s=socket.socket(); s.settimeout(10); s.connect(('93.184.215.14',443)); print('reached')",
-      ["example.com"]
-    );
+  it(
+    "has no route out except the hop, so ignoring the proxy reaches nothing",
+    { timeout: 180_000 },
+    async () => {
+        // Dials an address directly, with no proxy involved. This is the case that
+        // proves enforcement is topological rather than a convention the code could
+        // decline to follow: there is no default route on the per-run network.
+        const result = await withEgress(
+          "import socket; s=socket.socket(); s.settimeout(10); s.connect(('93.184.215.14',443)); print('reached')",
+          ["example.com"]
+        );
 
-    expect(result.stdout).not.toContain("reached");
-    expect(result.exitCode).not.toBe(0);
-  }, 180_000);
+        expect(result.stdout).not.toContain("reached");
+        expect(result.exitCode).not.toBe(0);
+      }
+  );
 
-  it("cannot reach the metadata address even when the sheet lists it", async () => {
+  it("cannot reach the metadata address even when the sheet lists it", { timeout: 180_000 }, async () => {
     const result = await withEgress(FETCH("169.254.169.254"), ["169.254.169.254"]);
     expect(result.outcome).toBe("egress_denied");
     expect(result.deniedHost).toBe("169.254.169.254");
-  }, 180_000);
+  });
 
   // `noexec` on the workdir cannot dlopen a shared object, which rules out every
   // native Python wheel — and Docker adds `noexec` unless you ask for the
@@ -374,7 +384,7 @@ print("kept going")`,
   // than a hand-rolled binary, because what is being protected is the thing
   // people actually reach for — and `pypi.org` plus `files.pythonhosted.org` is
   // the whole allowlist that takes, which is the recipe the docs give.
-  it("installs a package and loads its native extension", async () => {
+  it("installs a package and loads its native extension", { timeout: 900_000 }, async () => {
     const result = await withEgress(
       [
         "import subprocess, sys",
@@ -392,9 +402,9 @@ print("kept going")`,
     // The assertion that fails the moment `exec` leaves the mount: numpy
     // installs either way and imports only with it.
     expect(result.stdout).toContain("native 10");
-  }, 900_000);
+  });
 
-  it("leaves no container and no network behind", async () => {
+  it("leaves no container and no network behind", { timeout: 180_000 }, async () => {
     await withEgress(FETCH("example.com"), ["example.com"]);
 
     const networks = execFileSync("docker", ["network", "ls", "--filter", "name=libero-sandbox-", "--format", "{{.Name}}"], {
@@ -408,5 +418,5 @@ print("kept going")`,
     // clean up, which is worse than a leaked container.
     expect(networks).toBe("");
     expect(containers).toBe("");
-  }, 180_000);
+  });
 });

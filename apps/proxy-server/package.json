@@ -4,7 +4,9 @@
   "private": true,
   "description": "The tool-proxy process: composes @getlibero/proxy, listens only on localhost/private network with mTLS between services.",
   "license": "MIT",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,13 +18,15 @@
     "vault": "node dist/vault.js",
     "budget": "node dist/budget.js",
     "audit": "node dist/audit.js",
-    "test": "vitest run --exclude '**/dist/**'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@getlibero/proxy": "workspace:*",
     "@getlibero/schema": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@getlibero/test-kit": "workspace:*",
+    "@types/node": "^24.13.3",
+    "expect": "^30.4.1"
   }
 }

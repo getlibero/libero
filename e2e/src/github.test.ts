@@ -26,7 +26,8 @@
 // rig, and the catalog is cached per upstream for five minutes, so cases sharing
 // a rig would be coupled through two things neither of them names.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY_CREDENTIAL,
   CHANNEL,
@@ -152,14 +153,15 @@ function describeTheCallCompletes(): void {
         says("Two are open.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "completes a permitted call against a legacy, session-bearing, SSE-framed upstream",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -232,9 +234,7 @@ function describeTheCallCompletes(): void {
       });
 
       expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // Acceptance 2: the same call from a channel whose sheet omits the server is
@@ -264,14 +264,15 @@ function describeTheSheetlessChannelIsRefused(): void {
         rigOf(rig).channelsRoot.remove(CHANNEL);
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "refuses the same call from a channel whose sheet no longer names the server",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -300,9 +301,7 @@ function describeTheSheetlessChannelIsRefused(): void {
       // Relayed rather than fatal: the task answered the thread.
       expect(JSON.stringify(model.seen[1]?.messages)).toContain("no team sheet");
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // Acceptance 3: the credential appears in no tool result, log, or error visible
@@ -324,14 +323,15 @@ function describeTheCredentialDoesNotLeak(): void {
         says("Here is what came back.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "keeps the credential off every agent-visible surface when the upstream reflects it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, surfaces } = rigOf(rig);
 
@@ -351,7 +351,5 @@ function describeTheCredentialDoesNotLeak(): void {
       expect(reflected).toBeGreaterThan(0);
 
       expectNoCanary(surfaces());
-    },
-    CASE_MS
-  );
+    });
 }

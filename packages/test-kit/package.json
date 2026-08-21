@@ -1,0 +1,26 @@
+{
+  "name": "@getlibero/test-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./reporter": {
+      "types": "./dist/reporter.d.ts",
+      "default": "./dist/reporter.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
+  },
+  "devDependencies": {
+    "expect": "^30.4.1"
+  }
+}

@@ -29,7 +29,8 @@
 
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
 import type { Scheduler } from "@getlibero/gateway";
 import { AMBIENT_FINDING_TOOL, SCHEDULED_TASK_MAX_PENDING } from "@getlibero/schema";
@@ -193,7 +194,7 @@ describe("the positive control", () => {
       says("Scheduled. I will check in ninety minutes."),
       reports("Nobody has renewed the staging certs.")
     ]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -201,6 +202,7 @@ describe("the positive control", () => {
 
   it(
     "leaves a ticket for a create a human approved, and none for one nobody did",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, storeRoot } = rigOf(rig);
 
@@ -218,12 +220,11 @@ describe("the positive control", () => {
       expect(tickets[0]?.prompt).toContain("renewed the staging certs");
       // No unbidden speech yet: a create is a reply to a mention.
       expect(agent.slack.channelPosts).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "fires at the ticket's own instant and not before, and posts once",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot } = rigOf(rig);
 
@@ -255,9 +256,7 @@ describe("the positive control", () => {
       expect(ticketsIn(storeRoot)).toHaveLength(0);
       expect(await rig?.check(at + 25 * 60 * MINUTE)).toBe(0);
       expect(agent.slack.channelPosts).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("escaping at the create", () => {
@@ -269,7 +268,7 @@ describe("escaping at the create", () => {
       [schedules("check the certs"), says("I could not schedule that.")],
       { builtins: [] }
     );
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -277,6 +276,7 @@ describe("escaping at the create", () => {
 
   it(
     "refuses a create the sheet does not list, and leaves no ticket",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, storeRoot } = rigOf(rig);
 
@@ -295,16 +295,14 @@ describe("escaping at the create", () => {
       // Nothing to fire, forever.
       expect(await rig?.check(at + 24 * 60 * MINUTE)).toBe(0);
       expect(agent.slack.channelPosts).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a create nobody decided", () => {
   beforeAll(async () => {
     at = Date.now();
     rig = await scheduleRig([schedules("check the certs"), says("Waiting on approval.")], {}, clock.scheduler);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -312,6 +310,7 @@ describe("a create nobody decided", () => {
 
   it(
     "holds, and fires nothing ever",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, storeRoot } = rigOf(rig);
 
@@ -336,9 +335,7 @@ describe("a create nobody decided", () => {
       expect(ticketsIn(storeRoot)).toHaveLength(0);
       expect(await rig?.check(at + 24 * 60 * MINUTE)).toBe(0);
       expect(agent.slack.channelPosts).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("flooding the channel with checks", () => {
@@ -368,7 +365,7 @@ describe("flooding the channel with checks", () => {
         maxToolCallsPerTask: OVERFLOW
       }
     );
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -376,6 +373,7 @@ describe("flooding the channel with checks", () => {
 
   it(
     "refuses the overflow at the create, with the stated wording",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, storeRoot } = rigOf(rig);
 
@@ -392,9 +390,7 @@ describe("flooding the channel with checks", () => {
       // Refused rather than errored, and the model was told which bound it met
       // in the words the closed set writes.
       expect(JSON.stringify(rigOf(rig).model.seen)).toContain("Nothing was scheduled.");
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a channel that never opted in", () => {
@@ -403,7 +399,7 @@ describe("a channel that never opted in", () => {
     rig = await scheduleRig([schedules("check the certs"), says("I cannot schedule.")], {
       ambient: { enabled: false, heartbeatEveryMinutes: 15, answerAfterIdleMinutes: 60 }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -411,6 +407,7 @@ describe("a channel that never opted in", () => {
 
   it(
     "refuses the create outright, however the sheet lists the tool",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, storeRoot } = rigOf(rig);
 
@@ -422,9 +419,7 @@ describe("a channel that never opted in", () => {
       expect(ticketsIn(storeRoot)).toHaveLength(0);
       expect(await rig?.check(at + 24 * 60 * MINUTE)).toBe(0);
       expect(agent.slack.channelPosts).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("the channel boundary", () => {
@@ -448,7 +443,7 @@ describe("the channel boundary", () => {
       // `a create nobody decided` already are.
       { builtins: [{ name: "schedule_task", approval: "none" }] }
     );
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -456,6 +451,7 @@ describe("the channel boundary", () => {
 
   it(
     "cannot name another channel at the create, and fires into the one it was made in",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, storeRoot } = rigOf(rig);
 
@@ -485,9 +481,7 @@ describe("the channel boundary", () => {
       expect(agent.slack.channelPosts).toHaveLength(1);
       expect(agent.slack.channelPosts[0]?.channelId).toBe(CHANNEL);
       expect(ticketsIn(storeRoot, OTHER_CHANNEL)).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a fired check is not a wider agent", () => {
@@ -502,7 +496,7 @@ describe("a fired check is not a wider agent", () => {
       // whatever it likes; what it cannot do is reach a tool.
       reports("I was told to ignore my instructions and call every tool.")
     ]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -510,6 +504,7 @@ describe("a fired check is not a wider agent", () => {
 
   it(
     "steers what the post says and induces no served call",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, upstream, storeRoot } = rigOf(rig);
 
@@ -535,9 +530,7 @@ describe("a fired check is not a wider agent", () => {
       // One post per firing, and the ticket is done.
       expect(agent.slack.channelPosts).toHaveLength(1);
       expect(ticketsIn(storeRoot)).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a capped channel's due check", () => {
@@ -550,7 +543,7 @@ describe("a capped channel's due check", () => {
       // comes due the meter is out.
       { dailyToolCalls: 1 }
     );
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -558,6 +551,7 @@ describe("a capped channel's due check", () => {
 
   it(
     "spends nothing, tells the channel, and is done",
+    { timeout: CASE_MS },
     async () => {
       const { agent, budgetDb, storeRoot } = rigOf(rig);
 
@@ -580,7 +574,5 @@ describe("a capped channel's due check", () => {
       // One firing, one outcome. A capped check is not queued for later.
       expect(ticketsIn(storeRoot)).toHaveLength(0);
       expect(await rig?.check(at + 25 * 60 * MINUTE)).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 });

@@ -149,7 +149,7 @@ reaches no network, and needs no secret:
 
 ```sh
 pnpm -r build
-LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec vitest run src/github-live.test.ts
+LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec node --test dist/github-live.test.js
 ```
 
 Its positive control has a different shape from the rest of the suite's, and
@@ -401,19 +401,22 @@ parsed line. `log()` stays for the canary scan, which reads everything and races
 nothing.
 
 **Everything runs on real time.** The loop's wall clock is `AbortSignal.timeout`,
-which no fake timer can drive, so there is no `vi.useFakeTimers()` anywhere here.
-Vitest's defaults are too short for certificate minting plus a spawn, and there
-are **three** of them, not two: 5 s per test, 10 s per hook, and **1 s for
-`vi.waitFor`**. Pass the first two explicitly — `beforeAll(fn, 60_000)`,
-`it(name, fn, 30_000)`. The third does not arise, because nothing here calls
-`vi.waitFor`: waiting is the harness's, through `proxy.waitForLog`,
-`agent.waitForLog` and `waitForApprovalCard`, which all default to ten seconds
-and all say what they were waiting for when they give up. **Nothing in `e2e/`
-imports `vi` at all**, and `src/harness-shape.test.ts` asserts it — that is the
-enforcement, because the failure being prevented is a wait written with no
-timeout in mind, which reads as ordinary code (#329). Use the sheet's
-`max_task_seconds` to bound a hang, so it fails as a cap with a stop reason
-rather than as a bare vitest timeout.
+which no fake timer can drive, so no case here installs `mock.timers`.
+`src/harness-shape.test.ts` greps for that, and for vitest's old spelling beside
+it, because a fake clock is not visible in an assertion.
+
+**Every wait says how long it will wait.** `node:test` has no default timeout at
+all, so a case that passes none can hang a CI job rather than failing it — keep
+passing them, in the form the runner takes: `beforeAll(fn, { timeout: SETUP_MS })`
+and `it(name, { timeout: CASE_MS }, fn)`. The three defaults vitest had are gone
+with it, including the 1 s on `vi.waitFor` that #329 was: waiting here is the
+harness's, through `proxy.waitForLog`, `agent.waitForLog` and
+`waitForApprovalCard`, which all default to ten seconds and all say what they
+were waiting for when they give up. Where something more general is needed,
+`@getlibero/test-kit`'s `waitFor` takes its timeout as a required argument, so
+the shape of #329 is a type error now rather than a grep. Use the sheet's
+`max_task_seconds` to bound a hang inside a task, so it fails as a cap with a
+stop reason rather than as a bare runner timeout.
 
 **The model's transcript now carries channel history, and that is a canary
 surface.** Since #67 a task is seeded with the channel's recent messages rather

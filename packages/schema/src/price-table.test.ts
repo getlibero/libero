@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { ModelId } from "./names.js";
 import { parsePriceTable } from "./parse-price-table.js";
 import {

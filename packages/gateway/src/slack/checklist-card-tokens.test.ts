@@ -8,7 +8,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { renderChecklistCard } from "./checklist-card.js";
 import type { ChecklistCardStatus } from "./checklist-card.js";
 

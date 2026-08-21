@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { MESSAGE_STORE_SCHEMA_VERSION, openMessageStore } from "@getlibero/memory";
 import type { MessageStore } from "@getlibero/memory";
 import {
@@ -168,7 +170,7 @@ describe("what the model may send", () => {
     expect(text).not.toContain("another channel");
   });
 
-  it.each([
+  each([
     ["no query", {}],
     ["an empty query", { query: "" }],
     ["a non-string query", { query: 7 }],
@@ -221,12 +223,13 @@ describe("the channel's result bound", () => {
     expect(text).toContain("(1 more match omitted");
   });
 
-  it("stays inside the bound rather than exceeding it to report staying inside it", () => {
-    for (const maxResultChars of [40, 80, 120, 200, 300]) {
+  each([40, 80, 120, 200, 300])(
+    "stays inside a bound of %i rather than exceeding it to report staying inside it",
+    maxResultChars => {
       const text = textOf(search({ query: "vault" }, { maxResultChars }));
-      expect(text.length, `bound ${maxResultChars}`).toBeLessThanOrEqual(maxResultChars);
+      expect(text.length).toBeLessThanOrEqual(maxResultChars);
     }
-  });
+  );
 
   // One message longer than the whole bound is the only way nothing fits, and
   // answering with the notice alone would be a search that found something and
@@ -432,7 +435,7 @@ describe("schedule_task", () => {
   // an error naming the key rather than a field quietly ignored — and `channel`
   // is the one that matters: it cannot reach the store this call opens, because
   // that came off the client certificate.
-  it.each(["channel", "id", "dueAt", "task"])("rejects %s as an unknown key", key => {
+  each(["channel", "id", "dueAt", "task"])("rejects %s as an unknown key", key => {
     const dispatch = create({ prompt: "check", due_in_minutes: 60, [key]: "C0OTHER" });
 
     expect(dispatch.outcome).toBe("ran");

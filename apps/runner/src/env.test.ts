@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   clientPinFromEnv,
   dockerSocketFromEnv,
@@ -61,7 +63,7 @@ describe("the sandbox command", () => {
     ]);
   });
 
-  it.each([["notjson"], ["{}"], ["[]"], ['["ok",""]'], ['["ok",3]']])("refuses %s", raw => {
+  each([["notjson"], ["{}"], ["[]"], ['["ok",""]'], ['["ok",3]']])("refuses %s", raw => {
     expect(() => sandboxCommandFromEnv({ RUNNER_SANDBOX_COMMAND: raw })).toThrow();
   });
 });
@@ -95,7 +97,7 @@ describe("host and port", () => {
     expect(portFromEnv({ RUNNER_PORT: "0" })).toBe(0);
   });
 
-  it.each([["-1"], ["70000"], ["8443.5"], ["http"]])("refuses %s", raw => {
+  each([["-1"], ["70000"], ["8443.5"], ["http"]])("refuses %s", raw => {
     expect(() => portFromEnv({ RUNNER_PORT: raw })).toThrow(/not a port number/);
   });
 });

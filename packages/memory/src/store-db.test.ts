@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   MAX_EMBEDDING_DIMS,
   MESSAGE_STORE_SCHEMA_VERSION,
@@ -128,7 +130,7 @@ describe("the file", () => {
   // The isolation boundary is a path segment, so the character class is the
   // boundary. Each of these would climb out of `root` or collide if it did not
   // throw.
-  it.each([["dot-dot", ".."], ["separator", "a/b"], ["empty", ""], ["leading dot", ".hidden"]])(
+  each([["dot-dot", ".."], ["separator", "a/b"], ["empty", ""], ["leading dot", ".hidden"]])(
     "refuses a channel id that is not a safe path segment: %s",
     (_name, channel) => {
       expect(() => openMessageStore({ channel, root })).toThrow(/not a valid channel id/);
@@ -367,7 +369,7 @@ describe("reading with openMessageReader", () => {
     other.close();
   });
 
-  it.each([["dot-dot", ".."], ["separator", "a/b"], ["empty", ""], ["leading dot", ".hidden"]])(
+  each([["dot-dot", ".."], ["separator", "a/b"], ["empty", ""], ["leading dot", ".hidden"]])(
     "refuses a channel id that is not a safe path segment: %s",
     (_name, channel) => {
       expect(() => openMessageReader({ channel, root })).toThrow(/not a valid channel id/);
@@ -525,7 +527,7 @@ describe("reading recent messages", () => {
     expect(store.recent(10).map(hit => hit.text)).toEqual(["the correction"]);
   });
 
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["not a number", Number.NaN],
@@ -630,7 +632,7 @@ describe("reading one thread", () => {
     expect(store.recentInThread(ROOT_A, 10_000).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
   });
 
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["not a number", Number.NaN],
@@ -694,7 +696,7 @@ describe("searching", () => {
     expect(found("vault", 1)).toEqual(["1.2"]);
   });
 
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["not a number", Number.NaN],
@@ -710,7 +712,7 @@ describe("searching", () => {
 
   // An empty MATCH is a syntax error in FTS5. Answering with no rows is the
   // only sane thing for a caller that typed nothing.
-  it.each([["empty", ""], ["whitespace", "   "]])(
+  each([["empty", ""], ["whitespace", "   "]])(
     "answers nothing for a query with no terms: %s",
     (_name, query) => {
       expect(() => store.search(query, 10)).not.toThrow();
@@ -774,7 +776,7 @@ describe("the query is text and not an expression", () => {
     // The operators `toMatchQuery`'s own table covers, checked again here
     // because a joiner that is itself an FTS5 keyword is the one place these two
     // could diverge in behaviour rather than only in shape.
-    it.each([["AND"], ["OR"], ["NOT"], ["NEAR"]])("still quotes a bare %s", operator => {
+    each([["AND"], ["OR"], ["NOT"], ["NEAR"]])("still quotes a bare %s", operator => {
       expect(toAnyMatchQuery(`vault ${operator}`)).toBe(`"vault" OR "${operator}"`);
     });
   });
@@ -789,7 +791,7 @@ describe("the query is text and not an expression", () => {
       store.append(message("1.3", "we shipped it"));
     });
 
-    it.each([["AND"], ["OR"], ["NOT"], ["NEAR"]])("survives a bare %s", operator => {
+    each([["AND"], ["OR"], ["NOT"], ["NEAR"]])("survives a bare %s", operator => {
       expect(() => store.search(operator, 10)).not.toThrow();
       expect(found(operator)).toEqual([]);
     });
@@ -2063,7 +2065,7 @@ describe("scheduled checks", () => {
 
   // Every outcome is terminal. There is no value that leaves a ticket pending,
   // because that value is what would let a firing consume a check that never ran.
-  it.each(["posted", "silent", "over_budget", "failed"] as const)(
+  each(["posted", "silent", "over_budget", "failed"] as const)(
     "ends a ticket whatever the outcome was: %s",
     outcome => {
       store.scheduleTask(ticket("a"));

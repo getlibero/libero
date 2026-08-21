@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { NO_PRICES, openPriceTableStore } from "./price-table-store.js";
 import type { LogFields, LogLevel, Logger } from "./log.js";
 

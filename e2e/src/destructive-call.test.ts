@@ -30,7 +30,8 @@
 // reads as a refusal and nothing runs — is `harness-knobs.test.ts`. It is not
 // repeated here; the assertion there is the one this file would have written.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import type { Scheduler } from "@getlibero/gateway";
 import {
   CHANNEL,
@@ -136,14 +137,15 @@ function describeClickRunsIt(): void {
       sheets: { [CHANNEL]: SHEET },
       script: [calls("delete_branch", { branch: "topic" }), says("Deleted the branch.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a destructive call waits for a human, and the click is what runs it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -205,9 +207,7 @@ function describeClickRunsIt(): void {
       expect(transcript).toContain("called delete_branch");
       expect(transcript).not.toContain(ticket);
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeDenyStopsIt(): void {
@@ -219,14 +219,15 @@ function describeDenyStopsIt(): void {
       sheets: { [CHANNEL]: SHEET },
       script: [calls("delete_branch", { branch: "topic" }), says("I was not allowed to.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a denied call turns the card red and never reaches the upstream",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -257,9 +258,7 @@ function describeDenyStopsIt(): void {
       // Relayed, so the task answers the thread rather than dying on a refusal.
       expect(JSON.stringify(model.seen)).toContain("A human declined");
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeAbandonedWait(): void {
@@ -273,14 +272,15 @@ function describeAbandonedWait(): void {
       scheduler: clock.scheduler,
       script: [calls("delete_branch", { branch: "topic" }), says("Nobody answered.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "an agent that gives up waiting cannot turn an unclicked ticket into a call",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -306,9 +306,7 @@ function describeAbandonedWait(): void {
 
       expect(JSON.stringify(model.seen)).toContain("has not been decided");
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeApproveThenMutate(): void {
@@ -322,14 +320,15 @@ function describeApproveThenMutate(): void {
       resubmission: { arguments: { branch: "main" } },
       script: [calls("delete_branch", { branch: "topic" }), says("That did not work.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "an approval cannot be spent on arguments the human never saw",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -365,9 +364,7 @@ function describeApproveThenMutate(): void {
       // is exactly the thing worth being able to see.
       expect(JSON.stringify(model.seen)).toContain("was not for");
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeModelWritesItsOwnApproval(): void {
@@ -392,14 +389,15 @@ function describeModelWritesItsOwnApproval(): void {
         says("I could not do that.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a model that writes its own approval decides nothing",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -432,9 +430,7 @@ function describeModelWritesItsOwnApproval(): void {
       // never reached it — there is no tool that decides, so it had no way to.
       expect(upstream.callsTo("tools/call")).toHaveLength(0);
       expect(agent.slack.posted).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeHostileArgumentsOnTheCard(): void {
@@ -458,14 +454,15 @@ function describeHostileArgumentsOnTheCard(): void {
       sheets: { [CHANNEL]: SHEET },
       script: [calls("delete_branch", HOSTILE), says("I was not allowed to.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "hostile arguments render on the card without pinging or forging anyone",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb } = rigOf(rig);
 
@@ -508,7 +505,5 @@ function describeHostileArgumentsOnTheCard(): void {
       expect(shown).toContain("force: true");
       expect(shown).toContain(`<@${APPROVER}>`);
       expect(upstream.callsTo("tools/call")).toHaveLength(0);
-    },
-    CASE_MS
-  );
+    });
 }

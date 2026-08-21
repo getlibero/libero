@@ -10,7 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { SKILL_BODY_MAX_CHARS, SKILL_DESCRIPTION_MAX_CHARS } from "@getlibero/schema";
 import type { SkillOp, SkillOpResult } from "@getlibero/schema";
 import { openSkillFiles, planSkillOp } from "./skill-file.js";
@@ -84,7 +86,7 @@ describe("opening", () => {
   // The isolation boundary is a path segment, so the character class is the
   // boundary. Each of these would climb out of `root` or collide if it did not
   // throw.
-  it.each([
+  each([
     ["a parent traversal", ".."],
     ["a separator", "a/b"],
     ["empty", ""],
@@ -100,7 +102,7 @@ describe("opening", () => {
   // A channel that may hold no skills is one where every legal operation is
   // unwritable — the "parses, then cannot serve a call" class, caught at open
   // rather than as a model retrying an operation that can never succeed.
-  it.each([
+  each([
     ["zero", 0],
     ["negative", -1],
     ["a fraction", 2.5]
@@ -154,7 +156,7 @@ describe("the directory listing", () => {
   // The filter is a name rule and not a suffix rule, which is what keeps the
   // temporary file `replaceFileAtomically` plants mid-write out of the listing —
   // along with everything else in the directory that is not a skill.
-  it.each([
+  each([
     ["a capital", "Deploy-Runbook.md"],
     ["an underscore", "deploy_runbook.md"],
     ["a leading dot", ".hidden.md"],
@@ -326,7 +328,7 @@ describe("what an operation may carry", () => {
   // `SkillOp` is a plain type with no zod object, so nothing structurally forces
   // a caller through the schema's parser. These are this module's own
   // preconditions, and a hand-built operation is exactly what they are for.
-  it.each([
+  each([
     ["a parent traversal", ".."],
     ["a separator", "deploy/runbook"],
     ["a leading dot", ".hidden"],
@@ -367,7 +369,7 @@ describe("what an operation may carry", () => {
     expect(existsSync(directory)).toBe(false);
   });
 
-  it.each([
+  each([
     ["an empty description", { description: "" }],
     ["an empty body", { body: "" }]
   ])("refuses %s", (_label, over) => {
@@ -470,7 +472,7 @@ describe("moving a skill's status", () => {
     expect(after.size).toBe(before.size);
   });
 
-  it.each([
+  each([
     ["a name nobody wrote", "never-written"],
     ["a name that could never be a filename", "../escape"]
   ])("answers unusable for %s", (_label, name) => {

@@ -23,17 +23,18 @@
 // ## The gate
 //
 // Two-sided, as `apps/runner/src/sandbox.docker.test.ts` is, and probed
-// synchronously at module load for the reason that file records: `describe.skipIf`
-// is evaluated at collection, before any `beforeAll`, so a flag set in a hook is
-// still false when the decision is made and the suite skips itself in CI as
-// cheerfully as on a laptop.
+// synchronously at module load for the reason that file records: `describe`'s
+// `skip` option is read at collection, before any `beforeAll`, so a flag set in
+// a hook is still false when the decision is made and the suite skips itself in
+// CI as cheerfully as on a laptop.
 //
 //   - No daemon, not CI — skipped, so the rest of the suite runs anywhere.
 //   - No daemon, CI=true — this file fails at import. CI has one, and quietly
 //     reporting green on #396's acceptance is the false comfort the repository's
 //     "a test that encodes a gap" rule exists to forbid.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import { execFileSync } from "node:child_process";
 import {
   CHANNEL,
@@ -205,15 +206,15 @@ const SHEET = (approval?: "none", timeoutSeconds?: number) => ({
   egress: [SINK]
 });
 
-describe.skipIf(!socketPresent)("attacking the sandbox", () => {
+describe("attacking the sandbox", { skip: !socketPresent }, () => {
   beforeAll(() => {
     prepareSandboxFixtures();
     startSink();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(() => {
     stopSink();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   describeReachesTheAllowedHost();
   describeDeniedTheUnlistedHost();
@@ -239,13 +240,13 @@ function describeReachesTheAllowedHost(): void {
       sheets: { [CHANNEL]: SHEET("none") },
       script: [calls("run_code", { code: exfiltrate(SINK, PAYLOAD.allowed) }), says("sent")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("carries the payload to a host the sheet allows", async () => {
+  it("carries the payload to a host the sheet allows", { timeout: CASE_MS }, async () => {
     const { agent, auditDb, budgetDb, model } = rigOf(rig);
     await agent.slack.deliverMention(mention("Ev00000910"));
 
@@ -266,7 +267,7 @@ function describeReachesTheAllowedHost(): void {
     // the listener rather than out of our own result, because a result is this
     // system describing itself.
     expect(await waitForSink(PAYLOAD.allowed)).toContain(PAYLOAD.allowed);
-  }, CASE_MS);
+  });
 }
 
 /** The attack the security page has described in prose since before there was a surface. */
@@ -282,13 +283,13 @@ function describeDeniedTheUnlistedHost(): void {
         says("refused")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("refuses a host the sheet does not list, names it, and ends the run", async () => {
+  it("refuses a host the sheet does not list, names it, and ends the run", { timeout: CASE_MS }, async () => {
     const { agent, auditDb, model } = rigOf(rig);
     await agent.slack.deliverMention(mention("Ev00000911"));
 
@@ -315,7 +316,7 @@ function describeDeniedTheUnlistedHost(): void {
     // next turn from guessing at the cause. What the channel then reads is the
     // model's own sentence, which is why this asserts the result and not the post.
     expect(JSON.stringify(model.seen)).toContain(UNLISTED_HOST);
-  }, CASE_MS);
+  });
 }
 
 /** No `[egress]` block is no network at all, which is a stronger claim than a filtered one. */
@@ -334,23 +335,27 @@ function describeNoBlockIsNoNetwork(): void {
       },
       script: [calls("run_code", { code: exfiltrate(SINK, PAYLOAD.noBlock) }), says("done")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("gives a channel with no egress block no route to the allowed host either", async () => {
-    const { agent, auditDb } = rigOf(rig);
-    await agent.slack.deliverMention(mention("Ev00000912"));
+  it(
+    "gives a channel with no egress block no route to the allowed host either",
+    { timeout: CASE_MS },
+    async () => {
+        const { agent, auditDb } = rigOf(rig);
+        await agent.slack.deliverMention(mention("Ev00000912"));
 
-    // The same code that reached the sink in the first case does not reach it
-    // now, and the only difference is two lines of team sheet.
-    expect(sinkLog()).not.toContain(PAYLOAD.noBlock);
-    // `ran`, not `refused`: nothing was denied by a list, because there was no
-    // list and no network. The program simply failed, which is a normal answer.
-    expect(auditRows(auditDb)[0]).toMatchObject({ tool: "run_code", outcome: "ran" });
-  }, CASE_MS);
+        // The same code that reached the sink in the first case does not reach it
+        // now, and the only difference is two lines of team sheet.
+        expect(sinkLog()).not.toContain(PAYLOAD.noBlock);
+        // `ran`, not `refused`: nothing was denied by a list, because there was no
+        // list and no network. The program simply failed, which is a normal answer.
+        expect(auditRows(auditDb)[0]).toMatchObject({ tool: "run_code", outcome: "ran" });
+      }
+  );
 }
 
 /**
@@ -371,49 +376,53 @@ function describeApproval(): void {
       sheets: { [CHANNEL]: SHEET() },
       script: [calls("run_code", { code: exfiltrate(SINK, PAYLOAD.approval) }), says("declined")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await declined?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("runs no code before the click, and none at all when the card is declined", async () => {
-    const { agent, auditDb } = rigOf(declined);
+  it(
+    "runs no code before the click, and none at all when the card is declined",
+    { timeout: CASE_MS },
+    async () => {
+        const { agent, auditDb } = rigOf(declined);
 
-    const pending = agent.slack.deliverMention(mention("Ev00000913"));
-    const card = await waitForApprovalCard(agent);
+        const pending = agent.slack.deliverMention(mention("Ev00000913"));
+        const card = await waitForApprovalCard(agent);
 
-    expect(card?.card.color).toBe(AMBER);
-    // The load-bearing assertion. The container has not run, so the payload the
-    // code would send is not at the far end — checked against a listener that
-    // demonstrably receives one when a run is allowed.
-    expect(sinkLog()).not.toContain(PAYLOAD.approval);
+        expect(card?.card.color).toBe(AMBER);
+        // The load-bearing assertion. The container has not run, so the payload the
+        // code would send is not at the far end — checked against a listener that
+        // demonstrably receives one when a run is allowed.
+        expect(sinkLog()).not.toContain(PAYLOAD.approval);
 
-    const ticket = auditRows(auditDb).find(row => row.outcome === "held")?.ticket ?? "";
-    expect(ticket).not.toBe("");
+        const ticket = auditRows(auditDb).find(row => row.outcome === "held")?.ticket ?? "";
+        expect(ticket).not.toBe("");
 
-    await agent.slack.deliverDecision({
-      teamId: "T024BE7LD",
-      channelId: CHANNEL,
-      userId: APPROVER,
-      ticketId: ticket,
-      verdict: "deny",
-      messageTs: card?.messageTs ?? "",
-      threadTs: "1758000000.000100"
-    });
-    await pending;
+        await agent.slack.deliverDecision({
+          teamId: "T024BE7LD",
+          channelId: CHANNEL,
+          userId: APPROVER,
+          ticketId: ticket,
+          verdict: "deny",
+          messageTs: card?.messageTs ?? "",
+          threadTs: "1758000000.000100"
+        });
+        await pending;
 
-    // Still nothing, after the decision as before it.
-    expect(sinkLog()).not.toContain(PAYLOAD.approval);
-    // Re-read rather than the object captured before the click: the card is
-    // edited in place, and the value held here is what it looked like then.
-    expect(agent.slack.cardAt(card?.messageTs ?? "")?.color).toBe(RED);
+        // Still nothing, after the decision as before it.
+        expect(sinkLog()).not.toContain(PAYLOAD.approval);
+        // Re-read rather than the object captured before the click: the card is
+        // edited in place, and the value held here is what it looked like then.
+        expect(agent.slack.cardAt(card?.messageTs ?? "")?.color).toBe(RED);
 
-    const rows = auditRows(auditDb);
-    expect(rows.map(row => row.outcome)).toEqual(["held", "denied", "refused"]);
-    expect(rows[1]?.approver).toBe(APPROVER);
-    expect(rows[2]?.refusal_reason).toBe("approval_denied");
-  }, CASE_MS);
+        const rows = auditRows(auditDb);
+        expect(rows.map(row => row.outcome)).toEqual(["held", "denied", "refused"]);
+        expect(rows[1]?.approver).toBe(APPROVER);
+        expect(rows[2]?.refusal_reason).toBe("approval_denied");
+      }
+  );
 }
 
 /** A run that spins past its wall-time cap is killed within it. */
@@ -431,13 +440,13 @@ function describeWallTimeCap(): void {
         says("timed out")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("kills a run at the sheet's cap and still answers", async () => {
+  it("kills a run at the sheet's cap and still answers", { timeout: CASE_MS }, async () => {
     const { agent, auditDb } = rigOf(rig);
     const started = Date.now();
     await agent.slack.deliverMention(mention("Ev00000914"));
@@ -454,5 +463,5 @@ function describeWallTimeCap(): void {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ tool: "run_code", outcome: "ran" });
     expect(rows[0]?.refusal_reason ?? null).toBeNull();
-  }, CASE_MS);
+  });
 }

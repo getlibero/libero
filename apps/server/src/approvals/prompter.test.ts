@@ -8,7 +8,8 @@ import type { HeldToolCall } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger, Scheduler } from "@getlibero/gateway";
 import { createStubSlack } from "@getlibero/gateway";
 import { refusalMessage } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createHeldCallPrompter, type HeldCallPrompterOptions } from "./prompter.js";
 import { createApprovalRegistry } from "./registry.js";
 

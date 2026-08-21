@@ -31,7 +31,8 @@
 // for five minutes, so cases sharing a rig would be coupled through two things
 // neither of them mentions.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY,
   CANARY_CREDENTIAL,
@@ -138,14 +139,15 @@ function describeEchoedIntoTheResult(): void {
       // surface for the scan rather than a fixed string this file wrote.
       script: [calls("list_prs", { repo: "getlibero/libero" }), relays()]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "an upstream echoing the credential in every shape it has is scrubbed on the way back",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, surfaces } = rigOf(rig);
 
@@ -168,9 +170,7 @@ function describeEchoedIntoTheResult(): void {
 
       // Half two.
       expectNoCanary(surfaces());
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeEchoedIntoADescription(): void {
@@ -179,14 +179,15 @@ function describeEchoedIntoADescription(): void {
   beforeAll(async () => {
     rig = await startRig({ script: [calls("list_prs", { repo: "getlibero/libero" }), says("Two are open.")] });
     poisonTheCatalog(rigOf(rig).upstream);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "a credential planted in a tool description is scrubbed before the listing reaches the model",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, surfaces } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -214,9 +215,7 @@ function describeEchoedIntoADescription(): void {
       expect(rows[0]).toMatchObject({ channel: CHANNEL, tool: "list_prs", outcome: "ran" });
 
       expectNoCanary(surfaces());
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeAskedForByName(): void {
@@ -233,14 +232,15 @@ function describeAskedForByName(): void {
         says("I could not retrieve it.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "asking for the credential by name, through every listed tool, substitutes nothing",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb, surfaces } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -278,9 +278,7 @@ function describeAskedForByName(): void {
 
       // Half two.
       expectNoCanary(surfaces());
-    },
-    CASE_MS
-  );
+    });
 }
 
 function describeTheListingPathWithRedactionGutted(): void {
@@ -296,15 +294,16 @@ function describeTheListingPathWithRedactionGutted(): void {
       script: [calls("list_prs", { repo: "getlibero/libero" }), says("Two are open.")]
     });
     poisonTheCatalog(rigOf(rig).upstream);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
     await cleanup?.drain();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "with the proxy's redaction pass gutted, a poisoned description is caught too",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, surfaces } = rigOf(rig);
 
@@ -321,7 +320,5 @@ function describeTheListingPathWithRedactionGutted(): void {
       // without this, "the scan reads the listing too" would be an inference
       // from `surfaces()` rather than something demonstrated.
       expect(() => expectNoCanary(surfaces())).toThrow(/agent-visible surface/);
-    },
-    CASE_MS
-  );
+    });
 }

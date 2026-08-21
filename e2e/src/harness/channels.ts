@@ -59,7 +59,7 @@ export interface SheetSpec {
    * Generous by default, and it has to be: the loop's cap is a real
    * `AbortSignal.timeout` that no fake timer can drive, so this is spent in
    * real seconds. Small enough that a hang fails as a cap with a clear stop
-   * reason rather than as a vitest timeout with none.
+   * reason rather than as a bare runner timeout with none.
    */
   readonly maxTaskSeconds?: number;
   readonly maxToolCallsPerTask?: number;

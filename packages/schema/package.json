@@ -2,22 +2,26 @@
   "name": "@getlibero/schema",
   "version": "0.0.1",
   "private": true,
-  "description": "Zod schemas for Libero: team sheets, audit records, tool calls, approval requests, memory ops, skills. Single source of truth — both services import from here.",
+  "description": "Zod schemas for Libero: team sheets, audit records, tool calls, approval requests, memory ops, skills. Single source of truth \u2014 both services import from here.",
   "license": "MIT",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude '**/dist/**'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
     "zod": "^4.4.3",
     "smol-toml": "^1.7.1"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@getlibero/test-kit": "workspace:*",
+    "@types/node": "^24.13.3",
+    "expect": "^30.4.1"
   }
 }

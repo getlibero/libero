@@ -18,7 +18,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { openSkillFiles } from "./skill-file.js";
 import type { SkillFiles } from "./skill-file.js";
 import { reconcileSkillIndex } from "./skill-store.js";
@@ -501,7 +503,7 @@ describe("the lifecycle clocks", () => {
 
   // `recordSkillUse`'s behaviour, for its reason: a skill deleted between the
   // clock read and the write is gone, which is not an error.
-  it.each([
+  each([
     ["adopting", (name: string) => store.adoptSkillStatus([{ name, status: "stale" }], NOW)],
     ["recording", (name: string) => store.recordSkillStatus([{ name, status: "stale" }])]
   ])("ignores a name the index does not hold when %s", (_label, write) => {

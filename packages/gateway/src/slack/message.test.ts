@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { mentionsApp, toMessage } from "./message.js";
 import type { SlackEnvelope } from "./types.js";
 
@@ -93,7 +95,7 @@ describe("toMessage", () => {
     expect(messageOf(toMessage(envelope())).text).toBe("the deploy went out at four");
   });
 
-  it.each([["thread_broadcast"], ["file_share"]])(
+  each([["thread_broadcast"], ["file_share"]])(
     "records a %s, which is still a person saying something",
     subtype => {
       // Excluded, these leave holes in the transcript #67 reads back: a broadcast
@@ -128,7 +130,7 @@ describe("toMessage", () => {
     );
   });
 
-  it.each([["message_changed"], ["message_deleted"]])(
+  each([["message_changed"], ["message_deleted"]])(
     "reports %s as an edit rather than as an unwanted subtype",
     subtype => {
       // Its own code because it is a handoff rather than a drop: since #177
@@ -141,7 +143,7 @@ describe("toMessage", () => {
     }
   );
 
-  it.each([["channel_join"], ["channel_topic"], ["pinned_item"], ["channel_archive"]])(
+  each([["channel_join"], ["channel_topic"], ["pinned_item"], ["channel_archive"]])(
     "ignores the system event %s",
     subtype => {
       expect(ignoredOf(toMessage(envelope({ subtype })))).toBe("message_subtype");

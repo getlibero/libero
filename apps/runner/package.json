@@ -5,14 +5,20 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude '**/dist/**'",
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@getlibero/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@getlibero/test-kit": "workspace:*",
+    "expect": "^30.4.1"
   }
 }

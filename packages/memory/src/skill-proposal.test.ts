@@ -16,7 +16,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { parseSkillFile, serializeSkillFile } from "@getlibero/schema";
 import type { SkillFile } from "@getlibero/schema";
 import { openSkillProposals, renderMergeProposal } from "./skill-proposal.js";
@@ -82,7 +84,7 @@ afterEach(() => {
 });
 
 describe("opening", () => {
-  it.each([
+  each([
     ["a parent traversal", ".."],
     ["a separator", "a/b"],
     ["empty", ""]

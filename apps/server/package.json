@@ -4,7 +4,9 @@
   "private": true,
   "description": "The gateway + agent process: composes @getlibero/gateway and @getlibero/agent, talks to Slack over Socket Mode. Holds no tool credential.",
   "license": "MIT",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "dist/compose.js",
   "types": "dist/compose.d.ts",
@@ -20,7 +22,7 @@
     "start": "node dist/index.js",
     "tasks": "node dist/tasks.js",
     "rebuild": "node dist/rebuild.js",
-    "test": "vitest run --exclude '**/dist/**'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@getlibero/agent": "workspace:*",
@@ -29,6 +31,8 @@
     "@getlibero/schema": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3"
+    "@getlibero/test-kit": "workspace:*",
+    "@types/node": "^24.13.3",
+    "expect": "^30.4.1"
   }
 }

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   SKILL_TOOLS,
   SkillOpArguments,
@@ -35,7 +37,7 @@ describe("the skill tool definitions", () => {
     expect(Object.keys(SKILL_TOOLS).sort()).toEqual([...SkillToolName.options].sort());
   });
 
-  it.each(Object.entries(SKILL_TOOLS))(
+  each(Object.entries(SKILL_TOOLS))(
     "publishes %s within the schema's bounds",
     (_tool, definition) => {
       expect(definition.description.length).toBeLessThanOrEqual(MAX_TOOL_DESCRIPTION);
@@ -47,7 +49,7 @@ describe("the skill tool definitions", () => {
   // them. The directory is resolved from the channel the session already is; an
   // argument that could name one would be the isolation boundary in the hands of
   // the model.
-  it.each(SkillToolName.options)("gives %s no way to name a file or a channel", tool => {
+  each(SkillToolName.options)("gives %s no way to name a file or a channel", tool => {
     const keys = Object.keys(published(tool).properties);
     for (const forbidden of ["path", "file", "filename", "channel", "root", "directory"]) {
       expect(keys).not.toContain(forbidden);
@@ -57,7 +59,7 @@ describe("the skill tool definitions", () => {
   // The split ./skill.ts argues for, enforced rather than conventional: a model
   // cannot stamp a date, set a status, or move a clock, because there is no
   // field for any of it.
-  it.each(SkillToolName.options)("gives %s no way to write a clock or a status", tool => {
+  each(SkillToolName.options)("gives %s no way to write a clock or a status", tool => {
     const keys = Object.keys(published(tool).properties);
     expect(keys).toEqual(["name", "description", "body"]);
     for (const forbidden of ["uses", "created", "status", "last_used"]) {
@@ -85,7 +87,7 @@ describe("the skill tool definitions", () => {
   // Two spellings of one contract — a JSON Schema the model reads and a zod
   // parser the store's caller enforces — so they are checked against each other
   // rather than trusted to stay in step.
-  it.each(SkillToolName.options)("declares on %s exactly the keys the parser accepts", tool => {
+  each(SkillToolName.options)("declares on %s exactly the keys the parser accepts", tool => {
     const schema = published(tool);
     expect(Object.keys(schema.properties)).toEqual(["name", "description", "body"]);
     expect(schema.required).toEqual(["name", "description", "body"]);
@@ -94,7 +96,7 @@ describe("the skill tool definitions", () => {
     expect(schema.additionalProperties).toBe(false);
   });
 
-  it.each(SkillToolName.options)("states on %s the same bounds the parser enforces", tool => {
+  each(SkillToolName.options)("states on %s the same bounds the parser enforces", tool => {
     const schema = published(tool);
     expect(schema.properties.description?.maxLength).toBe(SKILL_DESCRIPTION_MAX_CHARS);
     expect(schema.properties.description?.minLength).toBe(1);
@@ -110,13 +112,13 @@ describe("a skill operation's arguments", () => {
     expect(SkillOpArguments.safeParse(args()).success).toBe(true);
   });
 
-  it.each([["name"], ["description"], ["body"]])("requires %s", field => {
+  each([["name"], ["description"], ["body"]])("requires %s", field => {
     const without: Record<string, unknown> = args();
     delete without[field];
     expect(SkillOpArguments.safeParse(without).success).toBe(false);
   });
 
-  it.each([
+  each([
     ["a path", { path: "../other/skills/x.md" }],
     ["a channel", { channel: "C123" }],
     ["a status", { status: "archived" }],
@@ -153,12 +155,12 @@ describe("a skill operation's arguments", () => {
 });
 
 describe("parsing an operation", () => {
-  it.each(SkillToolName.options)("turns %s into a tagged operation", tool => {
+  each(SkillToolName.options)("turns %s into a tagged operation", tool => {
     const parsed = parseSkillOp(tool, args());
     expect(parsed.ok && parsed.op).toEqual({ op: tool, ...ARGS });
   });
 
-  it.each([
+  each([
     ["a memory operation", "memory_append"],
     ["a proxied tool", "merge_pull_request"],
     ["a built-in", "search_channel_history"],
@@ -241,7 +243,7 @@ describe("what an operation is told about itself", () => {
     );
   });
 
-  it.each(failures)("says nothing was written for $reason", failure => {
+  each(failures)("says nothing was written for $reason", failure => {
     expect(skillOpMessage(failure)).toContain("Nothing was written.");
   });
 
@@ -279,7 +281,7 @@ describe("what an operation is told about itself", () => {
     );
   });
 
-  it.each([...failures, { outcome: "written", skills: 1, limit: 100 } as const])(
+  each([...failures, { outcome: "written", skills: 1, limit: 100 } as const])(
     "keeps $reason$outcome free of exclamation and emoji",
     result => {
       expect(skillOpMessage(result)).not.toMatch(/[!😀-🿿]/u);

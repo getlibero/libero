@@ -7,7 +7,8 @@
 // and the deadline it carries on its own behalf.
 
 import { SpendReport } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import type { TokenUsage } from "../completion/types.js";
 import { createProxySpendClient } from "./spend.js";
 import { ProxyClientError, type ProxyRequest, type ProxyResponse, type ProxyTransport } from "./transport.js";

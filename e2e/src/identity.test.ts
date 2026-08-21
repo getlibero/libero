@@ -28,7 +28,8 @@
 // cases are coupled through nothing but the audit and upstream cursors they
 // each take for themselves.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CANARY,
   CHANNEL,
@@ -79,14 +80,15 @@ beforeAll(async () => {
   });
   rig.channelsRoot.writeRaw(BROKEN_CHANNEL, "this is not a team sheet [[[\n");
   client = rawClient({ url: rig.proxy.url, certs: rig.certs });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "serves a permitted call over a client of its own, so the refusals below mean something",
+  { timeout: CASE_MS },
   async () => {
     const { upstream, auditDb, budgetDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -113,12 +115,11 @@ it(
       { channel: CHANNEL, server: "github", tool: "list_prs", outcome: "ran" }
     ]);
     expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(1);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "ignores a channel asserted in a header and in the query string",
+  { timeout: CASE_MS },
   async () => {
     const { upstream, auditDb, budgetDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -153,12 +154,11 @@ it(
     // could spend another channel's cap without ever appearing in its rows.
     expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(before + 1);
     expect(spendFor(budgetDb, OTHER_CHANNEL).toolCalls).toBe(0);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "refuses a body that asserts a channel rather than ignoring the field",
+  { timeout: CASE_MS },
   async () => {
     const { upstream, auditDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -189,12 +189,11 @@ it(
     // would be counted.
     expect(auditRows(auditDb, since)).toHaveLength(0);
     expect(upstream.received).toHaveLength(served);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "refuses a certificate that is not a channel principal, and says so only in its own log",
+  { timeout: CASE_MS },
   async () => {
     const { proxy, auditDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -224,12 +223,11 @@ it(
     ).resolves.toMatchObject({ commonName: "agent" });
 
     expect(auditRows(auditDb, since)).toHaveLength(0);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "denies a certificate for a channel that was never provisioned, under its own name",
+  { timeout: CASE_MS },
   async () => {
     const { upstream, auditDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -259,12 +257,11 @@ it(
       { channel: OTHER_CHANNEL, tool: "list_prs", outcome: "refused", refusal_reason: "no_team_sheet" }
     ]);
     expect(upstream.received).toHaveLength(served);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "denies a channel whose sheet has never parsed, and says which mistake it was",
+  { timeout: CASE_MS },
   async () => {
     const { upstream, auditDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -291,12 +288,11 @@ it(
       { channel: BROKEN_CHANNEL, outcome: "refused", refusal_reason: "team_sheet_unreadable" }
     ]);
     expect(upstream.received).toHaveLength(served);
-  },
-  CASE_MS
-);
+  });
 
 it(
   "finds nothing on Object.prototype for a tool named constructor",
+  { timeout: CASE_MS },
   async () => {
     const { upstream, auditDb } = rigOf(rig);
     const since = lastAuditId(auditDb);
@@ -322,6 +318,4 @@ it(
       { channel: CHANNEL, tool: "constructor", outcome: "refused", refusal_reason: "tool_not_allowed" }
     ]);
     expect(upstream.received).toHaveLength(served);
-  },
-  CASE_MS
-);
+  });

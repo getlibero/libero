@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { ToolCall, ToolCallResponse, resolveToolCall } from "./tool-call.js";
 
 const wire = {
@@ -118,12 +120,13 @@ describe("the wire tool call", () => {
   // leading underscore is not in the identifier's first character class — so
   // the layer that refuses them is this one, and a reader looking for
   // `__proto__` beside `constructor` should find the answer here.
-  it("cannot express the prototype names that do not start with a letter", () => {
-    for (const name of ["__proto__", "_constructor", "__defineGetter__"]) {
-      expect(ToolCall.safeParse({ ...wire, server: name }).success, name).toBe(false);
-      expect(ToolCall.safeParse({ ...wire, tool: name }).success, name).toBe(false);
+  each(["__proto__", "_constructor", "__defineGetter__"])(
+    "cannot express the prototype name %s, which does not start with a letter",
+    name => {
+      expect(ToolCall.safeParse({ ...wire, server: name }).success).toBe(false);
+      expect(ToolCall.safeParse({ ...wire, tool: name }).success).toBe(false);
     }
-  });
+  );
 });
 
 describe("resolving a call to a channel", () => {

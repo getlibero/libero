@@ -224,11 +224,14 @@ export function approvalCardOf(
  * row, and the tool client posts the card. Reading `approvalCardOf` before that
  * lands is a race, so every case that needs the card waits here first.
  *
- * **The bound is the harness's, and it is not vitest's.** This replaced six
+ * **The bound is the harness's, and it is chosen here.** This replaced six
  * `vi.waitFor` calls that all took vitest's 1000 ms default, in files whose
  * `SETUP_MS` is a minute because the same rig mints certificates and spawns a
  * process — two numbers three orders of magnitude apart, and only one of them
  * chosen. One of the six failed a CI run on nothing but a loaded runner (#329).
+ * The runner that supplied that default is gone (#202), and its replacement in
+ * `@getlibero/test-kit` takes the timeout as a required argument — so the shape
+ * of that failure is now unwritable rather than merely absent.
  * Ten seconds is `waitForLog`'s default above, for the same reason: a wait that
  * resolves the moment its condition holds costs nothing when things are quick,
  * so the number only has to be larger than the worst honest case.

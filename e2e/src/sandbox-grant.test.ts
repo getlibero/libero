@@ -17,7 +17,8 @@
 // One rig per case, per unlisted-tool.test.ts: `model.seen`'s length is the
 // script cursor for a rig's whole life.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import { CHANNEL, auditRows, calls, rigOf, says, spendFor, startRig } from "./harness/index.js";
 import type { Rig } from "./harness/index.js";
 
@@ -48,13 +49,13 @@ function describeNotOffered(): void {
       sheets: { [CHANNEL]: { tools: [{ name: "list_prs", approval: "none" }] } },
       script: [says("nothing to do")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("never offers run_code to a channel whose sheet omits it", async () => {
+  it("never offers run_code to a channel whose sheet omits it", { timeout: CASE_MS }, async () => {
     const { agent, model, auditDb, budgetDb } = rigOf(rig);
     await agent.slack.deliverMention(mention("Ev00000900"));
 
@@ -67,7 +68,7 @@ function describeNotOffered(): void {
 
     expect(auditRows(auditDb)).toHaveLength(0);
     expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(0);
-  }, CASE_MS);
+  });
 }
 
 function describeRefusedWhenAsked(): void {
@@ -81,26 +82,30 @@ function describeRefusedWhenAsked(): void {
       // what it was offered, and the refusal has to hold without its cooperation.
       script: [calls("run_code", { code: "print(1)" }), says("refused")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("refuses a run_code the sheet never granted, before the proxy is dialled", async () => {
-    const { agent, auditDb, budgetDb, upstream } = rigOf(rig);
-    await agent.slack.deliverMention(mention("Ev00000901"));
+  it(
+    "refuses a run_code the sheet never granted, before the proxy is dialled",
+    { timeout: CASE_MS },
+    async () => {
+        const { agent, auditDb, budgetDb, upstream } = rigOf(rig);
+        await agent.slack.deliverMention(mention("Ev00000901"));
 
-    await agent.waitForLog({ event: "tool_not_permitted", channel: CHANNEL }, 1);
+        await agent.waitForLog({ event: "tool_not_permitted", channel: CHANNEL }, 1);
 
-    // No row, and that is right rather than a gap: the proxy never saw this
-    // call, and a row for a call it did not decide would be a record of
-    // something it did not observe.
-    expect(auditRows(auditDb)).toHaveLength(0);
-    expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(0);
-    // And nothing was sent anywhere at all.
-    expect(upstream.callsTo("tools/call")).toHaveLength(0);
-  }, CASE_MS);
+        // No row, and that is right rather than a gap: the proxy never saw this
+        // call, and a row for a call it did not decide would be a record of
+        // something it did not observe.
+        expect(auditRows(auditDb)).toHaveLength(0);
+        expect(spendFor(budgetDb, CHANNEL).toolCalls).toBe(0);
+        // And nothing was sent anywhere at all.
+        expect(upstream.callsTo("tools/call")).toHaveLength(0);
+      }
+  );
 }
 
 /**
@@ -127,26 +132,30 @@ function describeNoRunnerIsNotARefusal(): void {
       },
       script: [calls("run_code", { code: "print(1)" }), says("done")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
-  it("answers a granted run_code not_implemented when no runner is composed", async () => {
-    const { agent, model, auditDb } = rigOf(rig);
-    await agent.slack.deliverMention(mention("Ev00000902"));
+  it(
+    "answers a granted run_code not_implemented when no runner is composed",
+    { timeout: CASE_MS },
+    async () => {
+        const { agent, model, auditDb } = rigOf(rig);
+        await agent.slack.deliverMention(mention("Ev00000902"));
 
-    // Offered, because the sheet grants it — the listing does not know whether a
-    // runner exists and should not.
-    expect(model.seen[0]?.tools?.map(tool => tool.name)).toContain("run_code");
+        // Offered, because the sheet grants it — the listing does not know whether a
+        // runner exists and should not.
+        expect(model.seen[0]?.tools?.map(tool => tool.name)).toContain("run_code");
 
-    const rows = auditRows(auditDb);
-    expect(rows).toHaveLength(1);
-    // `unavailable`, not `refused`. The row an operator reads says the proxy had
-    // nothing to serve the call, which is true, rather than saying the channel
-    // was denied, which is not.
-    expect(rows[0]).toMatchObject({ channel: CHANNEL, server: "libero", tool: "run_code", outcome: "unavailable" });
-    expect(rows[0]?.refusal_reason ?? null).toBeNull();
-  }, CASE_MS);
+        const rows = auditRows(auditDb);
+        expect(rows).toHaveLength(1);
+        // `unavailable`, not `refused`. The row an operator reads says the proxy had
+        // nothing to serve the call, which is true, rather than saying the channel
+        // was denied, which is not.
+        expect(rows[0]).toMatchObject({ channel: CHANNEL, server: "libero", tool: "run_code", outcome: "unavailable" });
+        expect(rows[0]?.refusal_reason ?? null).toBeNull();
+      }
+  );
 }

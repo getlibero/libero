@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import type { ResolvedToolCall } from "@getlibero/schema";
 import {
   APPROVAL_TTL_MS,

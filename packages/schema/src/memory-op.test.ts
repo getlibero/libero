@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   MEMORY_OP_MAX_TEXT_CHARS,
   MEMORY_TOOLS,
@@ -31,7 +33,7 @@ describe("the memory tool definitions", () => {
     expect(Object.keys(MEMORY_TOOLS).sort()).toEqual([...MemoryToolName.options].sort());
   });
 
-  it.each(Object.entries(MEMORY_TOOLS))("publishes %s within the schema's bounds", (_tool, definition) => {
+  each(Object.entries(MEMORY_TOOLS))("publishes %s within the schema's bounds", (_tool, definition) => {
     expect(definition.description.length).toBeLessThanOrEqual(MAX_TOOL_DESCRIPTION);
     expect(ToolInputSchema.safeParse(definition.inputSchema).success).toBe(true);
   });
@@ -40,7 +42,7 @@ describe("the memory tool definitions", () => {
   // them. The file is resolved from the channel the session already is; an
   // argument that could name one would be the whole isolation boundary in the
   // hands of the model.
-  it.each(MemoryToolName.options)("gives %s no way to name a file or a channel", tool => {
+  each(MemoryToolName.options)("gives %s no way to name a file or a channel", tool => {
     const keys = Object.keys(published(tool).properties);
     for (const forbidden of ["path", "file", "filename", "channel", "root"]) {
       expect(keys).not.toContain(forbidden);
@@ -81,7 +83,7 @@ describe("memory_append's arguments", () => {
     expect(schema.additionalProperties).toBe(false);
   });
 
-  it.each([
+  each([
     ["a missing text", {}],
     ["an empty text", { text: "" }],
     ["a text that is not a string", { text: 42 }]
@@ -118,7 +120,7 @@ describe("memory_replace's arguments", () => {
     expect(schema.additionalProperties).toBe(false);
   });
 
-  it.each([
+  each([
     ["a missing find", { replace: "x" }],
     ["a missing replace", { find: "x" }],
     ["an empty find", { find: "", replace: "x" }]
@@ -133,7 +135,7 @@ describe("memory_replace's arguments", () => {
     expect(schema.properties["replace"]?.minLength).toBeUndefined();
   });
 
-  it.each(["find", "replace"])("bounds %s by the same ceiling, in both spellings", field => {
+  each(["find", "replace"])("bounds %s by the same ceiling, in both spellings", field => {
     const at = { find: "x", replace: "x", [field]: "x".repeat(MEMORY_OP_MAX_TEXT_CHARS) };
     const over = { find: "x", replace: "x", [field]: "x".repeat(MEMORY_OP_MAX_TEXT_CHARS + 1) };
     expect(MemoryReplaceArguments.safeParse(at).success).toBe(true);
@@ -162,7 +164,7 @@ describe("parsing an operation the model emitted", () => {
     expect(parsed.op).toEqual({ op: "memory_replace", find: "Tuesdays", replace: "Thursdays" });
   });
 
-  it.each([
+  each([
     ["a built-in", "search_channel_history"],
     ["a tool from the sheet", "list_pull_requests"],
     ["nothing at all", ""]
@@ -192,7 +194,7 @@ describe("parsing an operation the model emitted", () => {
   // A model emitting nonsense is an ordinary outcome of asking a model for
   // something. A throw here would end a curation turn that was meant to be
   // unable to affect the reply it follows.
-  it.each([
+  each([
     ["null", null],
     ["a string", "text"],
     ["an array", []],

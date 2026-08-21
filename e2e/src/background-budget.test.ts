@@ -31,7 +31,8 @@
 
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
 import { SWEEP_INTERVAL_MS, toSlackTs } from "@getlibero/server";
 import { CHANNEL, calls, rigOf, spendFor, startRig, withUsage } from "./harness/index.js";
@@ -118,7 +119,7 @@ describe("a background pass over its cap", () => {
         }
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -126,6 +127,7 @@ describe("a background pass over its cap", () => {
 
   it(
     "spends its cap once and is then refused, having asked another process",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, budgetDb, model } = rigOf(rig);
 
@@ -155,9 +157,7 @@ describe("a background pass over its cap", () => {
       // turn that ran reported, not a token more.
       const after = spendFor(budgetDb, CHANNEL);
       expect(after.inputTokens + after.outputTokens).toBe(SUMMARY_TOKENS);
-    },
-    CASE_MS
-  );
+    });
 });
 
 // The positive control. Identical sequence, a cap out of reach — and the sweep
@@ -180,7 +180,7 @@ describe("the same sweep under a cap it cannot reach", () => {
         }
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -188,6 +188,7 @@ describe("the same sweep under a cap it cannot reach", () => {
 
   it(
     "summarizes both threads and spends twice",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot, budgetDb, model } = rigOf(rig);
 
@@ -205,7 +206,5 @@ describe("the same sweep under a cap it cannot reach", () => {
 
       const spent = spendFor(budgetDb, CHANNEL);
       expect(spent.inputTokens + spent.outputTokens).toBe(2 * SUMMARY_TOKENS);
-    },
-    CASE_MS
-  );
+    });
 });

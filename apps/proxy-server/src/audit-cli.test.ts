@@ -5,7 +5,9 @@ import { DatabaseSync } from "node:sqlite";
 import { hashArguments, openAttemptStore, openAuditDb } from "@getlibero/proxy";
 import type { AuditRecord } from "@getlibero/schema";
 import { refusalMessage } from "@getlibero/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import {
   DEFAULT_LIST_LIMIT,
   EXIT_ERROR,
@@ -217,7 +219,7 @@ describe("filters", () => {
   // typing it did not: a non-ISO format read in some other order, an impossible
   // date rolled forward into a real one, and — the quiet one — an ISO datetime
   // with no zone read as local time on a command whose usage says UTC.
-  it.each([
+  each([
     ["a month and a day that do not exist", "2026-13-40"],
     ["a date that rolls over", "2026-02-30"],
     ["a date that rolls over with a time on it", "2026-02-30T00:00:00Z"],
@@ -626,7 +628,7 @@ describe("usage and errors", () => {
 
   // The vault CLI's "command that must never exist" test, for the verbs an
   // operator might reach for on a log that refuses all of them.
-  it.each(["delete", "prune", "rotate", "reset", "purge", "truncate"])("has no %j command", command => {
+  each(["delete", "prune", "rotate", "reset", "purge", "truncate"])("has no %j command", command => {
     const result = run([command, "1"]);
 
     expect(result.code).toBe(EXIT_USAGE);

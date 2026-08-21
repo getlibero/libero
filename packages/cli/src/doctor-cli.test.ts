@@ -3,7 +3,9 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { runChannelCommand } from "./channel-cli.js";
 import { runDoctorCommand } from "./doctor-cli.js";
@@ -151,7 +153,7 @@ describe("the environment file", () => {
     expect(check(result, "env file").detail).toContain("libero init");
   });
 
-  it.each([
+  each([
     [{ AGENT_MODEL: "" }, "AGENT_MODEL", "empty"],
     [{ AGENT_MODEL: "(unreported)" }, "AGENT_MODEL", "not a model id"],
     [{ AGENT_PROVIDER: "gemini" }, "AGENT_PROVIDER", "not a provider"],
@@ -379,11 +381,11 @@ describe("the probe", () => {
 });
 
 describe("arguments", () => {
-  it.each([
+  each([
     [["nonsense"], "takes no arguments"],
     [["--fil", "x"], "unknown option"]
   ])("%s exits 2", async (argv, expected) => {
-    const result = await doctor(argv as string[]);
+    const result = await doctor([...argv]);
 
     expect(result.code).toBe(EXIT_USAGE);
     expect(result.err.join("\n")).toContain(expected as string);

@@ -25,7 +25,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import {
@@ -435,7 +437,7 @@ describe("what bounds it", () => {
     expect(lines.map(line => line.event)).toContain("skill_merge_backlog");
   });
 
-  it.each([
+  each([
     ["skills are disabled", { ...SETTINGS, enabled: false }],
     ["curation is disabled", { ...SETTINGS, curate: false }]
   ])("does nothing at all when %s", async (_label, settings) => {
@@ -600,7 +602,7 @@ describe("what it costs", () => {
     expect(lines.map(line => line.event)).toContain("skill_merge_failed");
   });
 
-  it.each([
+  each([
     ["the sheet cannot be read", { settings: () => Promise.reject(new Error("EACCES")) }],
     ["the directory cannot be opened", { files: () => null }],
     ["the proposals directory cannot be opened", { proposals: () => null }]

@@ -11,7 +11,8 @@
 // If this file fails, no assertion in #132-#135 means anything, which is why it
 // asserts on every stage rather than only on the reply.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   auditRows,
@@ -43,14 +44,15 @@ beforeAll(async () => {
     // the server and tool alone, and a one-server sheet never collides.
     script: [calls("list_prs", { repo: "getlibero/libero" }), says("Two are open.")]
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "a benign mention completes a permitted tool call through the composed pair",
+  { timeout: CASE_MS },
   async () => {
     const { agent, upstream, model, auditDb, budgetDb, surfaces } = rigOf(rig);
     const before = auditRows(auditDb).length;
@@ -108,6 +110,4 @@ it(
     expect(spend.toolCalls).toBe(1);
     expect(spend.inputTokens).toBeGreaterThan(0);
     expect(spend.outputTokens).toBeGreaterThan(0);
-  },
-  CASE_MS
-);
+  });

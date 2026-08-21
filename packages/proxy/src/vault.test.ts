@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { ToolRefusal, refusalMessage } from "@getlibero/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import type { LogFields, LogLevel, Logger } from "./log.js";
 import {
   MAX_VAULT_BYTES,
@@ -74,7 +76,7 @@ describe("the master key", () => {
   // Buffer.from(x, "base64") discards characters outside the alphabet instead
   // of failing, so a length check on the decode accepts keys the operator never
   // typed. The round trip is what catches these.
-  it.each([
+  each([
     ["a passphrase", "hunter2!!!!hunter2!!!!hunter2!!!!hunter2!!!!"],
     ["punctuation", "AAAA????BBBB????CCCC????DDDD????EEEE????FFFF"],
     ["a PEM header", "-----BEGIN PRIVATE KEY-----"],
@@ -83,7 +85,7 @@ describe("the master key", () => {
     expect(parseVaultKey(input)).toEqual({ ok: false, reason: "not_base64" });
   });
 
-  it.each([
+  each([
     ["31 bytes", 31],
     ["33 bytes", 33],
     ["16 bytes", 16],
@@ -145,7 +147,7 @@ describe("what is on disk", () => {
 describe("a file that has been edited", () => {
   // The salt and iv rows are the ones that prove the AAD binding. Without it
   // they are unauthenticated header bytes and this table would not be total.
-  it.each([
+  each([
     ["a magic byte", 2],
     ["the version byte", 7],
     ["a salt byte", 10],
@@ -161,7 +163,7 @@ describe("a file that has been edited", () => {
     expect(() => openVault({ file, key: k })).toThrow(VaultError);
   });
 
-  it.each([
+  each([
     ["empty", 0, "truncated"],
     ["shorter than the magic", 3, "truncated"],
     ["header only", VAULT_HEADER_BYTES, "bad_key_or_tampered"],
@@ -216,7 +218,7 @@ describe("a secret has nowhere to go", () => {
     expect(secretOf().reveal()).toBe(VALUE);
   });
 
-  it.each([
+  each([
     ["JSON.stringify", (s: object) => JSON.stringify(s)],
     ["JSON.stringify of a wrapper", (s: object) => JSON.stringify({ credential: s })],
     ["JSON.stringify of an array", (s: object) => JSON.stringify([s])],
@@ -264,8 +266,9 @@ describe("the log and the error", () => {
   // up with zero credentials over a permissions regression would surface as
   // `credential_unresolved` mid-request instead of a startup failure. Root
   // reads through mode 000, so the test is meaningless there.
-  it.runIf(process.getuid?.() !== 0)(
+  it(
     "refuses to open a vault it cannot stat rather than starting empty",
+    { skip: process.getuid?.() === 0 },
     () => {
       const k = key();
       const inner = join(dir, "sealed");
@@ -301,7 +304,7 @@ describe("the log and the error", () => {
     });
   });
 
-  it.each([
+  each([
     ["a wrong key", (k: VaultKey) => writeVaultEntries(file, k, new Map([[NAME, VALUE]]))],
     ["a corrupt file", () => writeFileSync(file, randomBytes(128))],
     ["an empty file", () => writeFileSync(file, Buffer.alloc(0))]
@@ -363,7 +366,7 @@ describe("looking a credential up", () => {
 
   // What justifies the Map. On an object literal these return a function where
   // a credential belongs.
-  it.each(["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"])(
+  each(["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"])(
     "misses %j rather than reaching the prototype",
     name => {
       expect(vaultWith(new Map([[NAME, VALUE]])).lookup(name)).toEqual({ status: "missing" });
@@ -372,7 +375,7 @@ describe("looking a credential up", () => {
 
   // Rejected before the map is consulted, so a caller that skipped its own
   // validation cannot reach the store with a path segment.
-  it.each([
+  each([
     ["empty", ""],
     ["too long", "a".repeat(65)],
     ["a traversal", "../etc/passwd"],
@@ -428,7 +431,7 @@ describe("a plaintext that is not what this wrote", () => {
     writeFileSync(file, Buffer.concat([buildHeader(salt, iv, cipher.getAuthTag()), body]));
   }
 
-  it.each([
+  each([
     ["duplicate names", JSON.stringify({ v: 1, entries: [[NAME, VALUE], [NAME, "second"]] })],
     ["a name that is not a credential name", JSON.stringify({ v: 1, entries: [["../etc", VALUE]] })],
     ["an empty name", JSON.stringify({ v: 1, entries: [["", VALUE]] })],

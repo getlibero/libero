@@ -7,7 +7,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import { createChannelLister } from "./channels.js";
 

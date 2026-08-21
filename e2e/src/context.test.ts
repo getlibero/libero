@@ -11,7 +11,8 @@
 // history, which the canary scan reads — so the standing "no credential on any
 // surface" assertion now covers a surface that was empty before.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   expectNoCanary,
@@ -49,14 +50,15 @@ beforeAll(async () => {
     users: { U0ALICE: "alice", U0SAM: "Sam" },
     script: [says("Noted.")]
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 it(
   "assembles a channel's stored messages into the prompt, bounded by its own sheet",
+  { timeout: CASE_MS },
   async () => {
     const { agent, model, surfaces } = rigOf(rig);
 
@@ -101,6 +103,4 @@ it(
 
     // The transcript is a canary surface now that it carries history.
     expectNoCanary(surfaces());
-  },
-  CASE_MS
-);
+  });

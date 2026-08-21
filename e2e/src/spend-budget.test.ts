@@ -23,7 +23,8 @@
 // One rig per case, per exceed-budget.test.ts: `model.seen`'s length is the
 // script cursor for a rig's whole life.
 
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   SERVED_MODEL,
@@ -129,14 +130,15 @@ function describeDollarCapWithModelSwitch(): void {
         says("I have run out of budget.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "stops at the dollar figure with the model switching mid-day",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -188,9 +190,7 @@ function describeDollarCapWithModelSwitch(): void {
       const models = spendFor(budgetDb, CHANNEL).byModel.map(bucket => bucket.model);
       expect(models).toContain("cheap-model");
       expect(models).toContain("dear-model");
-    },
-    CASE_MS
-  );
+    });
 }
 
 // Fail closed, and the refusal names the model so an operator knows what to
@@ -218,14 +218,15 @@ function describeUnpricedModelFailsClosed(): void {
       // priced two models and met a third.
       script: [call("call-1"), says("I cannot run.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "refuses spend on a model the table does not price, and names it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -246,9 +247,7 @@ function describeUnpricedModelFailsClosed(): void {
       const seen = JSON.stringify(model.seen);
       expect(seen).toContain(NOT_PRICED);
       expect(seen).toContain(SERVED_MODEL);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // **The non-vacuity control for the case above**, and for every fail-closed
@@ -277,14 +276,15 @@ function describeUnpricedModelServedWithoutTheCap(): void {
       },
       script: [call("call-1"), call("call-2"), says("Both checked.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "serves the same unpriced model when the sheet sets no dollar cap",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -305,9 +305,7 @@ function describeUnpricedModelServedWithoutTheCap(): void {
       const seen = JSON.stringify(model.seen);
       expect(seen).not.toContain(NOT_PRICED);
       expect(seen).not.toContain(SPEND_BUDGET);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // The other pricing fault, and the reason there are two reasons: this one has
@@ -333,14 +331,15 @@ function describeUnreportedModelFailsClosed(): void {
       },
       script: [servedBy(call("call-1"), "cheap-model"), says("I cannot run.")]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "refuses spend reported without a model, and names no model to price",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb, budgetDb } = rigOf(rig);
 
@@ -367,9 +366,7 @@ function describeUnreportedModelFailsClosed(): void {
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBeGreaterThan(0);
       expect(spend.byModel.map(bucket => bucket.model)).toEqual(["(unreported)"]);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // Both caps set, and the token one is the tighter. The dollar cap is checked
@@ -400,14 +397,15 @@ function describeWhicheverBindsFirst(): void {
         says("I have run out of budget.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "stops at whichever limit binds first and says which one it was",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model, auditDb } = rigOf(rig);
 
@@ -428,9 +426,7 @@ function describeWhicheverBindsFirst(): void {
       // happened to be spent too.
       expect(2 * CHEAP_TURN_USD).toBeLessThan(1_000);
       expect(CHEAP_TURN_USD).toBeGreaterThan(0);
-    },
-    CASE_MS
-  );
+    });
 }
 
 // `warn_at` covers the dollar cap too, so its first sign is a notice rather than
@@ -472,14 +468,15 @@ function describeDollarWarning(): void {
         says("Five checked.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "warns in dollars before the dollar cap refuses, and serves the call that crossed",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, model } = rigOf(rig);
 
@@ -499,9 +496,7 @@ function describeDollarWarning(): void {
       // is re-sent as context on every later turn, and the remedy it asks for is
       // not the model's to reach for.
       expect(JSON.stringify(model.seen)).not.toContain("Budget");
-    },
-    CASE_MS
-  );
+    });
 }
 
 // A cache-heavy turn is priced at the cache tier, not the input one. Its own
@@ -542,14 +537,15 @@ function describeCacheTierPricing(): void {
         says("Both checked.")
       ]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "prices cache reads at the cache rate rather than as input tokens",
+    { timeout: CASE_MS },
     async () => {
       const { agent, upstream, auditDb, budgetDb } = rigOf(rig);
 
@@ -570,7 +566,5 @@ function describeCacheTierPricing(): void {
       // At least, not exactly: the task's final answer turn reports a handful of
       // ordinary tokens on top, as every real task does.
       expect(spend.inputTokens).toBeGreaterThanOrEqual(MTOK);
-    },
-    CASE_MS
-  );
+    });
 }

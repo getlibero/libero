@@ -234,7 +234,7 @@ this path against real GitHub and is skipped unless `LIBERO_GITHUB_PAT` is set:
 
 ```bash
 pnpm -r build
-LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec vitest run src/github-live.test.ts
+LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec node --test dist/github-live.test.js
 ```
 
 From a channel whose sheet has no GitHub block, the same question gets *"This channel's team sheet

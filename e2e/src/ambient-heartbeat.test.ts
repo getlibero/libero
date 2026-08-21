@@ -30,7 +30,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
 import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
 import { HEARTBEAT_POST_WINDOW_MS, toSlackTs } from "@getlibero/server";
@@ -108,7 +109,7 @@ describe("the positive control", () => {
   beforeAll(async () => {
     at = Date.now();
     rig = await ambientRig([posts("Two questions have had no reply since Friday.")]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -116,6 +117,7 @@ describe("the positive control", () => {
 
   it(
     "posts once for a channel with something worth saying, and charges it to that channel",
+    { timeout: CASE_MS },
     async () => {
       const { agent, budgetDb } = rigOf(rig);
 
@@ -137,9 +139,7 @@ describe("the positive control", () => {
       // process — the claim only this suite can make.
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(HEARTBEAT_TOKENS);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a channel whose content demands to be posted about", () => {
@@ -153,7 +153,7 @@ describe("a channel whose content demands to be posted about", () => {
       posts("Third finding."),
       posts("Fourth finding.")
     ]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -161,6 +161,7 @@ describe("a channel whose content demands to be posted about", () => {
 
   it(
     "gets one post per rate window, however many ticks fire inside it",
+    { timeout: CASE_MS },
     async () => {
       // The control is the case above: the same script's first entry does post.
       const { agent, model } = rigOf(rig);
@@ -188,12 +189,11 @@ describe("a channel whose content demands to be posted about", () => {
       // And the window stopped the *evaluation*, not just the post: three script
       // entries are untouched, which is spend that never happened.
       expect(model.seen).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "speaks again once the window has passed, which is what makes the case above a bound",
+    { timeout: CASE_MS },
     async () => {
       const { agent } = rigOf(rig);
 
@@ -203,16 +203,14 @@ describe("a channel whose content demands to be posted about", () => {
 
       await agent.waitForLog({ event: "heartbeat_posted", channel: CHANNEL }, 2);
       expect(agent.slack.channelPosts).toHaveLength(2);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a question asked a moment ago", () => {
   beforeAll(async () => {
     at = Date.now();
     rig = await ambientRig([posts("Nobody has answered Priya.")]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -222,6 +220,7 @@ describe("a question asked a moment ago", () => {
   // than a coincidence: the same message, the same rig, the same script.
   it(
     "is not answered before the threshold, and is once past it",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, budgetDb } = rigOf(rig);
 
@@ -242,16 +241,14 @@ describe("a question asked a moment ago", () => {
 
       await agent.waitForLog({ event: "heartbeat_posted", channel: CHANNEL }, 1);
       expect(agent.slack.channelPosts).toHaveLength(1);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a channel with nothing new", () => {
   beforeAll(async () => {
     at = Date.now();
     rig = await ambientRig([posts("This must never be reached.")]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -259,6 +256,7 @@ describe("a channel with nothing new", () => {
 
   it(
     "spends nothing, and content cannot talk its way past a pregate it never reaches",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, budgetDb } = rigOf(rig);
 
@@ -285,9 +283,7 @@ describe("a channel with nothing new", () => {
       expect(agent.slack.channelPosts).toHaveLength(1);
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(HEARTBEAT_TOKENS);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a channel at its budget cap", () => {
@@ -298,7 +294,7 @@ describe("a channel at its budget cap", () => {
     rig = await ambientRig([posts("First finding."), posts("Second finding.")], {
       dailyTokens: HEARTBEAT_TOKENS
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -306,6 +302,7 @@ describe("a channel at its budget cap", () => {
 
   it(
     "heartbeats without spending once it is over",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, budgetDb } = rigOf(rig);
 
@@ -325,9 +322,7 @@ describe("a channel at its budget cap", () => {
       expect(agent.slack.channelPosts).toHaveLength(1);
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(HEARTBEAT_TOKENS);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a channel that never opted in", () => {
@@ -344,7 +339,7 @@ describe("a channel that never opted in", () => {
         [OTHER_CHANNEL]: { tools: [] }
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -352,6 +347,7 @@ describe("a channel that never opted in", () => {
 
   it(
     "sees nothing, whatever its content asks for",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, storeRoot } = rigOf(rig);
 
@@ -369,12 +365,11 @@ describe("a channel that never opted in", () => {
       // The message was still recorded — the sheet withholds the heartbeat, not
       // the channel's memory.
       expect(messagesIn(storeRoot)).toBe(1);
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "is silent for a channel whose sheet omits the block entirely",
+    { timeout: CASE_MS },
     async () => {
       // `OTHER_CHANNEL`'s sheet writes `[ambient] enabled = false` because the
       // rig always writes the block. The schema's own default is off too, which
@@ -389,16 +384,14 @@ describe("a channel that never opted in", () => {
 
       expect(model.seen).toEqual([]);
       expect(agent.slack.channelPosts).toEqual([]);
-    },
-    CASE_MS
-  );
+    });
 });
 
 describe("a waiting merge proposal", () => {
   beforeAll(async () => {
     at = Date.now();
     rig = await ambientRig([posts("A finding."), posts("Another finding.")]);
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
@@ -409,6 +402,7 @@ describe("a waiting merge proposal", () => {
   // cannot buy a second post or a repeat notice.
   it(
     "is named once, and its own content cannot buy a second post",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot } = rigOf(rig);
 
@@ -446,12 +440,11 @@ describe("a waiting merge proposal", () => {
       expect(agent.slack.channelPosts).toHaveLength(2);
       expect(agent.slack.channelPosts[1]?.text).toContain("Another finding.");
       expect(agent.slack.channelPosts[1]?.text).not.toContain("proposals/");
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "never puts the proposal in front of the model",
+    { timeout: CASE_MS },
     async () => {
       // `packages/memory` keeps closed the path by which text in that directory
       // re-enters a model's context. The turn above ran with the file on disk.
@@ -459,7 +452,5 @@ describe("a waiting merge proposal", () => {
 
       expect(JSON.stringify(model.seen)).not.toContain("every heartbeat");
       expect(JSON.stringify(model.seen)).not.toContain("cert-rotation");
-    },
-    CASE_MS
-  );
+    });
 });

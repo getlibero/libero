@@ -1,6 +1,8 @@
 import { MAX_TOOL_DESCRIPTION } from "@getlibero/schema";
 import type { McpServer } from "@getlibero/schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
+import { expect } from "expect";
 import { createHttpDispatcher } from "./http-dispatcher.js";
 import { createJsonLogger } from "./log.js";
 import { createMcpCatalog } from "./mcp-catalog.js";
@@ -287,7 +289,7 @@ describe("a tool whose x-mcp-header annotations do not validate", () => {
   // keyword the `properties` chain must not pass through, so a case built only
   // on `items` would still pass against a scan that had quietly stopped
   // descending into `$defs`.
-  it.each([
+  each([
     ["under items", ANNOTATION_UNDER_ITEMS],
     ["behind a $ref", ANNOTATION_BEHIND_REF]
   ])("is excluded when the annotation sits %s, not published thin", async (_label, inputSchema) => {
@@ -451,7 +453,7 @@ describe("when the upstream cannot be asked", () => {
   // the request's own id. A client numbers its requests however it likes, and an
   // answer to an id nobody asked about is no answer at all — which this suite
   // would see as a timeout rather than as the refusal it is testing for.
-  it.each<[string, (id: number | undefined) => FakeReply, string]>([
+  each<[string, (id: number | undefined) => FakeReply, string]>([
     ["a body that is not MCP", () => ({ raw: "not json" }), "protocol_error"],
     [
       "a result with no tools",
@@ -538,7 +540,7 @@ describe("when the upstream cannot be asked", () => {
   // that black-holes the *handshake* would hold the agent's first turn for the
   // 30s default before a model token was spent. `hangOn: "server/discover"` is
   // the case no per-page timeout can reach.
-  it.each([["the handshake", "server/discover"], ["the listing", "tools/list"]])(
+  each([["the handshake", "server/discover"], ["the listing", "tools/list"]])(
     "abandons an upstream that black-holes %s, inside its own budget",
     async (_label, method) => {
       fake = await startFakeMcpServer({ hangOn: method });
@@ -561,7 +563,7 @@ describe("when the upstream cannot be asked", () => {
         lines.some(line => line["event"] === "catalog_unavailable" && line["reason"] === "budget_exhausted")
       ).toBe(true);
     },
-    CATALOG_BUDGET_MS * 4
+    { timeout: CATALOG_BUDGET_MS * 4 }
   );
 
   // The other half of abandoning a walk, and it only became a cost with #159:
@@ -570,46 +572,50 @@ describe("when the upstream cannot be asked", () => {
   // against calls that are. The page in flight still lands — that is where the
   // handshake ladder runs, so it is what warms the client — and the walk stops
   // there.
-  it("asks for no further pages once its budget has gone", async () => {
-    // Three pages fit inside `CATALOG_BUDGET_MS` and five do not, so the walk is
-    // reliably mid-pagination when the race ends, on a slow machine as well as a
-    // fast one.
-    const PAGE_MS = 1_500;
-    fake = await startFakeMcpServer();
-    // The never-advancing cursor from "gives up on a server whose cursor never
-    // advances", slowed. Every page has a next one, so nothing but a bound of
-    // ours can stop this walk — and that case is this one's positive control:
-    // on the same fixture at full speed the walk really does ask for all
-    // `MAX_CATALOG_PAGES`, so a count below it here is the stop flag rather than
-    // a fixture that could only ever serve one page.
-    fake.respond = request =>
-      request.rpc?.method === "tools/list"
-        ? {
-            delayMs: PAGE_MS,
-            message: {
-              jsonrpc: "2.0",
-              id: request.rpc.id,
-              result: completeListResult({ tools: [], nextCursor: "always" })
+  it(
+    "asks for no further pages once its budget has gone",
+    { timeout: CATALOG_BUDGET_MS * 4 },
+    async () => {
+      // Three pages fit inside `CATALOG_BUDGET_MS` and five do not, so the walk is
+      // reliably mid-pagination when the race ends, on a slow machine as well as a
+      // fast one.
+      const PAGE_MS = 1_500;
+      fake = await startFakeMcpServer();
+      // The never-advancing cursor from "gives up on a server whose cursor never
+      // advances", slowed. Every page has a next one, so nothing but a bound of
+      // ours can stop this walk — and that case is this one's positive control:
+      // on the same fixture at full speed the walk really does ask for all
+      // `MAX_CATALOG_PAGES`, so a count below it here is the stop flag rather than
+      // a fixture that could only ever serve one page.
+      fake.respond = request =>
+        request.rpc?.method === "tools/list"
+          ? {
+              delayMs: PAGE_MS,
+              message: {
+                jsonrpc: "2.0",
+                id: request.rpc.id,
+                result: completeListResult({ tools: [], nextCursor: "always" })
+              }
             }
-          }
-        : null;
-    const { describe: ask } = harnessFor();
+          : null;
+      const { describe: ask } = harnessFor();
 
-    expect(await ask(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
-    const asked = fake.callsTo("tools/list").length;
+      expect(await ask(serverAt(fake.url), ["list_prs"])).toEqual(new Map());
+      const asked = fake.callsTo("tools/list").length;
 
-    // Genuinely mid-walk when the race ended, with pages still inside the cap to
-    // go after. Ranges rather than an exact count: the claim is about what the
-    // walk does next, and a slow machine moves the number without moving that.
-    expect(asked).toBeGreaterThan(1);
-    expect(asked).toBeLessThan(MAX_CATALOG_PAGES);
+      // Genuinely mid-walk when the race ended, with pages still inside the cap to
+      // go after. Ranges rather than an exact count: the claim is about what the
+      // walk does next, and a slow machine moves the number without moving that.
+      expect(asked).toBeGreaterThan(1);
+      expect(asked).toBeLessThan(MAX_CATALOG_PAGES);
 
-    // Long enough for the page in flight to land and a further one to have been
-    // asked for and answered. A request is a permit, which is why counting them
-    // is the assertion rather than a proxy for it.
-    await new Promise(resolve => setTimeout(resolve, PAGE_MS * 2));
-    expect(fake.callsTo("tools/list")).toHaveLength(asked);
-  }, CATALOG_BUDGET_MS * 4);
+      // Long enough for the page in flight to land and a further one to have been
+      // asked for and answered. A request is a permit, which is why counting them
+      // is the assertion rather than a proxy for it.
+      await new Promise(resolve => setTimeout(resolve, PAGE_MS * 2));
+      expect(fake.callsTo("tools/list")).toHaveLength(asked);
+    }
+  );
 
   it("answers empty once the pool has begun closing", async () => {
     fake = await startFakeMcpServer();

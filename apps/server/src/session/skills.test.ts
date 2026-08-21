@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { createSkillFilesOpener } from "./skills.js";
 
 const CHANNEL = "C024BE91L";

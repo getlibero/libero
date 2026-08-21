@@ -1,5 +1,6 @@
 import { parseTeamSheet } from "@getlibero/schema";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { renderStarterSheet } from "./starter-sheet.js";
 
 const FINGERPRINT = "D8:13:B2:93:C1:69:72:BE:CD:36:A1:D1:40:5F:84:05:05:BB:52:D5:E2:DC:2E:F2:32:59:69:3A:09:91:38:7B";

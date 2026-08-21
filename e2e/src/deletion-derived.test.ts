@@ -37,7 +37,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import { openMessageStore } from "@getlibero/memory";
 import { getLoadablePath } from "sqlite-vec";
 import { CHANNEL, rigOf, says, startRig } from "./harness/index.js";
@@ -160,11 +161,11 @@ beforeAll(async () => {
     },
     script: [says("Noted.")]
   });
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 afterAll(async () => {
   await rig?.stop();
-}, SETUP_MS);
+}, { timeout: SETUP_MS });
 
 /**
  * One thread, summarized, then revised through a real Slack event.
@@ -216,6 +217,7 @@ async function threadRevisedBy(
 describe("a Slack deletion reaches what was derived from the message", () => {
   it(
     "removes the thread's summary and its embedding when a reply is deleted",
+    { timeout: CASE_MS },
     async () => {
       const root = "1758000100.000100";
       const { before, after } = await threadRevisedBy(
@@ -238,12 +240,11 @@ describe("a Slack deletion reaches what was derived from the message", () => {
       expect(after.sources).toBe(0);
       // The vector itself, by the rowid it was filed under before the deletion.
       expect(vectorRows(rigOf(rig).storeRoot, before.vectorId ?? -1)).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 
   it(
     "removes them when the deleted message is the thread's root",
+    { timeout: CASE_MS },
     async () => {
       const root = "1758000200.000100";
       const { before, after } = await threadRevisedBy(
@@ -257,14 +258,13 @@ describe("a Slack deletion reaches what was derived from the message", () => {
       expect(after.summaries).toBe(0);
       expect(after.sources).toBe(0);
       expect(vectorRows(rigOf(rig).storeRoot, before.vectorId ?? -1)).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 
   // An edit is the other half of the same promise: the store keeps the new text,
   // so a summary of the old text must not outlive it.
   it(
     "removes them when a message is edited rather than deleted",
+    { timeout: CASE_MS },
     async () => {
       const root = "1758000300.000100";
       const reply = "1758000300.000200";
@@ -277,15 +277,14 @@ describe("a Slack deletion reaches what was derived from the message", () => {
       expect(after.summaries).toBe(0);
       expect(after.sources).toBe(0);
       expect(vectorRows(rigOf(rig).storeRoot, before.vectorId ?? -1)).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 
   // Slack's third wire shape: a deleted thread parent with replies arrives as a
   // `message_changed` carrying a tombstone, and `toRevision` reads it as a
   // deletion. A derived row that survived only this shape would survive silently.
   it(
     "removes them when a deletion arrives as a tombstone",
+    { timeout: CASE_MS },
     async () => {
       const root = "1758000400.000100";
       const { before, after } = await threadRevisedBy("tombstone", root, "1758000400.000200", root);
@@ -294,15 +293,14 @@ describe("a Slack deletion reaches what was derived from the message", () => {
       expect(after.summaries).toBe(0);
       expect(after.sources).toBe(0);
       expect(vectorRows(rigOf(rig).storeRoot, before.vectorId ?? -1)).toBe(0);
-    },
-    CASE_MS
-  );
+    });
 
   // The blast radius. One thread's deletion must not reach another thread's
   // summary, which is the failure a trigger written against the wrong column
   // would produce.
   it(
     "leaves another thread's summary and vector alone",
+    { timeout: CASE_MS },
     async () => {
       const { agent, storeRoot } = rigOf(rig);
       const kept = "1758000500.000100";
@@ -336,7 +334,5 @@ describe("a Slack deletion reaches what was derived from the message", () => {
       // Untouched: a different thread, a different summary, a different vector.
       expect(derivedRows(storeRoot, kept).summaries).toBe(1);
       expect(derivedRows(storeRoot, kept).sources).toBe(1);
-    },
-    CASE_MS
-  );
+    });
 });

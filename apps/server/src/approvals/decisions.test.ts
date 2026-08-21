@@ -7,7 +7,8 @@
 import type { ProxyApprovalsClient } from "@getlibero/agent";
 import type { ApprovalDecisionResponse } from "@getlibero/schema";
 import type { LogFields, LogLevel, Logger, SlackDecision } from "@getlibero/gateway";
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+import { expect } from "expect";
 import { createDecisionHandler } from "./decisions.js";
 import { createApprovalRegistry, type ApprovalSettlement } from "./registry.js";
 

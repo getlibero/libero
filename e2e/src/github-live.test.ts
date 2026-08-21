@@ -4,7 +4,7 @@
 // no network, and needs no secret. Run it by hand:
 //
 //   pnpm -r build
-//   LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec vitest run src/github-live.test.ts
+//   LIBERO_GITHUB_PAT=… pnpm --filter @getlibero/e2e exec node --test dist/github-live.test.js
 //
 // **This is the acceptance run, not a demonstration of one.** #130 asks for a
 // real GitHub tool call end to end through the proxy, recorded in the PR. A
@@ -35,7 +35,8 @@
 // the sheet overrides `url`. Harmless, and cheaper than a seam for switching it
 // off.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { after as afterAll, before as beforeAll, describe, it } from "node:test";
+import { expect } from "expect";
 import {
   CHANNEL,
   auditRows,
@@ -110,7 +111,7 @@ const sheet = {
   maxTaskSeconds: 55
 };
 
-describe.skipIf(PAT === undefined || PAT === "")("against api.githubcopilot.com", () => {
+describe("against api.githubcopilot.com", { skip: PAT === undefined || PAT === "" }, () => {
   describeTheGovernedPathReachesGitHub();
   describeTheCallCompletes();
   describeTheRevokedChannelIsRefused();
@@ -136,14 +137,15 @@ function describeTheGovernedPathReachesGitHub(): void {
       // file wrote.
       script: [calls("pull_request_read", { method: "get", ...PR }), relays()]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "handshakes, lists, and authenticates against GitHub, and the token reaches nothing else",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, surfaces } = rigOf(rig);
 
@@ -175,9 +177,7 @@ function describeTheGovernedPathReachesGitHub(): void {
       // thread, the cards, the model's transcript, the agent's log, and the
       // proxy's own output. The failure message masks the value.
       expectNoSecret(surfaces(), PAT ?? "", "the GitHub token");
-    },
-    CASE_MS
-  );
+    });
 }
 
 /**
@@ -207,14 +207,15 @@ function describeTheCallCompletes(): void {
       sheets: { [CHANNEL]: sheet },
       script: [calls("pull_request_read", { method: "get", ...PR }), relays()]
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "completes against GitHub, with x-mcp-header mirrored into Mcp-Param-* headers",
+    { timeout: CASE_MS },
     async () => {
       const { agent, auditDb, budgetDb, surfaces } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -248,8 +249,8 @@ function describeTheCallCompletes(): void {
       // is also the assertion that the log is safe to hand to an auditor.
       //
       // Through `expectNoSecret` rather than `expect(…).not.toContain(PAT)`,
-      // and that is the point rather than a style preference: vitest prints the
-      // *expected substring* when a `not.toContain` fails, so the plain form
+      // and that is the point rather than a style preference: a failing
+      // `not.toContain` prints the *expected substring*, so the plain form
       // writes a live credential to the terminal on exactly the run where one
       // has already leaked. `expectNoSecret` masks it.
       expectNoSecret([surface("the audit row", rows[0])], PAT ?? "", "the GitHub token");
@@ -261,9 +262,7 @@ function describeTheCallCompletes(): void {
 
       // And GitHub's answer is upstream-authored, so it is a surface too.
       expectNoSecret(surfaces(), PAT ?? "", "the GitHub token");
-    },
-    CASE_MS
-  );
+    });
 }
 
 // Acceptance 2: the same call from a channel whose sheet omits the server is
@@ -286,14 +285,15 @@ function describeTheRevokedChannelIsRefused(): void {
         rigOf(rig).channelsRoot.remove(CHANNEL);
       }
     });
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   afterAll(async () => {
     await rig?.stop();
-  }, SETUP_MS);
+  }, { timeout: SETUP_MS });
 
   it(
     "refuses the same call once the channel's sheet is gone, without dialling GitHub",
+    { timeout: CASE_MS },
     async () => {
       const { agent, model, auditDb, surfaces } = rigOf(rig);
       const before = auditRows(auditDb).length;
@@ -316,7 +316,5 @@ function describeTheRevokedChannelIsRefused(): void {
       // Relayed rather than fatal, and the token is still nowhere.
       expect(agent.slack.posted).toHaveLength(1);
       expectNoSecret(surfaces(), PAT ?? "", "the GitHub token");
-    },
-    CASE_MS
-  );
+    });
 }

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openTokenStore, parseVaultKey, startFakeTokenIssuer } from "@getlibero/proxy";
 import type { FakeTokenIssuer } from "@getlibero/proxy";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, runGrantCommand } from "./grant-cli.js";
 
 // The CLI over a real store, real sheets in a temp channels root, and the
