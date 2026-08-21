@@ -1,0 +1,133 @@
+# Tells us when a vendored third-party file has fallen behind upstream.
+#
+# Only site/public/count.js is vendored today. It is pinned to count.v4.js, a
+# frozen release — one commit upstream in 2025 and untouched since — so the copy
+# itself cannot drift, and "is it stale?" is the wrong question to ask about it.
+# The two worth asking, and that this job asks:
+#
+#   1. Has upstream's unpinned count.js moved past what the pin does? That is
+#      the signal to read the diff and decide whether to follow it.
+#   2. Has a count.v6.js appeared? That is the signal the pin itself has been
+#      superseded.
+#
+# It files an issue rather than failing. A red cross on a schedule is noise
+# nobody can clear — whereas an issue is where work already lives here, can be
+# triaged, and closes when the sync lands. It will not open a second one while
+# the first is open.
+#
+# The one thing it does fail on is the vendored copy not matching its recorded
+# hash. That is not upstream moving, it is a file whose whole contract is being
+# byte-identical having been edited, and it should stop the queue.
+name: Vendor check
+
+on:
+  schedule:
+    # Mondays, 09:00 UTC. count.js changed ten times in the two and a half
+    # years to August 2026, so a weekly look is already generous.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  count-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare the vendored copy against upstream
+        id: check
+        run: |
+          set -euo pipefail
+          manifest=site/vendor.json
+          get() { jq -r ".\"count.js\".$1" "$manifest"; }
+
+          vendored=$(get vendoredAs)
+          pin_url=$(get upstream)
+          pin_sha=$(get sha256)
+          latest_url=$(get latest)
+          latest_at_sync=$(get latestSha256AtSync)
+          synced_on=$(get syncedOn)
+
+          have=$(sha256sum "$vendored" | cut -d' ' -f1)
+          if [ "$have" != "$pin_sha" ]; then
+            echo "::error::$vendored does not match the sha256 recorded in $manifest"
+            echo "  file:     $have"
+            echo "  manifest: $pin_sha"
+            echo "Re-vendor from $pin_url, or update the hash if the edit was deliberate."
+            exit 1
+          fi
+          echo "vendored copy matches the manifest ($pin_sha)"
+
+          findings=$(mktemp)
+
+          latest_now=$(curl -sSf "$latest_url" | sha256sum | cut -d' ' -f1)
+          if [ "$latest_now" != "$latest_at_sync" ]; then
+            {
+              printf -- '- Upstream `%s` has changed since the last sync on %s.\n' "$latest_url" "$synced_on"
+              printf -- '  - at sync: `%s`\n' "$latest_at_sync"
+              printf -- '  - now: `%s`\n' "$latest_now"
+            } >> "$findings"
+          fi
+
+          for v in 6 7 8 9; do
+            url="https://gc.zgo.at/count.v${v}.js"
+            if curl -sfI "$url" >/dev/null 2>&1; then
+              printf -- '- `count.v%s.js` now exists, so the `count.v5.js` pin has a successor: %s\n' "$v" "$url" >> "$findings"
+            fi
+          done
+
+          if [ ! -s "$findings" ]; then
+            echo "nothing to report: upstream unchanged and no successor pin"
+            exit 0
+          fi
+
+          echo "findings_file=$findings" >> "$GITHUB_OUTPUT"
+          cat "$findings"
+
+      - name: Open an issue, unless one is already open
+        if: steps.check.outputs.findings_file != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINDINGS_FILE: ${{ steps.check.outputs.findings_file }}
+        run: |
+          set -euo pipefail
+          title='Vendored count.js has fallen behind upstream'
+
+          existing=$(gh issue list --state open --search "\"$title\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "#$existing is already open; not filing another."
+            exit 0
+          fi
+
+          body=$(mktemp)
+          {
+            cat <<'HEAD'
+          `site/public/count.js` is a verbatim copy of GoatCounter's `count.v5.js`. Its provenance and hash
+          are in `site/vendor.json`, and `site/README.md` under "Analytics" has why it is vendored rather
+          than loaded from a CDN.
+
+          HEAD
+            cat "$FINDINGS_FILE"
+            cat <<'TAIL'
+
+          Nothing is broken. GoatCounter guarantees `/count` stays backward-compatible — a breaking change
+          would land on a new endpoint such as `/count/v2` — so an old copy loses features rather than
+          failing. This is a prompt to read the diff and decide, not an outage.
+
+          To follow upstream:
+
+          1. Re-download the pin, or move to the successor if one is listed above.
+          2. Update `sha256`, `latestSha256AtSync` and `syncedOn` in `site/vendor.json`.
+          3. `pnpm --dir site build`, and confirm the tag still points at `/count.js`.
+
+          To stay put, close this. Nothing reopens it until upstream moves again.
+
+          Filed by `.github/workflows/vendor-check.yml`.
+          TAIL
+          } > "$body"
+
+          gh issue create --title "$title" --label 'area:site,dependencies' --body-file "$body"

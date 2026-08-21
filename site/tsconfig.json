@@ -1,5 +1,8 @@
 {
   "extends": "astro/tsconfigs/strict",
   "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist"]
+  // public/ is served verbatim and holds vendored third-party source we do not
+  // own — count.js is a copy, not a fork, so its deprecation warnings are not
+  // ours to act on and must not become noise on every `astro check`.
+  "exclude": ["dist", "public"]
 }
