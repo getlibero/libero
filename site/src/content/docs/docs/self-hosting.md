@@ -23,8 +23,11 @@ clean checkout, and a `docker compose -f deploy/docker-compose.yml pull` first m
 exact bytes a release published.
 
 What is not finished: certificate rotation and revocation are manual — possible without downtime,
-and driven by a shell script and an edit to a team sheet rather than by anything automated. There
-is no sandbox, so `[egress]` is validated when a sheet loads and enforced nowhere. Memory is whole — the message
+and driven by a shell script and an edit to a team sheet rather than by anything automated. Code
+execution exists and is off unless you start it: `docker compose --profile runner up -d`, plus a
+digest-pinned sandbox image, the runner's client pin, and the host's docker group id. Without it a
+channel that grants `run_code` is told the call is permitted and this deployment has nothing to
+serve it. Memory is whole — the message
 store and its full-text index, a curated `MEMORY.md`, and semantic recall over thread summaries —
 and so are skills, though a deployment with no embedding provider retrieves them on full text alone
 and proposes no merges. Ambient mode is whole too — the heartbeat, proactive posts behind a rate
@@ -406,6 +409,139 @@ The CA is yours: it never leaves the host, it signs only these two roles, and it
 trust anchor. The keys it produces are secrets. Keep `deploy/certs` out of the git repo holding
 your team sheets — that repo is meant to be readable by everyone who reviews a manifest, and these
 files are not.
+
+## Turning code execution on
+
+Off unless you do this, and a deployment that skips it is unchanged — a channel granting
+`run_code` is told the call is permitted and this proxy has nothing to serve it, which is true and
+is not a refusal.
+
+It is a fourth container that holds the Docker socket and no credential. That pairing is the whole
+design: the socket is equivalent to root on this host, so it belongs anywhere except the process
+holding every tool credential. The proxy reaches it over mutual TLS on an internal network the
+agent has no route to, and the request it sends has no field naming an image, a mount, or a
+capability — the runner builds every container spec itself.
+
+**1. Mint the material.** `sh scripts/dev-certs.sh` already writes the runner's server certificate
+and the proxy's client certificate, and prints the fingerprint you need:
+
+```
+dev-certs:   RUNNER_CLIENT_PIN=A9:84:C7:1E:...
+```
+
+That pin is not optional and not a formality. One CA signs it *and* every channel certificate the
+agent holds — so a runner trusting the CA alone would serve a compromised agent process directly,
+with no team sheet, no decision, no meter and no audit row.
+
+**2. Choose a sandbox image, by digest.** The runner refuses a floating tag at startup: which
+language the sandbox has is a property of your deployment, and a tag makes it a property of
+whenever the daemon last pulled.
+
+```bash
+docker buildx imagetools inspect python:3.13-slim   # prints the digest
+docker pull python:3.13-slim@sha256:...             # the runner never pulls
+```
+
+**3. Fill in three values in `.env`.** `libero init` scaffolds them blank with the command that
+prints each:
+
+```bash
+RUNNER_SANDBOX_IMAGE=python:3.13-slim@sha256:...
+RUNNER_CLIENT_PIN=...                 # sh scripts/dev-certs.sh prints it
+DOCKER_GID=...                        # getent group docker | cut -d: -f3
+```
+
+`DOCKER_GID` is this host's docker group, and it differs between distributions — Debian and
+Amazon Linux do not agree. It has no usable default: the fallback is the root group, which every
+host has and which opens the socket on none of them, so a deployment that forgot the variable
+fails rather than quietly working on whichever distribution somebody guessed.
+
+**4. Uncomment the proxy's four `RUNNER_*` lines** in `deploy/docker-compose.yml`, and start it:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile runner up -d
+```
+
+**5. Grant it in a team sheet.** No `approval` line means the hold — a built-in's default is
+declared rather than guessed, and this one's is `required`:
+
+```toml
+[[builtin]]
+name            = "run_code"
+cpus            = 1
+memory_mb       = 512
+timeout_seconds = 30
+
+[egress]
+allow = ["api.github.com"]
+```
+
+Omit `[egress]` and the run gets no network at all, which is the safe default rather than an
+oversight. See [the team sheet reference](/docs/team-sheet) for what a list does and does not
+grant — in particular that it covers HTTP and HTTPS only, and that a host outside it ends the run.
+
+### Letting it install packages
+
+The common case, and it takes two hosts. A package index and the file host it
+redirects to are different names, so one is not enough:
+
+```toml
+[[builtin]]
+name            = "run_code"
+approval        = "none"      # or omit the line, and every run waits for a click
+memory_mb       = 2048
+timeout_seconds = 300
+
+[egress]
+allow = ["pypi.org", "files.pythonhosted.org"]
+```
+
+The npm equivalent is `registry.npmjs.org`; Debian's is `deb.debian.org`. Add
+only the index you use — a list is a grant, and each entry is a host sandboxed
+code may reach with whatever it has.
+
+Three things about the caps, because the defaults are sized for arithmetic and
+not for installing a package tree:
+
+- **`memory_mb` is also the workdir's size.** The scratch directory is a tmpfs,
+  and a tmpfs is memory — so the two are one bound rather than two, and a
+  program that fills the workdir is killed for exceeding the memory cap. The
+  default 512 MB installs `requests`; `numpy` needs more like 2 GB while pip
+  unpacks it.
+- **`timeout_seconds` covers the install too.** 30 seconds is not enough to
+  fetch and unpack a wheel over a filtered connection.
+- **The rootfs is read-only, so install somewhere writable.** `pip install`
+  with no target writes to the interpreter's own `site-packages` and fails.
+  Point it at the workdir and put that on the path:
+
+```python
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "--target", "/work/pkgs", "numpy"], check=True)
+sys.path.insert(0, "/work/pkgs")
+import numpy
+```
+
+Nothing persists between calls, so each run that needs a package installs it
+again. That is the sandbox working as designed rather than a limit to route
+around: a warm cache is state, and state is the thing an ephemeral container
+exists not to have.
+
+**Pick a glibc image if you want native wheels.** `python:3.13-slim` is the
+straightforward choice — most projects publish `manylinux` wheels and some do
+not publish the `musllinux` ones Alpine needs, so `python:3.13-alpine` will
+build from source or fail where slim just works.
+
+### Hardening it further with gVisor
+
+The container boundary here is the kernel's, and a container escape is a kernel bug. If that is
+inside your threat model, run the daemon with [gVisor](https://gvisor.dev/) (`runsc`) as its
+default runtime, which puts a user-space kernel between a sandboxed process and the host's.
+
+It is configured at the daemon and not by us. The runner asks for no runtime, so whatever the
+daemon defaults to is what a run gets — which also means the choice applies to every container on
+that host, including the services themselves. **We do not test under it**, so treat it as a
+deployment you validate rather than a supported configuration: start with a scratch host, and
+check that a `run_code` call still returns before you rely on it.
 
 ## Operating it
 

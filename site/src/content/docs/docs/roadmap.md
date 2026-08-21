@@ -79,10 +79,20 @@ and a blocked call's arguments land in an off-chain, deletable store the audit r
 binds, without reopening the decision against argument capture in the chain.
 
 **v0.4.0 — open.** Code execution, governed: the ephemeral container the proxy invokes
-([#368](https://github.com/getlibero/libero/issues/368)) — the one section of the
-[architecture](/docs/architecture/) still marked designed-not-built — which gives `[egress]` its
-first live caller ([#219](https://github.com/getlibero/libero/issues/219)). The
-[milestone](https://github.com/getlibero/libero/milestone/8) carries the definition of done.
+([#368](https://github.com/getlibero/libero/issues/368)), which gave `[egress]` its first live
+caller ([#219](https://github.com/getlibero/libero/issues/219)). The
+[architecture](/docs/architecture/) page carries no designed-not-built marker any more. The
+[milestone](https://github.com/getlibero/libero/milestone/8) carries the definition of done and
+the correctness items still open beside it.
+
+Two things landed differently from that milestone's own wording, and the differences are recorded
+here rather than a box being ticked against a sentence that turned out to be untrue. It said the
+sandbox would be "approved by default", which reads two ways; the default is `approval =
+"required"`, argued in `builtin.ts`'s header rather than assumed, because the destructive-verb
+heuristic would have answered `"none"` for the one built-in that runs arbitrary code. And the
+socket did not stay off the deployment — it **moved**, to a runner service that holds no
+credential, so what "the proxy still never mounts the Docker socket" now means is that the
+privilege and the credentials live in two different processes rather than that neither exists.
 
 ## What success looks like
 

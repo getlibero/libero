@@ -30,11 +30,17 @@ the model's cooperation.
    — but a compromised agent process could. The reset is an operator command against the proxy's
    own file, deliberately not a route, so a compromised agent cannot clear its own hard limit.
 5. **Attribution.** Append-only audit log of every tool call and its requester.
-6. **Sandboxed code execution — designed, not built.** The design of record: ephemeral container,
-   no network unless the team sheet grants an egress allowlist, invoked by the proxy so it is
-   audited and budgeted like any other tool. No code-execution surface exists today, so
-   `[egress]` is validated when a sheet loads and enforced nowhere
-   ([#219](https://github.com/getlibero/libero/issues/219)).
+6. **Sandboxed code execution.** `run_code` runs model-written code in an ephemeral container —
+   read-only rootfs, tmpfs workdir, cpu/memory/wall-time caps, and no network at all unless the
+   team sheet grants an egress allowlist. Invoked by the proxy, so it is granted by a
+   `[[builtin]]` block, held for a human by default, metered and audited like any other tool.
+   `[egress]` is enforced rather than only validated: the container's single route out is a
+   filter that checks the channel's list per host, and a host outside it ends the run and refuses
+   the call, naming the host on the audit row. Two narrowings worth knowing before you write a
+   list — it grants HTTP and HTTPS only, so `git://`, postgres and ssh have no route whatever it
+   says; and the sandbox is opt-in twice, needing both a `[[builtin]]` grant and a runner the
+   operator started. The service that holds the container runtime holds no credential, and the
+   proxy that holds every credential never gets the runtime.
 7. **Physical channel isolation.** One SQLite file per channel for anything holding channel
    *content* — messages, memory — so no query path can join across channels and the layout
    enforces the storage boundary. The line is whose data it is: content belongs to a channel's

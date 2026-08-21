@@ -777,8 +777,10 @@ passes on that sentence.
 | A host-side runner daemon over a bind-mounted unix socket | Same privilege split, and it would work. It lives outside `docker compose up`, so it needs its own install, upgrade and restart story, and the deployment guide's restart-as-recovery promise is a promise about one compose file. |
 | Firecracker or Kata microVMs | Wants `/dev/kvm`, and **no instance type the deployment guide names has nested virtualization** — not the minimum sizes, not the recommended ones. Later work, not a 0.4 option. |
 
-gVisor (`runsc`) stays what the architecture says it is: documented for hardened
-deployments, not required.
+gVisor (`runsc`) is a deployment choice rather than anything this package does:
+the runner asks for no runtime, so a daemon defaulting to `runsc` gives a run
+one and a daemon that does not, does not. The self-hosting guide says so, and
+says plainly that it is untested here.
 
 **Built in #395, and three things the build settled that the design did not.**
 The runner is `apps/runner` — a third service, third image, and the only

@@ -33,7 +33,7 @@ import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createDockerClient, type DockerClient } from "./docker.js";
-import { runInSandbox, SANDBOX_PIDS_LIMIT, SANDBOX_TMPFS_BYTES, SANDBOX_WORKDIR } from "./run.js";
+import { runInSandbox, SANDBOX_PIDS_LIMIT, SANDBOX_WORKDIR } from "./run.js";
 
 /**
  * The image these cases run against.
@@ -172,14 +172,29 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
     expect(result.stdout).toMatch(/tmpfs/);
   }, 120_000);
 
-  it("bounds the workdir, so tmpfs cannot be used to spend the memory cap sideways", async () => {
-    const megabytes = Math.floor(SANDBOX_TMPFS_BYTES / (1024 * 1024)) + 16;
-    const result = await run(
-      `open('${SANDBOX_WORKDIR}/big','wb').write(b'x' * ${megabytes} * 1024 * 1024)`,
-      { memoryMb: 1024 }
-    );
+  // The workdir is sized to the memory cap rather than fixed, so a program
+  // cannot use it to spend that cap sideways — filling it is the same bound as
+  // allocating, and it stops at the same number.
+  it("bounds the workdir at the channel's memory cap", async () => {
+    const result = await run(`open('${SANDBOX_WORKDIR}/big','wb').write(b'x' * 192 * 1024 * 1024)`, {
+      memoryMb: 64
+    });
+    // The exit status and nothing else: the kernel's OOM killer ends the
+    // process rather than the program raising, so there is no traceback to
+    // match on — which is itself the demonstration. Filling the workdir *is*
+    // spending the memory cap, because they are the same cap.
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toMatch(/No space left|OSError/);
+    expect(result.stdout).not.toContain("wrote");
+  }, 120_000);
+
+  // The other half, and the reason the fixed 64 MiB had to go: a cap big enough
+  // to hold a package tree gets a workdir big enough to hold it.
+  it("gives a bigger cap a bigger workdir", async () => {
+    const result = await run(`open('${SANDBOX_WORKDIR}/big','wb').write(b'x' * 192 * 1024 * 1024)\nprint("wrote")`, {
+      memoryMb: 512
+    });
+    expect(result.stdout).toContain("wrote");
+    expect(result.exitCode).toBe(0);
   }, 120_000);
 
   it("has no network at all", async () => {
@@ -281,9 +296,13 @@ describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
     }
   }, 900_000);
 
-  const withEgress = (code: string, allow: readonly string[]) =>
+  const withEgress = (
+    code: string,
+    allow: readonly string[],
+    caps: Partial<{ cpus: number; memoryMb: number; timeoutSeconds: number }> = {}
+  ) =>
     runInSandbox(
-      { code, caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 60 }, egressAllow: [...allow] },
+      { code, caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 60, ...caps }, egressAllow: [...allow] },
       {
         docker,
         config: {
@@ -345,6 +364,35 @@ print("kept going")`,
     expect(result.outcome).toBe("egress_denied");
     expect(result.deniedHost).toBe("169.254.169.254");
   }, 180_000);
+
+  // `noexec` on the workdir cannot dlopen a shared object, which rules out every
+  // native Python wheel — and Docker adds `noexec` unless you ask for the
+  // opposite, so this guards a mount option that is easy to regain by accident.
+  //
+  // It lives in this block rather than beside the other workdir cases because it
+  // needs a package index, which needs a hop. A real extension module rather
+  // than a hand-rolled binary, because what is being protected is the thing
+  // people actually reach for — and `pypi.org` plus `files.pythonhosted.org` is
+  // the whole allowlist that takes, which is the recipe the docs give.
+  it("installs a package and loads its native extension", async () => {
+    const result = await withEgress(
+      [
+        "import subprocess, sys",
+        `r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--target", "${SANDBOX_WORKDIR}/pkgs", "numpy"], capture_output=True, text=True, timeout=540)`,
+        'print("install", r.returncode, r.stderr[-300:])',
+        `sys.path.insert(0, "${SANDBOX_WORKDIR}/pkgs")`,
+        "import numpy",
+        'print("native", numpy.arange(5).sum())'
+      ].join("\n"),
+      ["pypi.org", "files.pythonhosted.org"],
+      { memoryMb: 2048, timeoutSeconds: 600 }
+    );
+
+    expect(result.stdout).toContain("install 0");
+    // The assertion that fails the moment `exec` leaves the mount: numpy
+    // installs either way and imports only with it.
+    expect(result.stdout).toContain("native 10");
+  }, 900_000);
 
   it("leaves no container and no network behind", async () => {
     await withEgress(FETCH("example.com"), ["example.com"]);
