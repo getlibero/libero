@@ -8,6 +8,7 @@
 // and no channel store — and the list of what this process does not mount is in
 // deploy/README.md, because that is where an operator can check it.
 
+import { randomUUID } from "node:crypto";
 import { createDockerClient } from "./docker.js";
 import { createRunnerServer } from "./server.js";
 import { runInSandbox } from "./run.js";
@@ -18,7 +19,10 @@ import {
   portFromEnv,
   requiredEnv,
   sandboxCommandFromEnv,
-  sandboxImageFromEnv
+  sandboxImageFromEnv,
+  egressNetworkFromEnv,
+  runnerImageFromEnv,
+  DEFAULT_HOP_PORT
 } from "./env.js";
 import { loadRunnerTls } from "./tls.js";
 
@@ -32,7 +36,24 @@ const env = process.env;
 const host = hostFromEnv(env);
 const listenPort = portFromEnv(env);
 
-const config = { image: sandboxImageFromEnv(env), command: sandboxCommandFromEnv(env) };
+// The hop's image is this process's own (#219). There is no second image to pin
+// because it is the same code with a different entrypoint — if it were
+// substituted, the runner would already be substituted.
+const egressNetwork = egressNetworkFromEnv(env);
+const config = {
+  image: sandboxImageFromEnv(env),
+  command: sandboxCommandFromEnv(env),
+  ...(egressNetwork === undefined
+    ? {}
+    : {
+        egress: {
+          image: runnerImageFromEnv(env),
+          command: ["node", "dist/hop.js"],
+          network: egressNetwork,
+          port: DEFAULT_HOP_PORT
+        }
+      })
+};
 const docker = createDockerClient({ socketPath: dockerSocketFromEnv(env) });
 
 const server = createRunnerServer({
@@ -49,7 +70,12 @@ const server = createRunnerServer({
       config,
       // A container that outlived its run is holding a tmpfs. Nothing here can
       // fix it, and an operator who can needs to be told.
-      onRemoveFailed: reason => logger.log("error", { event: "container_remove_failed", reason })
+      onRemoveFailed: reason => logger.log("error", { event: "container_remove_failed", reason }),
+      // A sheet granted hosts and this deployment cannot enforce the grant, so
+      // the run got no network. Loud, because the operator's channel is asking
+      // for something their deployment has not turned on.
+      onEgressUnavailable: () => logger.log("warn", { event: "egress_unavailable" }),
+      newRunId: () => randomUUID()
     })
 });
 

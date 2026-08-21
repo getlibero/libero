@@ -118,11 +118,11 @@ describe("the column contract", () => {
 
   it("puts the headers in the header row", () => {
     expect(csvHeader()).toBe(AUDIT_CSV_COLUMNS.map(column => column.header).join(","));
-    // The number moves with the table — twenty-one since #354 added `prev_hash`
-    // and `row_hash`. It is here as a second pair of eyes on the count rather
+    // The number moves with the table — twenty-two since #219 added
+    // `destination`. It is here as a second pair of eyes on the count rather
     // than as a contract: the case above is what pins the headers to the table's
     // own columns.
-    expect(csvHeader().split(",")).toHaveLength(21);
+    expect(csvHeader().split(",")).toHaveLength(22);
   });
 });
 

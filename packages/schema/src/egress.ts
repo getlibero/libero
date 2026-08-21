@@ -23,10 +23,14 @@
 // is a team-sheet field and this is the only code that knows what `*.` means in
 // one; splitting the syntax from its meaning is how the two drift.
 //
-// **Who calls this, and why it is not a call site.** #393 decided the shape, and
-// it is worth having here because the obvious reading of `isEgressAllowed` — a
-// check somewhere on the way out, like the one ../../proxy/src/outbound.ts
-// explains it does not make — is wrong for the caller this list was built for.
+// **Who calls this, and why it is not a call site.** #393 decided the shape and
+// #219 built it, and it is worth having here because the obvious reading of
+// `isEgressAllowed` — a check somewhere on the way out, like the one
+// ../../proxy/src/outbound.ts explains it does not make — is wrong for the
+// caller this list was built for.
+//
+// The caller is `apps/runner/src/hop-server.ts`, a CONNECT proxy that runs one
+// container per sandbox run and imports this function rather than restating it.
 // Sandboxed code opens sockets nobody declared, so there is no line to put a
 // check on. Enforcement is topological instead: the sandbox runs on a network
 // with no route out, whose only other member is a CONNECT hop that calls this
@@ -60,7 +64,7 @@
 //   `git clone https://…` works and `git clone git://…` does not.
 //
 // A caller that expresses this list in some other syntax — an off-the-shelf
-// proxy's ACL file being the tempting one — is the review failure #219 names,
+// proxy's ACL file being the tempting one — is the review failure #219 named,
 // and the reason is that the near-miss behaviour below is the security
 // deliverable. It is cheaper to write a CONNECT hop that imports this function
 // than to prove someone else's matcher agrees with it. See

@@ -214,10 +214,21 @@ import type { Logger } from "./log.js";
  * them from that moment forward and asserts nothing about what happened to them
  * before it.
  *
+ * **Version 6 is a widening again** (#219), and the easy kind: one nullable
+ * `destination`, the host that ended a run because the channel's `[egress]` list
+ * did not allow it. Every row written before it is given `NULL`, which is a
+ * reading rather than a gap — a row that is not an egress refusal has no
+ * destination. It costs the chain nothing, because NULL columns are omitted from
+ * the preimage: the rows already on disk hash to exactly what they did.
+ *
+ * It lands now rather than after 0.4 ships, and that is a cost comparison rather
+ * than eagerness. `migrate` is a rebuild-and-rename over every row, so the price
+ * of this column is paid by whoever has the most of them. Today that is nobody.
+ *
  * A file from the future is still a startup failure, and so is a file from a
  * past this build has no migration from.
  */
-export const AUDIT_SCHEMA_VERSION = 5;
+export const AUDIT_SCHEMA_VERSION = 6;
 
 /**
  * The table, parameterised on its name.
@@ -279,6 +290,20 @@ CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
   -- the preimage of every row already written.
   -- A shape check, not hex validation. Lowercase hex is pinned by the round-trip
   -- test; a CHECK that pretended to validate it would be worse than none.
+  -- #219. The host a run was killed for reaching. Null on every row that is not
+  -- an egress_denied refusal, which is almost all of them.
+  --
+  -- This is the column auditRefusalMessage in @getlibero/schema said the table
+  -- did not have: it returned null for egress_denied because naming a host the
+  -- row never recorded would be a fabricated fact in a record whose whole value
+  -- is that it was observed. It can now rebuild the sentence the channel saw,
+  -- which is what that function is for. (No backticks in this block: the DDL is
+  -- a template literal, and one would end it.)
+  --
+  -- One host and not a list, and that is the schema agreeing with the policy
+  -- rather than a limitation: #393 made the first denial terminal, so a run has
+  -- at most one.
+  destination      TEXT,
   prev_hash        TEXT    NOT NULL CHECK (length(prev_hash) = 64),
   row_hash         TEXT    NOT NULL CHECK (length(row_hash) = 64)
 )`;
@@ -409,7 +434,8 @@ export const CHAINED_COLUMNS = [
   "result_bytes",
   "result_is_error",
   "approver",
-  "ticket"
+  "ticket",
+  "destination"
 ] as const;
 
 type ChainedColumn = (typeof CHAINED_COLUMNS)[number];
@@ -530,7 +556,8 @@ function auditRowValues(record: AuditRecord): AuditRowValues {
     // 0 would read as a tool that succeeded and said nothing.
     result_is_error: record.resultIsError === undefined ? null : record.resultIsError ? 1 : 0,
     approver: record.approver ?? null,
-    ticket: record.ticket ?? null
+    ticket: record.ticket ?? null,
+    destination: record.destination ?? null
   };
 }
 
@@ -1236,7 +1263,8 @@ function migrate(db: DatabaseSync, file: string): void {
     row.version === 1 ||
     row.version === 2 ||
     row.version === 3 ||
-    row.version === 4
+    row.version === 4 ||
+    row.version === 5
   ) {
     rebuildAuditTable(db);
     return;

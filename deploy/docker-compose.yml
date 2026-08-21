@@ -346,6 +346,22 @@ services:
       # sheet, no decision, no meter, no audit row. `sh scripts/dev-certs.sh`
       # prints this value when it mints deploy/certs/proxy/client.pem.
       RUNNER_CLIENT_PIN: "${RUNNER_CLIENT_PIN:-}"
+      # Egress (#219). Unset, a run gets no network at all whatever its sheet's
+      # [egress] block says — a stricter rule than the sheet asked for, applied
+      # in the safe direction and logged so the operator can see the channel is
+      # asking for something this deployment has not turned on.
+      #
+      # Set, it names the network a per-run hop joins for its route out. The
+      # sandbox never joins it: the sandbox sits on an ephemeral internal network
+      # whose only other member is the hop, which is what makes enforcement
+      # topological rather than a check the code could decline to make.
+      RUNNER_EGRESS_NETWORK: sandbox-egress
+      # This service's own image, which the hop runs with a different entrypoint
+      # (node dist/hop.js). There is no second image to pin because the hop *is*
+      # this image — if it were substituted, the runner would already be. A
+      # container cannot reliably learn its own image from inside itself, so it
+      # is named here beside the image line above and the two must agree.
+      RUNNER_IMAGE: ghcr.io/getlibero/runner:latest
     volumes:
       # The one privilege, and the only mount that is not a certificate.
       # Read-write because starting a container is a write; there is no
@@ -370,7 +386,12 @@ services:
     # One network, and it is internal. The agent is not on it, so the pin above
     # is the second wall rather than the only one: a compromised agent has no
     # route to this service at all.
-    networks: [runner-control]
+    # Two networks. `runner-control` is where the proxy reaches it;
+    # `sandbox-egress` is the route out it lends to a per-run hop. The runner
+    # itself does not need the second — it never dials anything — but it has to
+    # be able to attach a hop to it, and Docker will not attach a container to a
+    # network the daemon cannot see from this compose project.
+    networks: [runner-control, sandbox-egress]
     restart: unless-stopped
 
   litellm:
@@ -395,6 +416,16 @@ networks:
   runner-control:
     driver: bridge
     internal: true
+  # The hop's route out (#219), and deliberately **not** `libero`. A hop sits on
+  # this and on the run's own internal network, so an allowed host is reachable
+  # — and `proxy:8443` is not, because the proxy is not on this network. Putting
+  # the hop on `libero` would make every allowed destination a path to the
+  # process holding every tool credential.
+  #
+  # The per-run networks are not here: the runner creates and destroys one per
+  # run, `internal: true`, with exactly two members.
+  sandbox-egress:
+    driver: bridge
 
 volumes:
   audit-data:

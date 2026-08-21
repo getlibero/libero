@@ -85,6 +85,15 @@ function transportTo(dir: string, port: number, url?: string): ProxyTransport {
   });
 }
 
+// Cert minting is the slow part of this hook and it got slower in #395, which
+// added the runner's server certificate and the proxy's client certificate to
+// `dev-certs.sh` — two more RSA keypairs per mint, on a script this hook runs
+// twice. Vitest's 10s default is enough on a developer's machine and was not on
+// a loaded CI runner, where the whole file failed with "Hook timed out".
+//
+// A timeout rather than a faster script: the cases are about mutual TLS, not
+// about how long a keypair takes, and the script mints what the deployment
+// actually uses.
 beforeAll(async () => {
   certs = mkdtempSync(join(tmpdir(), "libero-agent-certs-"));
   // A second, unrelated CA. Its certificates are well-formed and worthless.
@@ -127,7 +136,8 @@ beforeAll(async () => {
 
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   port = (server.address() as AddressInfo).port;
-});
+  // See the note above `mint`: two mints of a script that got slower in #395.
+}, 60_000);
 
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));

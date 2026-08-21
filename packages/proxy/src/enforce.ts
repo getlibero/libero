@@ -214,7 +214,25 @@ export type Decision =
 export type Target =
   | { readonly kind: "mcp"; readonly upstream: McpServer }
   | { readonly kind: "builtin"; readonly tool: StoreBuiltinName }
-  | { readonly kind: "builtin"; readonly tool: "run_code"; readonly caps: SandboxCaps };
+  | {
+      readonly kind: "builtin";
+      readonly tool: "run_code";
+      readonly caps: SandboxCaps;
+      /**
+       * The channel's `[egress] allow` patterns, empty for no network (#219).
+       *
+       * Beside `caps` and for the same reason: it is a grant the sheet made, and
+       * an arm that resolved its own could read a different sheet than the one
+       * that authorized the call. Patterns rather than resolved hosts, because
+       * `isEgressAllowed` is what decides and it takes what the operator wrote.
+       *
+       * It comes from `[egress]`, not from the `[[builtin]]` block — the two
+       * blocks stay apart for the reason egress.ts argues at length: merging
+       * them would let listing a host for the sandbox authorize dialling it as
+       * an MCP server, and vice versa.
+       */
+      readonly egressAllow: readonly string[];
+    };
 
 /**
  * The built-ins served by the arm that reads a local file: every one but the
@@ -833,7 +851,12 @@ function decideBuiltin(
   // the block had.
   const target: Target =
     first.name === "run_code"
-      ? { kind: "builtin", tool: "run_code", caps: resolveSandboxCaps(entries.filter(isSandboxEntry)) }
+      ? {
+          kind: "builtin",
+          tool: "run_code",
+          caps: resolveSandboxCaps(entries.filter(isSandboxEntry)),
+          egressAllow: sheet.egress.allow
+        }
       : { kind: "builtin", tool: first.name };
   const limits = resolveLimits(sheet, entries);
   const warning = crossedThreshold(sheet, spend, prices);
@@ -1011,7 +1034,12 @@ export function permittedToolSources(sheet: TeamSheet): PermittedToolSource[] {
       },
       target:
         entry.name === "run_code"
-          ? { kind: "builtin", tool: "run_code", caps: resolveSandboxCaps(named.filter(isSandboxEntry)) }
+          ? {
+              kind: "builtin",
+              tool: "run_code",
+              caps: resolveSandboxCaps(named.filter(isSandboxEntry)),
+              egressAllow: sheet.egress.allow
+            }
           : { kind: "builtin", tool: entry.name }
     });
   }

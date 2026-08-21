@@ -129,10 +129,9 @@ that volume `readOnly` by design and a cancel is a write.
 
 ## The sandbox runner (#368)
 
-Decided in #393, built in #395. The argument is in `packages/proxy/README.md`
-under "Reaching a runtime" and "Enforcing `[egress]`"; what follows is what it
-means for this directory. The egress hop the second section describes is still
-#219 — a run today has no network at all rather than a filtered one.
+Decided in #393, built in #395, and given its egress hop in #219. The argument
+is in `packages/proxy/README.md` under "Reaching a runtime" and "Enforcing
+`[egress]`"; what follows is what it means for this directory.
 
 **It is behind a `runner` profile**, so `docker compose up` does not start it and
 a deployment whose channels never grant `run_code` is unchanged. Turning it on:
@@ -162,14 +161,26 @@ Three networks today, and a fourth when the egress hop lands (#219):
 | --- | --- | --- |
 | `libero` (existing bridge) | `server`, `proxy` | Each other, and out. Unchanged. |
 | `runner-control` (new, `internal: true`) | `proxy`, `runner` | Each other, nothing else. **The agent has no route to the runner at all** — the mTLS fingerprint pin is the second wall, not the only one. |
-| `sandbox-egress` (**#219, not built**) | egress hops only | Out. Deliberately **not** `libero`, so an allowed host cannot become a path to `proxy:8443`. |
-| `sandbox-<runid>` (**#219, not built**) | one sandbox, one hop | Each other. No route out, which is what enforces `[egress]` — see the proxy's README for why that is topological rather than a check. |
+| `sandbox-egress` (new bridge, has a default route) | `runner`, and each run's hop | Out. Deliberately **not** `libero`, so an allowed host cannot become a path to `proxy:8443` — the proxy is not on this network. |
+| `sandbox-<runid>` (per run, ephemeral, `internal: true`) | one sandbox, one hop | Each other, and nothing else. No route out, which is what enforces `[egress]`. |
 
-**Today every run gets `NetworkMode: none` and no hop**, whatever a sheet's
-`[egress]` block says, and there is a test that dials an address rather than
-resolving a name to prove it. The last two rows arrive with #219; until then
-`[egress]` is still validated at load and enforced nowhere, exactly as the docs
-have said since #73.
+**A sheet with no `[egress]` block gets `NetworkMode: none` and no hop at all** —
+not a filtered network, no network. With one, the sandbox joins only its own
+per-run network and the hop joins that plus `sandbox-egress`, so the single
+route out of a run passes through something that checks the channel's list per
+host. A test dials a raw address rather than resolving a name, to prove the
+enforcement is the topology rather than the proxy environment variables.
+
+The per-run network and its hop are created and destroyed by the runner, which
+is why they are not in this file. A leaked one is a bridge interface on the host
+that nothing would clean up, so teardown removes containers first and the
+network last — the daemon refuses to remove a network something is still
+attached to.
+
+Turning egress on is `RUNNER_EGRESS_NETWORK` and `RUNNER_IMAGE` on the runner.
+Without them a run gets no network whatever a sheet says, which is the safe
+direction, and the runner logs `egress_unavailable` so an operator can see their
+channel is asking for something the deployment has not enabled.
 
 **The one line an operator will get wrong.** The runner runs non-root, like both
 existing images and asserted by `scripts/image-checks.sh`, and the Docker socket

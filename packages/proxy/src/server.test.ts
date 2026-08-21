@@ -378,7 +378,10 @@ beforeEach(() => {
   logLines = [];
   // Not a truncate. Nothing can truncate this table — see `auditCursor`.
   auditCursor = lastAuditId();
-});
+// Cert minting dominates this hook and grew in #395, which added two more
+// keypairs to `dev-certs.sh`. Vitest's 10s default is enough locally and was not
+// on a loaded CI runner. See the same note in packages/agent's transport test.
+}, 60_000);
 
 afterAll(() => {
   server.close();

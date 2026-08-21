@@ -570,6 +570,16 @@ export function createProxyServer(options: ProxyServerOptions): Server {
       readonly approver?: string;
       /** Present on every row for a call that passed through the broker. */
       readonly ticket?: string;
+      /**
+       * The host an `egress_denied` refusal named (#219).
+       *
+       * Taken off the refusal the dispatcher produced rather than re-derived,
+       * exactly as `budgetLimit` is taken off the decision's: it is the one fact
+       * this reason carries that the table had no column for until version 6,
+       * and re-deriving it here would be a second opinion about a comparison
+       * that has already been made — by a hop, in another process.
+       */
+      readonly destination?: string;
     }): Promise<void> => {
       // Set on *entry*, not on success, and the difference is load-bearing: this
       // flag is what the catch below reads to decide whether the call still needs
@@ -649,6 +659,7 @@ export function createProxyServer(options: ProxyServerOptions): Server {
               }),
           ...(event.approver !== undefined ? { approver: event.approver } : {}),
           ...(event.ticket !== undefined ? { ticket: event.ticket } : {}),
+          ...(event.destination !== undefined ? { destination: event.destination } : {}),
           ...(event.result !== undefined
             ? {
                 // Bytes, not `String.length`, which counts UTF-16 code units:
@@ -851,13 +862,18 @@ export function createProxyServer(options: ProxyServerOptions): Server {
         }
         case "refused":
           // Refused while serving rather than before: the vault could not resolve
-          // a credential the sheet names (#51). The ticket is on the row because
-          // it was spent — the approval is gone and the call did not run, which
-          // is a thing an operator reading the lifecycle needs to see.
+          // a credential the sheet names (#51), or a sandbox run reached a host
+          // the channel's `[egress]` list does not allow (#219). The ticket is on
+          // the row because it was spent — the approval is gone and the call did
+          // not run, which is a thing an operator reading the lifecycle needs to
+          // see.
           await audit({
             outcome: "refused",
             reason: dispatched.refusal.reason,
-            ...(ticket !== undefined ? { ticket } : {})
+            ...(ticket !== undefined ? { ticket } : {}),
+            ...(dispatched.refusal.reason === "egress_denied"
+              ? { destination: dispatched.refusal.destination }
+              : {})
           });
           return ok({
             outcome: "refused",
