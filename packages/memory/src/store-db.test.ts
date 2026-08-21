@@ -16,6 +16,7 @@ import {
   toMatchQuery
 } from "./store-db.js";
 import type { MessageStore, StoredMessage, StoredScheduledTask } from "./store-db.js";
+import type { SummaryShape } from "@getlibero/schema";
 
 const CHANNEL = "C0ENGINEERING";
 const OTHER = "C0DESIGN";
@@ -180,7 +181,9 @@ describe("the interface", () => {
       "append",
       "cancelScheduledTask",
       "close",
+      "dropEmbeddings",
       "dueScheduledTasks",
+      "embeddingModel",
       "forgetSkillMergeProposal",
       "idleThreads",
       "listCancelledScheduledTasks",
@@ -210,7 +213,8 @@ describe("the interface", () => {
       "skillMergeCandidate",
       "skillMergeNoticed",
       "skillsNeedingEmbedding",
-      "staleThreads"
+      "staleThreads",
+      "summariesNeedingEmbedding"
     ]);
   });
 
@@ -1661,6 +1665,223 @@ describe("reading one thread's summary", () => {
     expect(store.readThreadSummary("1.1")).not.toBeNull();
     store.replaceText("1.1", "actually, something else");
     expect(store.readThreadSummary("1.1")).toBeNull();
+  });
+});
+
+// #282's two halves: what a rebuild has left to embed, and the drop that gives it
+// something to do. Kept together because neither is worth much alone — the read
+// answers nothing on a file whose vectors are all present, and the drop is what
+// makes it answer everything.
+describe("rebuilding a channel's vectors", () => {
+  const vector = (...values: number[]): Float32Array => Float32Array.from(values);
+
+  /** A summary with the shape and text a rebuild cares about, defaults elsewhere. */
+  function summarize(thread: string, shape: SummaryShape, text: string): void {
+    store.append(message(thread, "root"));
+    store.putThreadSummary({
+      thread,
+      shape,
+      text,
+      coversThroughTs: thread,
+      messageCount: 1,
+      at: 1_700_000_000_000
+    });
+  }
+
+  /** The threads `summariesNeedingEmbedding` offered, in the order it offered them. */
+  function pending(limit = 10): string[] {
+    return store.summariesNeedingEmbedding(limit).map(summary => summary.thread);
+  }
+
+  /** The names of every vec0 table in the file, read past the module's API. */
+  function vecTables(path: string): string[] {
+    return raw(path, db =>
+      db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vec_%'`)
+        .all()
+        .map(row => (row as { name: string }).name)
+    );
+  }
+
+  describe("what still needs one", () => {
+    it("offers a summary with no vector, and the whole row rather than the ref", () => {
+      summarize("1.1", "decision", "Chose slim over distroless.");
+
+      expect(store.summariesNeedingEmbedding(10)).toEqual([
+        {
+          thread: "1.1",
+          shape: "decision",
+          text: "Chose slim over distroless.",
+          coversThroughTs: "1.1",
+          messageCount: 1,
+          at: 1_700_000_000_000
+        }
+      ]);
+    });
+
+    it("stops offering one once it has a vector", () => {
+      summarize("1.1", "decision", "Chose slim.");
+      expect(pending()).toEqual(["1.1"]);
+
+      store.putEmbedding({
+        source: { kind: "summary", ref: "1.1" },
+        vector: vector(1, 0, 0),
+        model: "m1",
+        at: 1
+      });
+
+      expect(pending()).toEqual([]);
+    });
+
+    // The DDL's rule, kept in SQL rather than by the caller. A `nothing` row
+    // exists so the sweep stops re-reading a silent thread and it carries no
+    // text at all, so offering one would spend a provider call on the empty
+    // string and put the answer in the corpus that row is kept out of.
+    it("never offers a nothing summary, which has no text and no business in the corpus", () => {
+      summarize("1.1", "nothing", "");
+      summarize("2.2", "decision", "Chose slim.");
+
+      expect(pending()).toEqual(["2.2"]);
+    });
+
+    // Oldest first, which is `staleThreads` reversed: that read races new
+    // conversation and this one works through a fixed backlog, so a bounded
+    // rebuild resumed after it stopped makes progress rather than re-offering
+    // the same head forever.
+    it("offers the oldest thread first, so a bounded rebuild advances", () => {
+      summarize("3.3", "decision", "third");
+      summarize("1.1", "decision", "first");
+      summarize("2.2", "decision", "second");
+
+      expect(pending()).toEqual(["1.1", "2.2", "3.3"]);
+      expect(pending(2)).toEqual(["1.1", "2.2"]);
+    });
+
+    it("offers nothing on a file that has never been summarized", () => {
+      expect(pending()).toEqual([]);
+    });
+
+    // A file under a deployment with no embedding provider is the ordinary case
+    // here, not a broken one, so both reads answer rather than throw.
+    it("answers null from both reads on a file that holds no vectors at all", () => {
+      expect(store.embeddingModel()).toBeNull();
+      expect(store.dropEmbeddings()).toBeNull();
+      expect(store.embeddingModel()).toBeNull();
+    });
+  });
+
+  describe("dropping what is held", () => {
+    beforeEach(() => {
+      summarize("1.1", "decision", "Chose slim.");
+      store.putEmbedding({
+        source: { kind: "summary", ref: "1.1" },
+        vector: vector(1, 0, 0),
+        model: "text-embedding-3-small",
+        at: 1
+      });
+    });
+
+    it("reports the model and width it was holding", () => {
+      expect(store.embeddingModel()).toEqual({ model: "text-embedding-3-small", dims: 3 });
+      expect(store.dropEmbeddings()).toEqual({ model: "text-embedding-3-small", dims: 3 });
+      expect(store.embeddingModel()).toBeNull();
+    });
+
+    // `vec_embedding` and the four shadow tables vec0 keeps beside it, which is
+    // why this counts rather than names them: what a rebuild must not leave
+    // behind is any of them, and their names are sqlite-vec's business.
+    it("takes the vec table, its shadow tables, and its trigger with it", () => {
+      expect(vecTables(file).length).toBeGreaterThan(1);
+      store.dropEmbeddings();
+
+      expect(vecTables(file)).toEqual([]);
+      expect(
+        raw(file, db =>
+          db
+            .prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'embed%'`)
+            .all()
+        )
+      ).toEqual([]);
+    });
+
+    // The property the whole command rests on: a rebuild costs embedding calls
+    // and no completion ones, which is only true if the corpus outlives the
+    // vectors derived from it.
+    it("leaves the corpus alone, which is what makes a rebuild a re-embed", () => {
+      store.dropEmbeddings();
+
+      expect(store.readThreadSummary("1.1")?.text).toBe("Chose slim.");
+      expect(store.recent(10)).toHaveLength(1);
+      expect(pending()).toEqual(["1.1"]);
+    });
+
+    it("answers nothing from nearest, rather than throwing, once the table is gone", () => {
+      store.dropEmbeddings();
+      expect(store.nearest(vector(1, 0, 0), 5)).toEqual([]);
+    });
+
+    // The point of the whole exercise. A vec0 table's width is fixed at
+    // creation, so this width is only reachable through a drop.
+    it("lets the file take a vector of a different width from a different model", () => {
+      expect(() =>
+        store.putEmbedding({
+          source: { kind: "summary", ref: "1.1" },
+          vector: vector(1, 0, 0, 0),
+          model: "text-embedding-3-large",
+          at: 2
+        })
+      ).toThrow(/rebuild/);
+
+      store.dropEmbeddings();
+      store.putEmbedding({
+        source: { kind: "summary", ref: "1.1" },
+        vector: vector(1, 0, 0, 0),
+        model: "text-embedding-3-large",
+        at: 2
+      });
+
+      expect(store.embeddingModel()).toEqual({ model: "text-embedding-3-large", dims: 4 });
+      expect(store.nearest(vector(1, 0, 0, 0), 5).map(hit => hit.source.ref)).toEqual(["1.1"]);
+    });
+
+    // The cached vec statements name a table the DROP took away, and node:sqlite
+    // lets the DROP through with them live rather than refusing it — so a store
+    // that did not clear the cache would throw "no such table" on the next write
+    // through the *same* handle, which is exactly the handle a rebuild uses.
+    it("survives a second drop and a second rebuild on one open handle", () => {
+      store.dropEmbeddings();
+      store.putEmbedding({
+        source: { kind: "summary", ref: "1.1" },
+        vector: vector(0, 1, 0, 0),
+        model: "m2",
+        at: 2
+      });
+      store.dropEmbeddings();
+      store.putEmbedding({
+        source: { kind: "summary", ref: "1.1" },
+        vector: vector(0, 1),
+        model: "m3",
+        at: 3
+      });
+
+      expect(store.embeddingModel()).toEqual({ model: "m3", dims: 2 });
+      expect(store.nearest(vector(0, 1), 5).map(hit => hit.source.ref)).toEqual(["1.1"]);
+    });
+
+    it("clears every kind, not only the one that asked", () => {
+      store.putEmbedding({
+        source: { kind: "skill", ref: "deploy-runbook" },
+        vector: vector(0, 1, 0),
+        model: "text-embedding-3-small",
+        at: 1
+      });
+
+      store.dropEmbeddings();
+
+      expect(
+        raw(file, db => db.prepare(`SELECT COUNT(*) AS n FROM embedding_source`).get())
+      ).toEqual({ n: 0 });
+    });
   });
 });
 
