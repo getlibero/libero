@@ -37,13 +37,23 @@ import { DENIED_EVENT, HOP_LISTENING_EVENT } from "./hop-server.js";
 export const SANDBOX_WORKDIR = "/work";
 
 /**
- * How much scratch space the tmpfs gets, in bytes.
+ * How much scratch space the tmpfs gets: the channel's memory cap, exactly.
  *
- * Deliberately not a sheet field. tmpfs is *memory*, so a large workdir is a way
- * to spend the memory cap without appearing to, and a channel that could set
- * both would be setting one bound twice. Fixed here, and small.
+ * Not a sheet field of its own, and the reason changed shape rather than going
+ * away. The first version was a fixed 64 MiB, on the argument that tmpfs is
+ * *memory* and a separate workdir size would be a way to spend the memory cap
+ * without appearing to. That argument was right and the conclusion was wrong:
+ * deriving the size from the cap is what actually makes it one bound instead of
+ * two, because tmpfs pages are charged to the same cgroup — a program that fills
+ * the workdir hits `memory_mb` and is killed for it, which is the behaviour
+ * wanted and is what a fixed size could not give.
+ *
+ * 64 MiB was also simply too small for the thing people reach for first:
+ * `pip install numpy` fails on it with "No space left on device". A channel that
+ * wants to install packages raises `memory_mb`, which is the one number it
+ * should have to think about.
  */
-export const SANDBOX_TMPFS_BYTES = 64 * 1024 * 1024;
+export const sandboxTmpfsBytes = (memoryMb: number): number => memoryMb * 1024 * 1024;
 
 /**
  * The most processes a run may have.
@@ -256,7 +266,7 @@ async function build(
     tmpfs: SANDBOX_WORKDIR,
     memory: caps.memoryMb * 1024 * 1024,
     nanoCpus: nanoCpus(caps.cpus),
-    tmpfsSize: SANDBOX_TMPFS_BYTES,
+    tmpfsSize: sandboxTmpfsBytes(caps.memoryMb),
     pidsLimit: SANDBOX_PIDS_LIMIT
   } as const;
 

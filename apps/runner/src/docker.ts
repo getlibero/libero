@@ -247,12 +247,30 @@ export function createDockerClient(options: DockerClientOptions): DockerClient {
         HostConfig: {
           ReadonlyRootfs: true,
           NetworkMode: spec.network?.name ?? "none",
-          // `mode=1777` is load-bearing, not decoration. Docker mounts a tmpfs
-          // root-owned and 0755 by default, and the container runs as uid 65534
-          // — so without it the one writable path in the sandbox is writable by
-          // nobody, and every program that opens a file fails. The suite caught
-          // it because the read-only-rootfs case has a positive control.
-          Tmpfs: { [spec.tmpfs]: `rw,noexec,nosuid,mode=1777,size=${spec.tmpfsSize}` },
+          // Two of these options are load-bearing and neither is obvious.
+          //
+          // `mode=1777`, because Docker mounts a tmpfs root-owned and 0755 by
+          // default and the container runs as uid 65534 — so without it the one
+          // writable path in the sandbox is writable by nobody, and every
+          // program that opens a file fails. The suite caught that because the
+          // read-only-rootfs case has a positive control.
+          //
+          // `exec`, because **Docker adds `noexec` unless you ask for the
+          // opposite** — omitting it is not enough — and a `noexec` workdir
+          // cannot `dlopen` a shared object. That rules out every native Python
+          // wheel: numpy, pandas, cryptography, lxml, pillow. The symptom is
+          // `failed to map segment from shared object`, which reads like a
+          // corrupt download rather than a mount option.
+          //
+          // Dropping it is a real weakening and worth naming as one: a program
+          // can now write a binary here and run it. What makes that the right
+          // trade is that this container exists to run arbitrary code already,
+          // so `noexec` was stopping downloaded *native* binaries and nothing
+          // else — while the boundary that matters is unchanged and is a list:
+          // read-only rootfs, every capability dropped, no-new-privileges,
+          // non-root, no network unless the sheet grants one, pids/cpu/memory
+          // caps, and the container destroyed when the call returns.
+          Tmpfs: { [spec.tmpfs]: `rw,exec,nosuid,mode=1777,size=${spec.tmpfsSize}` },
           Memory: spec.memory,
           // Without this the kernel counts swap separately and a container can
           // exceed its memory cap by swapping. Equal values mean no swap.
