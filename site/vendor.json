@@ -1,0 +1,25 @@
+{
+  "$comment": [
+    "Third-party files copied into this site verbatim, and how to tell when a copy has fallen behind.",
+    ".github/workflows/vendor-check.yml reads this file every Monday. Changing a vendored file means",
+    "updating its hash here in the same commit, or that check fails on the next run.",
+    "See site/README.md, 'Analytics', for why count.js is vendored rather than loaded from a CDN."
+  ],
+  "count.js": {
+    "vendoredAs": "site/public/count.js",
+    "servedAt": "/count.js",
+    "upstream": "https://gc.zgo.at/count.v5.js",
+    "sha256": "9e4391f5c18cb24de433b6ef31d8b1f1c85ee41c6f0ad274b28664168063725a",
+    "license": "ISC",
+    "source": "https://github.com/arp242/goatcounter/blob/main/public/count.v5.js",
+    "$pin": [
+      "count.v5.js is a frozen release: one commit upstream, 2025-06-09, untouched since.",
+      "So this copy cannot drift, and staleness is not the question to ask about it. What the",
+      "check watches instead is whether upstream's unpinned count.js has moved past what v5 does,",
+      "and whether a count.v6.js has appeared. v3, v4 and v5 are served today; v6 is not."
+    ],
+    "latest": "https://gc.zgo.at/count.js",
+    "latestSha256AtSync": "792b7abd26c1fb6ae62906833e09a301251e2641816e69e4f95aba518f3fe3f0",
+    "syncedOn": "2026-08-21"
+  }
+}

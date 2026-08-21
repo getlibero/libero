@@ -1,17 +1,26 @@
 ---
 /**
- * GoatCounter, on our own subdomain.
+ * GoatCounter, on our own subdomain, with the script served from ours too.
  *
  * Chosen for what it does not do: no cookies, no cross-site identifier, no
  * personal data, and nothing to consent to. A project whose pitch is that
  * credentials stay in one process should not be the one shipping a tracker.
  *
- * Two hosts rather than one, and not by preference. The collection endpoint is
- * stats.getlibero.com, a CNAME onto GoatCounter — but the custom domain serves
- * only /count, not /count.js, which 404s there. So the script comes from
- * GoatCounter's CDN and the data goes to our subdomain. If they ever serve the
- * script from custom domains, moving it here removes the third-party request
- * entirely and nothing else changes.
+ * `count.js` is vendored into public/ rather than loaded from GoatCounter's
+ * CDN, so a page makes no third-party request at all. The custom domain cannot
+ * serve it — stats.getlibero.com/count.js is a 404, and GoatCounter's own
+ * settings page calls the custom domain "just intended as a convenient vanity
+ * domain" — so the choice was our origin or theirs, not which of theirs. Ours
+ * also removes an unpinned third-party script from every page, which mattered
+ * more than the request did.
+ *
+ * The copy is count.v5.js, a frozen release rather than the rolling count.js:
+ * one commit upstream in 2025 and untouched since, so there is a fixed URL to
+ * diff against. Its provenance and hash are in site/vendor.json, and
+ * .github/workflows/vendor-check.yml opens an issue when upstream moves past
+ * it. The /count endpoint is guaranteed backward-compatible — a breaking
+ * change would land on a new one, e.g. /count/v2 — so an old copy loses
+ * features rather than breaking.
  *
  * `is:inline` because Astro otherwise takes ownership of a <script> tag and
  * bundles it; this one has to reach the page exactly as written.
@@ -19,15 +28,10 @@
 ---
 
 {
-  /* Production only — dev pages make no request to the CDN at all. count.js
-     also refuses to count localhost, 127.* and the private ranges on its own,
-     so `pnpm preview` exercises the real tag without polluting the numbers. */
+  /* Production only — dev pages fire no beacon. count.js also refuses to count
+     localhost, 127.* and the private ranges on its own, so `pnpm preview`
+     exercises the real tag without polluting the numbers. */
   import.meta.env.PROD && (
-    <script
-      is:inline
-      data-goatcounter="https://stats.getlibero.com/count"
-      async
-      src="https://gc.zgo.at/count.js"
-    />
+    <script is:inline data-goatcounter="https://stats.getlibero.com/count" async src="/count.js" />
   )
 }
