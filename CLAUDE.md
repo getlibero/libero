@@ -499,6 +499,16 @@ optional properties reject explicit `undefined`.
   job fails any `pull_request_target` workflow containing an
   `actions/checkout` step. Third-party actions in those workflows are pinned to
   a SHA, not a tag.
+- **Pull requests target `main`.** The `base-guard` job in `ci.yml` fails one
+  that does not. CodeQL runs as GitHub's *default setup*, which only analyzes
+  pull requests aimed at the default branch — aim one elsewhere and it never
+  runs, the `code_scanning` rule has no result to judge, and the merge blocks
+  with every other check green and nothing to point at. Retargeting when the
+  parent merges fires no `pull_request` event and reopening does not help; only
+  a `synchronize` against `main` does. This is `pages.yml`'s rule — a gate has
+  to run everywhere to be able to gate anywhere — applied to the one gate whose
+  triggering we do not control, so it forbids the case instead. **Sequencing is
+  issue dependencies, not stacked branches**, which is why that costs nothing.
 - **CODEOWNERS review** covers `packages/proxy`, `packages/schema`,
   `apps/proxy-server`, `.github/`, `.claude/`, `SECURITY.md`, and
   `GOVERNANCE.md` (currently inert — the teams don't exist yet; see the note
