@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test --test-reporter=spec 'dist/**/*.test.js'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=dot 'dist/**/*.test.js'"
   },
   "devDependencies": {
     "expect": "^30.4.1"

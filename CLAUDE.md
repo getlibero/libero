@@ -36,7 +36,7 @@ and a `tsconfig.json` extending `../../tsconfig.base.json`. A package with no
 tests yet needs no special flag: the glob matches nothing and the run passes.
 
 **The suite runs `node:test` over the compiled output, and every `test` script
-is the same string** — `tsc -p tsconfig.json && node --test --test-reporter=spec
+is the same string** — `tsc -p tsconfig.json && node --test --test-reporter=dot
 'dist/**/*.test.js'` (#202). Assertions are Jest's standalone `expect`, which
 runs under any runner; `it.each` and a polling `waitFor` are
 `@getlibero/test-kit`, because `node:test` has neither.

@@ -26,7 +26,7 @@ import { expect } from "expect";
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** The canonical script: compile the package, then run the suite out of `dist`. */
-const TEST_SCRIPT = "tsc -p tsconfig.json && node --test --test-reporter=spec 'dist/**/*.test.js'";
+const TEST_SCRIPT = "tsc -p tsconfig.json && node --test --test-reporter=dot 'dist/**/*.test.js'";
 
 /** Every workspace package, by the same directories `pnpm-workspace.yaml` names. */
 function packages(): { name: string; manifest: Record<string, unknown> }[] {

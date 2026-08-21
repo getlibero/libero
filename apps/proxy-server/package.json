@@ -18,7 +18,7 @@
     "vault": "node dist/vault.js",
     "budget": "node dist/budget.js",
     "audit": "node dist/audit.js",
-    "test": "tsc -p tsconfig.json && node --test --test-reporter=spec 'dist/**/*.test.js'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=dot 'dist/**/*.test.js'"
   },
   "dependencies": {
     "@getlibero/proxy": "workspace:*",

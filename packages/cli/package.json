@@ -37,7 +37,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test --test-reporter=spec 'dist/**/*.test.js'"
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=dot 'dist/**/*.test.js'"
   },
   "devDependencies": {
     "@getlibero/atomic-write": "workspace:*",
