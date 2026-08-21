@@ -14,6 +14,16 @@
 // `McpServer`, so neither can be given the other's work and neither needs a
 // branch guarding against it.
 //
+// **The code-execution built-in does not land here** (#368), and #393 decided
+// that rather than leaving it to be discovered. It is a built-in in every sense
+// the team sheet cares about, so the obvious move is to add a case to the switch
+// below — and that case would open a network connection to the runner, which is
+// the one thing the paragraph above says this arm does not do. It gets a third
+// arm on `createToolDispatcher` instead, keyed off the same `BuiltinToolName`.
+// The cost is one more branch in a switch that has no I/O in it; what it buys is
+// that "no vault, no client pool, no network" stays a fact about this file
+// rather than a sentence someone has to remember to delete.
+//
 // ## Neither tool writes
 //
 // `search_channel_history` reads, and `schedule_task` mints a ticket and returns

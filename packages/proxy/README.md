@@ -257,8 +257,11 @@ the walk needs the serialization as well as the SQL, and a walk that recomputed
 with a different encoding would report a break on every untampered file ever
 written.
 
-Still to come, with its own issue: the egress allowlist (#73).
-`http-dispatcher.ts` marks where the egress check slots in.
+Still to come, with its own issue: the egress allowlist's first live caller
+(#219), which arrives with the code-execution sandbox (#368). Where it goes is
+decided rather than open — "Reaching a runtime" and "Enforcing `[egress]`" below
+— and it is not a call site in this package. `http-dispatcher.ts` says why it
+makes no such check, and that stays true.
 
 The proxy pins no protocol revision of its own any more. The SDK owns the wire
 since #188, so keeping up with the specification is a dependency bump rather
@@ -715,6 +718,232 @@ exhaustive switch. Two `Record`s over the enum and one switch, so there is no
 order in which a half-added built-in compiles — and the approval entry is in that
 list because a built-in with no declared default would silently inherit a guess
 about somebody else's naming.
+
+## Reaching a runtime
+
+The code-execution built-in (#368) needs a container runtime, and this process
+must not be able to reach one. `deploy/docker-compose.yml` argues the second half
+where the mount would be: a process that can reach the daemon socket can start a
+privileged container mounting the host's root filesystem, so giving the socket to
+the process holding every tool credential is a supported path to host root. That
+is the trade this package exists to refuse.
+
+**The socket moves rather than returns.** A separate `runner` service holds it.
+The proxy reaches it over mutual TLS with one narrow endpoint: *run this code
+under this run-spec*. The runner holds no credential, and it **constructs the
+container spec itself** — the request has no field that reaches `Binds`,
+`Privileged`, a capability set, or an image name. The privilege and the
+credentials then live in two different processes, which is the inverse of the
+mount rather than a softened version of it.
+
+**The rule that rejects most of the alternatives at once.** Any generic container
+API — the raw socket, a path-filtering socket proxy, a rootless-Podman sidecar's
+REST endpoint, a daemon authorization plugin — takes a *spec*, and a spec has
+`Binds` and `Privileged` in it. A filter on the verb is not a constraint on the
+spec: a permitted `POST /containers/create` still accepts a body that mounts `/`.
+So the process that **constructs** the spec has to be ours, and the request that
+reaches it must have no field that reaches the spec. Every shape below fails or
+passes on that sentence.
+
+| Shape | Why not |
+| --- | --- |
+| The socket, mounted here | Root-equivalence in the process holding every tool credential. The original decision; unchanged. |
+| A filtering socket proxy | Filters the verb, not the body. See the rule above. |
+| Rootless Podman or a user-namespace sandbox inside this process | No daemon, which is genuinely attractive. But it puts container-creation privilege back in the credential-holding process, and it leans on kernel features no instance type in the deployment guide guarantees. |
+| Docker-in-Docker sidecar | Wants `--privileged`. Strictly worse than the thing being avoided. |
+| An in-process Wasm/WASI or `isolated-vm` sandbox | The cheapest shape and the one that will be proposed again, so it gets a reason rather than silence. It puts the sandbox boundary *inside* the process holding every tool credential, which is the socket trade moved one layer in — a single escape lands on the vault. Its egress story is API interception, which is convention, and the next section is a rejection of convention. And the tool's value is a real toolchain, which an isolate does not have. |
+| A host-side runner daemon over a bind-mounted unix socket | Same privilege split, and it would work. It lives outside `docker compose up`, so it needs its own install, upgrade and restart story, and the deployment guide's restart-as-recovery promise is a promise about one compose file. |
+| Firecracker or Kata microVMs | Wants `/dev/kvm`, and **no instance type the deployment guide names has nested virtualization** — not the minimum sizes, not the recommended ones. Later work, not a 0.4 option. |
+
+gVisor (`runsc`) stays what the architecture says it is: documented for hardened
+deployments, not required.
+
+**The runner must not trust the CA alone.** `scripts/dev-certs.sh` mints one
+CA, and its `ca.pem` is shared with both containers — the agent holds client
+keys signed by it. A runner whose listener trusted that CA would accept a call
+from a compromised agent process: no team sheet, no `decide`, no meter, no audit
+row. That is the security property inverted, by a service added to protect it.
+
+Two things close it, and both are load-bearing:
+
+- **A pinned client fingerprint.** The runner accepts exactly one, supplied as
+  `RUNNER_CLIENT_PIN`. This is `identity.ts`'s discipline verbatim — a
+  CA signature is necessary and not sufficient, and the pin is the
+  authorization — so the deployment has one idea in it rather than two.
+- **A network the agent has no route to.** The runner sits on its own
+  `internal: true` network whose only members are this process and the runner.
+  Putting it on the shared bridge, where mutual TLS is the only barrier, is the
+  shape to reject: the pin should be the second wall, not the only one.
+
+**What this costs, said plainly.** Compromising the *runner* is host root. That
+is a real loss and it is the better trade for four checkable reasons: the runner
+holds no credential; it is unreachable from the agent; it parses one fixed-shape
+request from one pinned peer; and it treats the run's output as hostile bytes —
+bounded, never parsed, never interpolated. That last one matters more than it
+looks, because the runner's real input surface is a sandbox's stdout, not its own
+request. "A fraction of the proxy's surface" is a claim those four sentences make
+checkable rather than a comforting one.
+
+**The seam here.** The runner client is a network client, which is the one thing
+`builtin-dispatcher.ts` says its arm does not hold. So the code-execution built-in
+gets a **third arm on `createToolDispatcher`**, not a widening of the built-in
+arm: `Target` stays `{kind:"builtin", tool}`, the switch branches on the tool
+name and still has no I/O in it, and both files' headers stay literally true. The
+new arm gets its own `no-restricted-imports` block barring `vault`, `token-store`
+and `grant-flow`, which is how "the runner holds no credential" becomes something
+CI checks rather than something this paragraph asserts. The run-spec's caps and
+allow list ride on the `Decision`, for the reason `ToolDispatcher` already gives:
+a dispatcher that resolved the sheet itself could get a different answer than the
+decision did, because sheets reload on file change.
+
+`deploy/README.md` has the operational half — what the service mounts, what each
+network can reach, and the one variable an operator will get wrong.
+
+## Enforcing `[egress]`
+
+`isEgressAllowed` has had adversarial tests and no caller since #73. The sandbox
+is the caller (#219), and the first thing to get right is that **it is not a call
+site.** A check on the way out works when the destination is announced;
+sandboxed code opens sockets nobody declared, so there is no line to put one on.
+
+**Enforcement is topological.** The sandbox runs on a per-run `internal: true`
+network with no route out. The only other member is a CONNECT hop that calls
+`isEgressAllowed` once per host. Code that ignores `HTTP_PROXY`, or dials a raw
+address, reaches nothing — not because it was checked and refused, but because
+there is nowhere for the packet to go. **A sheet with no `[egress]` block gets no
+hop and no network at all.**
+
+**The hop is ours, and that is not a build-versus-buy preference.** #219's
+standing rule is that a caller which reimplements matching instead of calling
+`isEgressAllowed` is a review failure — and Squid, tinyproxy, or any off-the-shelf
+CONNECT proxy expresses its allowlist in its own ACL syntax, which *is*
+reimplementing it. The near-miss behaviour in `egress.ts` is the security
+deliverable of that issue, and it is cheaper to write a CONNECT hop that imports
+the function than to prove someone else's matcher agrees with it. The hop ships as
+a second entrypoint on the runner's image, the way `apps/proxy-server` already
+carries `vault`, `audit`, `grant` and `tasks`, so it inherits the image assertions
+for free.
+
+**Per-run, not one shared hop.** Four reasons, strongest first:
+
+1. A shared hop has to identify which run is calling it, which means a bearer
+   token in the sandbox's environment. The sandbox path's whole claim is that it
+   carries no credential, and a shared hop breaks that by construction in the one
+   process specifically designed to be untrusted.
+2. A shared network lets concurrent runs from different channels reach each
+   other. Channel isolation is what the client certificate exists for.
+3. A shared hop has to re-resolve the sheet by channel — the second lookup
+   `ToolDispatcher` forbids, one process over. A per-run hop is configured from
+   the allow list that rode on the `Decision`, so the sheet is still read once
+   per call.
+4. Only a per-run hop can tear down its own run, which the refusal below needs.
+
+The cost is two containers per concurrent run, against a deployment guide whose
+minimum is 2 vCPU and 2 GB. Worth flagging for whoever builds it:
+**`PROXY_MAX_UPSTREAM_CONCURRENCY` does not bound this.** It bounds the MCP pool.
+There is no concurrency cap on built-ins today, and this is the built-in that
+needs one.
+
+**CONNECT only, which decides two things an operator will trip over.** A CONNECT
+hop reads a host and a port from the request line and never the payload: no
+interception, no CA injected into the sandbox, no plaintext. That is deliberate —
+the hop is an allowlist check, not a second redaction point, because redaction
+belongs to `outbound.ts` and lives on the credential path, which this is not.
+It follows that:
+
+- **Absolute-form requests are refused.** `GET http://host/path` is what a client
+  sends when `HTTP_PROXY` is set, and serving it would make the hop a forward
+  proxy reading bodies. So plain `http://` does not work.
+- **`[egress]` grants HTTP and HTTPS and nothing else.** `git://`, postgres, ssh
+  and bare TCP have no route. `allow = ["api.github.com"]` is a narrower grant
+  than it reads as: `git clone https://…` works, `git clone git://…` does not.
+  This needs saying in the team-sheet documentation too, and #397 owns that.
+
+DNS, the address cases, and why loopback and link-local are denied ahead of the
+allowlist while RFC1918 is not, are argued in `packages/schema/src/egress.ts`
+beside the matcher they constrain.
+
+### A denied destination ends the run
+
+The first denied host stops the run. The call's audit row — its **one** audit row
+— is `outcome = refused`, `refusalReason = egress_denied`, with the destination on
+it. It came back through the dispatcher, so it is `Dispatch.refused`, which is
+where `credential_unresolved` already sits: a refusal discovered while serving
+rather than a permission denied before it.
+
+The alternative was to let the connection fail and the run continue. It lost on
+five counts, and they are recorded because it is the humane-looking option and
+will be proposed again:
+
+- **One row per call is an invariant, not a habit.** `server.ts` says writing two
+  rows would break it and make every count downstream wrong, `server.test.ts`
+  locks it, and the `audited` flag makes the closure at-most-once by design. A
+  mid-run denial has no second row to live in.
+- **The hop could not write one anyway.** The chain is single-writer with a
+  unique index on `prev_hash`, so a second writer forks it rather than appending
+  to it. The denial can only reach the log by coming back through the run result
+  — which is the instant the call's own row is written.
+- **Terminal makes at most one destination exist per call**, which is exactly one
+  column. The policy and the schema agree instead of negotiating.
+- **It closes a gap `audit.ts` names about itself.** `auditRefusalMessage`
+  returns `null` for `egress_denied` because the table has no column for the
+  destination, and inventing one would be "a fabricated fact in a record whose
+  whole value is that it was observed". The remedy that comment implies is to
+  make the row say. A nullable `destination` appended at schema version 6 is a
+  widening of exactly the kind version 4 already did with three columns, and it
+  belongs to #219 alongside the wiring — cheaper there than after 0.4 ships,
+  because `migrate` is a rebuild-and-rename and by then there are chained rows in
+  the field.
+- **It keeps an exfiltration attempt visible.** A run that continued would bury
+  the one attack the security page names inside a `ran` row's log line, and would
+  still return its result. Killing it makes the attempt a refusal a human reads.
+
+There is precedent in both directions and both point the same way. `outbound.ts`
+refuses to follow a redirect to a host nothing declared — it does not fetch and
+warn — and that is the only live egress-adjacent check in the tree today.
+`schedule_task`'s three caps already refuse from inside the dispatcher after
+reading arguments.
+
+**What it costs.** A run that does real work and then touches one unlisted
+telemetry host or package CDN loses all of it, and **the refused call was still
+metered**, because `recordToolCall` runs before dispatch. That is the same
+direction `credential_unresolved` and `schedule_task`'s caps already take, and it
+is a real cost rather than an acceptable-sounding one: an operator's first few
+`[egress]` blocks will be written by watching runs fail. What makes it liveable
+is that **the channel's allow list is declared to the model in the built-in's
+tool description**, so a denial is not how the model finds out what it may
+reach — it is a bug in generated code or an attack. #394 owns that surface, and
+it is a requirement rather than a nicety.
+
+**One distinction to keep, because it is easy to collapse.** A run killed at its
+wall-time cap is *not* a refusal and not a `ProxyError` — the request was served.
+A denied destination *is* a refusal. The difference is not whether the container
+ran. It is that a timeout is a resource fact and a denied destination is a
+governance decision the team sheet made.
+
+### If the hop balloons
+
+The honest fallback is that 0.4 ships **no network for sandboxed code, ever** —
+`network: none` on every run, no hop, no allowlist consulted. It is a smaller
+thing to build and it is strictly safer. What it descopes, named rather than
+implied:
+
+- #219 gets no live caller and `egress_denied` stays unconstructed, so the
+  destination column has no reason to exist yet.
+- Every place that says `[egress]` is validated at load and enforced nowhere goes
+  on saying it — the root `README.md` and `SECURITY.md`, four docs pages, the
+  marketing page's code sample, and the example channel sheet.
+- The exfiltration case in the e2e suite becomes "the container has no network"
+  rather than "the unlisted host was refused", and its positive control has
+  nothing left to prove. The suite's rule that positive controls are load-bearing
+  makes that a real loss, not a cosmetic one.
+- The v0.4.0 milestone's own definition of done commits in writing to a
+  destination outside the list being refused before a connection is opened. That
+  text would have to be edited, not just the documentation.
+
+Worth saying in the same breath: **the runner decision survives the fallback
+untouched.** The two decisions on this page are independently shippable, and the
+fallback costs only the second.
 
 ## Endpoints
 

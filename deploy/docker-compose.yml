@@ -255,9 +255,17 @@ services:
       # on the host, and would make "compromising the agent yields no tool
       # credentials" a claim about the less interesting direction.
       #
-      # When #154 lands it needs a sandbox the proxy can drive without the
-      # daemon socket. That is a design question for that issue, not a mount to
-      # restore.
+      # The code-execution sandbox (#368) is the thing that actually needs a
+      # runtime, and #393 decided how it gets one: the socket moves rather
+      # than returns. A separate `runner` service holds it and exposes one
+      # narrow mTLS endpoint — a run-spec it does not take fields from — on a
+      # network the agent has no route to. The privilege and the credentials
+      # then sit in two different processes, which is the inverse of the mount
+      # this comment refuses. See packages/proxy/README.md for the argument and
+      # deploy/README.md for what that service mounts; #397 lands the block.
+      #
+      # This line does not change when it does. Nothing gives the proxy the
+      # socket.
     networks: [libero]
     # No published ports: the proxy listens only on the private network.
     restart: unless-stopped

@@ -22,6 +22,49 @@
 // nothing can influence. It lives in the schema package because `EgressPattern`
 // is a team-sheet field and this is the only code that knows what `*.` means in
 // one; splitting the syntax from its meaning is how the two drift.
+//
+// **Who calls this, and why it is not a call site.** #393 decided the shape, and
+// it is worth having here because the obvious reading of `isEgressAllowed` — a
+// check somewhere on the way out, like the one ../../proxy/src/outbound.ts
+// explains it does not make — is wrong for the caller this list was built for.
+// Sandboxed code opens sockets nobody declared, so there is no line to put a
+// check on. Enforcement is topological instead: the sandbox runs on a network
+// with no route out, whose only other member is a CONNECT hop that calls this
+// function once per host. Code that ignores `HTTP_PROXY`, or dials a raw
+// address, reaches nothing — not because it was checked and refused, but because
+// there is nowhere for the packet to go. A sheet with no `[egress]` block at all
+// gets no hop and no network.
+//
+// Three consequences that belong with the matcher rather than with the hop:
+//
+// - **The hop resolves names; the sandbox resolves nothing.** Not a tidiness
+//   point — DNS is itself an exfiltration channel, and a query for
+//   `<payload>.attacker.com` has already leaked whether or not the connection is
+//   ever allowed. A resolver with a route out defeats the whole arrangement. It
+//   also keeps the check honest in the one direction that works: the hop matches
+//   the name an operator wrote and then dials the name it matched, rather than
+//   being handed an address and reverse-mapping it.
+// - **A raw address is checked as one.** `CONNECT 1.2.3.4:443` goes through
+//   `admits` as an IP literal, which never matches a wildcard, so dialling by
+//   address is denied unless an operator literally wrote that address down. That
+//   is how `169.254.169.254` dies to default deny. The hop denies loopback and
+//   link-local ahead of this function regardless, because a listed name that
+//   *resolves* to the metadata address is a rebinding an allowlist over names
+//   structurally cannot see — and it stops there rather than denying RFC1918,
+//   because `*.internal.example.com` is the worked example this list ships with.
+// - **The list grants HTTP and HTTPS, and nothing else.** A CONNECT hop reads a
+//   host and a port and never the payload, which is why it is an allowlist check
+//   and not a second redaction point. It also means `git://`, postgres, ssh and
+//   bare TCP have no route at all. An operator writing `allow =
+//   ["api.github.com"]` is making a narrower grant than that line looks like:
+//   `git clone https://…` works and `git clone git://…` does not.
+//
+// A caller that expresses this list in some other syntax — an off-the-shelf
+// proxy's ACL file being the tempting one — is the review failure #219 names,
+// and the reason is that the near-miss behaviour below is the security
+// deliverable. It is cheaper to write a CONNECT hop that imports this function
+// than to prove someone else's matcher agrees with it. See
+// packages/proxy/README.md under "Enforcing [egress]" for the rest.
 
 import { z } from "zod";
 
