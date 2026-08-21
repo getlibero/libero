@@ -352,8 +352,11 @@ END;
 -- chances for a copy to disagree with the table it describes.
 --
 -- The consequence the issue names is what \`putEmbedding\` enforces: changing the
--- embedding model is a **stated rebuild**, not something a file absorbs. There
--- is no rebuild command yet; #231 and #232 are what will need one.
+-- embedding model is a **stated rebuild**, not something a file absorbs. #282
+-- built the way out: \`dropEmbeddings\` clears this row and the vec table with it,
+-- and \`apps/server\`'s \`rebuild\` entrypoint is the operator's word for doing so.
+-- The corpus is untouched by either, so the price is embedding calls and not
+-- completion ones.
 CREATE TABLE IF NOT EXISTS embedding_model (
   id     INTEGER PRIMARY KEY CHECK (id = 1),
   model  TEXT NOT NULL,
@@ -1156,6 +1159,37 @@ export interface MessageStore {
    */
   removeEmbedding(source: EmbeddingSource): boolean;
   /**
+   * The model and width every vector in this file is under, or `null` for a file
+   * that holds none.
+   *
+   * Exposed for the rebuild command (#282), which has to tell an operator what
+   * their store holds before offering to throw it away. Every other caller wants
+   * `putEmbedding`'s refusal instead: this answers what is, and that answers
+   * whether what you have agrees with it.
+   */
+  embeddingModel(): { readonly model: string; readonly dims: number } | null;
+  /**
+   * Forgets every vector in this file and the model stamp over them, so the next
+   * `putEmbedding` may create the table again at whatever width it is given.
+   *
+   * Answers what was held, or `null` if nothing was. **The corpus is untouched**
+   * — `thread_summary` rows and the skill index survive, which is what makes a
+   * rebuild cost embedding calls and no completion ones.
+   *
+   * This is the way out that `putEmbedding`'s refusal has always pointed at and
+   * that #229 named without building: a `vec0` table's width is fixed at
+   * creation, so a changed embedding model is a stated rebuild, and this is the
+   * statement. It is not a repair — nothing here is broken — so it is deliberately
+   * not reachable from the sweep, from a route, or from anything a model can
+   * influence. `apps/server`'s `rebuild` entrypoint is its only caller.
+   *
+   * One transaction, for `ensureEmbeddingSpace`'s reason exactly inverted: a
+   * crash between dropping the table and clearing the stamp would leave a row
+   * claiming a width for a table that is gone, and the next `putEmbedding` would
+   * agree with the row and then fail against the absent table.
+   */
+  dropEmbeddings(): { readonly model: string; readonly dims: number } | null;
+  /**
    * Records one thread's summary, replacing any this store already held.
    *
    * **A `nothing` summary is stored too, and that is not a contradiction.** The
@@ -1233,6 +1267,34 @@ export interface MessageStore {
    * invalidated between the two should skip it rather than fail the task.
    */
   readThreadSummary(thread: string): StoredThreadSummary | null;
+  /**
+   * Summaries worth a vector that do not have one, oldest first.
+   *
+   * `skillsNeedingEmbedding`'s counterpart, and the read a rebuild walks (#282).
+   * Derived by LEFT JOIN rather than by a flag, for that method's reason: a
+   * dirty bit would be a second fact to keep in step with the vectors it
+   * describes, and this cannot go out of step with them at all.
+   *
+   * **A `nothing` summary is never offered, and the filter is in the query.**
+   * The DDL's argument is that a row records a thread was assessed while the
+   * vector store is the corpus, so embedding chatter would put a vector in the
+   * neighbourhood of every question. The sweep keeps that rule by not calling
+   * its `embed` for a `nothing` shape; this read keeps it in SQL instead, so the
+   * second caller cannot forget it — `SEARCH_SKILLS_SQL`'s argument about a rule
+   * split across two paths, met here for the first time.
+   *
+   * Answers the whole summary rather than the thread ref, which is where it
+   * departs from `skillsNeedingEmbedding`: a skill's words live in its file and
+   * this store holds only a cache of them, but a summary's text *is* this row.
+   * Answering refs would make the caller pay one `readThreadSummary` per hit for
+   * text already read.
+   *
+   * Oldest first, so a bounded rebuild resumed after it stopped makes progress
+   * through a backlog rather than re-offering the same head. That is the
+   * opposite of `staleThreads`, deliberately: that read races new conversation,
+   * and this one has a fixed set to get through.
+   */
+  summariesNeedingEmbedding(limit: number): readonly StoredThreadSummary[];
   /**
    * Every skill this index holds, by name, with the metadata a caller needs to
    * tell whether its file has moved.
@@ -2063,6 +2125,27 @@ const SKILLS_NEEDING_EMBEDDING_SQL = `SELECT s.name
  * Ordered by name for `LIST_SKILLS_SQL`'s reason: a caller that bounds its writes
  * takes a deterministic prefix rather than whatever the query planner returned.
  */
+/**
+ * `SKILLS_NEEDING_EMBEDDING_SQL` over the other corpus (#282), with one clause
+ * that method does not need: `shape != 'nothing'`.
+ *
+ * A `nothing` row exists precisely so the sweep stops re-reading a silent
+ * thread, and it carries no text — `ThreadSummary` enforces that the two go
+ * together. Offering one here would have a rebuild spend a provider call on the
+ * empty string and then put the result in the corpus the DDL keeps it out of.
+ *
+ * Oldest first, which is `STALE_THREADS_SQL` reversed and argued at the method.
+ */
+const SUMMARIES_NEEDING_EMBEDDING_SQL = `SELECT t.thread_ts, t.shape, t.text,
+            t.covers_through_ts, t.message_count, t.at
+     FROM thread_summary t
+     LEFT JOIN embedding_source e
+       ON e.source_kind = 'summary' AND e.source_ref = t.thread_ts
+    WHERE e.id IS NULL
+      AND t.shape != 'nothing'
+    ORDER BY t.thread_ts
+    LIMIT ?`;
+
 const SKILL_CLOCKS_SQL = `SELECT s.name, s.status, u.first_seen_at, u.last_used_at,
                                  u.status_by_job, u.status_by_job_at
      FROM skill s
@@ -2479,6 +2562,18 @@ type ThreadSummaryRow = {
   readonly at: number | bigint;
 };
 
+/** One `thread_summary` row as a caller reads it. Two reads share it (#282). */
+function toStoredThreadSummary(row: ThreadSummaryRow): StoredThreadSummary {
+  return {
+    thread: row.thread_ts,
+    shape: row.shape as SummaryShape,
+    text: row.text,
+    coversThroughTs: row.covers_through_ts,
+    messageCount: Number(row.message_count),
+    at: Number(row.at)
+  };
+}
+
 /**
  * What decides whether a skill's vector is still the right one.
  *
@@ -2777,7 +2872,13 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       `SELECT thread_ts, shape, text, covers_through_ts, message_count, at
          FROM thread_summary
         WHERE thread_ts = ?`
-    )
+    ),
+    summariesNeedingEmbedding: db.prepare(SUMMARIES_NEEDING_EMBEDDING_SQL),
+    // The three writes a rebuild makes, and none of them touches a corpus. The
+    // vec table and its trigger go by DDL in `dropEmbeddings`, which cannot be
+    // prepared ahead of a table that may not exist.
+    clearEmbeddingSources: db.prepare(`DELETE FROM embedding_source`),
+    clearEmbeddingModel: db.prepare(`DELETE FROM embedding_model`)
   } satisfies Record<string, StatementSync>;
 
   /**
@@ -3007,14 +3108,14 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     readThreadSummary(thread) {
       const row = statements.readThreadSummary.get(thread) as ThreadSummaryRow | undefined;
       if (row === undefined) return null;
-      return {
-        thread: row.thread_ts,
-        shape: row.shape as SummaryShape,
-        text: row.text,
-        coversThroughTs: row.covers_through_ts,
-        messageCount: Number(row.message_count),
-        at: Number(row.at)
-      };
+      return toStoredThreadSummary(row);
+    },
+
+    summariesNeedingEmbedding(limit) {
+      const rows = statements.summariesNeedingEmbedding.all(
+        clampLimit(limit)
+      ) as ThreadSummaryRow[];
+      return rows.map(toStoredThreadSummary);
     },
 
     removeEmbedding(source) {
@@ -3023,6 +3124,43 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       // branch on whether that table exists: no table means no trigger and no
       // row to delete either.
       return Number(statements.removeSource.run(source.kind, source.ref).changes) === 1;
+    },
+
+    embeddingModel() {
+      return readEmbeddingModel();
+    },
+
+    dropEmbeddings() {
+      const held = readEmbeddingModel();
+
+      // DDL and DML in one transaction, which SQLite allows and which is the
+      // whole point — see the method's doc for the half-dropped state this
+      // closes. `IF EXISTS` on both, because a file that was stamped but whose
+      // vec table somehow is not there should still end up clean rather than
+      // throwing on the way to it.
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.exec("DROP TRIGGER IF EXISTS embedding_source_delete");
+        db.exec("DROP TABLE IF EXISTS vec_embedding");
+        // Explicitly, and not left to the trigger: the trigger is gone one line
+        // up, and it pointed the other way in any case.
+        statements.clearEmbeddingSources.run();
+        statements.clearEmbeddingModel.run();
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+
+      // **After the commit, and this is load-bearing.** `prepareVecStatements`
+      // caches statements that name a table which no longer exists; node:sqlite
+      // lets the DROP through with them live and then throws "no such table" on
+      // the next use. Measured, not assumed. Clearing the cache makes the next
+      // `putEmbedding` prepare against whatever `ensureEmbeddingSpace` just
+      // created, at the new width.
+      vecStatements = null;
+
+      return held;
     },
 
     listSkills() {

@@ -636,6 +636,21 @@ it said, when it would have run, and when it was called off land in a record `ca
 newest first. The record exists because the check being called off is one a human in the channel
 approved — a cancel is a person with a shell undoing a person with a click, and that deserves an
 account ([#349](https://github.com/getlibero/libero/issues/349)).
+
+The same container carries the one command you have to remember to run. `AGENT_EMBEDDING_MODEL` is
+stamped against a channel's stored vectors, and the table holding them has its width fixed when it
+is created — so changing the model is a **rebuild**, not a swap:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm server node dist/rebuild.js C024BE91L
+```
+
+Until it has run for a channel, that channel's threads are still summarized and never embedded, and
+its semantic recall answers nothing while everything else reports healthy. The rebuild costs
+embedding calls and no completion ones — the summaries are already written, so it re-embeds them
+rather than asking the model again — and it is safe to run twice: it embeds whatever has no vector,
+so a run you interrupted continues where it stopped
+([#282](https://github.com/getlibero/libero/issues/282)).
 SQLite writes `-wal` and `-shm` files beside it, so the *directory* must be writable and not just
 the file. Nothing in it is a secret.
 

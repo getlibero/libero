@@ -127,6 +127,14 @@ volume too, and the scheduled checks in it are read and cancelled through
 entrypoint. It is the server's rather than the proxy's because the proxy mounts
 that volume `readOnly` by design and a cancel is a write.
 
+`node dist/rebuild.js <channel>` is the second, and it is there for the same
+reason (#282). Changing `AGENT_EMBEDDING_MODEL` under a channel that has already
+embedded is a **stated rebuild** — a `vec0` table's width is fixed at creation —
+and until the rebuild is run that channel's summaries are written and never
+embedded, so its semantic recall quietly answers nothing. Run it once per
+channel after changing the variable. It costs embedding calls and no completion
+ones, and it is safe to run again.
+
 ## The sandbox runner (#368)
 
 Decided in #393, built in #395, and given its egress hop in #219. The argument

@@ -351,6 +351,23 @@ model or width is **refused naming both**, because a `vec0` table's width is
 fixed at creation: changing the embedding model is a stated rebuild, not
 something a file absorbs.
 
+**And #282 built the way out that refusal points at.** `dropEmbeddings` clears
+the vectors, the provenance rows, the vec table and the stamp in one transaction,
+so the next `putEmbedding` creates the table again at whatever width it is given;
+`summariesNeedingEmbedding` is what a rebuild then walks, and `embeddingModel`
+is how a caller asks what a file holds without having a vector to be refused
+with. Three things are worth knowing about that trio. **The corpus is
+untouched** — `thread_summary` rows and the skill index survive a drop, which is
+what makes a rebuild cost embedding calls and no completion ones. **The read
+excludes a `nothing` summary in SQL** rather than leaving it to the caller,
+because there are now two callers of that rule and a rule applied by callers is a
+rule forgotten in one of them. And **the drop clears the cached vec statements**:
+node:sqlite lets a `DROP TABLE` through with prepared statements live and then
+throws `no such table` on the next use, which would be the same handle a rebuild
+is writing through. `apps/server`'s `rebuild` entrypoint is the only caller of
+any of it — nothing here is reachable from a route or from anything a model can
+influence.
+
 **Model and dimensions are recorded once per file rather than once per row.**
 #229 asked for them per vector. One table holds one width under one model, so per
 row would be the same two values repeated with N−1 chances to disagree with the

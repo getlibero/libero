@@ -128,7 +128,7 @@ the far end of a thread.
 | `ANTHROPIC_BASE_URL` | Optional. Anthropic's own endpoint when unset. |
 | `OPENAI_BASE_URL` | Optional. Reaches Together, Fireworks, Groq, Ollama, Gemini's compatibility endpoint, or a LiteLLM sidecar. |
 | `AGENT_EMBEDDING_PROVIDER` | Optional, `openai-compatible`. Unset turns semantic recall off. |
-| `AGENT_EMBEDDING_MODEL` | Required once a provider is named. Stamped against the channel's vectors. |
+| `AGENT_EMBEDDING_MODEL` | Required once a provider is named. Stamped against the channel's vectors, so changing it is [a rebuild](#rebuild-the-way-out-of-a-changed-embedding-model) rather than a swap. |
 | `AGENT_EMBEDDING_API_KEY` | The embedding vendor's key. Falls back to `OPENAI_API_KEY`. |
 | `AGENT_EMBEDDING_BASE_URL` | Optional. Reaches Voyage, Together, Ollama, or a LiteLLM sidecar. |
 
@@ -1351,8 +1351,9 @@ to wake at a time that has passed.
 
 `src/tasks-cli.ts` is this process's **first operator entrypoint** — `node
 dist/tasks.js list <channel>`, `cancel <channel> <id>` and `cancelled <channel>`
-— beside the four `apps/proxy-server` already carries. Where it lives was forced
-twice over.
+— beside the four `apps/proxy-server` already carries; `src/rebuild-cli.ts` is
+the second, and [has its own section](#rebuild-the-way-out-of-a-changed-embedding-model).
+Where they live was forced twice over.
 
 Not the published `libero` CLI, for the reason #98 gave the audit log: the store
 is a named volume, so `npx @getlibero/cli` would open a path that is not on the
@@ -1379,6 +1380,57 @@ people. `cancelled` is the record's read, newest first.
 
 It needs no restart to take effect, and that is the property the clock's
 read-every-scan was chosen for.
+
+### `rebuild`: the way out of a changed embedding model
+
+`src/rebuild-cli.ts` is the second entrypoint — `node dist/rebuild.js <channel>`
+— and it exists because a `vec0` table's width is fixed at creation (#282). One
+store file holds one `(model, dims)` pair, `putEmbedding` refuses anything that
+disagrees, and until this there was no way to make the stated rebuild that
+refusal has always pointed at. The failure it left is the kind that looks like
+the feature quietly not working: an operator changes `AGENT_EMBEDDING_MODEL`,
+every `putEmbedding` throws, the sweep logs `summary_embed_failed` per thread,
+summaries keep being written and never embedded — and recall degrades to nothing
+while every other part of the system reports healthy.
+
+It lives here for the entrypoint above's two reasons, and one of its own: the
+store is under `AGENT_STORE_ROOT`, which the *proxy* mounts `readOnly`, and this
+writes.
+
+**What it costs is embedding calls and no completion ones.** `dropEmbeddings`
+clears the vectors and leaves the corpus, so every summary is re-embedded from
+text already on disk. The honest workaround before it — delete `store.db` and
+let the sweep re-summarize — paid a model call per thread and threw the
+channel's messages away besides.
+
+**It drops only when the model changed.** A file already under the configured
+model needs none, so the command becomes a repair of whatever was never embedded
+and costs accordingly. That is also what makes it safe to run twice.
+
+**Metered, and not gated.** An embedding call is spend whether it was spent
+writing the corpus or reading it, so it reports to the proxy's meter exactly as
+the sweep and recall do. It does not ask `maySpend`: the channel's cap bounds
+what the *channel's* activity may spend, and this is the operator repairing a
+configuration they changed, from a shell on the host. A cap that stopped it half
+way would leave the channel in the state the command was run to get out of. The
+spend stays visible, which is what reporting is for.
+
+**Resumable, and never silently capped.** `summariesNeedingEmbedding` derives
+what is left by join rather than by a flag and answers oldest first, so a run
+that stopped — a crash, a ctrl-C, a provider that started refusing — continues
+when run again with nothing to remember. `MAX_SUMMARIES_PER_REBUILD` is a
+backstop: a run that reaches it says so and says to run it again.
+
+**Skills are not rebuilt here**, and the asymmetry is in the corpora rather than
+in the command. A summary has no other way back — `staleThreads` offers threads
+that are *unsummarized*, and these are summarized, so nothing in the running
+system would ever re-embed them. A skill does: `session/skill-embed.ts` reads
+`skillsNeedingEmbedding` on channel activity. And embedding a skill correctly
+means reconciling the index against the directory first, because the index is a
+cache of the files — which is that pass, whole, and a second copy of it here
+would be a second implementation of one thing. What it costs is that a channel
+nobody speaks in keeps no skill vectors until somebody does; a channel nobody
+speaks in also runs no task for that to degrade.
 
 ## The proactive post: the one way this process starts a message
 
