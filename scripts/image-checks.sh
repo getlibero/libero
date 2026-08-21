@@ -7,7 +7,13 @@
 # import ban.
 #
 # The proxy holds every tool credential in the deployment, so what is in its
-# filesystem is a security property in the same way its dependency list is.
+# filesystem is a security property in the same way its dependency list is. The
+# runner (#395) is the other end of the same argument: it holds no credential and
+# it can start containers, so what is in *its* filesystem decides what an
+# attacker who reaches the Docker socket finds waiting there. Non-root matters to
+# it twice over — it reads a root-owned socket through `group_add` rather than by
+# being root, and an image that quietly ran as root would make that mechanism
+# look like it was working.
 # Asserting it here rather than trusting the Dockerfile is the same move as
 # boundary-check backing up the ESLint rule: the multi-stage build and the
 # `pnpm deploy --prod` prune are each one edit away from silently shipping the
@@ -29,7 +35,7 @@ failed=0
 for image in "$@"; do
   user=$(docker image inspect "$image" --format '{{.Config.User}}')
   if [ "$user" = "" ] || [ "$user" = "root" ] || [ "$user" = "0" ]; then
-    echo "::error::$image runs as '${user:-root}'. Both images must run as a non-root user."
+    echo "::error::$image runs as '${user:-root}'. Every published image must run as a non-root user."
     failed=1
   fi
 

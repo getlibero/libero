@@ -309,7 +309,9 @@ function proxyError(
  * remedy, because the reader's next act is running the grant flow, not
  * editing a sheet.
  */
-function unavailableText(reason: "no_grant" | "grant_dead" | "mint_failed" | undefined): string {
+function unavailableText(
+  reason: "no_grant" | "grant_dead" | "mint_failed" | "runner_unreachable" | "runner_error" | undefined
+): string {
   switch (reason) {
     case undefined:
       return "the call is permitted, and this proxy has no upstream to serve it";
@@ -319,6 +321,14 @@ function unavailableText(reason: "no_grant" | "grant_dead" | "mint_failed" | und
       return "the call is permitted, and the grant for its upstream is dead; re-run the grant flow";
     case "mint_failed":
       return "the call is permitted, and no live access token could be minted for its upstream";
+    // The two sandbox sentences (#395). They stay apart because the operator's
+    // next act differs: one is a runner that is not there or not reachable on
+    // the internal network, the other is a runner that answered something this
+    // build cannot use — a version skew rather than a missing service.
+    case "runner_unreachable":
+      return "the call is permitted, and this proxy could not reach the sandbox runner";
+    case "runner_error":
+      return "the call is permitted, and the sandbox runner could not serve it";
   }
 }
 

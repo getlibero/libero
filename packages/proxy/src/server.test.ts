@@ -1034,6 +1034,69 @@ url = "https://api.github.com"
 
 // The log line above is what an operator tails. This is what survives the
 // process — and #97's criteria are about the row, not the line.
+// #395's first acceptance criterion, on the governance half: a granted sandbox
+// call is served, audited under the reserved server name, and metered — the same
+// three sentences every other tool answers to. What the *run* does is covered
+// against real containers in apps/runner; nothing here starts one, and nothing
+// in this path branches on which built-in was called, which is the point.
+describe("a granted sandbox call", () => {
+  const RUN = asked({ id: "toolu_run", server: "libero", tool: "run_code", arguments: { code: "print(1)" } });
+
+  beforeEach(() => {
+    writeSheet(
+      CHANNEL,
+      `
+[channel]
+name = "engineering"
+
+[[builtin]]
+name = "run_code"
+approval = "none"
+`
+    );
+  });
+
+  it("is served, audited under libero, and metered", async () => {
+    const before = (await meter.read(CHANNEL)).toolCalls;
+    const response = await post("/v1/tools/call", RUN);
+
+    expect(response.status).toBe(200);
+
+    const rows = auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ channel: CHANNEL, call_id: "toolu_run", server: "libero", tool: "run_code" });
+    expect((await meter.read(CHANNEL)).toolCalls).toBe(before + 1);
+  });
+
+  // The sheet is the switch, and forgetting the block is a refusal rather than
+  // a quiet success — the same answer `search_channel_history` gets, reached by
+  // the same code.
+  it("is refused when the sheet does not grant it", async () => {
+    writeSheet(CHANNEL, `[channel]\nname = "engineering"\n`);
+    const response = await post("/v1/tools/call", RUN);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ outcome: "refused" });
+    expect(auditRows().at(-1)).toMatchObject({ outcome: "refused", server: "libero", tool: "run_code" });
+  });
+
+  // The declared default is `required`, so a block that names the tool and stops
+  // is a hold. Asserted here as well as in enforce.test.ts because this is the
+  // path an operator's sheet actually travels.
+  it("is held when the block says nothing about approval", async () => {
+    writeSheet(CHANNEL, `[channel]\nname = "engineering"\n\n[[builtin]]\nname = "run_code"\n`);
+    const response = await post("/v1/tools/call", RUN);
+
+    // `held`, with a ticket — not `refused`. The distinction is the broker's:
+    // the call is waiting for a human rather than having been denied, and a
+    // client that ignores the ticket abandons it, which is safe.
+    expect(response.body).toMatchObject({
+      outcome: "held",
+      ticket: { id: expect.any(String), expiresAt: expect.any(Number) }
+    });
+  });
+});
+
 describe("the durable audit record", () => {
   const CALL = asked({ id: "toolu_01", server: "github", tool: "list_prs", arguments: { state: "open" } });
 

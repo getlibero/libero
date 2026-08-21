@@ -780,6 +780,34 @@ passes on that sentence.
 gVisor (`runsc`) stays what the architecture says it is: documented for hardened
 deployments, not required.
 
+**Built in #395, and three things the build settled that the design did not.**
+The runner is `apps/runner` — a third service, third image, and the only
+dependency in it is `@getlibero/schema`, because it speaks the Docker Engine API
+over `node:http` with a `socketPath` rather than through a client library. That
+is this repository's third hand-rolled HTTP surface for one reason: a package
+with a hand on the socket that is equivalent to root on the host is the edge
+./server.ts's header tells a reviewer to reject.
+
+The container spec is built in `apps/runner/src/run.ts` from two sources — the
+runner's own environment and the request's three numeric caps — and from nothing
+else. `SandboxRunRequest` has no field reaching `Image`, `Cmd`, `Binds`,
+`Privileged` or a capability set, which is what makes "a compromised proxy can
+ask for a code run and nothing else" checkable by reading one schema file.
+
+The proxy's half is ./sandbox-dispatcher.ts, and it holds no credential — an
+ESLint block bans it from importing the vault, the token store and the grant
+flow by name, so that stays true when somebody wants to pass an upstream token
+into a run. The caps ride on the `Decision` for `ToolDispatcher`'s stated reason:
+sheets reload on file change, so an arm resolving its own would size a container
+against a sheet that changed after a human approved the call.
+
+**The service is opt-in and its image is not.** `deploy/docker-compose.yml` puts
+the runner behind a `runner` profile, so a deployment whose channels never grant
+`run_code` does not run it and a granted call answers `not_implemented`. CI still
+builds it — `docker compose --profile runner build` — because a service nothing
+builds is a service that rots, and that is the whole reason it is a profile
+rather than a commented-out block.
+
 **The runner must not trust the CA alone.** `scripts/dev-certs.sh` mints one
 CA, and its `ca.pem` is shared with both containers — the agent holds client
 keys signed by it. A runner whose listener trusted that CA would accept a call

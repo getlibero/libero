@@ -129,10 +129,25 @@ that volume `readOnly` by design and a cancel is a write.
 
 ## The sandbox runner (#368)
 
-Decided in #393, landed by #397 — this section is the topology, not a description
-of a service that exists. The argument for both decisions is in
-`packages/proxy/README.md` under "Reaching a runtime" and "Enforcing `[egress]`";
-what follows is what it means for this directory.
+Decided in #393, built in #395. The argument is in `packages/proxy/README.md`
+under "Reaching a runtime" and "Enforcing `[egress]`"; what follows is what it
+means for this directory. The egress hop the second section describes is still
+#219 — a run today has no network at all rather than a filtered one.
+
+**It is behind a `runner` profile**, so `docker compose up` does not start it and
+a deployment whose channels never grant `run_code` is unchanged. Turning it on:
+
+```
+sh scripts/dev-certs.sh                     # mints runner/ and proxy/client, prints the pin
+# set RUNNER_SANDBOX_IMAGE, RUNNER_CLIENT_PIN and DOCKER_GID in .env
+# uncomment the proxy's four RUNNER_* variables
+docker compose --profile runner up -d
+```
+
+A profile rather than a commented-out block, and the difference is not cosmetic:
+a commented-out service is not validated, not built by CI, and not covered by
+`scripts/image-checks.sh`. `ci.yml` builds with `--profile runner` for exactly
+that reason.
 
 **One new service, holding the one privilege.** `runner` mounts the Docker socket
 and its own certificate slice, **and nothing else** — no channels, no prices, no
@@ -141,23 +156,30 @@ it does not mount is how that stays true. The proxy still does not get the socke
 the compose file says so where the mount would be, and that line does not change
 when the runner arrives.
 
-Four networks, and what each can reach:
+Three networks today, and a fourth when the egress hop lands (#219):
 
 | Network | Members | Reaches |
 | --- | --- | --- |
 | `libero` (existing bridge) | `server`, `proxy` | Each other, and out. Unchanged. |
 | `runner-control` (new, `internal: true`) | `proxy`, `runner` | Each other, nothing else. **The agent has no route to the runner at all** — the mTLS fingerprint pin is the second wall, not the only one. |
-| `sandbox-egress` (new bridge, has a default route) | egress hops only | Out. Deliberately **not** `libero`, so an allowed host cannot become a path to `proxy:8443`. |
-| `sandbox-<runid>` (per run, ephemeral, `internal: true`) | one sandbox, one hop | Each other. No route out, which is what enforces `[egress]` — see the proxy's README for why that is topological rather than a check. |
+| `sandbox-egress` (**#219, not built**) | egress hops only | Out. Deliberately **not** `libero`, so an allowed host cannot become a path to `proxy:8443`. |
+| `sandbox-<runid>` (**#219, not built**) | one sandbox, one hop | Each other. No route out, which is what enforces `[egress]` — see the proxy's README for why that is topological rather than a check. |
 
-A sheet with no `[egress]` block gets `network: none` and no hop.
+**Today every run gets `NetworkMode: none` and no hop**, whatever a sheet's
+`[egress]` block says, and there is a test that dials an address rather than
+resolving a name to prove it. The last two rows arrive with #219; until then
+`[egress]` is still validated at load and enforced nowhere, exactly as the docs
+have said since #73.
 
 **The one line an operator will get wrong.** The runner runs non-root, like both
 existing images and asserted by `scripts/image-checks.sh`, and the Docker socket
 is root-owned. Reaching it therefore needs `group_add` with the **host's** docker
 group id — which differs between Debian on GCP and AL2023 on AWS. That makes it an
-operator variable (`DOCKER_GID`) with a `:?` guard, like the other required ones,
-rather than a number this file can hardcode.
+operator variable (`DOCKER_GID`) rather than a number this file can hardcode. Its
+default is `0` — the root group, which every host has and which opens the socket
+on none of them — so a deployment that forgot the variable fails rather than
+quietly working on whichever distribution somebody guessed. `libero init`
+scaffolds it blank with the command that prints it.
 
 **The sandbox image is the runner's, and the runner never pulls.** The run request
 has no image field — that is most of what makes it narrow — so the image is named
@@ -165,13 +187,14 @@ in the runner's own environment, pinned by digest, and pulled at deploy time. A
 runner that pulled at call time would put a network dependency, a latency cliff
 and a supply-chain surface inside the call path.
 
-Two things this hands to whoever lands the service. The hop and the runner are
-**one image with two entrypoints**, the pattern `apps/proxy-server` already uses
-for `vault`, `audit`, `grant` and `tasks` — so the image count goes to three, not
-four, and the hop inherits the assertions for free. That third image has to be
-named in `scripts/image-checks.sh`'s argument list in `ci.yml`, in
-`release-images.yml`, and in `.dockerignore`, which is an allowlist and will
-otherwise silently exclude it.
+The image count is three. `ci.yml` asserts all three and `release-images.yml`
+publishes and attests all three on a `v*` tag — the runner ships with the
+deployment even though it is opt-in at `up` time, so an operator turning the
+sandbox on finds an image already built for the version they are running. When
+the egress hop lands it is a second entrypoint on this same image, the pattern
+`apps/proxy-server` already uses for `vault`, `audit`, `grant` and `tasks`, so
+the count stays at three. `.dockerignore` needed no edit: `!apps` already covers
+any new directory under it.
 
 One assumption worth stating rather than discovering: the isolation between these
 networks rests on Docker's default iptables rules. A deployment running the daemon

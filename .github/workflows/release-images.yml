@@ -74,6 +74,24 @@ jobs:
             ghcr.io/getlibero/proxy:${{ github.ref_name }}
             ghcr.io/getlibero/proxy:latest
 
+      # The runner (#395). Published on the same tag as the other two — one v*
+      # tag releases the whole deployment — even though it is opt-in at `up`
+      # time behind a compose profile. An operator turning the sandbox on should
+      # find an image already built and attested for the version they are
+      # running, not have to build one.
+      - name: Build and push runner
+        id: runner
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/runner/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/getlibero/runner:${{ github.ref_name }}
+            ghcr.io/getlibero/runner:latest
+
       - name: Attest server
         uses: actions/attest-build-provenance@v4
         with:
@@ -86,6 +104,12 @@ jobs:
           subject-name: ghcr.io/getlibero/proxy
           subject-digest: ${{ steps.proxy.outputs.digest }}
           push-to-registry: true
+      - name: Attest runner
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/getlibero/runner
+          subject-digest: ${{ steps.runner.outputs.digest }}
+          push-to-registry: true
 
       # The four assertions ci.yml runs on every PR, here against what was
       # *published* rather than only what was built: each image pulled back by
@@ -97,6 +121,7 @@ jobs:
         env:
           SERVER_DIGEST: ${{ steps.server.outputs.digest }}
           PROXY_DIGEST: ${{ steps.proxy.outputs.digest }}
+          RUNNER_DIGEST: ${{ steps.runner.outputs.digest }}
         run: |
           set -eu
           check() {
@@ -109,3 +134,4 @@ jobs:
           }
           check server "$SERVER_DIGEST"
           check proxy "$PROXY_DIGEST"
+          check runner "$RUNNER_DIGEST"

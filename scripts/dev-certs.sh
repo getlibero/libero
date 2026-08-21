@@ -33,7 +33,9 @@
 #   OUT/ca.pem          trust anchor, shared with both containers
 #   OUT/ca.key          signs certificates; stays on the host
 #   OUT/ca.srl          the CA's serial counter; stays beside the key
-#   OUT/proxy/          the proxy's server certificate and key
+#   OUT/proxy/          the proxy's server certificate and key, and the client
+#                       certificate it presents to the runner (#395)
+#   OUT/runner/         the sandbox runner's server certificate and key
 #   OUT/agent/          one client certificate and key per channel
 #   OUT/agent/staged/   a replacement waiting to be pinned; see --rotate
 #
@@ -161,13 +163,16 @@ warn_if_expiring() { # warn_if_expiring <label> <pem> [rotate-id]
 }
 
 write_ext() {
-  mkdir -p "$OUT/proxy" "$OUT/agent"
+  mkdir -p "$OUT/proxy" "$OUT/agent" "$OUT/runner"
   # Extension sections only. Subjects are passed with -subj instead of being
   # named here: the CN is the security-relevant field, and the LibreSSL that
   # ships with macOS lets a config file's [dn] silently override -subj.
   #
-  # "proxy" is the compose service name, so the agent container reaches the
-  # proxy by that hostname; localhost covers running the two processes directly.
+  # "proxy" and "runner" are compose service names, so the agent container
+  # reaches the proxy by that hostname and the proxy reaches the runner by its
+  # one; localhost covers running the processes directly. One SAN list serves
+  # both server certificates because a SAN a certificate does not need is inert,
+  # and two lists would be two places to forget a name.
   cat > "$EXT" <<'EOF'
 [v3_ca]
 basicConstraints = critical,CA:TRUE,pathlen:0
@@ -188,6 +193,7 @@ extendedKeyUsage = clientAuth
 [server_alt]
 DNS.1 = proxy
 DNS.2 = localhost
+DNS.3 = runner
 IP.1 = 127.0.0.1
 IP.2 = ::1
 EOF
@@ -334,6 +340,42 @@ else
   require_ca
   say "proxy server cert -> ${OUT}/proxy/server.pem"
   sign proxy/server "libero-proxy" v3_server "$SERVER_DAYS"
+fi
+
+# The sandbox runner's own listener (#395). "runner" is the compose service name,
+# so the proxy reaches it by that hostname on the internal network; the SAN list
+# in write_ext covers it the way it covers "proxy".
+if [ -f "${OUT}/runner/server.pem" ] && [ "$FORCE" -eq 0 ]; then
+  say "runner server cert ${OUT}/runner/server.pem exists — kept."
+  warn_if_expiring "the runner server certificate" "${OUT}/runner/server.pem"
+else
+  require_ca
+  say "runner server cert -> ${OUT}/runner/server.pem"
+  sign runner/server "libero-runner" v3_server "$SERVER_DAYS"
+fi
+
+# The proxy's *client* certificate, which it presents to the runner (#395).
+#
+# A second certificate for the proxy, and the second one is a client rather than
+# a server: this is the only connection in the deployment the proxy opens where
+# it has to prove who it is. It is not an agent client cert and must never be
+# minted like one — those carry `CN=channel:<id>`, and the runner authorizes on
+# a pinned fingerprint rather than on a CN, so what keeps them apart is that the
+# runner pins exactly this file's fingerprint and no other.
+#
+# The line printed below is RUNNER_CLIENT_PIN. That one CA signs both this and
+# every agent client certificate is exactly why the pin exists: without it, a
+# compromised agent holding CA-signed material could call the runner directly.
+if [ -f "${OUT}/proxy/client.pem" ] && [ "$FORCE" -eq 0 ]; then
+  say "proxy client cert ${OUT}/proxy/client.pem exists — kept."
+  warn_if_expiring "the proxy's runner client certificate" "${OUT}/proxy/client.pem"
+  say "  RUNNER_CLIENT_PIN=$(fingerprint "${OUT}/proxy/client.pem")"
+else
+  require_ca
+  say "proxy client cert -> ${OUT}/proxy/client.pem"
+  sign proxy/client "libero-proxy" v3_client "$CLIENT_DAYS"
+  say "  expires $(expires_on "${OUT}/proxy/client.pem")"
+  say "  RUNNER_CLIENT_PIN=$(fingerprint "${OUT}/proxy/client.pem")"
 fi
 
 if [ -z "$CHANNELS" ] && [ -z "$RAW_CNS" ]; then

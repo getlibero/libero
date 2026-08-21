@@ -21,6 +21,9 @@ import type { CallLimits } from "./enforce.js";
  */
 const LIMITS: CallLimits = { maxResultChars: 100_000 };
 
+/** What a sandbox run may spend, for the cases that route one. Values are the schema's defaults. */
+const CAPS = { cpus: 1, memoryMb: 512, timeoutSeconds: 30 };
+
 const noSpend = {
   toolCalls: 0,
   inputTokens: 0,
@@ -143,7 +146,7 @@ describe("createToolDispatcher", () => {
     const { seen, mcp, builtin, sandbox } = arms();
     const result = await createToolDispatcher({ mcp, builtin, sandbox }).dispatch(
       call,
-      { kind: "builtin", tool: "run_code" },
+      { kind: "builtin", tool: "run_code", caps: CAPS },
       LIMITS
     );
 
@@ -174,7 +177,7 @@ describe("createToolDispatcher", () => {
   it("answers run_code 501 when no sandbox arm was composed", () => {
     const { mcp, builtin } = arms();
     expect(
-      createToolDispatcher({ mcp, builtin }).dispatch(call, { kind: "builtin", tool: "run_code" }, LIMITS)
+      createToolDispatcher({ mcp, builtin }).dispatch(call, { kind: "builtin", tool: "run_code", caps: CAPS }, LIMITS)
     ).toEqual({ outcome: "unavailable" });
   });
 

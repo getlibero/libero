@@ -29,6 +29,8 @@ export type {
 export { BUILTIN_TOOLS, DEFAULT_SEARCH_LIMIT } from "./builtins.js";
 export type { BuiltinDefinition } from "./builtins.js";
 export { createBuiltinDispatcher } from "./builtin-dispatcher.js";
+export { createSandboxDispatcher } from "./sandbox-dispatcher.js";
+export type { SandboxDispatcherOptions } from "./sandbox-dispatcher.js";
 export type { BuiltinDispatcherOptions } from "./builtin-dispatcher.js";
 
 // The budget meter. Real, and required by any composition that also has a real

@@ -195,6 +195,20 @@ services:
       PROXY_PRICE_TABLE: ${PROXY_PRICE_TABLE:-}
       # 0.0.0.0 reaches only the private bridge below, which publishes no
       # ports. Outside compose the default is 127.0.0.1.
+      # The sandbox runner (#395), and all four are commented out together.
+      #
+      # RUNNER_URL is the switch: unset, the proxy composes an unavailable arm
+      # and a channel granting `run_code` is answered `not_implemented`. Set, the
+      # other three are required at boot — a deployment that named a runner and
+      # forgot its client material should fail at `docker compose up` rather than
+      # at the far end of a Slack thread.
+      #
+      # `runner` is the service name and it resolves only on the internal
+      # runner-control network, which the agent is not on.
+      # RUNNER_URL: https://runner:8444
+      # RUNNER_CLIENT_CERT: /etc/libero/certs/proxy/client.pem
+      # RUNNER_CLIENT_KEY: /etc/libero/certs/proxy/client.key
+      # RUNNER_CLIENT_CA: /etc/libero/certs/ca.pem
       PROXY_HOST: 0.0.0.0
       PROXY_PORT: 8443
       # How much of an upstream's answer this process will hold before
@@ -235,6 +249,11 @@ services:
       # variable unset this mount is inert.
       - ../prices:/data/prices:ro
       # Its own keypair and the trust anchor; no client keys, no CA key.
+      #
+      # Since #395 `certs/proxy` holds two certificates rather than one: the
+      # server certificate this service presents to the agent, and the *client*
+      # certificate it presents to the runner. The second is the only connection
+      # in the deployment this process opens where it has to prove who it is.
       - ./certs/ca.pem:/etc/libero/certs/ca.pem:ro
       - ./certs/proxy:/etc/libero/certs/proxy:ro
       - audit-data:/data/audit
@@ -266,12 +285,94 @@ services:
       #
       # This line does not change when it does. Nothing gives the proxy the
       # socket.
-    networks: [libero]
+    # Two networks. `libero` is where the agent reaches it; `runner-control` is
+    # where it reaches the runner, and the agent has no route onto that one.
+    networks: [libero, runner-control]
     # No published ports: the proxy listens only on the private network.
     restart: unless-stopped
 
   # Optional sidecar for exotic LLM providers behind an OpenAI-compatible endpoint.
   # Enable with: docker compose --profile litellm up
+  # The sandbox runner (#368, #393, #395).
+  #
+  # The one service that can reach the container runtime, and the one that holds
+  # no credential. That pairing is the whole decision: the socket is equivalent
+  # to root on the host, so it belongs anywhere except the process holding every
+  # tool credential. See packages/proxy/README.md, "Reaching a runtime", and
+  # deploy/README.md for what this mounts and what it deliberately does not.
+  #
+  # BEHIND A PROFILE, like litellm, rather than commented out. A deployment whose
+  # channels never grant `run_code` should not run it — with no RUNNER_URL set on
+  # the proxy a granted call answers `not_implemented`, which says the sheet is
+  # right and this deployment did not build the service. But a commented-out
+  # service is not validated, not built by CI, and not covered by the image
+  # assertions, so it rots. A profile is opt-in and still real:
+  #
+  #   docker compose --profile runner up -d
+  #
+  # Turning it on is that, plus the proxy's four RUNNER_* variables above, plus
+  # RUNNER_SANDBOX_IMAGE, RUNNER_CLIENT_PIN and DOCKER_GID in .env. The three
+  # have no usable defaults and the process refuses to start without them, which
+  # is the intended failure: each names a thing only the operator knows.
+  runner:
+    image: ghcr.io/getlibero/runner:latest
+    build:
+      context: ..
+      dockerfile: apps/runner/Dockerfile
+    profiles: [runner]
+    environment:
+      # The daemon, as this container sees it. The bind mount below is what puts
+      # it there; the path inside is ours to choose and is stable.
+      RUNNER_DOCKER_SOCKET: /var/run/docker.sock
+      # Pinned by digest, and refused at boot if it is not: #393 made the image a
+      # deployment fact, and a floating tag makes it a fact about whenever the
+      # daemon last pulled. Resolve one you have reviewed —
+      # `docker buildx imagetools inspect python:3.13-alpine` prints it — and
+      # pull it at deploy time. The runner never pulls.
+      RUNNER_SANDBOX_IMAGE: "${RUNNER_SANDBOX_IMAGE:-}"
+      # The interpreter and its flags; the model's code is appended as the final
+      # argument. This is what keeps the tool language-neutral, and it is why the
+      # built-in is `run_code` rather than `run_python` — swapping to
+      # ["node","-e"] is an .env edit rather than a code change.
+      RUNNER_SANDBOX_COMMAND: '["python3","-c"]'
+      RUNNER_HOST: 0.0.0.0
+      RUNNER_PORT: 8444
+      RUNNER_TLS_CERT: /etc/libero/certs/runner/server.pem
+      RUNNER_TLS_KEY: /etc/libero/certs/runner/server.key
+      RUNNER_TLS_CA: /etc/libero/certs/ca.pem
+      # THE PIN, AND IT IS NOT OPTIONAL. One CA signs both the proxy's client
+      # certificate and every agent channel certificate, so a runner trusting the
+      # CA alone would serve a compromised agent process directly — no team
+      # sheet, no decision, no meter, no audit row. `sh scripts/dev-certs.sh`
+      # prints this value when it mints deploy/certs/proxy/client.pem.
+      RUNNER_CLIENT_PIN: "${RUNNER_CLIENT_PIN:-}"
+    volumes:
+      # The one privilege, and the only mount that is not a certificate.
+      # Read-write because starting a container is a write; there is no
+      # read-only form of this that does anything useful.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Its own keypair and the trust anchor. No client keys, no CA key, and none
+      # of the four data volumes: no channels, no prices, no vault, no store, no
+      # audit, no budget. The list of what is absent here is the claim "the
+      # runner holds no credential", in a form an operator can check by reading.
+      - ./certs/ca.pem:/etc/libero/certs/ca.pem:ro
+      - ./certs/runner:/etc/libero/certs/runner:ro
+    # Reaching a root-owned socket as a non-root user. The gid is the HOST's
+    # docker group and differs between distributions — Debian on GCP and AL2023
+    # on AWS do not agree — so it is an operator variable rather than a number
+    # this file can know. `getent group docker | cut -d: -f3` on the host prints
+    # it. The default is deliberately not a guess: 0 is the root group, which
+    # every host has and which will not open the socket on any of them, so a
+    # deployment that forgot the variable fails rather than quietly working on
+    # the one distribution somebody guessed.
+    group_add:
+      - "${DOCKER_GID:-0}"
+    # One network, and it is internal. The agent is not on it, so the pin above
+    # is the second wall rather than the only one: a compromised agent has no
+    # route to this service at all.
+    networks: [runner-control]
+    restart: unless-stopped
+
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     profiles: [litellm]
@@ -283,6 +384,17 @@ services:
 networks:
   libero:
     driver: bridge
+  # The proxy-to-runner control plane (#393). `internal: true` means no route
+  # out and no route in from anywhere else on this host — the agent is not a
+  # member, so it cannot reach the service that can start containers even with
+  # a certificate this CA signed.
+  #
+  # It exists whether or not the runner is enabled, because a network with one
+  # member costs nothing and a commented-out network is one more thing to
+  # remember when uncommenting the service.
+  runner-control:
+    driver: bridge
+    internal: true
 
 volumes:
   audit-data:

@@ -7,6 +7,7 @@
 import {
   TeamSheetStore,
   createBuiltinDispatcher,
+  createSandboxDispatcher,
   createHttpDispatcher,
   createJsonLogger,
   createProxyServer,
@@ -31,6 +32,8 @@ import {
   portFromEnv,
   priceTableFromEnv,
   requiredEnv,
+  runnerTlsFromEnv,
+  runnerUrlFromEnv,
   storeRootFromEnv,
   upstreamTimeoutMsFromEnv,
   vaultFileFromEnv,
@@ -149,6 +152,22 @@ const mcp = createHttpDispatcher({
 // shutdown to close.
 const builtin = createBuiltinDispatcher({ storeRoot: storeRootFromEnv(process.env), logger });
 
+// The sandbox arm (#395), and the one arm this composition may legitimately not
+// have. A deployment whose channels never grant `run_code` runs no runner, and
+// `createToolDispatcher` then supplies the unavailable arm — a granted call gets
+// `not_implemented`, which is the honest pair of words rather than a refusal.
+//
+// Built here and not reached by any route, exactly as the other two are: this
+// file hands the server a dispatcher, and the server holds one seam. Note what
+// is *not* passed — no vault, no token store, no store root. The runner holds
+// the Docker socket, so what the arm that talks to it can reach is a security
+// property, and an ESLint block on sandbox-dispatcher.ts enforces the rest.
+const runnerUrl = runnerUrlFromEnv(process.env);
+const sandbox =
+  runnerUrl === undefined
+    ? undefined
+    : createSandboxDispatcher({ url: runnerUrl, tls: runnerTlsFromEnv(process.env), logger });
+
 const server = createProxyServer({
   tls: loadTlsOptions({
     cert: requiredEnv(process.env, "PROXY_TLS_CERT"),
@@ -168,7 +187,7 @@ const server = createProxyServer({
   // Consulted only by a channel whose sheet sets `[budget] daily_usd`; every
   // other channel is decided exactly as it was before prices existed.
   prices,
-  dispatcher: createToolDispatcher({ mcp, builtin }),
+  dispatcher: createToolDispatcher({ mcp, builtin, ...(sandbox === undefined ? {} : { sandbox }) }),
   // The MCP arm, not the composite: `ToolCatalog.describe` asks an *upstream*
   // what it offers, and a built-in has nobody to ask — the listing route reads
   // its definition from `BUILTIN_TOOLS` instead.
