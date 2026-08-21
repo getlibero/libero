@@ -80,8 +80,10 @@ const builtinEntryBase = {
  *
  * A deployment ceiling over these — an operator capping what any sheet may ask
  * for — is a real thing to want and is not here. It belongs with the runner that
- * would enforce it (#395), because a bound this file cannot check is a promise
- * this file cannot keep.
+ * would enforce it, because a bound this file cannot check is a promise this
+ * file cannot keep. Tracked in #405, which is where it went when #395 shipped
+ * without it; this used to point at #395 itself, which is exactly the dangling
+ * pointer that re-homing exists to prevent.
  */
 const sandboxLimits = {
   cpus: z.number().positive().max(64).default(1),
