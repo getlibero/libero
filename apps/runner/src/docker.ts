@@ -64,12 +64,42 @@ export interface ContainerSpec {
   readonly image: string;
   readonly command: readonly string[];
   readonly workdir: string;
+  /**
+   * Where the writable tmpfs is mounted.
+   *
+   * Separate from `workdir` because the two coincide for a sandbox and must not
+   * for the hop: the hop runs the runner's image, whose code lives at `/app`, so
+   * a workdir of `/work` makes `node dist/hop.js` resolve against an empty tmpfs
+   * and the process never starts. That was a real failure and it was silent —
+   * the container exited, its DNS alias went with it, and the sandbox reported a
+   * name it could not resolve rather than a hop that was not there.
+   */
+  readonly tmpfs: string;
   /** Bytes. */
   readonly memory: number;
   /** Docker counts cpu in billionths. */
   readonly nanoCpus: number;
   readonly tmpfsSize: number;
   readonly pidsLimit: number;
+  /**
+   * The network to join, or absent for none at all (#219).
+   *
+   * Absent is the common case and the safe one: `NetworkMode: "none"` plus
+   * `NetworkDisabled`. When present it is a per-run network with no route out,
+   * whose only other member is the hop — so joining it is not a grant of
+   * network access, it is a grant of access to the thing that decides.
+   */
+  readonly network?: { readonly name: string; readonly alias?: string };
+  /** Environment for the container. Empty for a sandbox that is given no proxy. */
+  readonly env?: readonly string[];
+  /**
+   * A name, so the hop is reachable by one from the sandbox beside it.
+   *
+   * Only the hop takes one. The sandbox is anonymous on purpose: nothing should
+   * be able to address it, including a future second sandbox that should never
+   * have shared a network with it in the first place.
+   */
+  readonly name?: string;
 }
 
 export interface DockerClientOptions {
@@ -97,6 +127,27 @@ export interface DockerClient {
   remove(id: string): Promise<void>;
   /** A cheap call used to prove the daemon is reachable before anything is created. */
   ping(): Promise<void>;
+  /**
+   * An ephemeral, routeless network for one run (#219).
+   *
+   * `internal: true` is the enforcement: a container on it has no default route,
+   * so ignoring `HTTP_PROXY` or dialling a raw address reaches nothing. See the
+   * header of packages/schema/src/egress.ts for why that is the shape rather
+   * than a check at a call site.
+   */
+  createNetwork(name: string): Promise<string>;
+  /** Give a container a second network — the hop's route out. */
+  connectNetwork(network: string, container: string): Promise<void>;
+  removeNetwork(id: string): Promise<void>;
+  /**
+   * Stream a container's stdout, one decoded line at a time, until stopped.
+   *
+   * How the runner learns of a denial promptly enough to make it terminal. The
+   * hop prints one JSON line and the sandbox is killed on it; polling would put
+   * the poll interval between the denial and the kill, and reading the logs at
+   * the end would make the denial not terminal at all.
+   */
+  followLogs(id: string, onLine: (line: string) => void): { stop(): void };
 }
 
 export function createDockerClient(options: DockerClientOptions): DockerClient {
@@ -161,14 +212,18 @@ export function createDockerClient(options: DockerClientOptions): DockerClient {
     },
 
     async create(spec) {
-      const reply = await expect("POST", "/containers/create", [201], {
+      const reply = await expect("POST", `/containers/create${spec.name === undefined ? "" : `?name=${encodeURIComponent(spec.name)}`}`, [201], {
         Image: spec.image,
         Cmd: [...spec.command],
         WorkingDir: spec.workdir,
-        // Belt and braces with `NetworkMode: "none"` below. Both are set because
+        // Belt and braces when there is no network. Both flags are set because
         // they are enforced at different layers and #395's acceptance is that a
         // run with no `[egress]` block has no network *at all*.
-        NetworkDisabled: true,
+        //
+        // With a network (#219) neither is set — but that network is `internal`
+        // and its only other member is the hop, so what the container gains is
+        // reachability to the thing that decides, not reachability to the world.
+        NetworkDisabled: spec.network === undefined,
         AttachStdout: true,
         AttachStderr: true,
         // No TTY, on purpose: a TTY merges the two streams into one and the
@@ -179,16 +234,25 @@ export function createDockerClient(options: DockerClientOptions): DockerClient {
         // nobody:nogroup. The rootfs is read-only anyway, but a process that is
         // not root inside the container is one fewer thing depending on that.
         User: "65534:65534",
-        Env: [],
+        Env: [...(spec.env ?? [])],
+        ...(spec.network === undefined
+          ? {}
+          : {
+              NetworkingConfig: {
+                EndpointsConfig: {
+                  [spec.network.name]: spec.network.alias === undefined ? {} : { Aliases: [spec.network.alias] }
+                }
+              }
+            }),
         HostConfig: {
           ReadonlyRootfs: true,
-          NetworkMode: "none",
+          NetworkMode: spec.network?.name ?? "none",
           // `mode=1777` is load-bearing, not decoration. Docker mounts a tmpfs
           // root-owned and 0755 by default, and the container runs as uid 65534
           // — so without it the one writable path in the sandbox is writable by
           // nobody, and every program that opens a file fails. The suite caught
           // it because the read-only-rootfs case has a positive control.
-          Tmpfs: { [spec.workdir]: `rw,noexec,nosuid,mode=1777,size=${spec.tmpfsSize}` },
+          Tmpfs: { [spec.tmpfs]: `rw,noexec,nosuid,mode=1777,size=${spec.tmpfsSize}` },
           Memory: spec.memory,
           // Without this the kernel counts swap separately and a container can
           // exceed its memory cap by swapping. Equal values mean no swap.
@@ -240,6 +304,40 @@ export function createDockerClient(options: DockerClientOptions): DockerClient {
 
     async remove(id) {
       await expect("DELETE", `/containers/${id}?force=1&v=1`, [204, 404]);
+    },
+
+    async createNetwork(name) {
+      const reply = await expect("POST", "/networks/create", [201], {
+        Name: name,
+        Driver: "bridge",
+        // The whole point. Without it the sandbox has a default route and the
+        // hop is a suggestion rather than the only way out.
+        Internal: true,
+        // Nothing outside this run may join it, including an operator with a
+        // shell — a network a third container can attach to is a network the
+        // sandbox shares with something it was never meant to reach.
+        Attachable: false,
+        CheckDuplicate: true
+      });
+      const parsed = JSON.parse(reply.body) as { Id?: unknown };
+      if (typeof parsed.Id !== "string" || parsed.Id === "") {
+        throw new DockerError("docker: network create answered without an id");
+      }
+      return parsed.Id;
+    },
+
+    async connectNetwork(network, container) {
+      await expect("POST", `/networks/${encodeURIComponent(network)}/connect`, [200], { Container: container });
+    },
+
+    async removeNetwork(id) {
+      // 404 is a network already gone, which on the teardown path is the state
+      // wanted rather than a fault.
+      await expect("DELETE", `/networks/${encodeURIComponent(id)}`, [204, 404]);
+    },
+
+    followLogs(id, onLine) {
+      return followContainerLogs(options.socketPath, id, onLine);
     }
   };
 }
@@ -323,5 +421,67 @@ export function demultiplex(buffer: Buffer, truncated: boolean): ContainerLogs {
     stdout: Buffer.concat(out).toString("utf8"),
     stderr: Buffer.concat(err).toString("utf8"),
     truncated: truncated || offset > buffer.length
+  };
+}
+
+/**
+ * Follow a container's stdout, decoding frames as they arrive (#219).
+ *
+ * The same framing `demultiplex` walks, read incrementally rather than over a
+ * finished buffer: `follow=1` holds the response open, so frames arrive as the
+ * container writes them and a caller learns of one within a round trip rather
+ * than at the end of the run. That is what makes an egress denial *terminal* —
+ * the runner kills the sandbox on the line rather than reporting it afterwards.
+ *
+ * Only stdout, and only whole lines. The hop writes one JSON object per line and
+ * nothing else, so a partial frame is held until its newline arrives rather than
+ * handed over as a fragment that would not parse.
+ */
+function followContainerLogs(
+  socketPath: string,
+  id: string,
+  onLine: (line: string) => void
+): { stop(): void } {
+  let stopped = false;
+  let pending = "";
+  let carry = Buffer.alloc(0);
+
+  const req = httpRequest(
+    { socketPath, path: `/containers/${id}/logs?stdout=1&follow=1`, method: "GET" },
+    res => {
+      res.on("data", (chunk: Buffer) => {
+        if (stopped) return;
+        carry = Buffer.concat([carry, chunk]);
+        // Walk whole frames only; a header split across two TCP reads waits.
+        while (carry.length >= 8) {
+          const length = carry.readUInt32BE(4);
+          if (carry.length < 8 + length) break;
+          const stream = carry[0];
+          const payload = carry.subarray(8, 8 + length);
+          carry = carry.subarray(8 + length);
+          if (stream !== 2) pending += payload.toString("utf8");
+        }
+        let newline = pending.indexOf("\n");
+        while (newline !== -1) {
+          const line = pending.slice(0, newline);
+          pending = pending.slice(newline + 1);
+          if (line !== "") onLine(line);
+          newline = pending.indexOf("\n");
+        }
+      });
+      res.on("error", () => undefined);
+    }
+  );
+  // A follow that cannot be established is not fatal to the run: the sandbox is
+  // still bounded by its wall-time cap and still has no route except the hop.
+  // What is lost is promptness, and saying so beats throwing on the happy path.
+  req.on("error", () => undefined);
+  req.end();
+
+  return {
+    stop() {
+      stopped = true;
+      req.destroy();
+    }
   };
 }

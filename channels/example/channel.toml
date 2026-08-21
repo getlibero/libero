@@ -380,12 +380,27 @@ name = "schedule_task"
 
 # Where traffic may go when this sheet does not already say.
 #
-# PARSED BUT NOT YET ENFORCED. Nothing in the deployment reaches a destination
-# this sheet has not already pinned, so nothing consults this list — entries are
-# validated when the sheet loads and permit nothing and forbid nothing. The
-# surface that needs it is a code-execution sandbox, which is later work (#219).
-# Write the list as though it were enforced; it is the contract it will be
-# enforced against.
+# ENFORCED SINCE #219, and only for run_code — the one surface that reaches a
+# destination this sheet has not already pinned. A sandbox run sits on a network
+# with no route out whose only exit is a filter that checks this list per host.
+# Code that ignores its proxy settings, or dials a raw address, reaches nothing:
+# there is nowhere for the packet to go.
+#
+# NO BLOCK MEANS NO NETWORK AT ALL, not an unfiltered one. Deleting these two
+# lines is how a channel says its code may reach nothing.
+#
+# A HOST OUTSIDE THE LIST ENDS THE RUN. It is not a failed connection the program
+# can catch and carry on from: the run is killed, the call is refused with
+# egress_denied naming the host, and the refusal reaches the channel and the
+# audit log. That is fail-closed on purpose and it has a real cost — a program
+# that does useful work and then touches one unlisted telemetry host loses all of
+# it, and the refused call still counted against the budget. The list is given to
+# the model in the tool description so it is not discovering it by losing runs.
+#
+# HTTP AND HTTPS ONLY. git://, postgres, ssh and bare TCP have no route whatever
+# this list says, and plain http:// does not work either — the filter speaks
+# CONNECT, which is what lets it read the host and never the payload.
+# `git clone https://...` works; `git clone git://...` does not.
 #
 # The MCP servers above are NOT listed here: declaring a url in [[mcp_server]]
 # is what authorizes it. This list is for the destinations nothing pinned.

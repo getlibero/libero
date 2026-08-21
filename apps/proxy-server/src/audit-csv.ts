@@ -108,6 +108,9 @@ export const AUDIT_CSV_COLUMNS: readonly Column[] = [
   { header: "result_is_error", of: e => optional(e.resultIsError) },
   { header: "approver", of: e => optional(e.approver) },
   { header: "ticket", of: e => optional(e.ticket) },
+  // #219, appended for this file's own rule: a new column goes at the end,
+  // because a script reading this by position should keep working.
+  { header: "destination", of: e => optional(e.destination) },
   // #354. Not `optional`, because the columns are NOT NULL — every exported row
   // has both. They are here rather than left off because an export that drops
   // the chain is an export nobody can verify: `row_hash` is what recomputation

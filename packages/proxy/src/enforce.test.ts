@@ -1552,7 +1552,14 @@ describe("a built-in tool", () => {
     // built-in target is a test somebody has to edit.
     expect(decision).toEqual({
       outcome: "allow",
-      target: { kind: "builtin", tool: "run_code", caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30 } },
+      target: {
+        kind: "builtin",
+        tool: "run_code",
+        caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30 },
+        // #219. Empty because `BASE` writes no `[egress]` block, and empty is
+        // the grant "no network at all" rather than an absent field.
+        egressAllow: []
+      },
       limits: { maxResultChars: expect.any(Number) },
       warning: null
     });
@@ -1624,6 +1631,42 @@ describe("a built-in tool", () => {
     expect(
       decide({ sheet: withBuiltin([{ name: "run_code" }]), call: callBuiltin("run_code"), spend: NO_SPEND })
     ).toMatchObject({ outcome: "hold", target: { tool: "run_code", caps: { cpus: 1 } } });
+  });
+
+  // #219: the sheet's `[egress]` list rides on the target, so the hop is
+  // configured from what `decide` read rather than from a second lookup against
+  // a sheet that may have reloaded since.
+  it("carries the channel's egress list on the target", () => {
+    const sheet = sheetOf({
+      ...BASE,
+      builtin: [{ name: "run_code", approval: "none" }],
+      egress: { allow: ["api.github.com", "*.internal.example.com"] }
+    });
+
+    expect(decide({ sheet, call: callBuiltin("run_code"), spend: NO_SPEND })).toMatchObject({
+      target: { egressAllow: ["api.github.com", "*.internal.example.com"] }
+    });
+  });
+
+  // The two blocks stay apart, which is `[egress]`'s whole argument: a host
+  // listed for the sandbox must not authorize dialling it as an MCP server, and
+  // an `[[mcp_server]]` url must not need listing here to be reachable.
+  it("does not take the sandbox's list from the mcp server block, or the reverse", () => {
+    const sheet = sheetOf({
+      ...BASE,
+      builtin: [{ name: "run_code", approval: "none" }],
+      egress: { allow: ["api.github.com"] }
+    });
+
+    // The sheet's github upstream is reachable and is not in `[egress]`.
+    expect(decide({ sheet, call: callTo("github", "list_prs"), spend: NO_SPEND })).toMatchObject({
+      outcome: "allow",
+      target: { kind: "mcp" }
+    });
+    // And the sandbox's grant is the `[egress]` list, not the upstream's url.
+    expect(decide({ sheet, call: callBuiltin("run_code"), spend: NO_SPEND })).toMatchObject({
+      target: { egressAllow: ["api.github.com"] }
+    });
   });
 
   it("refuses run_code when the sheet grants a different built-in", () => {

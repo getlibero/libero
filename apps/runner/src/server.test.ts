@@ -34,7 +34,8 @@ const RESULT: SandboxRunResult = {
   stdout: "ok\n",
   stderr: "",
   exitCode: 0,
-  truncated: false
+  truncated: false,
+  deniedHost: null
 };
 
 const mint = (args: string[]) => execFileSync("sh", ["scripts/dev-certs.sh", ...args], { cwd: REPO_ROOT, env: { ...process.env, OUT: dir }, stdio: "pipe" });
@@ -91,7 +92,7 @@ const call = (label: string, body: string, path = "/v1/run", method = "POST") =>
     req.end();
   });
 
-const RUN = JSON.stringify({ code: "print(1)", caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30 } });
+const RUN = JSON.stringify({ code: "print(1)", caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30 }, egressAllow: [] });
 
 describe("the runner's one route", () => {
   it("serves the pinned peer", async () => {

@@ -30,6 +30,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createDockerClient, type DockerClient } from "./docker.js";
 import { runInSandbox, SANDBOX_PIDS_LIMIT, SANDBOX_TMPFS_BYTES, SANDBOX_WORKDIR } from "./run.js";
 
@@ -104,10 +105,14 @@ afterAll(() => {
   // the case below asserts it.
 });
 
-const run = (code: string, caps: Partial<{ cpus: number; memoryMb: number; timeoutSeconds: number }> = {}) =>
+const run = (
+  code: string,
+  caps: Partial<{ cpus: number; memoryMb: number; timeoutSeconds: number }> = {},
+  egressAllow: readonly string[] = []
+) =>
   runInSandbox(
-    { code, caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30, ...caps } },
-    { docker, config: { image: IMAGE, command: [...COMMAND] } }
+    { code, caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 30, ...caps }, egressAllow: [...egressAllow] },
+    { docker, config: { image: IMAGE, command: [...COMMAND] }, newRunId: () => randomUUID() }
   );
 
 describe.skipIf(!socketPresent)("a real sandbox container", () => {
@@ -228,4 +233,102 @@ describe.skipIf(!socketPresent)("a real sandbox container", () => {
     const result = await run("import os; print(os.getuid())");
     expect(result.stdout.trim()).not.toBe("0");
   }, 120_000);
+});
+
+// #219's acceptance, against real containers on real networks. Nothing here is
+// a stub: a hop container really runs, a per-run network really has no default
+// route, and the allowed case really opens a TLS connection to a public host.
+//
+// **These reach the internet**, which is why they are their own block and why
+// the positive control is the first case. A sandbox that reaches nothing would
+// pass every denial assertion below, and the suite's standing rule is that a
+// "reached nothing" claim is worth nothing without proof the surface reaches
+// something.
+describe.skipIf(!socketPresent)("a sandbox with an egress grant", () => {
+  // Docker's default bridge, which has a route out. In a deployment this is the
+  // compose file's `sandbox-egress`; here it is the network that exists on any
+  // host running these tests.
+  const EGRESS_NETWORK = "bridge";
+
+  const withEgress = (code: string, allow: readonly string[]) =>
+    runInSandbox(
+      { code, caps: { cpus: 1, memoryMb: 512, timeoutSeconds: 60 }, egressAllow: [...allow] },
+      {
+        docker,
+        config: {
+          image: IMAGE,
+          command: [...COMMAND],
+          // The hop runs *this repository's* runner image, built by the compose
+          // file. Falling back to a plain `node` image would test a hop that is
+          // not the one that ships.
+          egress: {
+            image: process.env["RUNNER_IMAGE"] ?? "ghcr.io/getlibero/runner:latest",
+            command: ["node", "dist/hop.js"],
+            network: EGRESS_NETWORK,
+            port: 8080
+          }
+        },
+        newRunId: () => randomUUID()
+      }
+    );
+
+  const FETCH = (host: string) =>
+    `import urllib.request
+print(urllib.request.urlopen("https://${host}/", timeout=25).status)`;
+
+  it("reaches a host the sheet allows", async () => {
+    const result = await withEgress(FETCH("example.com"), ["example.com"]);
+
+    expect(result.outcome).toBe("completed");
+    expect(result.stdout.trim()).toBe("200");
+  }, 180_000);
+
+  it("is denied a host the sheet does not allow, and the run ends", async () => {
+    const result = await withEgress(
+      `${FETCH("example.org")}
+print("kept going")`,
+      ["example.com"]
+    );
+
+    expect(result.outcome).toBe("egress_denied");
+    expect(result.deniedHost).toBe("example.org");
+    // Terminal, not best-effort (#393): the program does not get to carry on
+    // after the denial and print its next line.
+    expect(result.stdout).not.toContain("kept going");
+  }, 180_000);
+
+  it("has no route out except the hop, so ignoring the proxy reaches nothing", async () => {
+    // Dials an address directly, with no proxy involved. This is the case that
+    // proves enforcement is topological rather than a convention the code could
+    // decline to follow: there is no default route on the per-run network.
+    const result = await withEgress(
+      "import socket; s=socket.socket(); s.settimeout(10); s.connect(('93.184.215.14',443)); print('reached')",
+      ["example.com"]
+    );
+
+    expect(result.stdout).not.toContain("reached");
+    expect(result.exitCode).not.toBe(0);
+  }, 180_000);
+
+  it("cannot reach the metadata address even when the sheet lists it", async () => {
+    const result = await withEgress(FETCH("169.254.169.254"), ["169.254.169.254"]);
+    expect(result.outcome).toBe("egress_denied");
+    expect(result.deniedHost).toBe("169.254.169.254");
+  }, 180_000);
+
+  it("leaves no container and no network behind", async () => {
+    await withEgress(FETCH("example.com"), ["example.com"]);
+
+    const networks = execFileSync("docker", ["network", "ls", "--filter", "name=libero-sandbox-", "--format", "{{.Name}}"], {
+      encoding: "utf8"
+    }).trim();
+    const containers = execFileSync("docker", ["ps", "-a", "--filter", "name=libero-hop-", "--format", "{{.ID}}"], {
+      encoding: "utf8"
+    }).trim();
+
+    // A leaked network is a bridge interface on the host that nothing will ever
+    // clean up, which is worse than a leaked container.
+    expect(networks).toBe("");
+    expect(containers).toBe("");
+  }, 180_000);
 });

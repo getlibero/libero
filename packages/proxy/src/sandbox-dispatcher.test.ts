@@ -8,6 +8,7 @@ const result = (over: Partial<SandboxRunResult> = {}): SandboxRunResult => ({
   stderr: "",
   exitCode: 0,
   truncated: false,
+  deniedHost: null,
   ...over
 });
 

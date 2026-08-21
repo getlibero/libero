@@ -307,7 +307,11 @@ export type { StoreBuiltinName } from "./enforce.js";
  * what its output may spend of the model's context.
  */
 export interface SandboxDispatcher {
-  run(call: ResolvedToolCall, caps: SandboxCaps, limits: CallLimits): Dispatch | Promise<Dispatch>;
+  run(
+    call: ResolvedToolCall,
+    grant: { readonly caps: SandboxCaps; readonly egressAllow: readonly string[] },
+    limits: CallLimits
+  ): Dispatch | Promise<Dispatch>;
 }
 
 /**
@@ -369,7 +373,7 @@ export function createToolDispatcher(arms: {
           // compiler checks rather than a convention: drop this branch and the
           // call below stops type-checking.
           return target.tool === "run_code"
-            ? sandbox.run(call, target.caps, limits)
+            ? sandbox.run(call, { caps: target.caps, egressAllow: target.egressAllow }, limits)
             : builtin.run(call, target.tool, limits);
       }
     }

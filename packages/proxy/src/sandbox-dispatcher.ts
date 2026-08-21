@@ -89,8 +89,12 @@ export function createSandboxDispatcher(options: SandboxDispatcherOptions): Sand
   });
 
   return {
-    async run(call, caps: SandboxCaps, limits) {
-      const body = Buffer.from(JSON.stringify({ code: codeOf(call), caps }), "utf8");
+    async run(call, grant, limits) {
+      const caps: SandboxCaps = grant.caps;
+      const body = Buffer.from(
+        JSON.stringify({ code: codeOf(call), caps, egressAllow: [...grant.egressAllow] }),
+        "utf8"
+      );
 
       let reply: { status: number; body: string };
       try {
@@ -116,7 +120,22 @@ export function createSandboxDispatcher(options: SandboxDispatcherOptions): Sand
         return { outcome: "unavailable", reason: "runner_error" };
       }
 
-      return ran(render(parsed.data, limits.maxResultChars));
+      // The one outcome that is a governance decision rather than a fact about
+      // resources, and the only one that becomes a refusal (#219). A completed
+      // run and a timed-out one are both `ran`: the request was served, and what
+      // the program printed is a real answer. A denied destination is the sheet
+      // saying no, and it reaches the channel and the audit log as such.
+      const result = parsed.data;
+      if (result.outcome === "egress_denied" && result.deniedHost !== null) {
+        options.logger.log("warn", {
+          event: "egress_denied",
+          channel: call.channel,
+          destination: result.deniedHost
+        });
+        return { outcome: "refused", refusal: { reason: "egress_denied", destination: result.deniedHost } };
+      }
+
+      return ran(render(result, limits.maxResultChars));
     }
   };
 }

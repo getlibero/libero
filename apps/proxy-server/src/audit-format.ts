@@ -111,13 +111,18 @@ export function showLines(entry: AuditEntry): string[] {
       entry.refusalReason,
       entry.server,
       entry.tool,
-      entry.budgetLimit
+      entry.budgetLimit,
+      entry.destination
     );
     if (sentence !== null) lines.push(`               ${sentence}`);
     // Which limit bound, as its own line as well as inside the sentence: an
     // operator scanning a page of refusals reads the left column, and the
     // sentence is a paragraph in.
     if (entry.budgetLimit !== undefined) lines.push(`limit          ${entry.budgetLimit}`);
+    // The host that ended a run, on the same argument (#219): a page of
+    // refusals is scanned down the left, and "which host" is the first thing an
+    // operator wants from an egress row.
+    if (entry.destination !== undefined) lines.push(`destination    ${entry.destination}`);
   }
 
   // Only on rows where something was priced. A `not recorded` line on every row

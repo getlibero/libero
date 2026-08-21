@@ -11,6 +11,9 @@ export type Env = Record<string, string | undefined>;
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 8444;
 
+/** The hop's port inside the per-run network. Not an operator setting: the runner sets both ends. */
+export const DEFAULT_HOP_PORT = 8080;
+
 /**
  * The Docker socket, as the runner sees it.
  *
@@ -106,4 +109,73 @@ export function portFromEnv(env: Env): number {
     throw new Error(`runner: RUNNER_PORT is not a port number: ${raw}`);
   }
   return port;
+}
+
+/**
+ * The hop's allowlist, as a JSON array of `[egress]` patterns (#219).
+ *
+ * Passed by the runner when it creates the hop container, from the list that
+ * rode in on the request — which came off the `Decision` that authorized the
+ * call. The hop never resolves a sheet and has no idea which channel it serves.
+ *
+ * An empty list is refused rather than accepted. A hop with nothing allowed
+ * permits nothing, which sounds safe and is actually a bug: the runner does not
+ * start a hop at all in that case, it gives the sandbox no network. A hop that
+ * booted with an empty list would mean the runner got the branch wrong, and it
+ * should say so rather than run.
+ */
+export function hopAllowFromEnv(env: Env): readonly string[] {
+  const raw = requiredEnv(env, "HOP_ALLOW");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`runner hop: HOP_ALLOW is not JSON: ${raw}`);
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string" && p !== "")) {
+    throw new Error(`runner hop: HOP_ALLOW must be a non-empty JSON array of patterns, and was ${raw}`);
+  }
+  return parsed as readonly string[];
+}
+
+/** Where the hop listens. Fixed by the runner, which also sets the sandbox's proxy env. */
+export function hopPortFromEnv(env: Env): number {
+  const raw = env["HOP_PORT"];
+  if (raw === undefined || raw === "") return DEFAULT_HOP_PORT;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`runner hop: HOP_PORT is not a port number: ${raw}`);
+  }
+  return port;
+}
+
+/**
+ * The network that gives a hop its route out, or absent (#219).
+ *
+ * **Absent is a supported deployment and the default one.** Without it a run
+ * gets no network whatever its sheet's `[egress]` block says — which is a
+ * stricter rule than the sheet asked for, applied in the safe direction, and
+ * logged so the operator can see their channel is asking for something the
+ * deployment has not turned on.
+ *
+ * It names a network the compose file created, not one this process makes: the
+ * per-run networks are ephemeral and internal, and this is the one with a
+ * default route. Keeping them apart is what stops a sandbox from ever being on
+ * a network that can reach anything.
+ */
+export function egressNetworkFromEnv(env: Env): string | undefined {
+  const raw = env["RUNNER_EGRESS_NETWORK"];
+  return raw === undefined || raw === "" ? undefined : raw;
+}
+
+/**
+ * This process's own image, which the hop runs with a different entrypoint.
+ *
+ * Required when egress is on, and there is nothing clever to do instead: a
+ * container cannot reliably learn its own image from inside itself, and
+ * guessing would mean starting the hop from something other than the code that
+ * asked for it. The compose file sets it beside the image it names.
+ */
+export function runnerImageFromEnv(env: Env): string {
+  return requiredEnv(env, "RUNNER_IMAGE");
 }

@@ -225,6 +225,13 @@ export interface AuditRecord {
    * the proxy host, where the vault already is.
    */
   readonly ticket?: string;
+  /**
+   * The host a run was killed for reaching (#219).
+   *
+   * Present only on an `egress_denied` refusal, and one host rather than a list
+   * because #393 made the first denial terminal — a run has at most one.
+   */
+  readonly destination?: string;
 }
 
 /**
@@ -262,7 +269,8 @@ export function auditRefusalMessage(
   reason: RefusalReason,
   server: string,
   tool: string,
-  budgetLimit?: BudgetLimit
+  budgetLimit?: BudgetLimit,
+  destination?: string
 ): string | null {
   switch (reason) {
     case "no_team_sheet":
@@ -302,7 +310,17 @@ export function auditRefusalMessage(
     case "schedule_too_far":
     case "ambient_disabled":
       return refusalMessage({ reason });
-    // The three the table cannot complete. Listed rather than defaulted, so a
+    // Completed by the row's own `destination` column since #219, and the
+    // column exists *because* this returned `null` here. The gap was structural
+    // and the fix was to make the row say, not to invent a sentence: an operator
+    // reading the log and the channel that saw the refusal now get the same
+    // words, which is this function's whole reason for existing.
+    //
+    // It stays `null` when the column is absent rather than guessing, exactly as
+    // `budget_exhausted` does for rows written before version 4.
+    case "egress_denied":
+      return destination === undefined ? null : refusalMessage({ reason, destination });
+    // The two the table cannot complete. Listed rather than defaulted, so a
     // new reason is a compile error here and a decision rather than a silent
     // `null` — `refusalMessage`'s totality would otherwise stop at this door.
     //
@@ -312,7 +330,6 @@ export function auditRefusalMessage(
     // business carrying. Inventing one would name a model the record never
     // observed.
     case "model_not_priced":
-    case "egress_denied":
     case "credential_unresolved":
       return null;
   }

@@ -25,6 +25,7 @@
 import type { SandboxCaps, SandboxRunRequest, SandboxRunResult } from "@getlibero/schema";
 import { SANDBOX_MAX_OUTPUT_BYTES } from "@getlibero/schema";
 import type { DockerClient } from "./docker.js";
+import { DENIED_EVENT } from "./hop-server.js";
 
 /**
  * The scratch directory, and the only writable path in the container.
@@ -59,6 +60,21 @@ export interface RunnerConfig {
   readonly image: string;
   /** The interpreter and its flags; the code is appended as the final argument. */
   readonly command: readonly string[];
+  /**
+   * The hop's image and entrypoint, and the network that gives it a route out
+   * (#219). Absent means this deployment cannot serve an `[egress]` grant.
+   *
+   * The hop runs the runner's *own* image with a different command, which is why
+   * there is no second image to pin: it is this process's code, so if it were
+   * substituted the runner would already be substituted.
+   */
+  readonly egress?: {
+    readonly image: string;
+    readonly command: readonly string[];
+    /** A network with a default route. The hop joins it; the sandbox never does. */
+    readonly network: string;
+    readonly port: number;
+  };
 }
 
 export interface RunOptions {
@@ -73,57 +89,211 @@ export interface RunOptions {
    * operator's first sign of it is a full disk.
    */
   readonly onRemoveFailed?: (reason: string) => void;
+  /**
+   * Called when a sheet granted `[egress]` and this deployment has no hop
+   * configured, so the run got no network at all.
+   *
+   * A log line rather than an error, and the run still happens. The alternative
+   * — failing the call — would make a deployment that has not enabled egress
+   * refuse a channel whose sheet is perfectly valid, which is a worse answer
+   * than running it under a stricter rule and saying so.
+   */
+  readonly onEgressUnavailable?: () => void;
+  /**
+   * A fresh identifier per run, for naming the network and the hop.
+   *
+   * Injected rather than taken from `randomUUID` here so a test can make the
+   * names it has to assert on predictable, and so this module has no clock and
+   * no entropy of its own.
+   */
+  newRunId(): string;
 }
 
 /** Docker counts cpu in billionths, and accepts fractions of one core that way. */
 const nanoCpus = (cpus: number) => Math.round(cpus * 1_000_000_000);
+
+/** The hop's alias inside the per-run network. What the sandbox's proxy env names. */
+export const HOP_ALIAS = "hop";
+
+/** Where the runner image puts its code, and so where the hop has to run from. */
+const HOP_WORKDIR = "/app";
+
+/**
+ * Everything one run created, so a `finally` can undo it in the right order.
+ *
+ * Containers before the network: Docker refuses to remove a network something
+ * is still attached to, and a leaked network is a leaked bridge interface on the
+ * host that nothing will ever clean up.
+ */
+interface Scaffolding {
+  readonly sandbox: string;
+  readonly hop?: string;
+  readonly network?: string;
+}
 
 export async function runInSandbox(
   request: SandboxRunRequest,
   options: RunOptions
 ): Promise<SandboxRunResult> {
   const caps: SandboxCaps = request.caps;
-  const created = await options.docker.create({
+  const wantsEgress = request.egressAllow.length > 0;
+
+  if (wantsEgress && options.config.egress === undefined) {
+    // A sheet granted hosts and this deployment cannot enforce the grant. The
+    // safe reading is the narrow one: no network, and the caller is told the run
+    // completed under a stricter rule than its sheet asked for. Quietly giving
+    // it a route out would be the opposite.
+    options.onEgressUnavailable?.();
+  }
+  const egress = wantsEgress ? options.config.egress : undefined;
+
+  const scaffolding = await build(request, options, caps, egress);
+  let denied: string | null = null;
+  const follow =
+    scaffolding.hop === undefined
+      ? undefined
+      : options.docker.followLogs(scaffolding.hop, line => {
+          if (denied !== null) return;
+          const host = deniedHostOf(line);
+          if (host === null) return;
+          denied = host;
+          // Killed on the line rather than at the end of the run. This is what
+          // makes the denial terminal (#393): the program loses the rest of its
+          // work, which is the fail-closed direction and the stated cost.
+          void options.docker.kill(scaffolding.sandbox).catch(() => undefined);
+        });
+
+  try {
+    await options.docker.start(scaffolding.sandbox);
+    const status = await options.docker.wait(scaffolding.sandbox, caps.timeoutSeconds * 1000);
+    const logs = await readAfter(options, scaffolding.sandbox, status);
+
+    // Checked before the timeout branch, because a killed sandbox stops
+    // reporting a status and both paths arrive here with `status === null`. The
+    // two are not the same answer: a timeout is a resource fact and this is a
+    // governance decision, and the proxy turns only one of them into a refusal.
+    if (denied !== null) {
+      return { outcome: "egress_denied", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated, deniedHost: denied };
+    }
+
+    if (status === null) {
+      return { outcome: "timed_out", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated, deniedHost: null };
+    }
+
+    return { outcome: "completed", stdout: logs.stdout, stderr: logs.stderr, exitCode: status, truncated: logs.truncated, deniedHost: null };
+  } finally {
+    follow?.stop();
+    await teardown(options, scaffolding);
+  }
+}
+
+/** Kill a run that outlived its cap, then read — the other order races a printer. */
+async function readAfter(options: RunOptions, sandbox: string, status: number | null) {
+  if (status === null) await options.docker.kill(sandbox).catch(() => undefined);
+  return await options.docker.logs(sandbox, SANDBOX_MAX_OUTPUT_BYTES);
+}
+
+/** The hop's one line, or null for any other output it produced. */
+function deniedHostOf(line: string): string | null {
+  try {
+    const parsed = JSON.parse(line) as { event?: unknown; host?: unknown };
+    return parsed.event === DENIED_EVENT && typeof parsed.host === "string" ? parsed.host : null;
+  } catch {
+    return null;
+  }
+}
+
+async function build(
+  request: SandboxRunRequest,
+  options: RunOptions,
+  caps: SandboxCaps,
+  egress: RunnerConfig["egress"]
+): Promise<Scaffolding> {
+  const sandboxSpec = {
     image: options.config.image,
     // The one place the caller's bytes enter the spec, and they enter as an
     // argument to a command this process chose — never as the command.
     command: [...options.config.command, request.code],
     workdir: SANDBOX_WORKDIR,
+    tmpfs: SANDBOX_WORKDIR,
     memory: caps.memoryMb * 1024 * 1024,
     nanoCpus: nanoCpus(caps.cpus),
     tmpfsSize: SANDBOX_TMPFS_BYTES,
     pidsLimit: SANDBOX_PIDS_LIMIT
-  });
+  } as const;
 
+  if (egress === undefined) {
+    const sandbox = await options.docker.create(sandboxSpec);
+    return { sandbox: sandbox.id };
+  }
+
+  const runId = options.newRunId();
+  const network = await options.docker.createNetwork(`libero-sandbox-${runId}`);
   try {
-    await options.docker.start(created.id);
-    const status = await options.docker.wait(created.id, caps.timeoutSeconds * 1000);
-
-    if (status === null) {
-      // Killed first, then read. The other order races a program that is still
-      // printing, and would return a transcript that keeps growing after the
-      // deadline the channel set.
-      await options.docker.kill(created.id);
-      const logs = await options.docker.logs(created.id, SANDBOX_MAX_OUTPUT_BYTES);
-      return { outcome: "timed_out", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated };
-    }
-
-    const logs = await options.docker.logs(created.id, SANDBOX_MAX_OUTPUT_BYTES);
-    return { outcome: "completed", stdout: logs.stdout, stderr: logs.stderr, exitCode: status, truncated: logs.truncated };
-  } finally {
-    // #395's second promise: the container is gone when the call returns,
-    // success or failure. In a `finally` because "failure" includes this
-    // function throwing, and a leaked container is a leaked tmpfs holding
-    // whatever the last run wrote.
-    //
-    // A remove that itself fails must not mask the run's own error — letting it
-    // throw out of a `finally` replaces a useful error with a less useful one —
-    // so it is caught and *reported* rather than swallowed. The distinction
-    // matters: the first version of this discarded the error while its comment
-    // claimed the log had it, which is the kind of sentence that survives a
-    // review because it sounds like it is describing something.
-    await options.docker.remove(created.id).catch((error: Error) => {
-      options.onRemoveFailed?.(error.message);
+    const hop = await options.docker.create({
+      image: egress.image,
+      command: [...egress.command],
+      // The runner image's own working directory, because the hop *is* the
+      // runner image with another entrypoint and its code lives there. Its
+      // scratch space goes somewhere else entirely — see `tmpfs` on the spec.
+      workdir: HOP_WORKDIR,
+      tmpfs: "/tmp",
+      // The hop holds a socket table and nothing else. Its caps are this
+      // module's rather than the sheet's: a channel sizing its own enforcement
+      // point would be a channel deciding how hard its enforcement is to
+      // exhaust.
+      memory: 128 * 1024 * 1024,
+      nanoCpus: nanoCpus(0.5),
+      tmpfsSize: 1024 * 1024,
+      pidsLimit: 64,
+      network: { name: `libero-sandbox-${runId}`, alias: HOP_ALIAS },
+      name: `libero-hop-${runId}`,
+      env: [`HOP_ALLOW=${JSON.stringify([...request.egressAllow])}`, `HOP_PORT=${egress.port}`]
     });
+    // The hop's second network, and the only route out of this run. The sandbox
+    // never joins it, which is what stops an allowed host from becoming a path
+    // back to anything else in the deployment.
+    await options.docker.connectNetwork(egress.network, hop.id);
+    await options.docker.start(hop.id);
+
+    const proxy = `http://${HOP_ALIAS}:${egress.port}`;
+    const sandbox = await options.docker.create({
+      ...sandboxSpec,
+      network: { name: `libero-sandbox-${runId}` },
+      // Both spellings, because clients disagree about which they read, and the
+      // lowercase pair is what most of them actually check. NO_PROXY is empty on
+      // purpose: there is no destination this run may reach directly.
+      env: [
+        `HTTP_PROXY=${proxy}`,
+        `HTTPS_PROXY=${proxy}`,
+        `http_proxy=${proxy}`,
+        `https_proxy=${proxy}`,
+        "NO_PROXY=",
+        "no_proxy="
+      ]
+    });
+    return { sandbox: sandbox.id, hop: hop.id, network };
+  } catch (error) {
+    await options.docker.removeNetwork(network).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Undo everything, in the order Docker requires and none of it optional.
+ *
+ * #395's promise is that the container is gone when the call returns; #219 adds
+ * two more things to that. A leaked network is a bridge interface nothing will
+ * clean up, and the daemon refuses to remove one while a container is still
+ * attached — so containers first, and the network last.
+ */
+async function teardown(options: RunOptions, scaffolding: Scaffolding): Promise<void> {
+  const report = (reason: string) => options.onRemoveFailed?.(reason);
+  await options.docker.remove(scaffolding.sandbox).catch((error: Error) => report(error.message));
+  if (scaffolding.hop !== undefined) {
+    await options.docker.remove(scaffolding.hop).catch((error: Error) => report(error.message));
+  }
+  if (scaffolding.network !== undefined) {
+    await options.docker.removeNetwork(scaffolding.network).catch((error: Error) => report(error.message));
   }
 }

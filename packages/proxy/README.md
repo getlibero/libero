@@ -851,9 +851,9 @@ network can reach, and the one variable an operator will get wrong.
 
 ## Enforcing `[egress]`
 
-`isEgressAllowed` has had adversarial tests and no caller since #73. The sandbox
-is the caller (#219), and the first thing to get right is that **it is not a call
-site.** A check on the way out works when the destination is announced;
+`isEgressAllowed` had adversarial tests and no caller from #73 until #219. The
+sandbox is the caller, and the first thing to get right is that **it is not a
+call site.** A check on the way out works when the destination is announced;
 sandboxed code opens sockets nobody declared, so there is no line to put one on.
 
 **Enforcement is topological.** The sandbox runs on a per-run `internal: true`
@@ -862,6 +862,15 @@ network with no route out. The only other member is a CONNECT hop that calls
 address, reaches nothing — not because it was checked and refused, but because
 there is nowhere for the packet to go. **A sheet with no `[egress]` block gets no
 hop and no network at all.**
+
+**Built in #219**, as `apps/runner/src/hop-server.ts` behind a second entrypoint
+on the runner's image. What follows was the design; what shipped matches it, with
+two things the build settled. The hop runs the runner's *own* image rather than a
+second published one, so there is nothing extra to pin — if it were substituted
+the runner would already be. And the runner learns of a denial by **following the
+hop's log stream** rather than polling it or reading it at the end: polling would
+put the interval between the denial and the kill, and reading at the end would
+make the denial not terminal at all.
 
 **The hop is ours, and that is not a build-versus-buy preference.** #219's
 standing rule is that a caller which reimplements matching instead of calling
@@ -971,29 +980,25 @@ A denied destination *is* a refusal. The difference is not whether the container
 ran. It is that a timeout is a resource fact and a denied destination is a
 governance decision the team sheet made.
 
-### If the hop balloons
+### The fallback, and why it was not taken
 
-The honest fallback is that 0.4 ships **no network for sandboxed code, ever** —
-`network: none` on every run, no hop, no allowlist consulted. It is a smaller
-thing to build and it is strictly safer. What it descopes, named rather than
-implied:
+#393 recorded an honest fallback: if the hop ballooned, 0.4 would ship
+`network: none` on every run, no hop, no allowlist consulted. It did not
+balloon, and #219 built the hop — so this section is kept as the record of a
+decision rather than as an open option.
 
-- #219 gets no live caller and `egress_denied` stays unconstructed, so the
-  destination column has no reason to exist yet.
-- Every place that says `[egress]` is validated at load and enforced nowhere goes
-  on saying it — the root `README.md` and `SECURITY.md`, four docs pages, the
-  marketing page's code sample, and the example channel sheet.
-- The exfiltration case in the e2e suite becomes "the container has no network"
-  rather than "the unlisted host was refused", and its positive control has
-  nothing left to prove. The suite's rule that positive controls are load-bearing
-  makes that a real loss, not a cosmetic one.
-- The v0.4.0 milestone's own definition of done commits in writing to a
-  destination outside the list being refused before a connection is opened. That
-  text would have to be edited, not just the documentation.
+What it would have cost, since that is the part worth keeping: `egress_denied`
+would have stayed unconstructed and the `destination` column would have had no
+reason to exist; the exfiltration case in the e2e suite would have become "the
+container has no network" rather than "the unlisted host was refused", leaving
+its positive control nothing to prove; and the v0.4.0 milestone's own definition
+of done — which commits in writing to a destination outside the list being
+refused before a connection is opened — would have had to be edited rather than
+met.
 
-Worth saying in the same breath: **the runner decision survives the fallback
-untouched.** The two decisions on this page are independently shippable, and the
-fallback costs only the second.
+The part that did hold either way is worth repeating: the runner decision was
+independent of this one. #395 shipped a working sandbox with no network at all,
+and #219 added the hop on top of it without changing the topology underneath.
 
 ## Endpoints
 

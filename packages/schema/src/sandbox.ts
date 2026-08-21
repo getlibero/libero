@@ -27,13 +27,21 @@
 // depends on was settled before the proxy dialled it. A channel id here would be
 // a fact the runner could log, correlate, or leak, bought for nothing.
 //
-// **No network grant, yet.** For 0.4's first half a run has no network at all —
-// `network: none`, not a filtered one. The `[egress]` hop that would qualify
-// that is #219, and it adds a field here when it lands. Until then the absence
-// is the honest shape: there is no way for a caller to ask for network, so there
-// is no way for one to be granted by mistake.
+// ## The network grant, which arrived with #219
+//
+// `egressAllow` is the channel's `[egress] allow` list, resolved by the same
+// `decide` that authorized the call. An **empty list is the common case and
+// means no network at all** — `NetworkMode: none`, not a filtered one — so a
+// sheet that says nothing cannot be read as saying "anything".
+//
+// It carries *patterns*, not resolved hosts, because `isEgressAllowed` is what
+// decides and it takes the pattern the operator wrote. A caller that resolved
+// them into addresses first would be reimplementing the matcher, which #219
+// calls a review failure, and would have thrown away the wildcard.
 
 import { z } from "zod";
+import { EgressPattern } from "./egress.js";
+import { DestinationHost } from "./names.js";
 
 /**
  * The most source one run may carry.
@@ -61,10 +69,19 @@ export const SandboxCaps = z.object({
 
 export type SandboxCaps = z.infer<typeof SandboxCaps>;
 
-/** One run: the code, and how much machine it may have. */
+/** One run: the code, how much machine it may have, and where it may reach. */
 export const SandboxRunRequest = z.object({
   code: z.string().min(1).max(SANDBOX_CODE_MAX_CHARS),
-  caps: SandboxCaps
+  caps: SandboxCaps,
+  /**
+   * The channel's `[egress] allow` patterns. Empty means no network.
+   *
+   * `EgressPattern` rather than a bare string, so a runner handed something the
+   * matcher would fail closed on refuses it at the edge instead of building a
+   * hop around a list that permits nothing. Defaulted so a proxy built before
+   * this field existed still parses — the default is the safe direction.
+   */
+  egressAllow: z.array(EgressPattern).default([])
 });
 
 export type SandboxRunRequest = z.infer<typeof SandboxRunRequest>;
@@ -79,12 +96,20 @@ export type SandboxRunRequest = z.infer<typeof SandboxRunRequest>;
  * `timed_out` means it outlived `timeoutSeconds` and was killed. #395 is
  * explicit that this **is not a refusal and not a `ProxyError`**: the request
  * was served, the caller gets whatever was printed before the kill, and the
- * result says plainly that it was cut off. The distinction to keep is that a
- * timeout is a resource fact where an `[egress]` denial (#219) is a governance
- * decision — the first is a bounded run doing what bounds do, the second is the
- * sheet refusing.
+ * result says plainly that it was cut off.
+ *
+ * `egress_denied` means the code dialled a host the channel's list does not
+ * allow, and the run was killed for it (#219). It is the third member and the
+ * only one that is a **governance decision** rather than a fact about resources
+ * — which is why the proxy turns this one into `Dispatch.refused` and the other
+ * two into `ran`. Keep the distinction: a timeout is a bounded run doing what
+ * bounds do, and this is the sheet refusing.
+ *
+ * Terminal on the first denial, decided in #393. The consequence is the one that
+ * makes `deniedHost` a single field rather than a list: there is at most one
+ * denied destination per run, because the first one ends it.
  */
-export const SandboxOutcome = z.enum(["completed", "timed_out"]);
+export const SandboxOutcome = z.enum(["completed", "timed_out", "egress_denied"]);
 
 export type SandboxOutcome = z.infer<typeof SandboxOutcome>;
 
@@ -123,7 +148,17 @@ export const SandboxRunResult = z.object({
   stdout: z.string(),
   stderr: z.string(),
   exitCode: z.number().int().nullable(),
-  truncated: z.boolean()
+  truncated: z.boolean(),
+  /**
+   * The host that ended the run, and `null` on every other outcome.
+   *
+   * A `DestinationHost` because that is what the refusal carries and what the
+   * audit row's column holds; a shape that parsed here but not there would be a
+   * run the proxy could not describe. Optional so a runner built before #219
+   * still satisfies this schema, which is the same direction `egressAllow`'s
+   * default takes.
+   */
+  deniedHost: DestinationHost.nullable().default(null)
 });
 
 export type SandboxRunResult = z.infer<typeof SandboxRunResult>;

@@ -156,6 +156,7 @@ describe("appending", () => {
         result_is_error: 0,
         approver: null,
         ticket: null,
+        destination: null,
         // #354. The first row chains from the genesis constant, and its hash is
         // asserted by recomputation rather than as a literal — a literal here
         // would have to be regenerated from the code it is meant to check.
@@ -195,7 +196,8 @@ describe("appending", () => {
       result_bytes: null,
       result_is_error: null,
       approver: null,
-      ticket: null
+      ticket: null,
+      destination: null
     });
     expect(rows(file)[1]).toMatchObject({ outcome: "unanswered", approver: "U0BOSS", ticket: "tk-4" });
   });
@@ -449,6 +451,7 @@ describe("the canonical serialization", () => {
     result_is_error: null,
     approver: null,
     ticket: null,
+    destination: null,
     ...overrides
   });
 
@@ -471,6 +474,18 @@ describe("the canonical serialization", () => {
   it("omits a null column rather than encoding it", () => {
     expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells())).not.toContain("ticket");
     expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells({ ticket: "tk-1" }))).toContain('"ticket":"tk-1"');
+  });
+
+  // Version 6's column, asserted the same way — and this is the case that makes
+  // "the v6 migration leaves every existing hash alone" a checked claim rather
+  // than a paragraph in AUDIT_SCHEMA_VERSION's doc. A row with no destination
+  // hashes to exactly what it hashed before the column existed.
+  it("leaves a row without a destination hashing as it did before version 6", () => {
+    const preimage = auditRowPreimage(AUDIT_CHAIN_GENESIS, cells());
+    expect(preimage).not.toContain("destination");
+    expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells({ destination: "evil.example.com" }))).toContain(
+      '"destination":"evil.example.com"'
+    );
   });
 
   it("keeps a numeric column and a text one carrying the same digits apart", () => {
@@ -881,6 +896,127 @@ END;
 `;
 
 /**
+ * The version 5 table: version 6 minus `destination`, and the shape a deployment
+ * running the previous build has on disk right now.
+ *
+ * The migration that matters, in other words. v1 through v4 are the historical
+ * ladder and this is the live rung — if #219's column can be added without
+ * breaking a chain, this is the file that proves it, because its rows are
+ * already hashed and those hashes must not move.
+ */
+const V5_SCHEMA = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_call_audit (
+  id               INTEGER PRIMARY KEY,
+  at               INTEGER NOT NULL,
+  channel          TEXT    NOT NULL,
+  requesting_user  TEXT    NOT NULL,
+  task             TEXT    NOT NULL,
+  request_id       TEXT    NOT NULL,
+  call_id          TEXT    NOT NULL,
+  server           TEXT    NOT NULL,
+  tool             TEXT    NOT NULL,
+  arguments_sha256 TEXT    NOT NULL,
+  outcome          TEXT    NOT NULL CHECK (outcome IN
+                     ('ran', 'held', 'refused', 'unavailable', 'unanswered',
+                      'approved', 'denied', 'expired')),
+  refusal_reason   TEXT,
+  budget_limit     TEXT CHECK (budget_limit IS NULL OR budget_limit IN
+                     ('daily_tokens', 'daily_tool_calls', 'daily_usd')),
+  day_spend_micro_usd INTEGER,
+  price_version    TEXT,
+  result_bytes     INTEGER,
+  result_is_error  INTEGER,
+  approver         TEXT,
+  ticket           TEXT,
+  prev_hash        TEXT    NOT NULL CHECK (length(prev_hash) = 64),
+  row_hash         TEXT    NOT NULL CHECK (length(row_hash) = 64)
+);
+
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_at ON tool_call_audit (channel, at);
+CREATE INDEX IF NOT EXISTS tool_call_audit_channel_task ON tool_call_audit (channel, task);
+CREATE INDEX IF NOT EXISTS tool_call_audit_ticket ON tool_call_audit (ticket) WHERE ticket IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS tool_call_audit_prev_hash ON tool_call_audit (prev_hash);
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_update
+BEFORE UPDATE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_audit_no_delete
+BEFORE DELETE ON tool_call_audit
+BEGIN
+  SELECT RAISE(ABORT, 'the audit log is append-only');
+END;
+`;
+
+/**
+ * A version 5 file with `count` chained rows in it.
+ *
+ * The hashes are computed with the *current* `auditRowHash`, which is the point
+ * rather than a shortcut: `destination` is null on every one of these rows and
+ * NULL columns are omitted from the preimage, so the current function and the
+ * version 5 function produce identical bytes for identical rows. If that ever
+ * stopped being true this fixture would stop verifying, which is exactly the
+ * alarm wanted.
+ */
+function writeV5File(path: string, count: number): void {
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("PRAGMA journal_mode = WAL");
+    raw.exec(V5_SCHEMA);
+    raw.prepare("INSERT INTO schema_version (version) VALUES (5)").run();
+    const insert = raw.prepare(
+      `INSERT INTO tool_call_audit
+         (at, channel, requesting_user, task, request_id, call_id, server, tool,
+          arguments_sha256, outcome, refusal_reason, budget_limit, day_spend_micro_usd,
+          price_version, result_bytes, result_is_error, approver, ticket, prev_hash, row_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    let prev: string = AUDIT_CHAIN_GENESIS;
+    for (let n = 1; n <= count; n += 1) {
+      const refused = n % 2 === 0;
+      const values = {
+        at: NOON + n,
+        channel: CHANNEL,
+        requesting_user: "U0ALICE",
+        task: `t-${n}`,
+        request_id: `r-${n}`,
+        call_id: `toolu_${n}`,
+        server: "github",
+        tool: refused ? "merge_pr" : "create_issue",
+        arguments_sha256: "d".repeat(64),
+        outcome: refused ? "refused" : "ran",
+        refusal_reason: refused ? "budget_exhausted" : null,
+        budget_limit: refused ? "daily_usd" : null,
+        day_spend_micro_usd: refused ? 5_000_000 : null,
+        price_version: refused ? "sha256:abc" : null,
+        result_bytes: refused ? null : 10,
+        result_is_error: refused ? null : 0,
+        approver: refused ? null : "U0BOSS",
+        ticket: refused ? null : `tk-${n}`,
+        destination: null
+      } as const;
+      const hash = auditRowHash(prev, values);
+      insert.run(
+        values.at, values.channel, values.requesting_user, values.task, values.request_id,
+        values.call_id, values.server, values.tool, values.arguments_sha256, values.outcome,
+        values.refusal_reason, values.budget_limit, values.day_spend_micro_usd,
+        values.price_version, values.result_bytes, values.result_is_error, values.approver,
+        values.ticket, prev, hash
+      );
+      prev = hash;
+    }
+  } finally {
+    raw.close();
+  }
+}
+
+/**
  * A version 4 file with `count` rows in it.
  *
  * Rows differ from one another in more than their ids, and one of them is a
@@ -965,6 +1101,7 @@ describe("migrating a version 1 file", () => {
       expect(unchained(after[0] as Record<string, unknown>)).toEqual({
         ...unchained(before[0] as Record<string, unknown>),
         ticket: null,
+        destination: null,
         budget_limit: null,
         day_spend_micro_usd: null,
         price_version: null
@@ -1235,7 +1372,8 @@ describe("migrating a version 3 file", () => {
           ...unchained(row),
           budget_limit: null,
           day_spend_micro_usd: null,
-          price_version: null
+          price_version: null,
+          destination: null
         }))
       );
     } finally {
@@ -1291,7 +1429,8 @@ describe("migrating a version 2 file", () => {
           ...unchained(row),
           budget_limit: null,
           day_spend_micro_usd: null,
-          price_version: null
+          price_version: null,
+          destination: null
         }))
       );
       expect(after.map(row => row.ticket)).toEqual(["tk-1", "tk-2", "tk-3"]);
@@ -1391,6 +1530,59 @@ describe("migrating a version 2 file", () => {
   });
 });
 
+// The migration a real deployment will actually run. Every other `migrating a
+// version N` block below is the historical ladder; this is the rung the last
+// release left people on, so it is where "adding #219's column does not disturb
+// what is already written" has to be true rather than argued.
+describe("migrating a version 5 file", () => {
+  let old: string;
+
+  beforeEach(() => {
+    old = join(dir, "v5.db");
+    writeV5File(old, 3);
+  });
+
+  it("adds destination as null and changes nothing else", () => {
+    const before = rows(old);
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(rows(old)).toEqual(before.map(row => ({ ...row, destination: null })));
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The claim `AUDIT_SCHEMA_VERSION`'s doc makes about version 6, checked
+  // rather than asserted: the rows were hashed by the previous build, and after
+  // the migration they carry **the same hashes**. That is what "NULL columns are
+  // omitted from the preimage" buys, and if it ever stopped holding, every
+  // operator's log would fail to verify on upgrade.
+  it("leaves every existing row hashing exactly as it did", () => {
+    const before = rows(old).map(row => row["row_hash"]);
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(rows(old).map(row => row["row_hash"])).toEqual(before);
+      expect(firstBrokenRow(old)).toBeUndefined();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("chains a row written after the migration onto the last one written before it", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      migrated.append(
+        record({ callId: "toolu_after", outcome: "refused", refusalReason: "egress_denied", destination: "evil.example.com" })
+      );
+      expect(firstBrokenRow(old)).toBeUndefined();
+      expect(rows(old).at(-1)).toMatchObject({ destination: "evil.example.com" });
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
 describe("migrating a version 4 file", () => {
   let old: string;
 
@@ -1404,7 +1596,9 @@ describe("migrating a version 4 file", () => {
     const migrated = openAuditDb({ file: old });
     try {
       const after = rows(old);
-      expect(after.map(unchained)).toEqual(before);
+      // Plus version 6's column, which a version 4 row has no value for and is
+      // given null — the same reading version 4 gave its own three.
+      expect(after.map(unchained)).toEqual(before.map(row => ({ ...row, destination: null })));
       expect(after.map(row => row.id)).toEqual([1, 2, 3]);
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
     } finally {
