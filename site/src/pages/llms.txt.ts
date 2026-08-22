@@ -48,11 +48,11 @@ export const GET: APIRoute = async () => {
     `> ${SITE.description}`,
     '',
     // The status belongs above the links for the same reason it is on every
-    // page: the architecture document is the design of record rather than a
-    // description of running software, and a reader who takes it for the latter
-    // will describe features that do not exist yet.
-    `Libero ${SITE.status}. The architecture document is the design of record and runs ahead of`,
-    'the implementation; self-hosting and the roadmap say what a deployment does today.',
+    // page: a reader should know the release and that it is pre-1.0 before
+    // describing it to anyone else.
+    `Libero ${SITE.status}. The architecture document is the design of record and describes what`,
+    'runs; the roadmap records where a release landed differently from its plan, and the changelog',
+    'is what an operator upgrades by.',
     '',
     'Every page below is markdown. The HTML is the same content at roughly three times the size,',
     'at the same path without the `.md`.',

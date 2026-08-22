@@ -38,12 +38,11 @@ export const SITE = {
    * retyped — a status string that lives in two places is a status string that
    * is wrong in one of them.
    *
-   * Every phase is now shipped, which is *still* not the same as usable, and
-   * the pre-release warning next to this on every page is doing the same
-   * load-bearing work it always was. What changed is only which thing is
-   * pending: delivery was phase-gated and is now release-gated, so this names
-   * the release being cut rather than a phase in flight. Move it on when the
-   * next milestone opens, not when work starts.
+   * Names the current release and the one fact about it a visitor needs
+   * before reading anything else: it is pre-1.0, so the team-sheet format can
+   * still change between releases. "Pre-release" was the old wording and is
+   * the wrong word now — a numbered tag with images and a changelog is a
+   * release; what it is not yet is stable. Move this on when a tag is cut.
    */
-  status: 'v0.3.0 · pre-release',
+  status: 'v0.4.0 · pre-1.0',
 } as const;

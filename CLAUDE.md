@@ -156,10 +156,12 @@ code is a paragraph the next reader will not find.
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |
 
-**The specification is `site/src/content/docs/docs/architecture.md`**, and it is
-far ahead of the implementation — treat it as the design of record, not a
-description of what exists. `docs/ARCHITECTURE.md` and `docs/ROADMAP.md` are
-one-line pointers; edit the files under `site/`.
+**The specification is `site/src/content/docs/docs/architecture.md`**, the
+design of record. Since v0.4.0 it describes what runs — it carried
+designed-not-built markers through the phases and carries none now, so a
+change that makes it run ahead of the code again should say so on the page.
+`docs/ARCHITECTURE.md` and `docs/ROADMAP.md` are one-line pointers; edit the
+files under `site/`.
 
 The roadmap is phase-gated on purpose: the governed core — vault, team-sheet
 enforcement, approval broker, budget meter, audit log, and the e2e suite that
