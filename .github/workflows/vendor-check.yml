@@ -84,7 +84,13 @@ jobs:
             exit 0
           fi
 
+          # Key the issue to what it reports, not to the subject. Two runs that
+          # would say the same thing produce the same fingerprint and so the
+          # same title; a run that would say something new produces a different
+          # one. That is what lets the duplicate check look at closed issues
+          # too — see the next step.
           echo "findings_file=$findings" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$(sha256sum "$findings" | cut -c1-8)" >> "$GITHUB_OUTPUT"
           cat "$findings"
 
       - name: Open an issue, unless one is already open
@@ -92,14 +98,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FINDINGS_FILE: ${{ steps.check.outputs.findings_file }}
+          FINGERPRINT: ${{ steps.check.outputs.fingerprint }}
         run: |
           set -euo pipefail
-          title='Vendored count.js has fallen behind upstream'
+          title="Vendored count.js has fallen behind upstream ($FINGERPRINT)"
 
-          existing=$(gh issue list --state open --search "\"$title\" in:title" \
-            --json number --jq '.[0].number // empty')
+          # --state all, not --state open. Closing the issue is how you say "I
+          # looked and I am staying put", and that has to stick: with an
+          # open-only check, a closed issue plus an unchanged vendor.json means
+          # the same report is filed again the following Monday, and every
+          # Monday after. The fingerprint in the title is what makes looking at
+          # closed issues safe — it keys the suppression to this exact report,
+          # so a later, different divergence still gets its own issue.
+          #
+          # Listed and matched exactly rather than searched: the search index
+          # lags writes by seconds, and a query that is fuzzy about which issue
+          # it found is a poor thing to hang "do not file again" on.
+          existing=$(gh issue list --state all --label dependencies --limit 200 \
+            --json number,title,state \
+            --jq "map(select(.title == \"$title\")) | .[0] | select(.) | \"#\(.number) (\(.state))\"")
           if [ -n "$existing" ]; then
-            echo "#$existing is already open; not filing another."
+            echo "$existing already covers this report; not filing another."
             exit 0
           fi
 
@@ -124,7 +143,9 @@ jobs:
           2. Update `sha256`, `latestSha256AtSync` and `syncedOn` in `site/vendor.json`.
           3. `pnpm --dir site build`, and confirm the tag still points at `/count.js`.
 
-          To stay put, close this. Nothing reopens it until upstream moves again.
+          To stay put, close this. The check will not file this report again once it is closed — the
+          identifier in the title is a fingerprint of the findings above. If upstream moves again after
+          this, that is a different report and gets its own issue.
 
           Filed by `.github/workflows/vendor-check.yml`.
           TAIL

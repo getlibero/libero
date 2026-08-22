@@ -190,10 +190,18 @@ worse problem than upstream having moved.
 
 That workflow runs Mondays and asks the two questions that are actually open: has upstream's
 unpinned `count.js` moved past what the pin does, and has a `count.v6.js` appeared. Either one
-opens an issue — not a failed run, which is noise nobody can clear — and it will not open a second
-while the first is open. Nothing it reports is an outage: GoatCounter guarantees `/count` stays
-backward-compatible and would put a breaking change on a new endpoint such as `/count/v2`, so an
-old copy loses features rather than failing.
+opens an issue — not a failed run, which is noise nobody can clear. Nothing it reports is an
+outage: GoatCounter guarantees `/count` stays backward-compatible and would put a breaking change
+on a new endpoint such as `/count/v2`, so an old copy loses features rather than failing.
+
+**Closing the issue is how you say "I looked, and I am staying put", and that sticks.** The title
+carries a fingerprint of the findings, and the duplicate check reads closed issues as well as open
+ones, so the same report is never filed twice — while a later, genuinely different divergence
+still gets its own issue. The first cut of this checked open issues only, which meant closing one
+without editing `vendor.json` re-filed it the following Monday, and every Monday after. A
+notification that cannot be dismissed is one that gets muted, and a muted check is not a check.
+The dedup lists and matches exactly rather than searching, because the search index lags writes by
+seconds and that is a poor thing to hang "do not file again" on.
 
 `public/` is excluded from `tsconfig.json`, so `astro check` does not lint third-party source we
 have deliberately not modified.
