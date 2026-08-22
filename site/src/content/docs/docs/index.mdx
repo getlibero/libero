@@ -14,33 +14,24 @@ only as itself, under admin-provisioned service credentials, through an allowlis
 every action audited. Channel isolation is a hard admin-defined boundary enforced in code, never
 model self-restraint.
 
-<Aside type="caution" title="Early — pre-1.0">
-The specification is ahead of the implementation on purpose — treat these pages as the design of
-record, not a description of running software.
-
-The governed core is shipped: mutual TLS, per-channel identity taken from the client certificate,
-team-sheet enforcement on both gates, the vault, credential injection, redaction, the MCP client
-and its pool, OAuth for upstreams that want it, daily caps in both calls and dollars, the
-append-only audit log, and the approval broker with its Slack card — plus the gateway, the agent
-loop, and the per-channel message store. The layers on top of it are shipped too: curated memory
-and semantic recall (phase 2), skills and their lifecycle (phase 3), and ambient mode — the
-heartbeat, proactive posts behind a rate window, and `schedule_task` (phase 4). So is the
-hardening pass over them: the audit log is hash-chained and an operator command walks it, and
-the MCP path streams through redaction rather than buffering behind it (phase 5). An end-to-end
-suite attacks all of it. `npx @getlibero/cli init` through `docker compose up` stands the stack
-up from a clean checkout.
-
-Every phase is shipped, and releases are numbered: `v0.3.0` is current, with the CLI on npm,
-both service images on GHCR, and a [changelog](/docs/changelog/) an operator can upgrade by.
-Delivery is milestone-gated per release now, and the open milestone is what lands next.
-
-What is not here: a fired scheduled check runs one bounded turn and can look nothing up;
-certificate rotation is two commands and a human edit rather than anything automated. Code
-execution exists but is off unless an operator starts the runner, and its `[egress]` allowlist
-grants HTTP and HTTPS only. Point it at a scratch workspace before a real one. The
-[roadmap](/docs/roadmap) says what lands when, and [self-hosting](/docs/self-hosting) says what a
-deployment does today.
+<Aside type="caution" title="Pre-1.0">
+`v0.4.0` is current, and these pages describe what runs. What pre-1.0 means in practice: the
+team-sheet format can still change between releases — the [changelog](/docs/changelog/) says
+when — and certificate rotation is two commands with a human edit between them rather than
+anything automated. [Self-hosting](/docs/self-hosting) is where to start, and it says to start in
+a scratch workspace.
 </Aside>
+
+The governed core is shipped and attacked by its own end-to-end suite: mutual TLS, per-channel
+identity taken from the client certificate, team-sheet enforcement on both gates, the vault,
+credential injection and redaction, the MCP client and its pool, OAuth for upstreams that want
+it, daily caps in both calls and dollars, the hash-chained audit log, and the approval broker
+with its Slack card. Built on it: curated memory and semantic recall, skills and their lifecycle,
+ambient mode — the heartbeat, proactive posts behind a rate window, and `schedule_task` — and,
+as of `v0.4.0`, code execution in an ephemeral container whose only way out is the channel's
+`[egress]` allowlist. `npx @getlibero/cli init` through `docker compose up` stands the stack up
+from a clean checkout. The [roadmap](/docs/roadmap) is the record of how it got here and where a
+release landed differently from its own plan.
 
 ## The shape of it
 

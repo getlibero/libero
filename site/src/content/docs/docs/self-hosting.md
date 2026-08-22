@@ -3,39 +3,36 @@ title: Self-hosting
 description: The target deployment — two containers, one team sheet per channel — and an honest account of what does not work yet.
 ---
 
-:::caution[Early — pre-1.0]
-The stack described here runs. The proxy speaks mutual TLS, binds every request to a channel,
-enforces team sheets, holds credentials in an encrypted vault, injects them into outbound calls,
-scrubs them back out of results, meters each channel's daily budget in calls and in dollars, and
-appends an audit row for every decided call. The Slack gateway and the agent loop reach tools
-through the proxy and nowhere else, and approvals are joined end to end: a held call raises an
-amber card in the channel, and an approver's click re-submits the identical call with the ticket.
+:::caution[Pre-1.0]
+The team-sheet format is the compatibility surface 1.0 will freeze, and until then a release may
+change it — the [changelog](/docs/changelog/)'s Upgrading section says when and what to edit.
+Certificate rotation and revocation are manual: possible without downtime, driven by a shell
+script and an edit to a sheet rather than by anything automated. Nobody outside the project has
+run this against a workspace they depend on yet; the section on
+[using a scratch workspace first](#use-a-scratch-workspace-first) is the practical consequence.
+:::
 
-The proxy speaks MCP for real — including OAuth against upstreams that require it, with the token
-minted and rotated inside the proxy — and [GitHub's hosted server](/docs/github/) is documented and
-exercised end to end. The end-to-end suite that attacks all of this composes both halves over real
-mutual TLS, fakes only the Slack socket and the model, and covers exfiltration, budget exhaustion,
-held destructive calls, channel isolation, and a hostile authorization server.
+Everything on this page runs as of `v0.4.0`. The proxy speaks mutual TLS, binds every request to
+a channel, enforces team sheets, holds credentials in an encrypted vault, injects them into
+outbound calls, scrubs them back out of results, meters each channel's daily budget in calls and
+in dollars, and appends a hash-chained audit row for every decided call. The gateway and the
+agent loop reach tools through the proxy and nowhere else, and a held call raises an amber card
+whose click re-submits the identical call with the ticket. The proxy speaks MCP, including OAuth
+against upstreams that require it, and [GitHub's hosted server](/docs/github/) is exercised end
+to end. Memory, skills and ambient mode are whole; two limits are stated rather than hidden — a
+deployment with no embedding provider retrieves skills on full text alone and proposes no merges,
+and a fired scheduled check is one bounded turn over the channel's recent messages that can look
+nothing up ([#348](https://github.com/getlibero/libero/issues/348)).
 
-Both services are published to GHCR on every release since `v0.3.0`, and both still build from
-the compose file — so `docker compose -f deploy/docker-compose.yml up` starts a deployment from a
+Code execution is off unless you start it: `docker compose --profile runner up -d`, plus a
+digest-pinned sandbox image, the runner's client pin, and the host's docker group id. Without the
+runner, a channel that grants `run_code` is told the call is permitted and this deployment has
+nothing to serve it.
+
+Both service images are published to GHCR on every release, and both still build from the
+compose file — so `docker compose -f deploy/docker-compose.yml up` starts a deployment from a
 clean checkout, and a `docker compose -f deploy/docker-compose.yml pull` first makes it run the
 exact bytes a release published.
-
-What is not finished: certificate rotation and revocation are manual — possible without downtime,
-and driven by a shell script and an edit to a team sheet rather than by anything automated. Code
-execution exists and is off unless you start it: `docker compose --profile runner up -d`, plus a
-digest-pinned sandbox image, the runner's client pin, and the host's docker group id. Without it a
-channel that grants `run_code` is told the call is permitted and this deployment has nothing to
-serve it. Memory is whole — the message
-store and its full-text index, a curated `MEMORY.md`, and semantic recall over thread summaries —
-and so are skills, though a deployment with no embedding provider retrieves them on full text alone
-and proposes no merges. Ambient mode is whole too — the heartbeat, proactive posts behind a rate
-window, and `schedule_task` — with one limit stated rather than hidden: a fired check is one
-bounded turn over the channel's recent messages and can look nothing up
-([#348](https://github.com/getlibero/libero/issues/348)). Point this at a
-scratch workspace before a real one.
-:::
 
 ## The shape of a deployment
 
@@ -262,8 +259,9 @@ socket, so a card would go up and stay amber.
 ### Use a scratch workspace first
 
 A free workspace you create is enough to bring the gateway up and watch it answer a mention. Point
-the app at a workspace you care about only once the enforcement path is one you have read — the
-caution at the top of this page is not a formality.
+the app at a workspace you care about only once the enforcement path is one you have read. It is
+pre-1.0 software that nobody outside the project has yet run against a workspace they depend on,
+and a scratch workspace is where that stops being an abstraction.
 
 ## Mutual TLS between the services
 

@@ -68,9 +68,9 @@ const phases = [
     </div>
 
     <p class="hero__note">
-      Early, pre-1.0 — v0.3.0 is current. The governed core is shipped and attacked by its own
-      test suite; memory, skills, and ambient mode are built on top of it. See
-      <a href="/docs/changelog">the changelog</a> for what each release contains.
+      v0.4.0 is current: the governed core, memory, skills, ambient mode, and sandboxed code
+      execution, each attacked by the same test suite. Pre-1.0 means the team-sheet format can
+      still change between releases — <a href="/docs/changelog">the changelog</a> says when it does.
     </p>
   </section>
 
@@ -300,8 +300,9 @@ enabled = false  <i># off by default, always</i></code></pre>
         <p class="feature__body u-mt-20" style="font-size:15px;">
           The phases are gated on purpose. Nothing that depends on the proxy shipped before the
           proxy could be attacked and hold — and memory, skills, and ambient mode each landed with
-          e2e attacks of their own. Phase 5 hardened what exists; every phase is now shipped, and
-          what remains before a numbered release is the release machinery itself.
+          e2e attacks of their own. Every phase is shipped, and delivery is numbered now: one
+          milestone per release, and a <a href="/docs/changelog">changelog</a> an operator can
+          upgrade by. v0.4.0 added code execution, governed the same way as every other tool.
         </p>
         <div class="lb-callout u-mt-32">
           <span class="lb-label lb-label--tight">Definition of done, phase 1 — met</span>
@@ -358,8 +359,8 @@ enabled = false  <i># off by default, always</i></code></pre>
         <div class="lb-stack lb-gap-8">
           <h2 class="lb-h2">Read the architecture before you decide.</h2>
           <p class="feature__body" style="max-width:56ch;">
-            It is the design of record, it is ahead of the code, and it says which parts do not
-            exist yet.
+            It is the design of record, and since v0.4.0 it describes what runs. Where something
+            landed differently from the plan, the roadmap says so.
           </p>
         </div>
         <div class="lb-cluster lb-gap-10">

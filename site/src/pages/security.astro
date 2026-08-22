@@ -113,7 +113,7 @@ const attempts = [
           compromised host, and Slack itself are out of scope for v1.
         </p>
         <p>
-          Libero is pre-1.0 — v0.3.0 is current — with the governed core shipped: mutual TLS, per-channel identity
+          Libero is pre-1.0 — v0.4.0 is current — with the governed core shipped: mutual TLS, per-channel identity
           from the client certificate, team-sheet enforcement on both gates, an encrypted vault,
           credential injection, a redaction pass on results, OAuth against upstreams that require
           it, the budget meter in calls and in dollars, the append-only audit log, and the approval
@@ -122,7 +122,7 @@ const attempts = [
           every change, including the sandbox: real containers, a real runner, and a real egress
           filter. Code execution is off unless an operator starts the runner, its allowlist grants
           HTTP and HTTPS only, and certificate rotation is two commands with a human edit between
-          them. Point it at a scratch workspace before a real one. The
+          them. The
           <a href="/docs/roadmap">roadmap</a> was gated so that nothing depending on the proxy
           shipped before the proxy could be attacked and hold.
         </p>

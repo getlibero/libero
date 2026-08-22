@@ -74,9 +74,9 @@ export const GET: APIRoute = ({ props }) => {
 
   // The status line is the reason this header exists at all. On the site it is
   // in the chrome — a banner in the layout, an Aside on the docs index — and
-  // none of that survives being extracted into a file. The specification is
-  // ahead of the implementation on purpose, and a reader who arrives at
-  // architecture.md alone has nothing else to tell them so.
+  // none of that survives being extracted into a file. A reader who arrives at
+  // architecture.md alone should still learn which release it describes and
+  // that it is pre-1.0, and has nothing else to tell them so.
   const provenance = [`Source: ${new URL(page.canonical, base).href}`, `Libero ${SITE.status}`];
   if (page.date) provenance.splice(1, 0, `Published ${page.date}`);
 

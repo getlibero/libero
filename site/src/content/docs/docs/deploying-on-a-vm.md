@@ -9,9 +9,8 @@ four secrets in the platform's secret manager rather than in a file the snapshot
 around, and disk snapshots as the backup.
 
 :::caution[Read the self-hosting page first]
-Everything the caution at the top of [self-hosting](/docs/self-hosting/) says still applies —
-certificate rotation is manual, and this is pre-1.0. Standing the stack on a cloud VM does not
-change what is finished. Point it at a scratch workspace before a real one.
+What its caution says still applies here — pre-1.0, and certificate rotation is manual. A cloud
+VM changes where the stack runs, not what is finished.
 :::
 
 ## The supported shape
