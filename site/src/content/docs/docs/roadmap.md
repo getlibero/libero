@@ -78,21 +78,42 @@ approval card shows the exact call being approved, a cancelled scheduled check l
 and a blocked call's arguments land in an off-chain, deletable store the audit row's own hash
 binds, without reopening the decision against argument capture in the chain.
 
-**v0.4.0 — open.** Code execution, governed: the ephemeral container the proxy invokes
-([#368](https://github.com/getlibero/libero/issues/368)), which gave `[egress]` its first live
-caller ([#219](https://github.com/getlibero/libero/issues/219)). The
+**v0.4.0 — complete, not yet tagged.** Code execution, governed: the ephemeral container the
+proxy invokes ([#368](https://github.com/getlibero/libero/issues/368)), which gave `[egress]` its
+first live caller ([#219](https://github.com/getlibero/libero/issues/219)). The
 [architecture](/docs/architecture/) page carries no designed-not-built marker any more. The
-[milestone](https://github.com/getlibero/libero/milestone/8) carries the definition of done and
-the correctness items still open beside it.
+[milestone](https://github.com/getlibero/libero/milestone/8) is closed and carries the definition
+of done; the release is cut when someone cuts it, and the [changelog](/docs/changelog/) entry is
+written then rather than now.
 
-Two things landed differently from that milestone's own wording, and the differences are recorded
-here rather than a box being ticked against a sentence that turned out to be untrue. It said the
-sandbox would be "approved by default", which reads two ways; the default is `approval =
+Three things landed differently from that milestone's own wording, and the differences are
+recorded here rather than a box being ticked against a sentence that turned out to be untrue. It
+said the sandbox would be "approved by default", which reads two ways; the default is `approval =
 "required"`, argued in `builtin.ts`'s header rather than assumed, because the destructive-verb
-heuristic would have answered `"none"` for the one built-in that runs arbitrary code. And the
-socket did not stay off the deployment — it **moved**, to a runner service that holds no
-credential, so what "the proxy still never mounts the Docker socket" now means is that the
-privilege and the credentials live in two different processes rather than that neither exists.
+heuristic would have answered `"none"` for the one built-in that runs arbitrary code. The socket
+did not stay off the deployment — it **moved**, to a runner service that holds no credential, so
+what "the proxy still never mounts the Docker socket" now means is that the privilege and the
+credentials live in two different processes rather than that neither exists.
+
+And **the milestone closed with three of its correctness items moved out rather than
+delivered.** Reconciling the proxy's cost against a sidecar's
+([#239](https://github.com/getlibero/libero/issues/239)), a measured distance cutoff for semantic
+recall ([#283](https://github.com/getlibero/libero/issues/283)) and segmenting long threads
+([#284](https://github.com/getlibero/libero/issues/284)) are each gated on data or a deployment
+shape that does not exist yet — there is no LiteLLM sidecar to report a cost, nothing records a
+recall hit's distance, and thread-length figures need a workspace that has had time to accumulate
+them. Parking them is the honest answer; what would have been dishonest is closing them, or
+holding a finished release open behind measurements nobody has taken. The work that would make
+the first two buildable is filed rather than left implicit
+([#427](https://github.com/getlibero/libero/issues/427),
+[#428](https://github.com/getlibero/libero/issues/428)), because a parked issue whose precondition
+is nowhere is a parked issue nobody can pick up.
+
+One thing landed that the definition of done did not ask for. The sandbox shipped with every
+bound on a run being the *channel's* and none being the operator's, so a sheet could ask for 64 GB
+and nothing capped how many runs a host held at once
+([#405](https://github.com/getlibero/libero/issues/405)). That is a gap the workstream named
+before it closed rather than one found afterwards, and it was filled inside the same milestone.
 
 ## What success looks like
 
