@@ -922,10 +922,13 @@ path out of the call. Three things about it are decided rather than incidental:
   enforcement lives in the proxy by invariant. What makes it a real bound rather
   than advice is that the runner pins exactly one peer.
 - **The wait comes out of the call's budget, not beside it.** A queued call gets
-  `timeoutSeconds + overhead` *minus* what it spent queueing, which is #253's
-  fix applied where the second instance of that stacking would otherwise have
-  been introduced. Waiting beside the budget would widen the window in which the
-  agent has already hung up on a run still holding a container.
+  `timeoutSeconds + overhead` *minus* what it spent queueing. This gate was built
+  that way from the start rather than acquiring the stacking the MCP pool's had
+  to have removed (#253), and the two now hold the same discipline for the same
+  reason: waiting beside the budget widens the window in which the agent has
+  already hung up on a run still holding a container. The one difference is that
+  a sandbox run makes exactly one request, so a duration is sufficient here where
+  the pool needs a deadline to survive its replay.
 
 A call that does not get a permit within `SANDBOX_QUEUE_WAIT_MS` is
 `unavailable` with reason `runner_busy` — a 501 and **not** a refusal. Nothing
@@ -1304,6 +1307,33 @@ would charge a channel's `daily_tool_calls` for a call that never happened and
 then charge it again for the retry. The wait is bounded because the agent
 abandons its request after 30 seconds, and a permit coming free for a caller that
 has stopped listening spends a saturated upstream's scarce capacity on nobody.
+
+**The wait is spent out of the call's budget rather than beside it** (#253).
+`gate` reads a deadline before it asks for a permit and passes it to `callTool`,
+so a call that queued for five seconds gets twenty-five and not a fresh thirty.
+Without that, the gate narrowed the *number* of calls left in flight against an
+agent that had already hung up, while slightly widening the window for each one
+that remained — which #159 recorded as a known residue rather than fixed.
+
+**A deadline and not a duration, because `callTool` replays.** It makes up to two
+`tools/call` requests, one after a session the server forgot is reopened, and a
+duration handed in once would bound each of them — so a caller asking for
+twenty-five seconds could spend fifty. The same instant read twice cannot, which
+is the difference between bounding a request and bounding a call.
+
+What the deadline does not bound is opening the connection. `ensureOpen` and
+`reopenSession` are single-flighted and shared between concurrent callers, so
+threading a per-call deadline into either would let one channel's remaining
+budget bound a handshake another channel is awaiting. Their bound stays the
+per-request timeout. The common case — a session already open — is therefore
+bounded entirely by the deadline, and the two paths that are not each add one
+shared connect.
+
+Listings needed none of this. A `tools/list` page is gated too, but a walk
+already runs inside `CATALOG_BUDGET_MS`, which starts before the first page is
+asked for and so already covers whatever its wait costs — the same invariant
+`LISTING_QUEUE_WAIT_MS` is chosen against. The listing arm was never the arm that
+stacked.
 
 Listings are gated too — a `tools/list` walk is a credentialed request to the
 same upstream — and a walk that loses degrades to the thin catalog, which has

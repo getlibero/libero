@@ -1171,3 +1171,127 @@ describe("mirroring an argument into a request header", () => {
     expect(call?.headers["mcp-param-owner"]).toBe("getlibero");
   });
 });
+
+
+/**
+ * A server that answers `tools/call` normally, but only after `delayMs`.
+ *
+ * `respond` replaces the default reply rather than decorating it, so the result
+ * envelope is built here — the same shape mcp-catalog.test.ts builds to slow a
+ * page. Slow rather than hanging, because a caller with one timeout cannot tell
+ * those apart and a caller running a *sequence* under one budget can.
+ */
+function slowCalls(server: FakeMcpServer, delayMs: number): void {
+  server.respond = request =>
+    request.rpc?.method === "tools/call"
+      ? {
+          delayMs,
+          message: {
+            jsonrpc: "2.0",
+            id: request.rpc.id,
+            result: completeResult({ content: [{ type: "text", text: "ok" }] })
+          }
+        }
+      : null;
+}
+
+// #253: one budget for the queue wait and the call it is for.
+//
+// The caller — ./mcp-pool.ts's gate — starts a deadline before it asks for a
+// permit, so queueing spends the call's allowance rather than sitting beside
+// it. Everything here is about what this file does with that instant.
+describe("a caller's deadline", () => {
+  it("bounds a call more tightly than the client's own timeout", async () => {
+    fake = await startFakeMcpServer();
+    const client = createMcpClient({
+      url: fake.url,
+      source: constantCredential("bearer", undefined),
+      timeoutMs: 5_000
+    });
+    slowCalls(fake, 200);
+
+    const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS, Date.now() + 60);
+    expect(outcome).toEqual({ outcome: "call_failed", failure: "timed_out" });
+  });
+
+  // The control for the case above, and it is what makes it worth anything: the
+  // same client and the same slow server answer normally when nobody imposed a
+  // deadline, so what failed was the deadline rather than the fixture.
+  it("leaves a call with no deadline on the client's timeout", async () => {
+    fake = await startFakeMcpServer();
+    const client = createMcpClient({
+      url: fake.url,
+      source: constantCredential("bearer", undefined),
+      timeoutMs: 5_000
+    });
+    slowCalls(fake, 200);
+
+    expect((await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
+  });
+
+  // A request fired with no time left is a write to the upstream on behalf of a
+  // caller whose budget is gone. ./semaphore.ts splices a departed waiter out of
+  // its queue for the same reason rather than handing it a permit.
+  it("sends nothing at all once the deadline has passed", async () => {
+    fake = await startFakeMcpServer();
+    const client = createMcpClient({
+      url: fake.url,
+      source: constantCredential("bearer", undefined),
+      timeoutMs: 5_000
+    });
+    // Opened first, so the handshake is not what this case observes.
+    expect((await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).outcome).toBe("called");
+    const before = fake.callsTo("tools/call").length;
+
+    const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS, Date.now() - 1);
+
+    expect(outcome).toEqual({ outcome: "call_failed", failure: "timed_out" });
+    expect(fake.callsTo("tools/call")).toHaveLength(before);
+  });
+
+  // **The reason it is an instant and not a duration.** `callTool` makes up to
+  // two requests, and a duration handed in once would bound each of them — so a
+  // caller asking for a budget could spend twice it, which is the stacking #253
+  // exists to remove reappearing one layer down.
+  //
+  // The server loses the session on the first call and delays every call, so
+  // the replay starts with most of the budget already spent. Under a duration
+  // it would be handed a fresh copy and would succeed.
+  it("charges the replay what is left rather than a second copy", async () => {
+    fake = await startFakeMcpServer({ protocol: "legacy" });
+    const client = createMcpClient({
+      url: fake.url,
+      source: constantCredential("bearer", undefined),
+      timeoutMs: 5_000
+    });
+    // **Both attempts are slow, and the first one is what spends the budget.**
+    // A fast first attempt would leave the replay nearly the whole allowance
+    // and the case would pass under either semantics, which is the version of
+    // this test that proves nothing.
+    let sent = 0;
+    fake.respond = request => {
+      if (request.rpc?.method !== "tools/call") return null;
+      sent += 1;
+      // A 404 to a request that carried a session id is the spec's own way of
+      // saying the session is gone — the one signal this client replays.
+      if (sent === 1) return { delayMs: 200, status: 404, raw: "no such session" };
+      return {
+        delayMs: 200,
+        message: {
+          jsonrpc: "2.0",
+          id: request.rpc.id,
+          result: completeResult({ content: [{ type: "text", text: "ok" }] })
+        }
+      };
+    };
+
+    const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS, Date.now() + 300);
+
+    // Not `called`. Whether the second attempt went out and timed out, or found
+    // nothing left and never went, is a matter of how loaded the machine is —
+    // both are the budget holding, and neither is a call that succeeded by
+    // spending it twice.
+    expect(outcome.outcome).toBe("call_failed");
+    expect(fake.callsTo("tools/call").length).toBeLessThanOrEqual(2);
+  });
+});

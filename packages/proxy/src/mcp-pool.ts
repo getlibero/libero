@@ -74,7 +74,7 @@ import {
   type McpOutcome,
   createMcpClient
 } from "./mcp-client.js";
-import { type CredentialSource, DEFAULT_UPSTREAM_CONCURRENCY } from "./outbound.js";
+import { type CredentialSource, DEFAULT_UPSTREAM_CONCURRENCY, DEFAULT_UPSTREAM_TIMEOUT_MS } from "./outbound.js";
 import { type Semaphore, createSemaphore } from "./semaphore.js";
 
 /**
@@ -88,13 +88,23 @@ import { type Semaphore, createSemaphore } from "./semaphore.js";
  *
  * **Five seconds, sized against the far end of the wire rather than this one.**
  * The agent's HTTP client abandons a request after `DEFAULT_PROXY_TIMEOUT_MS`
- * — thirty seconds — and the call this permit is for may then take
- * `DEFAULT_UPSTREAM_TIMEOUT_MS`, which is also thirty. So a wait much longer
+ * — thirty seconds — and `DEFAULT_UPSTREAM_TIMEOUT_MS` is also thirty, so the
+ * call alone already fills what the agent will wait for. A wait much longer
  * than this buys nothing: the permit would come free for a caller that had
  * already stopped listening, and the proxy would spend a saturated upstream's
- * scarce capacity answering nobody. Short enough to leave the call its own
- * budget, long enough to absorb the case this exists for — a burst of channels
- * arriving together, where the calls ahead finish in a second or two.
+ * scarce capacity answering nobody. Long enough to absorb the case this exists
+ * for — a burst of channels arriving together, where the calls ahead finish in
+ * a second or two.
+ *
+ * **It is spent out of the call's budget, not beside it** (#253). This used to
+ * say "short enough to leave the call its own budget", which was the honest
+ * description of a bug: waiting here and then starting a fresh
+ * `DEFAULT_UPSTREAM_TIMEOUT_MS` meant a queued call could run thirty-five
+ * seconds against an agent that hung up at thirty, so the gate narrowed the
+ * *number* of orphaned calls while slightly widening the window for each one.
+ * `gate` now reads a deadline before it asks for a permit, so this number no
+ * longer adds to anything — it only decides how much of the one allowance may
+ * go to queueing.
  */
 export const QUEUE_WAIT_MS = 5_000;
 
@@ -288,6 +298,7 @@ function gate(
   limiter: Semaphore,
   waitMs: number,
   listingWaitMs: number,
+  budgetMs: number,
   usage: Usage,
   now: () => number
 ): McpClient {
@@ -295,13 +306,29 @@ function gate(
     async callTool(tool, args, limits, definition): Promise<McpOutcome> {
       usage.inFlight += 1;
       try {
+        // **The budget starts here, before the wait** (#253). Until this line
+        // existed a call could wait `waitMs` for a permit and then be given a
+        // full `timeoutMs` on top, so the gate that exists to stop a saturated
+        // upstream from black-holing this process slightly *widened* the window
+        // in which the agent has already hung up on a call still in flight.
+        // Reading the deadline before `acquire` is what makes the two one
+        // allowance rather than two.
+        //
+        // **`Date.now` and not `now`**, which is the injected clock two fields
+        // up. That one's own doc draws the line: it is what idle eviction reads,
+        // a resource decision and "not a deadline anything is enforced against".
+        // This is the other kind, and it has to agree with the clock
+        // `mcp-client.ts` reads on the far side of the call — a deadline
+        // computed from a test's fiction would be arithmetic against a number
+        // that file will never see.
+        const deadline = Date.now() + budgetMs;
         const permit = await limiter.acquire(waitMs);
         // `connect_failed` rather than `call_failed`, and the type is the reason
         // as much as the truth is: nothing was sent, and this is the member that
         // structurally has no `detail` for a later edit to put upstream bytes in.
         if (permit === null) return { outcome: "connect_failed", failure: "busy" };
         try {
-          return await client.callTool(tool, args, limits, definition);
+          return await client.callTool(tool, args, limits, definition, deadline);
         } finally {
           permit.release();
         }
@@ -314,6 +341,13 @@ function gate(
     async listTools(cursor, timeoutMs): Promise<McpListOutcome> {
       usage.inFlight += 1;
       try {
+        // **No deadline here, and it is not an omission** (#253). A listing
+        // already runs inside one: ./mcp-catalog.ts races the whole walk against
+        // `CATALOG_BUDGET_MS`, which starts before the first page is asked for
+        // and therefore already covers whatever this wait costs. That is the
+        // same invariant `LISTING_QUEUE_WAIT_MS` is chosen against — it has to
+        // stay below the catalog budget or a queued walk can never win — so the
+        // listing arm was never the arm that stacked.
         const permit = await limiter.acquire(listingWaitMs);
         if (permit === null) return { outcome: "connect_failed", failure: "busy" };
         try {
@@ -347,6 +381,11 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
   // small enough that 40% of it rounds to no wait at all, and a listing that
   // never waits is a different behaviour from one that waits briefly.
   const listingWaitMs = Math.max(1, Math.round(waitMs * (LISTING_QUEUE_WAIT_MS / QUEUE_WAIT_MS)));
+  // The same number the clients are built with, read here so the gate can turn
+  // it into a deadline that starts before the wait (#253). Not a second setting
+  // — a pool whose queue budget and whose call budget could disagree would be
+  // exactly the stacking this removes, spelled as configuration.
+  const budgetMs = options.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
   const now = options.now ?? Date.now;
   let closed = false;
 
@@ -439,7 +478,7 @@ export function createMcpPool(options: McpPoolOptions): McpPool {
       const entry: Entry = {
         client,
         limiter,
-        gated: gate(client, limiter, waitMs, listingWaitMs, usage, now),
+        gated: gate(client, limiter, waitMs, listingWaitMs, budgetMs, usage, now),
         usage
       };
       entries.set(key, entry);
