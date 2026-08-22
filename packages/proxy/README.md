@@ -900,11 +900,74 @@ for free.
 4. Only a per-run hop can tear down its own run, which the refusal below needs.
 
 The cost is two containers per concurrent run, against a deployment guide whose
-minimum is 2 vCPU and 2 GB. Worth flagging for whoever builds it:
-**`PROXY_MAX_UPSTREAM_CONCURRENCY` does not bound this.** It bounds the MCP pool.
-There is no concurrency cap on built-ins today, and this is the built-in that
-needs one — #405, with the other bound that is the operator's rather than the
-channel's.
+minimum is 2 vCPU and 2 GB. **`PROXY_MAX_UPSTREAM_CONCURRENCY` does not bound
+this** — it bounds the MCP pool, and the units are not comparable: that one
+counts sockets and this one counts containers with a memory cgroup each.
+
+`PROXY_MAX_SANDBOX_CONCURRENCY` is what bounds it, defaulting to two (#405).
+`sandbox-dispatcher.ts` takes a permit from the same `createSemaphore` the pool
+uses before it dials the runner, and releases it in a `finally` around every
+path out of the call. Three things about it are decided rather than incidental:
+
+- **Per deployment, not per channel.** What is being protected is the host,
+  which is a property of the sum, and the semaphore's FIFO queue is what stops a
+  busy channel jumping ahead of a quiet one. A per-channel bound is a real thing
+  to want under contention and is a second number with nothing behind it yet.
+- **In the proxy rather than in the runner**, which is the opposite of where the
+  *other* #405 bound went, and the reasons are worth keeping apart. The ceiling
+  below has to be in the runner because the runner builds the container spec.
+  This one has to be here because the runner has no idea which channel a run is
+  for and must not — a channel id on `SandboxRunRequest` is the shape CLAUDE.md
+  forbids — so a gate there could never grow the per-channel bound, and because
+  enforcement lives in the proxy by invariant. What makes it a real bound rather
+  than advice is that the runner pins exactly one peer.
+- **The wait comes out of the call's budget, not beside it.** A queued call gets
+  `timeoutSeconds + overhead` *minus* what it spent queueing, which is #253's
+  fix applied where the second instance of that stacking would otherwise have
+  been introduced. Waiting beside the budget would widen the window in which the
+  agent has already hung up on a run still holding a container.
+
+A call that does not get a permit within `SANDBOX_QUEUE_WAIT_MS` is
+`unavailable` with reason `runner_busy` — a 501 and **not** a refusal. Nothing
+about the channel's grant changed; the deployment is full. Spelling it as a
+`ToolRefusal` would put a resource fact into a closed set of governance
+decisions, which is the same line the timeout already sits on.
+
+### The operator's ceiling over a sheet's caps
+
+The other half of #405, and it lives in the runner. A team sheet sets `cpus`,
+`memory_mb` and `timeout_seconds` on its `[[builtin]]` block and the proxy
+honours them; `RUNNER_MAX_CPUS`, `RUNNER_MAX_MEMORY_MB` and
+`RUNNER_MAX_TIMEOUT_SECONDS` bound what any sheet may ask for. Without them a
+block written `memory_mb = 65536` gets 64 GB of RAM and — since the tmpfs is
+sized from the memory cap — 64 GB of scratch, with only the schema's own sanity
+maximum above it.
+
+It is in `apps/runner/src/run.ts` rather than here for the reason
+`packages/schema/src/team-sheet.ts` gives about why it is not in the schema: the
+process that builds the container spec is the only one whose bound is a promise
+it can keep. `clampCaps` runs before anything is built from the numbers, so
+there is no path where a spec, a tmpfs or a wall-time wait is sized from
+something the deployment does not allow.
+
+**It clamps rather than refuses**, and the channel is told. Clamping, because
+the ceiling is the operator's statement about their host and the sheet is the
+same operator's grant — the two disagreeing is a configuration mismatch and not
+a channel reaching for something it was not given. Told, because the case this
+exists for is a program the OOM reaper killed at a limit its channel was never
+configured for, and an operator's log line is not read by the model holding the
+corpse: the run reports `appliedCaps`, and the rendered result names each field
+that differs in the sheet's own spelling. The runner logs `caps_clamped` beside
+it with both numbers.
+
+**Unset means no ceiling**, which is the one place the runner's "required with
+no default" rule does not apply. A missing socket path is a deployment that
+cannot work; a missing ceiling is one that works exactly as it did before this
+landed, and defaulting one in would silently shrink runs on every deployment
+whose sheets ask for more. `deploy/docker-compose.yml` ships real values, so the
+shipped deployment is bounded without a hand-rolled one changing under its
+operator, and the runner logs the ceiling in force at boot — including that
+there is none.
 
 **CONNECT only, which decides two things an operator will trip over.** A CONNECT
 hop reads a host and a port from the request line and never the payload: no

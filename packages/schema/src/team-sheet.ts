@@ -79,11 +79,17 @@ const builtinEntryBase = {
  * half-megabyte and a half-second are not units anybody means.
  *
  * A deployment ceiling over these — an operator capping what any sheet may ask
- * for — is a real thing to want and is not here. It belongs with the runner that
- * would enforce it, because a bound this file cannot check is a promise this
- * file cannot keep. Tracked in #405, which is where it went when #395 shipped
- * without it; this used to point at #395 itself, which is exactly the dangling
- * pointer that re-homing exists to prevent.
+ * for — is not here and is not missing. It is `RUNNER_MAX_CPUS`,
+ * `RUNNER_MAX_MEMORY_MB` and `RUNNER_MAX_TIMEOUT_SECONDS` in the runner (#405),
+ * because a bound this file cannot check is a promise this file cannot keep and
+ * the process that builds the container spec is the one that can keep it.
+ *
+ * The consequence for a reader of a sheet: **the numbers below are what a
+ * channel may ask for, not what it will get.** A deployment whose ceiling is
+ * lower clamps rather than refuses, and says so — the run reports the caps it
+ * actually had and the channel is told which fields were sized down. So a
+ * `[[builtin]]` block is still the honest record of what the channel asked
+ * for, and the deployment is where the answer lives.
  */
 const sandboxLimits = {
   cpus: z.number().positive().max(64).default(1),

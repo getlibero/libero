@@ -45,7 +45,16 @@ const VARIABLES = [
   // which is the intended failure rather than an oversight.
   "RUNNER_SANDBOX_IMAGE",
   "RUNNER_CLIENT_PIN",
-  "DOCKER_GID"
+  "DOCKER_GID",
+  // The deployment's ceiling over what a sheet may ask a run to have (#405).
+  // Blank for a different reason from the three above: those have no usable
+  // default and the runner refuses to start, and these have one — compose
+  // interpolates `:-`, so an empty line is the shipped number rather than no
+  // ceiling. Scaffolded anyway, because an operator who never opens the compose
+  // file should still find the bound on their host in the file they do edit.
+  "RUNNER_MAX_CPUS",
+  "RUNNER_MAX_MEMORY_MB",
+  "RUNNER_MAX_TIMEOUT_SECONDS"
 ];
 
 let dir: string;

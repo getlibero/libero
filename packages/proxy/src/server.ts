@@ -310,7 +310,14 @@ function proxyError(
  * editing a sheet.
  */
 function unavailableText(
-  reason: "no_grant" | "grant_dead" | "mint_failed" | "runner_unreachable" | "runner_error" | undefined
+  reason:
+    | "no_grant"
+    | "grant_dead"
+    | "mint_failed"
+    | "runner_unreachable"
+    | "runner_error"
+    | "runner_busy"
+    | undefined
 ): string {
   switch (reason) {
     case undefined:
@@ -329,6 +336,13 @@ function unavailableText(
       return "the call is permitted, and this proxy could not reach the sandbox runner";
     case "runner_error":
       return "the call is permitted, and the sandbox runner could not serve it";
+    // A third, and it is neither of the other two: the runner is there and
+    // working, and this deployment already has as many runs in flight as it
+    // allows (#405). The operator's next act is raising
+    // `PROXY_MAX_SANDBOX_CONCURRENCY` or accepting the queue, so the sentence
+    // says "at once" rather than reporting a failure.
+    case "runner_busy":
+      return "the call is permitted, and this deployment is already running as many sandboxes as it allows at once";
   }
 }
 

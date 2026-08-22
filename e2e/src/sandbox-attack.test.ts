@@ -221,6 +221,7 @@ describe("attacking the sandbox", { skip: !socketPresent }, () => {
   describeNoBlockIsNoNetwork();
   describeApproval();
   describeWallTimeCap();
+  describeDeploymentCeiling();
 });
 
 /**
@@ -463,5 +464,85 @@ function describeWallTimeCap(): void {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ tool: "run_code", outcome: "ran" });
     expect(rows[0]?.refusal_reason ?? null).toBeNull();
+  });
+}
+
+/**
+ * The operator's ceiling actually bounds a real container (#405).
+ *
+ * The claim `clampCaps` cannot make on its own. That function is arithmetic and
+ * `apps/runner/src/run.test.ts` pins the arithmetic; what is unproven until a
+ * daemon is involved is that the clamped number is the one that reaches the
+ * cgroup — that nothing downstream re-reads `request.caps` and sizes a spec, a
+ * tmpfs or a wall-time wait from what the sheet asked for instead.
+ *
+ * So the program is asked how much memory it actually has. The sheet says 2048
+ * MB and the deployment allows 256, and a run that came back reporting 2 GB
+ * would mean the ceiling was a number in a log line and nowhere else.
+ *
+ * It is in this file rather than beside the other #405 cases because it is the
+ * one that needs a Docker daemon, which is the split this suite already keeps.
+ */
+function describeDeploymentCeiling(): void {
+  let rig: Rig | undefined;
+
+  beforeAll(async () => {
+    rig = await startRig({
+      runner: "egress",
+      // The deployment's number, well below what the sheet below asks for.
+      runnerMaxMemoryMb: 256,
+      sheets: {
+        [CHANNEL]: {
+          tools: [{ name: "list_prs", approval: "none" as const }],
+          builtins: [{ name: "run_code", approval: "none" as const, memoryMb: 2048 }],
+          egress: [SINK]
+        }
+      },
+      // cgroup v2 first, then v1 — the path differs between hosts and the
+      // deployment guide names both Debian and AL2023.
+      script: [
+        calls("run_code", {
+          code: [
+            "def limit():",
+            "    try:",
+            "        return int(open('/sys/fs/cgroup/memory.max').read().strip())",
+            "    except OSError:",
+            "        return int(open('/sys/fs/cgroup/memory/memory.limit_in_bytes').read().strip())",
+            "print('limit_mb', limit() // (1024 * 1024))"
+          ].join("\n")
+        }),
+        says("done")
+      ]
+    });
+  }, { timeout: SETUP_MS });
+
+  afterAll(async () => {
+    await rig?.stop();
+  }, { timeout: SETUP_MS });
+
+  it("gives the container the deployment's cap, not the sheet's", { timeout: CASE_MS }, async () => {
+    const { agent, model, auditDb } = rigOf(rig);
+    await agent.slack.deliverMention(mention("Ev00000915"));
+
+    // What the container was actually given. Read from inside it, because the
+    // point of this case is that the number reached the kernel.
+    const result = model.seen.at(-1)?.messages.map(message => JSON.stringify(message)).join("\n") ?? "";
+    expect(result).toContain("limit_mb 256");
+    expect(result).not.toContain("limit_mb 2048");
+
+    // Clamped, not refused. The sheet is an operator-authored grant bounded by
+    // the same operator's limit, so the run happens and the row says it ran.
+    const rows = auditRows(auditDb);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tool: "run_code", outcome: "ran" });
+    expect(rows[0]?.refusal_reason ?? null).toBeNull();
+
+    // And the channel is told, in the sheet's own field name — the whole reason
+    // the clamp is not silent.
+    expect(result).toContain("memory_mb 2048 to 256");
+
+    // The operator's half of that — the runner's `caps_clamped` line — is
+    // asserted in apps/runner/src/run.test.ts, against the callback rather than
+    // against a log grep through a child process's stdout.
   });
 }

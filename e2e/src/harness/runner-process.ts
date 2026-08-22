@@ -56,6 +56,14 @@ export interface RunnerEnv {
   readonly clientPin: string;
   /** Absent gives every run `network: none`, whatever a sheet's `[egress]` says. */
   readonly egressNetwork?: string;
+  /**
+   * The deployment's ceiling over a sheet's caps (#405), or absent for none.
+   *
+   * Absent everywhere but the one case that is about it, which is the same rule
+   * `egressNetwork` follows: a fixture that quietly bounded every run would
+   * make the other sandbox cases assert against numbers they never asked for.
+   */
+  readonly maxMemoryMb?: number;
 }
 
 export interface RunnerProcess {
@@ -165,7 +173,8 @@ export async function spawnRunner(cleanup: Cleanup, env: RunnerEnv): Promise<Run
         RUNNER_TLS_KEY: env.tlsKey,
         RUNNER_TLS_CA: env.tlsCa,
         RUNNER_CLIENT_PIN: env.clientPin,
-        ...(env.egressNetwork === undefined ? {} : { RUNNER_EGRESS_NETWORK: env.egressNetwork })
+        ...(env.egressNetwork === undefined ? {} : { RUNNER_EGRESS_NETWORK: env.egressNetwork }),
+        ...(env.maxMemoryMb === undefined ? {} : { RUNNER_MAX_MEMORY_MB: String(env.maxMemoryMb) })
       },
       stdio: ["ignore", "pipe", "pipe"]
     }

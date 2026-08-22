@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { DEFAULT_UPSTREAM_CONCURRENCY, DEFAULT_UPSTREAM_RESPONSE_BYTES } from "@getlibero/proxy";
+import {
+  DEFAULT_SANDBOX_CONCURRENCY,
+  DEFAULT_UPSTREAM_CONCURRENCY,
+  DEFAULT_UPSTREAM_RESPONSE_BYTES
+} from "@getlibero/proxy";
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
@@ -13,6 +17,7 @@ import {
   hostFromEnv,
   maxResponseBytesFromEnv,
   maxUpstreamConcurrencyFromEnv,
+  maxSandboxConcurrencyFromEnv,
   portFromEnv,
   requiredEnv,
   upstreamTimeoutMsFromEnv,
@@ -262,5 +267,38 @@ describe("vaultKeyFromEnv", () => {
       }
       expect(`${String(thrown)}${(thrown as Error).stack}`).not.toContain(raw);
     }
+  });
+});
+
+// The host's bound on `run_code` (#405). A separate setting from the one above
+// and not a widening of it: that counts sockets against one upstream, this
+// counts containers — a sandbox plus its egress hop, with a memory cgroup each
+// — against the host this process shares with them.
+describe("maxSandboxConcurrencyFromEnv", () => {
+  it("defaults when unset or empty", () => {
+    expect(maxSandboxConcurrencyFromEnv({})).toBe(DEFAULT_SANDBOX_CONCURRENCY);
+    expect(maxSandboxConcurrencyFromEnv({ PROXY_MAX_SANDBOX_CONCURRENCY: "" })).toBe(DEFAULT_SANDBOX_CONCURRENCY);
+  });
+
+  it("takes the operator's number", () => {
+    expect(maxSandboxConcurrencyFromEnv({ PROXY_MAX_SANDBOX_CONCURRENCY: "4" })).toBe(4);
+  });
+
+  // On a small host it is the right setting: it serialises `run_code` across
+  // the deployment, which is what an operator with 2 vCPU is asking for.
+  it("accepts one", () => {
+    expect(maxSandboxConcurrencyFromEnv({ PROXY_MAX_SANDBOX_CONCURRENCY: "1" })).toBe(1);
+  });
+
+  each(["0", "-2", "2.5", "two", "unlimited"])("refuses %j", raw => {
+    expect(() => maxSandboxConcurrencyFromEnv({ PROXY_MAX_SANDBOX_CONCURRENCY: raw })).toThrow(
+      /PROXY_MAX_SANDBOX_CONCURRENCY is not a positive count/
+    );
+  });
+
+  // The two are independent. An operator raising the MCP bound has said nothing
+  // about how many containers their host can hold.
+  it("is not moved by the upstream concurrency setting", () => {
+    expect(maxSandboxConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: "32" })).toBe(DEFAULT_SANDBOX_CONCURRENCY);
   });
 });

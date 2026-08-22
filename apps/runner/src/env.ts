@@ -179,3 +179,82 @@ export function egressNetworkFromEnv(env: Env): string | undefined {
 export function runnerImageFromEnv(env: Env): string {
   return requiredEnv(env, "RUNNER_IMAGE");
 }
+
+/**
+ * The operator's ceiling over what any sheet may ask for (#405).
+ *
+ * Every member optional, and an absent member means **no ceiling on that
+ * field** — today's behaviour, preserved deliberately. This is the one place
+ * the runner's "required with no default" rule does not apply, and the reason
+ * is that the two failure modes are not symmetric. A missing socket path or
+ * image is a deployment that cannot work at all, so failing at boot is the
+ * kind answer. A missing ceiling is a deployment that works exactly as it did
+ * before this landed, and defaulting one in would silently shrink runs on
+ * every existing deployment whose sheets ask for more than whatever number
+ * this file guessed. `deploy/docker-compose.yml` ships real values, so the
+ * shipped deployment is bounded without a hand-rolled one being changed under
+ * its operator.
+ *
+ * What makes that safe rather than quiet is `index.ts` logging the ceiling in
+ * force at boot, including when there is none.
+ */
+export interface SandboxCeiling {
+  readonly cpus?: number;
+  readonly memoryMb?: number;
+  readonly timeoutSeconds?: number;
+}
+
+/**
+ * Read the three ceilings, refusing anything that is not a bound.
+ *
+ * Deliberately **not** checked against `SandboxCaps`'s own maxima. A ceiling
+ * above them clamps nothing and is harmless, and refusing it would be this file
+ * having an opinion about a number that only ever makes a run smaller. What is
+ * refused is a value that is not a positive number at all, because
+ * `RUNNER_MAX_MEMORY_MB=0` and `RUNNER_MAX_MEMORY_MB=none` are both an operator
+ * trying to say something, and neither means what silently ignoring them would
+ * do.
+ */
+export function sandboxCeilingFromEnv(env: Env): SandboxCeiling {
+  return {
+    ...present("cpus", positiveNumber(env, "RUNNER_MAX_CPUS")),
+    ...present("memoryMb", positiveInteger(env, "RUNNER_MAX_MEMORY_MB")),
+    ...present("timeoutSeconds", positiveInteger(env, "RUNNER_MAX_TIMEOUT_SECONDS"))
+  };
+}
+
+/**
+ * A one-key object, or none at all.
+ *
+ * Spread rather than assigned because `exactOptionalPropertyTypes` is on:
+ * `{ cpus: undefined }` is not assignable to an optional `cpus`, and writing it
+ * that way would make "the operator set no ceiling" and "the operator set a
+ * ceiling of undefined" the same object.
+ */
+function present<K extends string>(key: K, value: number | undefined): Record<K, number> | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, number>);
+}
+
+/** Whether a ceiling bounds anything at all, for the boot log. */
+export const ceilingIsEmpty = (ceiling: SandboxCeiling): boolean =>
+  ceiling.cpus === undefined && ceiling.memoryMb === undefined && ceiling.timeoutSeconds === undefined;
+
+function positiveNumber(env: Env, name: string): number | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`runner: ${name} is not a positive number: ${raw}`);
+  }
+  return value;
+}
+
+function positiveInteger(env: Env, name: string): number | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`runner: ${name} is not a positive whole number: ${raw}`);
+  }
+  return value;
+}

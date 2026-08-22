@@ -191,7 +191,13 @@ export type Dispatch =
    */
   | {
       readonly outcome: "unavailable";
-      readonly reason?: "no_grant" | "grant_dead" | "mint_failed" | "runner_unreachable" | "runner_error";
+      readonly reason?:
+        | "no_grant"
+        | "grant_dead"
+        | "mint_failed"
+        | "runner_unreachable"
+        | "runner_error"
+        | "runner_busy";
     };
 
 /**

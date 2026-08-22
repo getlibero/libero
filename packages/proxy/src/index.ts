@@ -29,7 +29,7 @@ export type {
 export { BUILTIN_TOOLS, DEFAULT_SEARCH_LIMIT } from "./builtins.js";
 export type { BuiltinDefinition } from "./builtins.js";
 export { createBuiltinDispatcher } from "./builtin-dispatcher.js";
-export { createSandboxDispatcher } from "./sandbox-dispatcher.js";
+export { createSandboxDispatcher, DEFAULT_SANDBOX_CONCURRENCY } from "./sandbox-dispatcher.js";
 export type { SandboxDispatcherOptions } from "./sandbox-dispatcher.js";
 export type { BuiltinDispatcherOptions } from "./builtin-dispatcher.js";
 

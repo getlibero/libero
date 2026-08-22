@@ -76,8 +76,21 @@ deployment needs the machinery, that is the issue to open.
 **If you turn the code-execution sandbox on, size up.** Every concurrent run puts two more
 containers on this machine — the sandbox itself, capped by the channel's `[[builtin]]` block, and
 the egress filter beside it — and the sandbox's memory cap is memory the host has to have. The
-minimum row above is for a deployment without it; with it, start at the comfortable row and add
-whatever the busiest channel's `memory_mb` is times the runs you expect at once.
+minimum row above is for a deployment without it; with it, start at the comfortable row.
+
+Two settings turn that from an estimate into a bound, and both are the operator's rather than a
+channel's. `RUNNER_MAX_MEMORY_MB` caps what any sheet may ask for — without it a `[[builtin]]`
+block can write `memory_mb = 65536` and get 64 GB of RAM and 64 GB of scratch — and
+`PROXY_MAX_SANDBOX_CONCURRENCY` caps how many runs are in flight at once. Multiply the two, add
+128 MB of egress filter per run, and that is the worst case the host can be asked to hold. The
+shipped compose file sets them to 2048 MB and 1, so about 2.2 GB — the memory ceiling is 2 GB
+because that is what this guide's own `pip install numpy` example wants, and the concurrency is 1
+because two of those would not fit the 4 GB row. Raise one and lower the other together.
+
+A sheet asking for more than the ceiling is **clamped, not refused**: the run happens with the
+deployment's numbers, the channel is told which caps were sized down, and the runner logs
+`caps_clamped`. A run that arrives when the deployment is already full waits briefly and is then
+told so, which reads as a temporarily unavailable tool rather than a permission problem.
 
 Memory is what the proxy's own bounds multiply out to. `PROXY_MAX_RESPONSE_BYTES` is 4 MiB, an
 upstream answer costs three to five times that while it is being decoded, redacted and parsed, and

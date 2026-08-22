@@ -158,7 +158,27 @@ export const SandboxRunResult = z.object({
    * still satisfies this schema, which is the same direction `egressAllow`'s
    * default takes.
    */
-  deniedHost: DestinationHost.nullable().default(null)
+  deniedHost: DestinationHost.nullable().default(null),
+  /**
+   * The caps the run actually got, when they are not the caps that were asked
+   * for (#405), and `null` when nothing was clamped.
+   *
+   * A deployment ceiling — `RUNNER_MAX_CPUS` and friends — bounds what any sheet
+   * may ask for, and it **clamps rather than refuses**: the operator's bound is
+   * not a governance decision about the channel, so a sheet asking for more than
+   * the host has gets the host's number rather than a failed call. That makes
+   * the clamp invisible at exactly the moment it matters most — a program killed
+   * by the OOM reaper at 512 MB when its sheet says 4096 has no way to know why
+   * — so the run reports what it was actually given and the proxy says so.
+   *
+   * **Null rather than always-present**, which is the difference between "the
+   * run was sized down" and "here is what it ran with". Only the first is worth
+   * a sentence in a tool result, and a field that is always set would make the
+   * proxy diff two objects to find out which it had. It also means a runner
+   * built before this field still satisfies the schema, the direction
+   * `deniedHost` and `egressAllow` both take.
+   */
+  appliedCaps: SandboxCaps.nullable().default(null)
 });
 
 export type SandboxRunResult = z.infer<typeof SandboxRunResult>;

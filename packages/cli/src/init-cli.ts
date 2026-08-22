@@ -389,6 +389,30 @@ function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
         { name: "RUNNER_CLIENT_PIN", value: "" },
         { name: "DOCKER_GID", value: "" }
       ]
+    },
+    {
+      comment: [
+        "Optional: the deployment's ceiling over what any team sheet may ask a",
+        "sandbox run to have (#405). Unlike the three above these do have",
+        "defaults — 2 cpus, 2048 MB and 300 seconds — so leaving them blank is a",
+        "supported answer and gets those numbers.",
+        "",
+        "They are the operator's bound, not the channel's. A sheet's [[builtin]]",
+        "block sizes one run; without these, nothing stops it writing",
+        "memory_mb = 65536 and asking for 64 GB of RAM and 64 GB of scratch. A",
+        "sheet asking for more than these is CLAMPED rather than refused: the run",
+        "happens with these numbers and the channel is told which caps were sized",
+        "down.",
+        "",
+        "Multiply RUNNER_MAX_MEMORY_MB by PROXY_MAX_SANDBOX_CONCURRENCY, add",
+        "128 MB of egress filter per run, and that is the worst case this host",
+        "can be asked to hold. Raise one and lower the other together."
+      ],
+      vars: [
+        { name: "RUNNER_MAX_CPUS", value: "" },
+        { name: "RUNNER_MAX_MEMORY_MB", value: "" },
+        { name: "RUNNER_MAX_TIMEOUT_SECONDS", value: "" }
+      ]
     }
   ];
 }

@@ -29,6 +29,7 @@ import {
   hostFromEnv,
   maxResponseBytesFromEnv,
   maxUpstreamConcurrencyFromEnv,
+  maxSandboxConcurrencyFromEnv,
   portFromEnv,
   priceTableFromEnv,
   requiredEnv,
@@ -166,7 +167,17 @@ const runnerUrl = runnerUrlFromEnv(process.env);
 const sandbox =
   runnerUrl === undefined
     ? undefined
-    : createSandboxDispatcher({ url: runnerUrl, tls: runnerTlsFromEnv(process.env), logger });
+    : createSandboxDispatcher({
+        url: runnerUrl,
+        tls: runnerTlsFromEnv(process.env),
+        logger,
+        // The deployment's bound on how many runs the host holds at once
+        // (#405). Here rather than in the runner because this process knows
+        // which channel is calling and the runner deliberately does not, and
+        // because the runner pins exactly one peer — so a bound here is the
+        // only caller there is rather than advice.
+        maxConcurrency: maxSandboxConcurrencyFromEnv(process.env)
+      });
 
 const server = createProxyServer({
   tls: loadTlsOptions({

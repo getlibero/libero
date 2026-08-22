@@ -510,6 +510,13 @@ not for installing a package tree:
   unpacks it.
 - **`timeout_seconds` covers the install too.** 30 seconds is not enough to
   fetch and unpack a wheel over a filtered connection.
+- **The deployment has a ceiling over all three, and it clamps rather than
+  refuses.** `RUNNER_MAX_MEMORY_MB` and its two siblings cap what any sheet may
+  ask for; the shipped compose file sets 2048 MB, 2 cpus and 300 seconds. Ask
+  for more and the run happens with the deployment's number instead, and the
+  result says which caps were sized down — so a `numpy` install that dies on a
+  host configured tighter than this says so rather than looking like a program
+  that failed. Raising it is the operator's edit, not the sheet's.
 - **The rootfs is read-only, so install somewhere writable.** `pip install`
   with no target writes to the interpreter's own `site-packages` and fails.
   Point it at the workdir and put that on the path:

@@ -232,6 +232,21 @@ services:
       # limit on the others' behalf. A call past the limit waits briefly and is
       # then told it was not made.
       PROXY_MAX_UPSTREAM_CONCURRENCY: 8
+      # How many sandbox runs the deployment holds at once (#405). A separate
+      # bound from the one above and not a widening of it: that counts sockets
+      # against one upstream, this counts containers — each run is a sandbox
+      # plus a per-run egress hop, with a memory cgroup each.
+      #
+      # One here, which serialises run_code across the deployment. The package's
+      # own default is two; this file ships the tighter number because it also
+      # ships a RUNNER_MAX_MEMORY_MB of 2048, and the product is what the host
+      # has to hold — 1 x (2048 + 128) fits the 4 GB the guide asks for once the
+      # sandbox is on, and 2 x does not. Raise this or lower that, together.
+      #
+      # A call past the limit queues briefly and is then told the deployment is
+      # full, which is a 501 and not a refusal — nothing about the channel's
+      # grant changed.
+      PROXY_MAX_SANDBOX_CONCURRENCY: 1
       # How long any one outbound request may hold a socket: each tool call,
       # and each OAuth token exchange. Safe to lower — past the window a call
       # is "timed out", a failed call rather than a served one.
@@ -339,6 +354,36 @@ services:
       # built-in is `run_code` rather than `run_python` — swapping to
       # ["node","-e"] is an .env edit rather than a code change.
       RUNNER_SANDBOX_COMMAND: '["python3","-c"]'
+      # The operator's ceiling over what any sheet may ask for (#405).
+      #
+      # A team sheet sizes one run and the proxy honours it; these bound what a
+      # sheet may ask for at all. Without them a `[[builtin]]` block written
+      # `memory_mb = 65536` gets 64 GB of RAM and 64 GB of tmpfs, on a
+      # deployment whose stated minimum is 2 vCPU and 2 GB.
+      #
+      # **They clamp rather than refuse.** A sheet asking for more than this
+      # gets this, and the run still happens — the ceiling is a fact about the
+      # host and not a governance decision about the channel. The channel is
+      # told its run was sized down, and the runner logs `caps_clamped` with
+      # both numbers, so neither side has to guess.
+      #
+      # Sized for the 2 vCPU / 4 GB the deploying guide already tells you to
+      # start at once the sandbox is on, with the gateway, the agent and the
+      # proxy on the same machine. Multiplied by PROXY_MAX_SANDBOX_CONCURRENCY
+      # they are the worst case the host can be asked to hold — 2 GB and 2 vCPU
+      # here — which is the number that sizing paragraph asks you to compute.
+      #
+      # 2048 rather than something tighter because the self-hosting guide's own
+      # worked example is `pip install numpy`, which wants about 2 GB while pip
+      # unpacks it. A ceiling below the documented recipe would clamp the first
+      # thing an operator tries. Raise them on a bigger box; a channel that
+      # wants more should be tuning its own sheet, and this is what stops it
+      # asking for the whole machine.
+      #
+      # Unset means no ceiling at all, which the runner says loudly at boot.
+      RUNNER_MAX_CPUS: "${RUNNER_MAX_CPUS:-2}"
+      RUNNER_MAX_MEMORY_MB: "${RUNNER_MAX_MEMORY_MB:-2048}"
+      RUNNER_MAX_TIMEOUT_SECONDS: "${RUNNER_MAX_TIMEOUT_SECONDS:-300}"
       RUNNER_HOST: 0.0.0.0
       RUNNER_PORT: 8444
       RUNNER_TLS_CERT: /etc/libero/certs/runner/server.pem
