@@ -2,7 +2,7 @@ import { type McpServer, TeamSheet as TeamSheetSchema } from "@getlibero/schema"
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
-import { type FakeMcpServer, startFakeMcpServer } from "./mcp-fake-server.js";
+import { type FakeMcpServer, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 import type { McpClient, McpOutcome } from "./mcp-client.js";
 import { CATALOG_BUDGET_MS, CATALOG_TTL_MS } from "./mcp-catalog.js";
 import {
@@ -628,5 +628,76 @@ describe("idle eviction", () => {
   // it means re-probing on every call while the listing never expires.
   it("outlives the catalog entry keyed on the same upstream", () => {
     expect(IDLE_TTL_MS).toBeGreaterThan(CATALOG_TTL_MS);
+  });
+});
+
+// #253: the wait and the call it is for are one budget.
+//
+// The gate reads a deadline *before* it asks for a permit and hands it to
+// `callTool`, so a call that queued gets what is left rather than a fresh
+// allowance on top. Until that landed the gate that exists to stop a saturated
+// upstream from black-holing this process slightly widened the window for each
+// individual orphaned call.
+describe("the queue wait and the call are one budget", () => {
+  /** Answer `tools/call` normally, but only after `delayMs`. */
+  function slowCalls(server: FakeMcpServer, delayMs: number): void {
+    server.respond = request =>
+      request.rpc?.method === "tools/call"
+        ? {
+            delayMs,
+            message: {
+              jsonrpc: "2.0",
+              id: request.rpc.id,
+              result: completeResult({ content: [{ type: "text", text: "ok" }] })
+            }
+          }
+        : null;
+  }
+
+  const CALL_MS = 250;
+  const BUDGET_MS = 400;
+
+  it("spends a queued call's wait out of its own allowance", async () => {
+    fake = await startFakeMcpServer();
+    slowCalls(fake, CALL_MS);
+    // Concurrency of one, so the second call must queue behind the first. The
+    // wait is long enough that it will get a permit rather than give up —
+    // giving up is `busy`, which is a different case and would not test this.
+    const pool = createMcpPool({ maxUpstreamConcurrency: 1, queueWaitMs: 2_000, timeoutMs: BUDGET_MS });
+    const client = pool.acquire(upstreamOf({ name: "a", transport: "http", url: fake.url }), bearer(undefined));
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const first = client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+    await until(() => fake?.callsTo("tools/call").length === 1, "the first call to reach the upstream");
+    const second = client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
+
+    expect(await first).toMatchObject({ outcome: "called" });
+    // The second waited ~250ms of its 400, so ~150 was left for a call that
+    // takes 250. Under a budget that started when the permit came free it would
+    // have had the full 400 and answered `called`.
+    expect(await second).toEqual({ outcome: "call_failed", failure: "timed_out" });
+
+    await pool.close();
+  });
+
+  // The control, and the case is worth nothing without it: the same budget and
+  // the same slow upstream answer normally when nothing had to queue. What
+  // failed above was the wait being charged, not a budget too small to serve
+  // one call.
+  it("leaves an uncontended call its whole allowance", async () => {
+    fake = await startFakeMcpServer();
+    slowCalls(fake, CALL_MS);
+    const pool = createMcpPool({ maxUpstreamConcurrency: 2, queueWaitMs: 2_000, timeoutMs: BUDGET_MS });
+    const client = pool.acquire(upstreamOf({ name: "a", transport: "http", url: fake.url }), bearer(undefined));
+    if (client === null) throw new Error("the pool handed out nothing");
+
+    const both = await Promise.all([
+      client.callTool("list_prs", {}, LIMITS, NO_HEADERS),
+      client.callTool("list_prs", {}, LIMITS, NO_HEADERS)
+    ]);
+
+    expect(both).toEqual([{ outcome: "called", result: expect.anything() }, { outcome: "called", result: expect.anything() }]);
+
+    await pool.close();
   });
 });

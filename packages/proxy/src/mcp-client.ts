@@ -161,11 +161,39 @@ export type McpListOutcome =
   | { readonly outcome: "call_failed"; readonly failure: McpFailure; readonly status?: number; readonly code?: number };
 
 export interface McpClient {
+  /**
+   * One tool call, bounded by `deadline` when one is given (#253).
+   *
+   * **An absolute instant, not a duration, and the replay is why.** This method
+   * makes up to two `tools/call` requests — one, and one more after a session
+   * the server forgot is reopened. A duration handed in once would bound *each*
+   * of them, so a caller asking for twenty-five seconds could spend fifty; the
+   * same instant read twice cannot. That is the difference between bounding a
+   * request and bounding a call, and the second is what the caller is asking
+   * for.
+   *
+   * On `Date.now`'s clock, because that is what this file reads. A caller with
+   * an injected clock must not compute one from it — `McpPoolOptions.now` says
+   * in as many words that it is a resource decision and not a deadline anything
+   * is enforced against, and a deadline on a fictional clock is arithmetic
+   * against a number this file will never see.
+   *
+   * Absent means the client's own `timeoutMs` per request, which is what every
+   * caller got before this existed.
+   *
+   * **What it does not bound** is opening the connection. `ensureOpen` and
+   * `reopenSession` are single-flighted and shared, so a deadline threaded into
+   * either would let one caller's remaining budget bound a handshake another
+   * caller is awaiting. Their bound stays `timeoutMs`. The common case — a
+   * session already open — is therefore bounded entirely by this, and the two
+   * paths that are not each add one shared connect.
+   */
   callTool(
     tool: string,
     args: Readonly<Record<string, unknown>>,
     limits: CallLimits,
-    definition: UpstreamCallDefinition
+    definition: UpstreamCallDefinition,
+    deadline?: number
   ): Promise<McpOutcome>;
   listTools(cursor: string | undefined, timeoutMs: number | undefined): Promise<McpListOutcome>;
   /** The era this connection settled on, or `undefined` before it has. */
@@ -471,6 +499,22 @@ export function createMcpClient(options: McpClientOptions): McpClient {
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
 
+  /**
+   * What a request gets: the time left on the caller's deadline, or the
+   * per-request timeout when there is none (#253).
+   *
+   * `null` means the deadline has already passed, and the caller answers
+   * `timed_out` **without sending**. Firing a request with a millisecond on it
+   * would be a write to the upstream on behalf of a caller whose budget is
+   * gone, which is the same reasoning ./semaphore.ts gives for splicing a
+   * departed waiter out of its queue rather than handing it a permit.
+   */
+  const budgetFor = (deadline: number | undefined): number | null => {
+    if (deadline === undefined) return timeoutMs;
+    const left = deadline - Date.now();
+    return left > 0 ? left : null;
+  };
+
 
   /** A transport and a client, custody-configured. Neither has spoken yet. */
   const build = (sink: FailureSink): { client: Client; transport: StreamableHTTPClientTransport } => {
@@ -662,12 +706,22 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     tool: string,
     args: Readonly<Record<string, unknown>>,
     limits: CallLimits,
-    definition: UpstreamCallDefinition
+    definition: UpstreamCallDefinition,
+    deadline: number | undefined
   ): Promise<Attempt<McpOutcome>> => {
     // Read before the call, so the replay discriminator is what this request
     // actually carried rather than what the transport holds afterwards.
     const carried = at.transport.sessionId;
     const mirrored = paramHeaders(args, definition);
+    // Read here rather than once per call, so the replay charges itself what is
+    // left rather than what the first attempt started with.
+    const budget = budgetFor(deadline);
+    // `answered` and not `session_lost`: there is nothing to replay into, and a
+    // caller out of time that reopened a session would spend the upstream's
+    // handshake on a call it is about to abandon.
+    if (budget === null) {
+      return { kind: "answered", outcome: { outcome: "call_failed", failure: "timed_out" } };
+    }
     try {
       // `request` rather than `callTool`, and both halves of that are wanted.
       // `callTool` validates the result against the specification's closed
@@ -683,7 +737,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
         { method: "tools/call", params: { name: tool, arguments: { ...args } } },
         CallEnvelope,
         {
-          timeout: timeoutMs,
+          timeout: budget,
           ...(mirrored !== undefined ? { headers: mirrored } : {})
         }
       );
@@ -751,18 +805,20 @@ export function createMcpClient(options: McpClientOptions): McpClient {
   };
 
   return {
-    async callTool(tool, args, limits, definition) {
+    async callTool(tool, args, limits, definition, deadline) {
       const ready = await ensureOpen();
       if (!ready.ok) return { outcome: "connect_failed", failure: ready.failure };
 
       // Two statements, no counter and no loop: the structure is what bounds the
-      // replay at one.
-      const first = await attempt(ready.session, tool, args, limits, definition);
+      // replay at one. `deadline` is what bounds the two of them *together* —
+      // the same instant read twice, so the replay shares the caller's budget
+      // rather than being handed a second copy of it (#253).
+      const first = await attempt(ready.session, tool, args, limits, definition, deadline);
       if (first.kind === "answered") return first.outcome;
 
       const reopened = await reopenSession(first.generation);
       if (!reopened.ok) return { outcome: "call_failed", failure: reopened.failure };
-      return (await attempt(reopened.session, tool, args, limits, definition)).outcome;
+      return (await attempt(reopened.session, tool, args, limits, definition, deadline)).outcome;
     },
 
     async listTools(cursor, perCallTimeoutMs) {

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { waitFor } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { NO_PRICES, openPriceTableStore } from "./price-table-store.js";
 import type { LogFields, LogLevel, Logger } from "./log.js";
@@ -48,8 +49,15 @@ const events = (): string[] => lines.map(line => line.fields.event);
  * Only the one case that depends on the watcher waits. Every other case here
  * changes the file's length, so the stat sees it and the answer does not depend
  * on timing at all — which is the pairing doing its job.
+ *
+ * **Polled rather than slept.** This was a flat 50 ms, which is a race the suite
+ * loses on a loaded machine: `fs.watch` delivery is at the platform's
+ * discretion, and the files here run in parallel with cases that hold real
+ * timers. It failed intermittently with the store still answering the *old*
+ * price, which reads as a broken watcher rather than as a slow one. A second is
+ * far longer than delivery ever takes and costs nothing when it arrives on time.
  */
-const watcherToCatchUp = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 50));
+const watcherToSee = (check: () => void): Promise<void> => waitFor(check, { timeout: 1_000 });
 
 describe("a deployment with no price table", () => {
   // The common case for a while: nothing sets `daily_usd`, so nothing needs a
@@ -165,8 +173,9 @@ describe("an edit while the proxy is running", () => {
     expect(after.size).toBe(before.size);
     expect(after.ino).toBe(before.ino);
 
-    await watcherToCatchUp();
-    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(9_000_000);
+    await watcherToSee(() => {
+      expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(9_000_000);
+    });
     store.close();
   });
 
