@@ -74,17 +74,18 @@ empty, which is exactly what `:?` rejects.
 
 ## Publishing
 
-Since v0.3.0 a `v*` tag publishes both images to GHCR —
+Since v0.3.0 a `v*` tag publishes the service images to GHCR — three of them
+since v0.4.0 added the runner —
 `.github/workflows/release-images.yml`, the GHCR counterpart to the CLI's
 `release-cli.yml`: one tag releases the whole deployment (`RELEASING.md` is the
 scheme's record), behind a reviewed environment gate, with build provenance
 attestations verifiable against the commit that built them:
 
 ```bash
-gh attestation verify oci://ghcr.io/getlibero/server:v0.3.0 -R getlibero/libero
+gh attestation verify oci://ghcr.io/getlibero/server:v0.4.0 -R getlibero/libero
 ```
 
-Each release publishes the version tag and moves `latest`. Both images are
+Each release publishes the version tag and moves `latest`. The images are
 multi-arch — `linux/amd64` and `linux/arm64`, because the VM guide covers
 Graviton and the arm64 sqlite-vec prebuild was already in the lockfile. After
 the push, the release workflow pulls each image back by its published digest,

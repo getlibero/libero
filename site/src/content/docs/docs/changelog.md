@@ -31,6 +31,77 @@ repository names this page as the changelog step:
   after the fact would duplicate it while numbering things that never had
   numbers.
 
+## v0.4.0 — 2026-08-22
+
+**What shipped.** Code execution, governed. A channel whose sheet grants the `run_code` built-in
+can run model-written code in an ephemeral container — read-only rootfs, a tmpfs workdir sized from
+its own memory cap, cpu/memory/time limits from its `[[builtin]]` block, a process cap against fork
+bombs, and no network at all unless `[egress]` grants a host — metered and audited under the
+reserved server name like any other tool ([#368](https://github.com/getlibero/libero/issues/368) is
+the tracker, with [#394](https://github.com/getlibero/libero/issues/394) the schema,
+[#395](https://github.com/getlibero/libero/issues/395) the runner,
+[#396](https://github.com/getlibero/libero/issues/396) the attack suite and
+[#397](https://github.com/getlibero/libero/issues/397) the docs).
+
+**The Docker socket did not come back to the proxy.** It moved to a third service that holds no
+credential at all ([#393](https://github.com/getlibero/libero/issues/393)), so the process with
+root-equivalent privilege and the process with every tool credential are different ones. That cost
+is stated rather than hidden: compromising the runner is host root. What makes it the better trade
+is argued in `packages/proxy/README.md` under "Reaching a runtime". The runner speaks the Docker
+Engine API over a unix socket with no client library, builds every container spec itself, and has
+no request field that reaches `Image`, `Binds` or `Privileged`.
+
+`[egress]` is now enforced rather than only validated
+([#219](https://github.com/getlibero/libero/issues/219)) — its first live caller since the matcher
+landed in #73. Enforcement is topological, not a check the code could decline to make: the sandbox
+sits on an ephemeral internal network whose only other member is a per-run CONNECT hop, and the hop
+is the single route out. A destination outside the list is refused before a connection is opened,
+the refusal names the host, and it **ends the run** — fail-closed, with the cost stated in the
+sheet's own comments.
+
+Two bounds on the sandbox are the operator's rather than the channel's
+([#405](https://github.com/getlibero/libero/issues/405)). `RUNNER_MAX_CPUS`,
+`RUNNER_MAX_MEMORY_MB` and `RUNNER_MAX_TIMEOUT_SECONDS` cap what any sheet may ask for — they
+**clamp rather than refuse**, and both the channel and the log are told which caps were sized down
+— and `PROXY_MAX_SANDBOX_CONCURRENCY` caps how many runs the host holds at once, which
+`PROXY_MAX_UPSTREAM_CONCURRENCY` never did.
+
+Beside them: an upstream call's queue wait now comes out of the call's own budget rather than
+stacking on top of it, closing a residue #159 recorded and could not fix by choosing better numbers
+([#253](https://github.com/getlibero/libero/issues/253)); `node dist/rebuild.js <channel>` is the
+way out of a changed embedding model ([#282](https://github.com/getlibero/libero/issues/282)); and
+the test suite moved to `node:test` with standalone `expect`, which retired vitest and with it the
+MPL-2.0 question ([#202](https://github.com/getlibero/libero/issues/202)).
+
+**Upgrading.** The team sheet first, because it is the compatibility surface — and here it is
+**purely additive**: a sheet with no `[[builtin]]` block naming `run_code` parses exactly as before
+and its channel cannot reach the sandbox at all. Granting it means a `[[builtin]]` block with
+optional `cpus`, `memory_mb` and `timeout_seconds`, each defaulting to the tight end. `approval`
+defaults to `"required"` for this built-in specifically, which is the opposite of what the
+destructive-verb heuristic would have answered for a tool whose whole job is running arbitrary
+code. `[egress] allow` was parsed but inert before this release and is now enforced — it governs
+only sandbox runs, so a sheet that carried one speculatively did nothing before and does nothing
+now unless the same sheet also grants `run_code`.
+
+**A third image, and it is opt-in twice.** `ghcr.io/getlibero/runner` is published on this tag
+beside `server` and `proxy`, and the service sits behind a compose profile: `docker compose
+--profile runner up -d`. A deployment that does not start it is unchanged by this release. Turning
+it on needs `RUNNER_SANDBOX_IMAGE` **pinned by digest** — a floating tag is refused at boot, because
+which toolchain the sandbox has is a deployment fact rather than a fact about whenever the daemon
+last pulled — plus `RUNNER_CLIENT_PIN` and `DOCKER_GID`, none of which has a usable default. Run
+`libero init` to scaffold them, and re-run `sh scripts/dev-certs.sh`, which now also mints the
+runner's server certificate and the proxy's client certificate for it. `RUNNER_MAX_*` and
+`PROXY_MAX_SANDBOX_CONCURRENCY` have defaults in the shipped compose file and can be left alone.
+
+The two services may be upgraded in either order: no wire shape between the agent and the proxy
+moved, and the one new `unavailable` reason (`runner_busy`) falls through to an older agent's
+generic message rather than breaking it. The proxy and the runner are a pair and should move
+together, which one tag already guarantees.
+
+**The suite.** The e2e security suite passes against this tag — including the file that requires a
+Docker daemon, which fails rather than skips in CI, and whose exfiltration cases run only after a
+positive control proves the same surface reaches an allowed host.
+
 ## v0.3.0 — 2026-08-20
 
 The first numbered release. For everything before versions — phases 0 through 5 — the
