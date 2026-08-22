@@ -505,6 +505,21 @@ can check. A `passClock` or an `embedding` with no `passes` throws at
 `startRig`, because a knob that silently does nothing is worse than one that is
 missing.
 
+**The runner is a third opt-in switch, and `runnerMaxMemoryMb` sits under it.**
+`startRig({ runner: "egress" })` stands a real runner up; `runnerMaxMemoryMb`
+sets `RUNNER_MAX_MEMORY_MB` on it, which is the deployment ceiling over what a
+sheet may ask for (#405). Absent everywhere but the one case that is about it,
+on `runner`'s own rule: a fixture that quietly bounded every run would make the
+other sandbox cases assert against numbers they never asked for.
+
+One of the three ceilings rather than all of them, because one is enough — the
+clamp is `Math.min` per field, and the other two are the same arithmetic over a
+different number. What the daemon buys that a unit test cannot is that the
+clamped number reaches the *cgroup*, so the case reads
+`/sys/fs/cgroup/memory.max` from inside the container rather than trusting the
+runner's own account of what it asked for. Its control is the ordinary one:
+remove the ceiling and the same program reports the sheet's 2048 MB.
+
 **Ambient is a separate switch, and it is off twice** (#321).
 `startRig({ ambient: true, passClock })` composes the clock, the channel
 enumerator and the heartbeat — and a channel still gets nothing until its sheet

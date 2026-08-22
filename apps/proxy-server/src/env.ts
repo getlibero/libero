@@ -3,6 +3,7 @@
 
 import {
   DEFAULT_UPSTREAM_CONCURRENCY,
+  DEFAULT_SANDBOX_CONCURRENCY,
   DEFAULT_UPSTREAM_RESPONSE_BYTES,
   VAULT_KEY_BYTES,
   parseVaultKey
@@ -326,6 +327,39 @@ export function maxUpstreamConcurrencyFromEnv(env: Env): number {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`proxy: PROXY_MAX_UPSTREAM_CONCURRENCY is not a positive count: ${raw}`);
+  }
+  return parsed;
+}
+
+/**
+ * How many sandbox runs the deployment will have in flight at once:
+ * `PROXY_MAX_SANDBOX_CONCURRENCY`, defaulting to the package's two (#405).
+ *
+ * A second concurrency setting and not a widening of the one above, because
+ * they bound different things and their units are not comparable. That one
+ * counts sockets against one upstream; this one counts *containers* — each run
+ * is a sandbox plus a per-run egress hop, with a memory cgroup each — against
+ * the host this process shares with them. An operator raising one has said
+ * nothing about the other.
+ *
+ * Not a sheet field, on `maxUpstreamConcurrencyFromEnv`'s argument in its
+ * sharper form: a channel's `[[builtin]]` block already sizes one run, and how
+ * many runs the *host* can hold at once is a fact about the deployment that no
+ * channel is in a position to know. Two sheets could disagree, and the host
+ * would lose.
+ *
+ * One is a legitimate setting, and on a small host it is the right one: it
+ * serialises `run_code` across the deployment, which is what an operator with
+ * 2 vCPU is asking for.
+ */
+export function maxSandboxConcurrencyFromEnv(env: Env): number {
+  const raw = env.PROXY_MAX_SANDBOX_CONCURRENCY;
+  // "" alongside undefined, per the two above: a blanked-out line is a setting
+  // removed, not a limit of zero, which here would refuse every run.
+  if (raw === undefined || raw === "") return DEFAULT_SANDBOX_CONCURRENCY;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`proxy: PROXY_MAX_SANDBOX_CONCURRENCY is not a positive count: ${raw}`);
   }
   return parsed;
 }

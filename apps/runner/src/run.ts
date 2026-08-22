@@ -9,6 +9,14 @@
 // set, and the way to keep that true is to keep this function's inputs to what
 // they are now.
 //
+// Since #405 the first of those two sources also *bounds* the second.
+// `RUNNER_MAX_CPUS` and its siblings clamp what a sheet may ask for, so the
+// request's three numbers are a ceiling on what a run may be given rather than
+// a statement of what it gets. That has to be here, in the process that builds
+// the spec, for the reason packages/schema/src/team-sheet.ts gives about why it
+// is not in the sheet: a bound that file cannot check is a promise it cannot
+// keep.
+//
 // #393's argument for the whole shape is in packages/proxy/README.md under
 // "Reaching a runtime". The short version: the socket did not come back, it
 // moved to a process holding no credential.
@@ -25,6 +33,7 @@
 import type { SandboxCaps, SandboxRunRequest, SandboxRunResult } from "@getlibero/schema";
 import { SANDBOX_MAX_OUTPUT_BYTES } from "@getlibero/schema";
 import type { DockerClient } from "./docker.js";
+import type { SandboxCeiling } from "./env.js";
 import { DENIED_EVENT, HOP_LISTENING_EVENT } from "./hop-server.js";
 
 /**
@@ -71,6 +80,16 @@ export interface RunnerConfig {
   /** The interpreter and its flags; the code is appended as the final argument. */
   readonly command: readonly string[];
   /**
+   * The operator's ceiling over the request's caps (#405). Absent members bound
+   * nothing, and an absent object bounds nothing at all.
+   *
+   * Here rather than in the sheet's schema because this is the process that
+   * builds the container spec, which is `packages/schema/src/team-sheet.ts`'s
+   * own argument for why it is not there: a bound that file cannot check is a
+   * promise it cannot keep.
+   */
+  readonly ceiling?: SandboxCeiling;
+  /**
    * The hop's image and entrypoint, and the network that gives it a route out
    * (#219). Absent means this deployment cannot serve an `[egress]` grant.
    *
@@ -111,6 +130,18 @@ export interface RunOptions {
    * than running it under a stricter rule and saying so.
    */
   readonly onEgressUnavailable?: () => void;
+  /**
+   * Called when the deployment ceiling sized a run smaller than its sheet asked
+   * for, with what was asked and what was given (#405).
+   *
+   * A log line and not a failure, on `onEgressUnavailable`'s argument: the
+   * operator's ceiling is not a governance decision about the channel, so a
+   * sheet that asks for more machine than the host has should get the host's
+   * number rather than a refusal. The channel is told separately — `appliedCaps`
+   * on the result is what carries it — because an operator reading a log is not
+   * the person whose program just died at a limit it did not know about.
+   */
+  readonly onCapsClamped?: (asked: SandboxCaps, applied: SandboxCaps) => void;
   /**
    * A fresh identifier per run, for naming the network and the hop.
    *
@@ -179,11 +210,49 @@ interface Scaffolding {
   readonly network?: string;
 }
 
+/**
+ * The caps a run actually gets: what its sheet asked for, bounded by what the
+ * deployment allows (#405).
+ *
+ * **Clamps rather than refuses**, and the direction is the whole decision. A
+ * sheet is an operator-authored grant and the ceiling is the same operator's
+ * statement about their host; the two disagreeing is a configuration mismatch
+ * between two things one person wrote, not a channel reaching for something it
+ * was not given. Refusing would spell it as a governance decision — which is
+ * what `ToolRefusal` is a closed set of — and make a deployment smaller than its
+ * sheets simply stop serving `run_code`.
+ *
+ * `Math.min` per field rather than "take the ceiling if any field exceeds it",
+ * so a sheet asking for a lot of memory and a little cpu keeps its little cpu.
+ */
+export function clampCaps(asked: SandboxCaps, ceiling: SandboxCeiling | undefined): SandboxCaps {
+  if (ceiling === undefined) return asked;
+  return {
+    cpus: ceiling.cpus === undefined ? asked.cpus : Math.min(asked.cpus, ceiling.cpus),
+    memoryMb: ceiling.memoryMb === undefined ? asked.memoryMb : Math.min(asked.memoryMb, ceiling.memoryMb),
+    timeoutSeconds:
+      ceiling.timeoutSeconds === undefined
+        ? asked.timeoutSeconds
+        : Math.min(asked.timeoutSeconds, ceiling.timeoutSeconds)
+  };
+}
+
+const sameCaps = (a: SandboxCaps, b: SandboxCaps): boolean =>
+  a.cpus === b.cpus && a.memoryMb === b.memoryMb && a.timeoutSeconds === b.timeoutSeconds;
+
 export async function runInSandbox(
   request: SandboxRunRequest,
   options: RunOptions
 ): Promise<SandboxRunResult> {
-  const caps: SandboxCaps = request.caps;
+  // Before anything is built from them, so there is no path where the spec, the
+  // tmpfs size or the wall-time wait is sized from a number the deployment does
+  // not allow. Everything below reads `caps` and nothing reads `request.caps`.
+  const caps: SandboxCaps = clampCaps(request.caps, options.config.ceiling);
+  const clamped = !sameCaps(request.caps, caps);
+  if (clamped) options.onCapsClamped?.(request.caps, caps);
+  // Null when nothing was clamped: the field says "this run was sized down",
+  // and a value on every run would make the proxy diff two objects to find out.
+  const appliedCaps = clamped ? caps : null;
   const wantsEgress = request.egressAllow.length > 0;
 
   if (wantsEgress && options.config.egress === undefined) {
@@ -221,14 +290,14 @@ export async function runInSandbox(
     // two are not the same answer: a timeout is a resource fact and this is a
     // governance decision, and the proxy turns only one of them into a refusal.
     if (denied !== null) {
-      return { outcome: "egress_denied", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated, deniedHost: denied };
+      return { outcome: "egress_denied", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated, deniedHost: denied, appliedCaps };
     }
 
     if (status === null) {
-      return { outcome: "timed_out", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated, deniedHost: null };
+      return { outcome: "timed_out", stdout: logs.stdout, stderr: logs.stderr, exitCode: null, truncated: logs.truncated, deniedHost: null, appliedCaps };
     }
 
-    return { outcome: "completed", stdout: logs.stdout, stderr: logs.stderr, exitCode: status, truncated: logs.truncated, deniedHost: null };
+    return { outcome: "completed", stdout: logs.stdout, stderr: logs.stderr, exitCode: status, truncated: logs.truncated, deniedHost: null, appliedCaps };
   } finally {
     follow?.stop();
     await teardown(options, scaffolding);

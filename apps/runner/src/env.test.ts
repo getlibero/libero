@@ -8,7 +8,9 @@ import {
   portFromEnv,
   requiredEnv,
   sandboxCommandFromEnv,
-  sandboxImageFromEnv
+  sandboxImageFromEnv,
+  sandboxCeilingFromEnv,
+  ceilingIsEmpty
 } from "./env.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -99,5 +101,67 @@ describe("host and port", () => {
 
   each([["-1"], ["70000"], ["8443.5"], ["http"]])("refuses %s", raw => {
     expect(() => portFromEnv({ RUNNER_PORT: raw })).toThrow(/not a port number/);
+  });
+});
+
+// The operator's ceiling over what any sheet may ask for (#405).
+describe("the deployment ceiling", () => {
+  // The one place this file's "required with no default" rule does not apply,
+  // and the argument is that the two failure modes differ: a missing socket is
+  // a deployment that cannot work, and a missing ceiling is one that works
+  // exactly as it did before this landed. Defaulting one in would silently
+  // shrink runs on every deployment whose sheets ask for more.
+  it("bounds nothing when nothing is set", () => {
+    const ceiling = sandboxCeilingFromEnv({});
+    expect(ceiling).toEqual({});
+    expect(ceilingIsEmpty(ceiling)).toBe(true);
+  });
+
+  it("treats an empty string as absent, as every other value here does", () => {
+    expect(sandboxCeilingFromEnv({ RUNNER_MAX_CPUS: "", RUNNER_MAX_MEMORY_MB: "" })).toEqual({});
+  });
+
+  it("reads the three", () => {
+    expect(
+      sandboxCeilingFromEnv({
+        RUNNER_MAX_CPUS: "1.5",
+        RUNNER_MAX_MEMORY_MB: "2048",
+        RUNNER_MAX_TIMEOUT_SECONDS: "300"
+      })
+    ).toEqual({ cpus: 1.5, memoryMb: 2048, timeoutSeconds: 300 });
+  });
+
+  // Each is independent: an operator who cares about memory and not about cpu
+  // should not have to invent a number for the other two.
+  it("takes one without the others", () => {
+    const ceiling = sandboxCeilingFromEnv({ RUNNER_MAX_MEMORY_MB: "1024" });
+    expect(ceiling).toEqual({ memoryMb: 1024 });
+    expect(ceilingIsEmpty(ceiling)).toBe(false);
+  });
+
+  // `cpus` is fractional because the runtime's own limit is — `--cpus=0.5` is a
+  // real answer — and the other two are whole for the reason the sheet's are:
+  // half a megabyte and half a second are not units anybody means.
+  it("allows a fractional cpu ceiling and refuses a fractional byte or second", () => {
+    expect(sandboxCeilingFromEnv({ RUNNER_MAX_CPUS: "0.5" })).toEqual({ cpus: 0.5 });
+    expect(() => sandboxCeilingFromEnv({ RUNNER_MAX_MEMORY_MB: "512.5" })).toThrow(/not a positive whole number/);
+    expect(() => sandboxCeilingFromEnv({ RUNNER_MAX_TIMEOUT_SECONDS: "1.5" })).toThrow(/not a positive whole number/);
+  });
+
+  // Zero is an operator trying to say something, and it is not what ignoring it
+  // would do — a ceiling of zero clamps every run to nothing.
+  each([["0"], ["-1"], ["none"], ["unlimited"]])("refuses RUNNER_MAX_MEMORY_MB=%s", raw => {
+    expect(() => sandboxCeilingFromEnv({ RUNNER_MAX_MEMORY_MB: raw })).toThrow(/RUNNER_MAX_MEMORY_MB/);
+  });
+
+  each([["0"], ["-0.5"], ["lots"]])("refuses RUNNER_MAX_CPUS=%s", raw => {
+    expect(() => sandboxCeilingFromEnv({ RUNNER_MAX_CPUS: raw })).toThrow(/RUNNER_MAX_CPUS is not a positive number/);
+  });
+
+  // Deliberately not checked against `SandboxCaps`'s own maxima: a ceiling above
+  // them clamps nothing and is harmless, and refusing it would be this file
+  // having an opinion about a number that only ever makes a run smaller.
+  it("accepts a ceiling above what any sheet could ask for", () => {
+    expect(sandboxCeilingFromEnv({ RUNNER_MAX_MEMORY_MB: "999999" })).toEqual({ memoryMb: 999_999 });
   });
 });

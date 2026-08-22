@@ -190,6 +190,27 @@ Without them a run gets no network whatever a sheet says, which is the safe
 direction, and the runner logs `egress_unavailable` so an operator can see their
 channel is asking for something the deployment has not enabled.
 
+**Two bounds on the host, and neither is the channel's** (#405). A team sheet
+sizes one run; nothing in it bounds the sum, and nothing in it bounds what a
+single sheet may ask for.
+
+- `RUNNER_MAX_CPUS`, `RUNNER_MAX_MEMORY_MB` and `RUNNER_MAX_TIMEOUT_SECONDS` on
+  the runner cap what any sheet may ask for. They **clamp rather than refuse** —
+  a sheet asking for more gets these numbers and the run still happens — and
+  both the channel and the log are told which fields were sized down. Unset
+  means no ceiling, which the runner says at boot; this file ships real values,
+  so a compose deployment is bounded and a hand-rolled one is not changed under
+  its operator.
+- `PROXY_MAX_SANDBOX_CONCURRENCY` on the proxy caps how many runs are in flight
+  at once. `PROXY_MAX_UPSTREAM_CONCURRENCY` does **not** bound this: it bounds
+  the MCP pool, and a socket is not a container. Past the limit a call queues
+  briefly and is then told the deployment is full — a 501, not a refusal.
+
+Multiply them — plus a 128 MB hop per run — for the worst case the host can be
+asked to hold. That is the number `deploying-on-a-vm.md` asks you to compute
+when you turn the sandbox on, and these two variables are what make it a bound
+rather than an estimate.
+
 **The one line an operator will get wrong.** The runner runs non-root, like both
 existing images and asserted by `scripts/image-checks.sh`, and the Docker socket
 is root-owned. Reaching it therefore needs `group_add` with the **host's** docker

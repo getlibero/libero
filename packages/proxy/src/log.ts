@@ -187,6 +187,16 @@ export interface LogFields {
   /** How many tools a listing returned. A count, not the list. */
   count?: number;
   /**
+   * How many calls were queued behind the sandbox concurrency cap (#405).
+   *
+   * On a `runner_busy` line, and the number an operator actually needs: that a
+   * call gave up says the deployment is full, and this says whether it is full
+   * by one or by twenty — which is the difference between a burst and a cap set
+   * too low. A depth, never an identity: nothing here says which channels are
+   * waiting.
+   */
+  waiting?: number;
+  /**
    * How many of a listing's tools carried an input schema. A count, not the
    * schemas.
    *

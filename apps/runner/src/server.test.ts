@@ -36,7 +36,8 @@ const RESULT: SandboxRunResult = {
   stderr: "",
   exitCode: 0,
   truncated: false,
-  deniedHost: null
+  deniedHost: null,
+  appliedCaps: null
 };
 
 const mint = (args: string[]) => execFileSync("sh", ["scripts/dev-certs.sh", ...args], { cwd: REPO_ROOT, env: { ...process.env, OUT: dir }, stdio: "pipe" });

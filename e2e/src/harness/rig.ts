@@ -167,6 +167,14 @@ export interface RigOptions {
    */
   readonly runner?: "none" | "egress";
   /**
+   * `RUNNER_MAX_MEMORY_MB` on that runner (#405), or absent for no ceiling.
+   *
+   * One of the three, because one is enough to prove the ceiling reaches a real
+   * container: the clamp is per field and the other two are the same `Math.min`
+   * over a different number. Only meaningful with `runner` set.
+   */
+  readonly runnerMaxMemoryMb?: number;
+  /**
    * The model's turns, in order. Running past the end throws.
    *
    * An entry is usually a constant — `calls`, `says` — and may be a function of
@@ -557,7 +565,8 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
             // pin is the whole of what stops a compromised agent calling the
             // runner directly. See `Certs.runnerClientPin`.
             clientPin: certs.runnerClientPin,
-            ...(options.runner === "egress" ? { egressNetwork: EGRESS_NETWORK } : {})
+            ...(options.runner === "egress" ? { egressNetwork: EGRESS_NETWORK } : {}),
+            ...(options.runnerMaxMemoryMb === undefined ? {} : { maxMemoryMb: options.runnerMaxMemoryMb })
           });
 
     let proxy = await spawnProxy(

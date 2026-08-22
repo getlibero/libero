@@ -20,6 +20,8 @@ import {
   requiredEnv,
   sandboxCommandFromEnv,
   sandboxImageFromEnv,
+  sandboxCeilingFromEnv,
+  ceilingIsEmpty,
   egressNetworkFromEnv,
   runnerImageFromEnv,
   DEFAULT_HOP_PORT
@@ -40,9 +42,11 @@ const listenPort = portFromEnv(env);
 // because it is the same code with a different entrypoint — if it were
 // substituted, the runner would already be substituted.
 const egressNetwork = egressNetworkFromEnv(env);
+const ceiling = sandboxCeilingFromEnv(env);
 const config = {
   image: sandboxImageFromEnv(env),
   command: sandboxCommandFromEnv(env),
+  ceiling,
   ...(egressNetwork === undefined
     ? {}
     : {
@@ -75,8 +79,23 @@ const server = createRunnerServer({
       // the run got no network. Loud, because the operator's channel is asking
       // for something their deployment has not turned on.
       onEgressUnavailable: () => logger.log("warn", { event: "egress_unavailable" }),
+      // A sheet asked for more machine than this deployment allows, so the run
+      // was sized down (#405). Both numbers, because "clamped" without them
+      // tells an operator that something happened and not what to change.
+      onCapsClamped: (asked, applied) =>
+        logger.log("warn", { event: "caps_clamped", asked, applied }),
       newRunId: () => randomUUID()
     })
+});
+
+// Said at boot rather than left to be inferred from a run that came back small.
+// An absent ceiling is the supported deployment and is today's behaviour, so
+// this is the only place an operator can see that nothing bounds what their
+// sheets ask for — which is the thing that makes "absent means no ceiling" a
+// decision rather than a silence.
+logger.log(ceilingIsEmpty(ceiling) ? "warn" : "info", {
+  event: "sandbox_ceiling",
+  ...(ceilingIsEmpty(ceiling) ? { ceiling: "none" } : { ceiling })
 });
 
 // Before anything binds. A socket that is not there, or a group this process is
