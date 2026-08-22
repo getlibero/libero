@@ -53,8 +53,11 @@ to `docker compose pull` until two flips are made by hand — the org must
 allow public packages (Organization → Settings → Packages → Package
 creation → Public), and then each package's own visibility is changed in its
 package settings. This recurs per *package*, not per release: `server` and
-`proxy` are done, and any image added later will need the same first-publish
-flip before its first release is actually pullable. Verify from outside:
+`proxy` were done at v0.3.0, and **`runner` is new at v0.4.0 and needs the
+same flip** — its first publish lands private exactly as theirs did, so a
+`--profile runner` deployment cannot pull it until the visibility is changed
+by hand. Any image added later needs the same before its first release is
+actually pullable. Verify from outside:
 an anonymous `docker manifest inspect` (or the registry's token + manifest
 round trip) answering 200, not the browser while signed in.
 

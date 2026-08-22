@@ -78,13 +78,12 @@ approval card shows the exact call being approved, a cancelled scheduled check l
 and a blocked call's arguments land in an off-chain, deletable store the audit row's own hash
 binds, without reopening the decision against argument capture in the chain.
 
-**v0.4.0 — complete, not yet tagged.** Code execution, governed: the ephemeral container the
-proxy invokes ([#368](https://github.com/getlibero/libero/issues/368)), which gave `[egress]` its
-first live caller ([#219](https://github.com/getlibero/libero/issues/219)). The
-[architecture](/docs/architecture/) page carries no designed-not-built marker any more. The
-[milestone](https://github.com/getlibero/libero/milestone/8) is closed and carries the definition
-of done; the release is cut when someone cuts it, and the [changelog](/docs/changelog/) entry is
-written then rather than now.
+**v0.4.0 — shipped.** Code execution, governed: the ephemeral container the proxy invokes
+([#368](https://github.com/getlibero/libero/issues/368)), which gave `[egress]` its first live
+caller ([#219](https://github.com/getlibero/libero/issues/219)), and a third service holding the
+Docker socket and no credential ([#393](https://github.com/getlibero/libero/issues/393)). The
+[architecture](/docs/architecture/) page carries no designed-not-built marker any more, and the
+[changelog](/docs/changelog/) has the operator's account.
 
 Three things landed differently from that milestone's own wording, and the differences are
 recorded here rather than a box being ticked against a sentence that turned out to be untrue. It
