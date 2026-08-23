@@ -340,8 +340,9 @@ export function createSkillEmbedSweep(options: SkillEmbedSweepOptions): SkillEmb
           channel,
           // A count, never the names: a playbook's name is the team's own words
           // and `LogFields.reason` is a closed vocabulary of codes.
-          // `skills_loaded` reports its count through the same field.
-          totalTokens: stored
+          // `skills_loaded` reports its count through `count` too, which is the
+          // field for a number the `event` word names (#429).
+          count: stored
         });
       }
       return stored;

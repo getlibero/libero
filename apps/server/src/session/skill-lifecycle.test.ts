@@ -596,7 +596,9 @@ describe("createSkillLifecyclePass", () => {
     advance(30 * DAY);
     await pass(CHANNEL, store);
     const stale = lines.find(line => line.event === "skills_marked_stale");
-    expect(stale).toMatchObject({ channel: CHANNEL, totalTokens: 1 });
+    expect(stale).toMatchObject({ channel: CHANNEL, count: 1 });
+    // Through `count` and not `totalTokens` (#429): rows moved are not tokens.
+    expect(stale).not.toHaveProperty("totalTokens");
     expect(JSON.stringify(lines)).not.toContain("rotate-a-cert");
 
     advance(60 * DAY);

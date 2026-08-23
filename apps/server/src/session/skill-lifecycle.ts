@@ -342,8 +342,10 @@ export function createSkillLifecyclePass(options: SkillLifecycleOptions): SkillL
         event: "skills_adopted",
         channel,
         // A count, never the names: a playbook's name is the team's own words.
-        // `skills_embedded` and `skills_loaded` report through the same field.
-        totalTokens: plan.adopt.length
+        // `skills_embedded` and `skills_loaded` report through `count` too — the
+        // field for a number the `event` word names, rather than `totalTokens`,
+        // which an operator sums (#429).
+        count: plan.adopt.length
       });
     }
 
@@ -386,13 +388,13 @@ export function createSkillLifecyclePass(options: SkillLifecycleOptions): SkillL
     }
 
     if (moved.stale > 0) {
-      logger.log("info", { event: "skills_marked_stale", channel, totalTokens: moved.stale });
+      logger.log("info", { event: "skills_marked_stale", channel, count: moved.stale });
     }
     if (moved.archived > 0) {
-      logger.log("info", { event: "skills_archived", channel, totalTokens: moved.archived });
+      logger.log("info", { event: "skills_archived", channel, count: moved.archived });
     }
     if (moved.active > 0) {
-      logger.log("info", { event: "skills_reactivated", channel, totalTokens: moved.active });
+      logger.log("info", { event: "skills_reactivated", channel, count: moved.active });
     }
 
     // A second reconciliation, so what the pass just wrote is what retrieval

@@ -549,7 +549,9 @@ describe("what retrieval records", () => {
     await retrieverWith({ logger })(ask("how is a release cut"));
 
     const loaded = lines.find(line => line.event === "skills_loaded");
-    expect(loaded?.totalTokens).toBe(1);
+    expect(loaded?.count).toBe(1);
+    // Through `count` and not `totalTokens` (#429), as `recalled` is.
+    expect(loaded).not.toHaveProperty("totalTokens");
     expect(JSON.stringify(lines)).not.toContain("tag.sh");
   });
 });

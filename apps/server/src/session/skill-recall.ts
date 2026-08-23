@@ -303,8 +303,9 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
           channel,
           // A count, never the skills: a playbook is the team's own text and a
           // log line is not where it goes. `recalled` logs its count the same
-          // way and through the same field.
-          totalTokens: loaded.length
+          // way and through `count`, which is the field for a number the `event`
+          // word names — not `totalTokens`, which sums (#429).
+          count: loaded.length
         });
       }
 
