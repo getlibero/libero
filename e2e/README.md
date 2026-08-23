@@ -49,6 +49,14 @@ daemon — a channel that never granted the built-in, and a deployment with no
 runner — is `sandbox-grant.test.ts`, so the strongest claim about the feature is
 checked everywhere.
 
+In CI this suite no longer has the `e2e` job to itself: `@getlibero/runner` runs
+there too, because `apps/runner/src/sandbox.docker.test.ts` fetches the same
+image and builds the same runner image, and on a separate job it paid for both a
+second time (#410). The job warms them once, alongside `pnpm -r build`, before
+either suite starts — a warm and not a source of truth, since both files still
+inspect and fetch what is absent, which is what makes a laptop run need no
+workflow at all.
+
 **The files run in parallel, and the absence of `--no-file-parallelism` is a
 decision rather than an omission.** The flag was here from the rig's first
 commit with no stated reason, and it cost 49 of the build job's 73 seconds:

@@ -16,38 +16,18 @@
 // So the script is one string, checked here against every workspace package. It
 // lives with `each` and `waitFor` because this package is the one about how the
 // suite runs, and because it depends on nothing else in the tree.
+//
+// `ci-partition.test.ts` beside it asks the question one level out — whether CI
+// runs each package at all — off the same workspace list, which is why that
+// list moved to `workspace.ts` rather than being copied.
 
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import { expect } from "expect";
-
-const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+import { workspacePackages as packages } from "./workspace.js";
 
 /** The canonical script: compile the package, then run the suite out of `dist`. */
 const TEST_SCRIPT =
   "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'";
-
-/** Every workspace package, by the same directories `pnpm-workspace.yaml` names. */
-function packages(): { name: string; manifest: Record<string, unknown> }[] {
-  const found: { name: string; manifest: Record<string, unknown> }[] = [];
-  for (const group of ["packages", "apps"]) {
-    for (const entry of readdirSync(join(ROOT, group), { withFileTypes: true })) {
-      if (entry.isDirectory()) found.push(read(join(ROOT, group, entry.name)));
-    }
-  }
-  found.push(read(join(ROOT, "e2e")));
-  return found;
-}
-
-function read(directory: string): { name: string; manifest: Record<string, unknown> } {
-  const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as Record<
-    string,
-    unknown
-  >;
-  return { name: String(manifest["name"]), manifest };
-}
 
 describe("every workspace package", () => {
   it("was found at all, so the checks below are not vacuous", () => {

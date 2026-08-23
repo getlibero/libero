@@ -13,13 +13,27 @@
 //
 //   - **No daemon, not CI** — skipped. A contributor without Docker can still
 //     run `pnpm test`, which is the only reason to allow skipping at all.
-//   - **No daemon, CI=true** — these fail. CI has a daemon (the `images` job
-//     builds through the compose file), so an absent one there means the runner
-//     changed or the workflow did, and quietly reporting green would be exactly
-//     the false comfort the rule forbids.
+//   - **No daemon, CI=true** — these fail. Every GitHub-hosted runner has one,
+//     so an absent socket there means the runner changed or the workflow did,
+//     and quietly reporting green would be exactly the false comfort the rule
+//     forbids.
 //
 // The daemon is probed once, before anything is collected, so the reason a case
 // did not run is a property of the environment rather than of the case.
+//
+// ## Which CI job runs this
+//
+// The `e2e` one, since #410 — not the `build` job that runs every other
+// package. This file and `e2e/src/sandbox-attack.test.ts` both pull
+// `python:3.13-alpine` and both build the runner image; on separate jobs that
+// is two daemons paying for the same thing twice, and it put a minute of image
+// fetching on the job everyone waits for. Together they share one.
+//
+// That leaves the gate above depending on a filter in `.github/workflows/ci.yml`
+// naming this package — delete it and these cases go dark with nothing failing,
+// which is the rule one level up. `packages/test-kit/src/ci-partition.test.ts`
+// is the mechanical answer: it reads the workflow and asserts that the two test
+// steps partition the workspace between them.
 //
 // ## What is deliberately not here
 //
@@ -278,10 +292,14 @@ describe("a sandbox with an egress grant", { skip: !socketPresent }, () => {
    * The hop runs *this repository's* runner image, so the image has to exist.
    *
    * Built here rather than assumed, and that is the second thing CI taught this
-   * file. The `images` job builds it; the `build` job that runs the tests does
-   * not, so the first run of these cases failed with "No such image" — a
-   * dependency on another job's side effect, which is the kind of coupling that
-   * works until somebody reorders a workflow.
+   * file. The `images` job builds it; the job that runs these tests does not,
+   * so the first run of them failed with "No such image" — a dependency on
+   * another job's side effect, which is the kind of coupling that works until
+   * somebody reorders a workflow.
+   *
+   * The `e2e` job warms the image before the suites start, which is the same
+   * daemon rather than another job's, and this `inspect` is what makes that a
+   * warm rather than a dependency: take the warm away and this still builds.
    *
    * A bind mount of `dist` would have been faster and is the thing to refuse:
    * `ContainerSpec` deliberately has no `Binds`, because a spec field that

@@ -86,6 +86,28 @@ The decision and the printing are separate functions — `problems` and
 otherwise be tested from inside a test run without failing it.
 `src/reporter.test.ts` exercises every guard in both directions.
 
+## The two checks that are not helpers
+
+`each`, `waitFor` and the reporter are what other packages import. Two test
+files here import nothing and are checks on the repository, and they live in
+this package because it is the one about how the suite runs and because it
+depends on nothing else in the tree.
+
+- **`test-scripts.test.ts`** — every package's `test` script is the same string,
+  and its `build` and `typecheck` are the invocations that string assumes. The
+  hazard is #107's successor: a glob that matches nothing exits 0.
+- **`ci-partition.test.ts`** — every workspace package is run by exactly one job
+  in `.github/workflows/ci.yml`. The hazard is one level out: a package no job
+  runs, which the reporter cannot see because there is no run to report on.
+  #410 created it by moving `@getlibero/runner` to the `e2e` job, where the
+  Docker daemon and the sandbox fixtures already are. Its parser understands the
+  filter syntax those two lines use and **throws on anything else**, because
+  quietly mis-modelling a flag would assert a partition CI does not perform.
+
+Both read the workspace off disk through `workspace.ts`, which is not exported:
+the list neither can hardcode is the same list, and the thing they exist to
+catch is a package nobody remembered.
+
 ## Running the suite
 
 Every package's `test` script compiles and then runs `node --test` over `dist`,

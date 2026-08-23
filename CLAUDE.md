@@ -61,6 +61,15 @@ skipping and a green build. The cases entitled to skip are `ALLOWED_SKIPS` in
 adding an entry, which is a reviewable line in a diff rather than a character
 nobody sees.
 
+**And no package may be run by no job.** The reporter can only fail a run that
+happened; a package CI never invokes produces nothing to report on. So
+`packages/test-kit/src/ci-partition.test.ts` reads `.github/workflows/ci.yml`
+and asserts that its `pnpm ... test` steps partition the workspace — every
+package in exactly one job. Two jobs run the suite: `build` runs everything
+except the two packages that need a Docker daemon, and `e2e` runs those
+(`@getlibero/e2e` and `@getlibero/runner`, #410), warming the sandbox image and
+the runner image once for both.
+
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
@@ -102,7 +111,7 @@ What exists:
 | Package | What it is |
 | --- | --- |
 | `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
-| `packages/test-kit` | What `node:test` does not have and the suite needs: `it.each`, a `waitFor` whose timeout is a required argument, and the reporter — which fails a run that collected nothing, or that skipped something `ALLOWED_SKIPS` does not account for. Private, never published, no dependencies at all — which is what lets `packages/memory` import it across the leaf rule (#202) |
+| `packages/test-kit` | What `node:test` does not have and the suite needs: `it.each`, a `waitFor` whose timeout is a required argument, and the reporter — which fails a run that collected nothing, or that skipped something `ALLOWED_SKIPS` does not account for. Plus the two checks on the repository itself: every `test` script is one string, and every package is run by exactly one CI job. Private, never published, no dependencies at all — which is what lets `packages/memory` import it across the leaf rule (#202) |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, and the skill file and its two operations |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
@@ -152,7 +161,7 @@ code is a paragraph the next reader will not find.
 | The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, the one fake embedder's shape and the rule it carries, and why exactly one file needs a Docker daemon and fails rather than skips in CI | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist, and the sandbox runner's service, networks and the one variable an operator gets wrong | `deploy/README.md` |
 | The runner's own modules: why the Docker Engine API is spoken with no client library, what builds a container spec and what may not reach it, and the two-sided gate on the tests that need a daemon | `apps/runner/src/*.ts` headers |
-| Why the test helpers are a package rather than a copied file, what is deliberately not re-exported from it, why `waitFor`'s timeout has no default, what the reporter fails a run for, and the two things `node:test` does that it has to work around | `packages/test-kit/README.md` |
+| Why the test helpers are a package rather than a copied file, what is deliberately not re-exported from it, why `waitFor`'s timeout has no default, what the reporter fails a run for, the two things `node:test` does that it has to work around, and why the two checks that are not helpers live there | `packages/test-kit/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |
 
