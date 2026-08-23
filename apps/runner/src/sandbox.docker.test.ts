@@ -13,13 +13,35 @@
 //
 //   - **No daemon, not CI** — skipped. A contributor without Docker can still
 //     run `pnpm test`, which is the only reason to allow skipping at all.
-//   - **No daemon, CI=true** — these fail. CI has a daemon (the `images` job
-//     builds through the compose file), so an absent one there means the runner
-//     changed or the workflow did, and quietly reporting green would be exactly
-//     the false comfort the rule forbids.
+//   - **No daemon, CI=true** — these fail. Every GitHub-hosted runner has one,
+//     so an absent socket there means the runner changed or the workflow did,
+//     and quietly reporting green would be exactly the false comfort the rule
+//     forbids.
 //
 // The daemon is probed once, before anything is collected, so the reason a case
 // did not run is a property of the environment rather than of the case.
+//
+// ## Which CI job runs this
+//
+// `sandbox`, since #410 — its own, not the `build` job that runs every other
+// package. Two things put it there. It was the largest single item on the
+// critical path, most of it not testing but the `docker pull` and
+// `docker build` below; and `build` was silently depending on a daemon it never
+// said it needed, because the gate above is what makes that dependency real.
+//
+// Not a seat on the `e2e` job either, which also has a daemon. The two suites
+// cannot share one concurrently: the case below asserts that no container on
+// the daemon descends from `python:3.13-alpine`, deliberately daemon-wide,
+// while `e2e/src/sandbox-attack.test.ts` keeps a sink container running on that
+// image. In series they are fine and the job becomes the critical path. A
+// daemon each costs a duplicate fetch on a runner nothing waits for.
+//
+// That leaves the gate above depending on a filter in `.github/workflows/ci.yml`
+// naming this package — delete it and these cases go dark with nothing failing,
+// which is the rule one level up. `packages/test-kit/src/ci-partition.test.ts`
+// is the mechanical answer: it reads the workflow, asserts the test steps
+// partition the workspace, and asserts that a package gating on a daemon is
+// never run beside one that does not.
 //
 // ## What is deliberately not here
 //
@@ -247,6 +269,13 @@ describe("a real sandbox container", { skip: !socketPresent }, () => {
     // `docker ps -a` over the whole daemon rather than a recorded id, because
     // the property is "none are left", and a leak would most likely be a
     // container this run never learned the id of.
+    //
+    // That scope is why this package has its own CI job rather than a seat on
+    // `e2e`: `e2e/src/sandbox-attack.test.ts` keeps a sink container running on
+    // this same image, so the two suites cannot share a daemon concurrently.
+    // Narrowing this to a recorded id would let them — and would give up the
+    // only case that can see a container nothing recorded, which is the leak
+    // worth catching.
     const listed = execFileSync("docker", ["ps", "-a", "--filter", `ancestor=${IMAGE}`, "--format", "{{.ID}}"], {
       encoding: "utf8"
     }).trim();
@@ -278,10 +307,14 @@ describe("a sandbox with an egress grant", { skip: !socketPresent }, () => {
    * The hop runs *this repository's* runner image, so the image has to exist.
    *
    * Built here rather than assumed, and that is the second thing CI taught this
-   * file. The `images` job builds it; the `build` job that runs the tests does
-   * not, so the first run of these cases failed with "No such image" — a
-   * dependency on another job's side effect, which is the kind of coupling that
-   * works until somebody reorders a workflow.
+   * file. The `images` job builds it; the job that runs these tests does not,
+   * so the first run of them failed with "No such image" — a dependency on
+   * another job's side effect, which is the kind of coupling that works until
+   * somebody reorders a workflow.
+   *
+   * The `sandbox` job warms the image before the suite starts, which is its own
+   * daemon rather than another job's, and this `inspect` is what makes that a
+   * warm rather than a dependency: take the warm away and this still builds.
    *
    * A bind mount of `dist` would have been faster and is the thing to refuse:
    * `ContainerSpec` deliberately has no `Binds`, because a spec field that
