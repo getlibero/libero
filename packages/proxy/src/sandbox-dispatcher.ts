@@ -80,8 +80,32 @@ const OVERHEAD_MS = 30_000;
  * **Per deployment and not per channel.** The thing being protected is the host,
  * which is a property of the sum rather than of any one channel, and the
  * semaphore's FIFO queue is what stops a busy channel jumping ahead of a quiet
- * one. A per-channel bound is a second number with nothing behind it yet; it is
- * a real thing to want under contention and is not this.
+ * one.
+ *
+ * **A per-channel bound beside it would gate a concurrency no channel reaches**,
+ * which is why #425 closed on the argument rather than deferring it a second
+ * time. A channel already holds at most one permit, and it is held down twice on
+ * the agent side: every path that runs a model turn takes that channel's session
+ * mutex (`apps/server/src/session/mutex.ts`), so a channel's tasks queue instead
+ * of interleaving, and a turn's tool calls are dispatched one at a time
+ * (`packages/agent/src/loop/loop.ts`) instead of together. That leaves no number
+ * to choose: below this cap it forbids nothing that happens, above it means
+ * nothing, and `deploy/docker-compose.yml` ships a cap of one, under which there
+ * is only zero.
+ *
+ * That serialization is the agent's, so it is a reason not to add a bound here
+ * rather than a property this process enforces — and the difference is the whole
+ * of the next paragraph.
+ *
+ * A compromised agent process is the case that looks like it rescues the idea
+ * and does not. That process holds one client certificate per channel it serves,
+ * so it fills these permits *across* channels and a per-channel number bounds
+ * none of what it does. This cap is what stands between it and the host, which
+ * is what this cap was for.
+ *
+ * What is genuinely unbounded is neither: on a cap of one, a second channel's
+ * run gives up after `SANDBOX_QUEUE_WAIT_MS` while the first is still inside its
+ * wall-time cap. That is this constant and that cap, not a share-out of permits.
  */
 export const DEFAULT_SANDBOX_CONCURRENCY = 2;
 
@@ -118,7 +142,7 @@ export interface SandboxDispatcherOptions {
    * runner-side copy would be a duplication with somewhere else to go. The
    * runner has no idea which channel a run is for and must not — a channel id on
    * `SandboxRunRequest` is the shape CLAUDE.md forbids — so a gate there could
-   * never grow a per-channel bound. And enforcement lives in the proxy by
+   * never be told whose run it is. And enforcement lives in the proxy by
    * invariant. What makes a bound here a real one rather than advice is that the
    * runner pins exactly one peer, so this process is the only caller there is.
    */
