@@ -91,10 +91,35 @@ describe("the example team sheet", () => {
       author_after_tool_calls: 5,
       top_k: 3,
       max_skill_chars: 8_192,
+      max_always_skills: 2,
+      max_always_chars: 8_192,
       max_skills: 100,
       stale_after_days: 30,
       archive_after_days: 90
     });
+  });
+
+  it("names a shared skill in each of the two load modes", () => {
+    expect(sheet.shared_skill).toEqual([
+      { name: "brand-voice", load: "always" },
+      { name: "code-review-standards", load: "retrieved" }
+    ]);
+  });
+
+  // A figure the starter *writes* and a figure it *inherits* parse to the same
+  // value, so an assertion on the parsed sheet cannot tell a documented default
+  // from an absent block. That is how [ambient] kept shipping a cron string past
+  // this suite until #316 — the case above it asserted a parsed value, and the
+  // parsed value was right. These two fields govern what every turn of every task
+  // pays, so what is asserted here is that the operator copying this file can
+  // *see* them, which is a fact about the text rather than about the parse.
+  it("writes the standing-skill caps out rather than inheriting them", () => {
+    const raw = parse(readFileSync(examplePath, "utf8")) as {
+      skills: Record<string, unknown>;
+    };
+    expect(Object.keys(raw.skills)).toEqual(
+      expect.arrayContaining(["max_always_skills", "max_always_chars"])
+    );
   });
 
   // The starter had no assertion at all on this block until #316, which is how
@@ -523,6 +548,8 @@ describe("the skills block", () => {
       author_after_tool_calls: 5,
       top_k: 5,
       max_skill_chars: 8_192,
+      max_always_skills: 2,
+      max_always_chars: 8_192,
       max_skills: 100,
       stale_after_days: 30,
       archive_after_days: 90
@@ -838,10 +865,13 @@ describe("defaults", () => {
       author_after_tool_calls: 5,
       top_k: 3,
       max_skill_chars: 8_192,
+      max_always_skills: 2,
+      max_always_chars: 8_192,
       max_skills: 100,
       stale_after_days: 30,
       archive_after_days: 90
     });
+    expect(sheet.shared_skill).toEqual([]);
   });
 
   // The one field here with no default, and deliberately (#62). Every other
@@ -1185,5 +1215,271 @@ describe("rejections", () => {
       llm: { max_task_seconds: 1.5 },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// `[[shared_skill]]` names a skill the operator published; the content is in a
+// third root and nothing here can see it. What this suite can hold is the shape:
+// a name in the skill grammar, a mode that has to be said, and one entry per name.
+describe("the shared skill list", () => {
+  const sharedSheet = (shared_skill: unknown) => ({
+    channel: minimalChannel(),
+    shared_skill
+  });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("defaults to empty, so a sheet that names none publishes none", () => {
+    expect(TeamSheet.parse({ channel: minimalChannel() }).shared_skill).toEqual([]);
+  });
+
+  // toEqual rather than a field-by-field check: a block that silently grew a
+  // third field would be a compatibility surface nobody decided on.
+  it("takes a name and a mode, in each of the two modes", () => {
+    const sheet = TeamSheet.parse(
+      sharedSheet([
+        { name: "brand-voice", load: "always" },
+        { name: "code-review-standards", load: "retrieved" }
+      ])
+    );
+    expect(sheet.shared_skill).toEqual([
+      { name: "brand-voice", load: "always" },
+      { name: "code-review-standards", load: "retrieved" }
+    ]);
+  });
+
+  // The acceptance criterion, and the reason it is one: the two modes are not two
+  // strengths of one setting, so an entry that does not say how it loads is a line
+  // somebody half-wrote.
+  it("requires a mode, because an entry that does not say how it loads is a mistake", () => {
+    expect(paths(sharedSheet([{ name: "brand-voice" }]))).toEqual([
+      "shared_skill.0.load: invalid_value"
+    ]);
+  });
+
+  it("refuses a mode it does not know", () => {
+    expect(paths(sharedSheet([{ name: "brand-voice", load: "sometimes" }]))).toEqual([
+      "shared_skill.0.load: invalid_value"
+    ]);
+  });
+
+  it("holds the name to the grammar a channel's own skill is held to", () => {
+    expect(paths(sharedSheet([{ name: "Brand Voice", load: "always" }]))).toEqual([
+      "shared_skill.0.name: invalid_format"
+    ]);
+  });
+
+  // The reservation, seen from the sheet. `shared/brand-voice` is how a shared
+  // skill is *addressed*; it is not a name, and this is the sheet refusing to let
+  // anyone write one. See ./skill.test.ts for the mechanism.
+  it("refuses a name that has helpfully qualified itself", () => {
+    expect(paths(sharedSheet([{ name: "shared/brand-voice", load: "always" }]))).toEqual([
+      "shared_skill.0.name: invalid_format"
+    ]);
+  });
+
+  it("refuses two blocks naming one skill, on the later one", () => {
+    expect(
+      paths(
+        sharedSheet([
+          { name: "brand-voice", load: "always" },
+          { name: "brand-voice", load: "retrieved" }
+        ])
+      )
+    ).toEqual(["shared_skill.1.name: custom"]);
+  });
+
+  // Refused even where there is nothing to resolve, because the always-count is
+  // arithmetic over this list and a repeat would ask whether it counts twice.
+  it("refuses a repeat even when the two agree", () => {
+    expect(
+      paths(
+        sharedSheet([
+          { name: "brand-voice", load: "always" },
+          { name: "brand-voice", load: "always" }
+        ])
+      )
+    ).toEqual(["shared_skill.1.name: custom"]);
+  });
+
+  it("names every duplicate, not the first", () => {
+    expect(
+      paths(
+        sharedSheet([
+          { name: "brand-voice", load: "retrieved" },
+          { name: "house-style", load: "retrieved" },
+          { name: "brand-voice", load: "retrieved" },
+          { name: "house-style", load: "retrieved" }
+        ])
+      )
+    ).toEqual(["shared_skill.2.name: custom", "shared_skill.3.name: custom"]);
+  });
+
+  // The decision this block carries: `enabled` governs the machinery a channel
+  // grows for itself, and a shared skill was decreed rather than grown. A sheet
+  // with both is the enterprise configuration — use the house playbooks, write
+  // none of your own — and it has to parse for that to be true.
+  it("keeps shared entries on a channel that grows none of its own", () => {
+    expect(
+      paths({
+        channel: minimalChannel(),
+        skills: { enabled: false },
+        shared_skill: [
+          { name: "brand-voice", load: "always" },
+          { name: "code-review-standards", load: "retrieved" }
+        ]
+      })
+    ).toBeNull();
+  });
+});
+
+// The count cap, which is the one of the two enforced at parse: how many entries
+// a sheet declares is a fact about the file, countable while it is open. The
+// character cap is about files in a root this parser cannot read.
+describe("the cap on always-loaded shared skills", () => {
+  const standing = (count: number) =>
+    Array.from({ length: count }, (_unused, index) => ({
+      name: `standing-${index}`,
+      load: "always"
+    }));
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("permits two standing skills by default", () => {
+    expect(paths({ channel: minimalChannel(), shared_skill: standing(2) })).toBeNull();
+  });
+
+  it("refuses the third, naming the word that made it count", () => {
+    expect(paths({ channel: minimalChannel(), shared_skill: standing(3) })).toEqual([
+      "shared_skill.2.load: custom"
+    ]);
+  });
+
+  it("names every entry past the cap, so one edit pass fixes the sheet", () => {
+    expect(paths({ channel: minimalChannel(), shared_skill: standing(4) })).toEqual([
+      "shared_skill.2.load: custom",
+      "shared_skill.3.load: custom"
+    ]);
+  });
+
+  // The case a buggy implementation passes silently: counting the list rather
+  // than the standing half of it.
+  it("counts only the entries that load on every task", () => {
+    expect(
+      paths({
+        channel: minimalChannel(),
+        shared_skill: [
+          ...standing(2),
+          { name: "one", load: "retrieved" },
+          { name: "two", load: "retrieved" },
+          { name: "three", load: "retrieved" }
+        ]
+      })
+    ).toBeNull();
+  });
+
+  it("takes a cap an operator raised", () => {
+    expect(
+      paths({
+        channel: minimalChannel(),
+        skills: { max_always_skills: 4 },
+        shared_skill: standing(4)
+      })
+    ).toBeNull();
+  });
+
+  each([
+    [0, "too_small"],
+    [11, "too_big"]
+  ])("refuses a cap of %s", (cap, code) => {
+    expect(paths({ channel: minimalChannel(), skills: { max_always_skills: cap } })).toEqual([
+      `skills.max_always_skills: ${code}`
+    ]);
+  });
+
+  it("takes a cap at the roof, which is top_k's", () => {
+    expect(
+      paths({ channel: minimalChannel(), skills: { max_always_skills: 10 } })
+    ).toBeNull();
+  });
+
+  // The guard, and the reason it is written down: zod runs a root check even when
+  // a *continuable* issue was already recorded, so without it a sheet whose cap is
+  // zero would be told its cap is too small AND that it has too many entries —
+  // one mistake reported as two. Delete the two guard lines in team-sheet.ts and
+  // this is the case that goes red.
+  it("says the cap is too small once, not twice", () => {
+    expect(
+      paths({
+        channel: minimalChannel(),
+        skills: { max_always_skills: 0 },
+        shared_skill: standing(3)
+      })
+    ).toEqual(["skills.max_always_skills: too_small"]);
+  });
+});
+
+describe("the standing block's character budget", () => {
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  const capped = (max_always_chars: unknown) => ({
+    channel: minimalChannel(),
+    skills: { max_always_chars }
+  });
+
+  it("defaults to two skills written at the model's own ceiling", () => {
+    expect(TeamSheet.parse({ channel: minimalChannel() }).skills.max_always_chars).toBe(
+      2 * SKILL_BODY_MAX_CHARS
+    );
+  });
+
+  // The floor is the same relationship max_file_chars has to one memory
+  // operation: below it, an entry this sheet permits could never load under any
+  // file the shared root holds.
+  it("refuses a budget below one skill at the model's ceiling", () => {
+    expect(paths(capped(SKILL_BODY_MAX_CHARS - 1))).toEqual([
+      "skills.max_always_chars: too_small"
+    ]);
+  });
+
+  it("accepts a budget of exactly one skill at that ceiling", () => {
+    expect(paths(capped(SKILL_BODY_MAX_CHARS))).toBeNull();
+  });
+
+  // The roof is [memory] max_file_chars' own default rather than its roof: text
+  // arriving from a root the channel cannot see should not be able to outweigh the
+  // channel's whole memory file.
+  it("refuses a budget past the memory file's own default", () => {
+    expect(paths(capped(32_769))).toEqual(["skills.max_always_chars: too_big"]);
+    expect(paths(capped(32_768))).toBeNull();
+  });
+
+  each([[1.5], ["8192"], [null], [-1]])("refuses %s as a budget", value => {
+    expect(paths(capped(value))).not.toBeNull();
+  });
+
+  // Asserting an absence, the way the author threshold above its own tool cap is
+  // asserted: there is deliberately no rule relating the standing budget to the
+  // per-skill cap, because "long playbooks are retrieved, short ones may stand" is
+  // a policy an operator may mean.
+  it("does not relate the standing budget to the per-skill cap", () => {
+    expect(
+      paths({
+        channel: minimalChannel(),
+        skills: { max_always_chars: SKILL_BODY_MAX_CHARS, max_skill_chars: 65_536 }
+      })
+    ).toBeNull();
   });
 });

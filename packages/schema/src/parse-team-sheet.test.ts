@@ -25,6 +25,10 @@ describe("parsing a team sheet", () => {
       "pull_request_read",
       "merge_pull_request"
     ]);
+    expect(result.sheet.shared_skill).toEqual([
+      { name: "brand-voice", load: "always" },
+      { name: "code-review-standards", load: "retrieved" }
+    ]);
   });
 
   it("fills defaults from a minimal sheet", () => {
@@ -104,6 +108,46 @@ describe("reporting why a sheet did not parse", () => {
   it("carries no free-form message and no value out of the file", () => {
     const result = parseTeamSheet(
       CHANNEL + '\n[[mcp_server]]\nname = "github"\ntransport = "sk-live-abc123"\n'
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok || result.reason !== "schema_invalid") return;
+    expect(JSON.stringify(result)).not.toContain("sk-live-abc123");
+    for (const issue of result.issues) {
+      expect(Object.keys(issue).sort()).toEqual(["code", "path"]);
+    }
+  });
+
+  // The acceptance criterion travelling through the layer an operator actually
+  // meets. An entry that does not say how it loads is a mistake rather than a
+  // preference, and this is where they are told so.
+  it("names the shared skill that did not say how it loads", () => {
+    const result = parseTeamSheet(CHANNEL + '\n[[shared_skill]]\nname = "brand-voice"\n');
+    expect(result.ok).toBe(false);
+    if (result.ok || result.reason !== "schema_invalid") return;
+    expect(result.issues).toContainEqual({
+      path: "shared_skill.0.load",
+      code: "invalid_value"
+    });
+  });
+
+  // The first proof that a check on the root object — rather than on a block or a
+  // list — reaches this function's output at all. The count cap is the only rule
+  // on this sheet that spans two top-level keys.
+  it("names each standing skill past the cap the sheet permits", () => {
+    const entry = (name: string) => `\n[[shared_skill]]\nname = "${name}"\nload = "always"\n`;
+    const result = parseTeamSheet(CHANNEL + entry("one") + entry("two") + entry("three"));
+    expect(result.ok).toBe(false);
+    if (result.ok || result.reason !== "schema_invalid") return;
+    expect(result.issues).toContainEqual({ path: "shared_skill.2.load", code: "custom" });
+  });
+
+  // `load` is a closed enum, so it is the newest place a value from the file could
+  // reach a log line — and the count check above is the first on this sheet whose
+  // message interpolates anything at all. It interpolates the cap, which is a
+  // number this schema chose; this is the case that says so.
+  it("carries no value out of a shared skill block either", () => {
+    const result = parseTeamSheet(
+      CHANNEL + '\n[[shared_skill]]\nname = "brand-voice"\nload = "sk-live-abc123"\n'
     );
     expect(result.ok).toBe(false);
     if (result.ok || result.reason !== "schema_invalid") return;

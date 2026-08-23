@@ -155,7 +155,8 @@ summarize_after_idle_minutes = 60
 # ON BY DEFAULT, for the same reason curation is: a skill comes out of a task
 # somebody asked for, into capped text your team can read, edit and delete, on a
 # turn metered like every other. Set enabled = false and no author turn runs and
-# nothing is loaded.
+# none of THIS CHANNEL'S OWN playbooks are loaded. It does not switch off the
+# shared skills your operator publishes to you — see [[shared_skill]] below.
 #
 # Two things to know before leaving it on. A skill is PROCEDURAL where a memory
 # fact is declarative: "the team decided X" steers a reply, "to deploy, run Y
@@ -167,7 +168,9 @@ summarize_after_idle_minutes = 60
 #
 # Like [memory] above, THIS BLOCK IS HONOURED BY THE AGENT AND NOT BY THE PROXY,
 # with everything that follows from it — including that a sheet the agent cannot
-# read falls back to NO skills, the opposite of the default here.
+# read falls back to NO skills, the opposite of the default here. A sheet it
+# cannot read loses its shared skills too, but for a duller reason: the list of
+# them is in the sheet.
 #
 # The files are the source of truth. A skill you edit is re-indexed, one you
 # delete is gone, one you write by hand joins the library. How much text one
@@ -202,15 +205,70 @@ summarize_after_idle_minutes = 60
 # something early or reactivating something it retired both stick, and you get a
 # full stale window before it has an opinion again. What ages a skill is when a
 # task last loaded it, never the `created:` line in the file.
+#
+# max_always_skills and max_always_chars bound something none of the above does:
+# the shared skills your operator publishes with load = "always", which are in
+# front of the model on EVERY TURN OF EVERY TASK whether or not they had anything
+# to do with the request. top_k bounds a pool assembled against a request; these
+# two bound standing text, which is the [memory] file's kind of cost rather than
+# retrieval's. Naming more standing skills than the count permits is a parse
+# error — you hear it here, with the file open. Overrunning the characters is not,
+# because the text is in another root: a skill that would breach the budget is
+# dropped whole, with a log line naming it, rather than cut off mid-sentence.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
 curate                  = true              # propose merges of overlapping playbooks
 author_after_tool_calls = 5                 # strictly more than this many served calls
 top_k                   = 3                 # how many skills a task may open with
 max_skill_chars         = 8192              # a skill's body; one operation may write 4096
+max_always_skills       = 2                 # standing shared skills; see [[shared_skill]]
+max_always_chars        = 8192              # the whole standing block, two at the model's ceiling
 max_skills              = 100               # the whole library; nothing else bounds it
 stale_after_days        = 30                # unloaded this long and a skill is marked stale
 archive_after_days      = 90                # unloaded this long and it leaves retrieval
+
+# Skills your operator published, named here by reference. The files live in a
+# third root — not this channels directory, and not the agent's state root where
+# your own skills are written — mounted read-only, so a compromised agent process
+# can poison one channel's playbooks and not every channel's.
+#
+# Nothing here is a path and nothing here is a digest. Whoever edits this sheet is
+# whoever edits those files, one git repository and one trust domain, so a hash
+# would buy re-review on every update at the cost of the single-point update that
+# is the whole point. Marketplace content gets in by being vendored into that root
+# — a reviewed diff in your repo — not fetched at runtime, and the model has no
+# verb for installing one.
+#
+# They are addressed as shared/<name> everywhere they are loaded, indexed or
+# logged, which is why a shared skill and one of your own with the same name never
+# collide: a slash cannot appear in a skill name at all, so the namespace is
+# reserved by the alphabet rather than by a precedence rule somebody has to
+# remember.
+#
+# THE TWO MODES ARE NOT TWO STRENGTHS OF ONE SETTING, and load has no default
+# because of it. "always" is injected into every task in this channel and charged
+# against every turn of it, whether or not the request had anything to do with it
+# — which is what a house voice needs, because retrieval will never surface
+# brand-voice for a question about a database migration. "retrieved" joins the
+# same pool your own playbooks are matched against, so it arrives when the request
+# looks like it and costs nothing when it does not. [skills] max_always_skills and
+# max_always_chars above bound the first mode; top_k and max_skill_chars bound the
+# second, exactly as they bound your own.
+#
+# [skills] enabled = false does NOT switch these off. That switch governs the
+# playbooks this channel grows for itself; these were decreed rather than grown,
+# and "use the house playbooks, write none of your own" is a sheet with both.
+#
+# A name whose file is not in the root is not a sheet error — the file is in
+# another root and can move without this file changing — so it is dropped at load
+# time with a log line naming it.
+[[shared_skill]]
+name = "brand-voice"
+load = "always"                             # every task, charged against every turn
+
+[[shared_skill]]
+name = "code-review-standards"
+load = "retrieved"                          # joins the pool beside your own skills
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
