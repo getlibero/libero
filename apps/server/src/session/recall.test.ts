@@ -342,4 +342,138 @@ describe("createRecall", () => {
 
     expect(recalled.map(summary => summary.thread)).toEqual(["1.1"]);
   });
+
+  // ## #427: the distance of every hit
+  //
+  // These lines are written for an analysis rather than for an operator, and
+  // what makes them worth anything is the part these cases pin: one line per
+  // hit *whatever became of it*, a rank and a distance beside it, and not a
+  // word of what was recalled. The distances were being computed and dropped,
+  // so no deployment however long-lived produced the distribution #283 needs.
+
+  it("records a line for every hit, with its rank and its distance", async () => {
+    summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
+    summarized("2.1", "chose Debian slim over Alpine because sqlite-vec ships glibc prebuilds");
+    const { lines, logger } = capturingLogger();
+    const { recall } = recallWith({ logger });
+
+    await recall(ask("how do we roll a new key for a channel"));
+
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.kind, hit.threadTs, hit.rank, hit.disposition])).toEqual([
+      ["summary", "1.1", 1, "loaded"],
+      ["summary", "2.1", 2, "loaded"]
+    ]);
+    // The numbers themselves and not merely their presence. Nearer is smaller,
+    // which is the property the whole measurement rests on — a line carrying a
+    // constant, or a rank order the distance contradicted, would look like this
+    // one at every level above the value.
+    const near = hits[0]?.distance ?? Number.NaN;
+    const far = hits[1]?.distance ?? Number.NaN;
+    expect(near).toBeGreaterThan(0);
+    expect(near).toBeLessThan(far);
+  });
+
+  // The case the `break` this replaced used to lose. A hit that was near and
+  // got cut for length and a hit that was simply far are different things, and
+  // a distribution that cannot separate them answers neither of #283's
+  // questions.
+  it("records the hits the character bound cut, not only the ones it loaded", async () => {
+    store.append(message("1.1", "near"));
+    store.putThreadSummary({
+      thread: "1.1",
+      shape: "decision",
+      text: "x".repeat(RECALL_MAX_CHARS - 100),
+      coversThroughTs: "1.1",
+      messageCount: 1,
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "summary", ref: "1.1" },
+      vector: Float32Array.from([1, 0, 0]),
+      model: "test-embedding-model",
+      at: 1
+    });
+    store.append(message("2.1", "far"));
+    store.putThreadSummary({
+      thread: "2.1",
+      shape: "decision",
+      text: "y".repeat(500),
+      coversThroughTs: "2.1",
+      messageCount: 1,
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "summary", ref: "2.1" },
+      vector: Float32Array.from([0.5, 0.5, 0]),
+      model: "test-embedding-model",
+      at: 1
+    });
+    const { lines, logger } = capturingLogger();
+    const { recall } = recallWith({ logger });
+
+    const recalled = await recall(ask("how do we roll a new key for a channel"));
+
+    expect(recalled.map(summary => summary.thread)).toEqual(["1.1"]);
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.threadTs, hit.disposition])).toEqual([
+      ["1.1", "loaded"],
+      ["2.1", "dropped_chars"]
+    ]);
+  });
+
+  // A hit the block could not turn into text is still a distance the k-NN
+  // answered, so it is still recorded — with the word that says nothing reached
+  // the model.
+  //
+  // Driven through a vector pointing at a `nothing` summary rather than through
+  // `replaceText`, and the difference is worth knowing: editing the thread's
+  // message drops the summary *and* its vector, so that hit does not come back
+  // at all. What this reaches is the branch that survives — a row the k-NN can
+  // find and the loop cannot use.
+  it("records a hit whose summary carries no text", async () => {
+    store.append(message("1.1", "deploying now"));
+    store.putThreadSummary({
+      thread: "1.1",
+      shape: "nothing",
+      text: "",
+      coversThroughTs: "1.1",
+      messageCount: 1,
+      at: 1
+    });
+    store.putEmbedding({
+      source: { kind: "summary", ref: "1.1" },
+      vector: Float32Array.from([1, 0, 0]),
+      model: "test-embedding-model",
+      at: 1
+    });
+    summarized("2.1", "chose Debian slim over Alpine because sqlite-vec ships glibc prebuilds");
+    const { lines, logger } = capturingLogger();
+    const { recall } = recallWith({ logger });
+
+    const recalled = await recall(ask("how do we roll a new key for a channel"));
+
+    expect(recalled.map(summary => summary.thread)).toEqual(["2.1"]);
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.threadTs, hit.disposition])).toEqual([
+      ["1.1", "unresolved"],
+      ["2.1", "loaded"]
+    ]);
+  });
+
+  it("never carries a summary's text on a hit line", async () => {
+    summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
+    const { lines, logger } = capturingLogger();
+    const { recall } = recallWith({ logger });
+
+    await recall(ask("how do we roll a new key for a channel"));
+
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits).toHaveLength(1);
+    expect(JSON.stringify(hits)).not.toContain("--promote");
+    // The thread id is the point rather than an oversight: it is an id and not
+    // content, and it is what lets whoever reads the distribution open the
+    // conversation and judge the hit relevant or not.
+    expect(hits[0]?.threadTs).toBe("1.1");
+  });
 });

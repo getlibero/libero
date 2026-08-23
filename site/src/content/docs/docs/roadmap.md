@@ -99,14 +99,15 @@ delivered.** Reconciling the proxy's cost against a sidecar's
 ([#239](https://github.com/getlibero/libero/issues/239)), a measured distance cutoff for semantic
 recall ([#283](https://github.com/getlibero/libero/issues/283)) and segmenting long threads
 ([#284](https://github.com/getlibero/libero/issues/284)) are each gated on data or a deployment
-shape that does not exist yet — there is no LiteLLM sidecar to report a cost, nothing records a
+shape that does not exist yet — there is no LiteLLM sidecar to report a cost, nothing recorded a
 recall hit's distance, and thread-length figures need a workspace that has had time to accumulate
 them. Parking them is the honest answer; what would have been dishonest is closing them, or
 holding a finished release open behind measurements nobody has taken. The work that would make
 the first two buildable is filed rather than left implicit
 ([#427](https://github.com/getlibero/libero/issues/427),
 [#428](https://github.com/getlibero/libero/issues/428)), because a parked issue whose precondition
-is nowhere is a parked issue nobody can pick up.
+is nowhere is a parked issue nobody can pick up. #427 has since landed, so recall's distances are
+recorded and #283 is now parked on the analysis rather than on the data.
 
 One thing landed that the definition of done did not ask for. The sandbox shipped with every
 bound on a run being the *channel's* and none being the operator's, so a sheet could ask for 64 GB

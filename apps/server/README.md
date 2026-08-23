@@ -561,6 +561,19 @@ gated on `[memory] summarize`, the same switch that writes the corpus, rather
 than a third one of its own: a channel that turned summarization off should not
 go on being answered out of summaries it asked to stop producing.
 
+Since #427 **every hit's distance is recorded**, which is the precondition
+[#283](https://github.com/getlibero/libero/issues/283) was waiting on rather
+than a change to the first of those limits: nothing filters, and the number
+still is not written down anywhere. One `recall_hit` line per hit, carrying its
+`kind`, its `rank`, its `distance` and a `disposition` — including the hits that
+never reached the model, because "near and cut for length" and "far" are the two
+cases a cutoff has to be able to tell apart. The choice of a log line over a
+table is argued in `src/session/recall.ts`; the short version is that the
+question is cross-channel, so the per-channel store is the wrong home for it,
+and the two cross-channel tables that exist are the tool proxy service's durable
+operator surfaces where this is instrumentation for a measurement somebody runs
+once.
+
 ## Skill retrieval: the same shape, and the three things that differ
 
 `src/session/skill-recall.ts` answers #292, and it is recall's sibling in every
@@ -614,7 +627,13 @@ them: the vector leg for recall's reason, and the lexical leg because
 `store-db.ts` records why the obvious bm25 rank floor was tried and rejected, and
 it is worth knowing: on a one-skill library every term takes bm25's IDF floor, so
 any threshold excluding a stop-word match also excludes the only skill a small
-channel has. What bounds it is the three numbers above; what makes it tolerable
+channel has. The vector leg writes recall's `recall_hit` lines under `kind:
+"skill"` (#427) and the lexical leg writes none, because it measures nothing —
+so a skill that reached a model on words alone is in `skills_loaded`'s count and
+in no distance at all. Two things there are the fusion's doing rather than the
+distance's, and the file says so: a near hit can be outranked out of the block
+entirely (`dropped_rank`), and a skill hit carries no identity, because its ref
+is a name the model chose. What bounds it is the three numbers above; what makes it tolerable
 is that an irrelevant playbook costs context and a distraction and **widens
 nothing the proxy governs**. And **archived skills are excluded structurally**
 rather than by a filter here: `searchSkills` carries its own status clause inside

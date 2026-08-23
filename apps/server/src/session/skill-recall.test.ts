@@ -554,6 +554,149 @@ describe("what retrieval records", () => {
     expect(loaded).not.toHaveProperty("totalTokens");
     expect(JSON.stringify(lines)).not.toContain("tag.sh");
   });
+
+  // ## #427: the vector leg's distances
+  //
+  // The same `recall_hit` word ./recall.ts writes, separated on `kind`, because
+  // the question the lines exist to answer is how the two corpora's
+  // distributions compare. What differs is whose decision the disposition is —
+  // here the fusion's, which can outrank a near hit out of the block entirely.
+
+  it("records a line for every vector hit, with its rank and its distance", async () => {
+    skill("roll-a-key", "Swapping client credentials before they expire.");
+    embed("roll-a-key", "Swapping client credentials before they expire.");
+    skill("base-image", "When somebody asks which base image the containers use.");
+    embed("base-image", "When somebody asks which base image the containers use.");
+    const { lines, logger } = capturingLogger();
+
+    await retrieverWith({ logger })(ask("how do we roll a new key for a channel"));
+
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.kind, hit.rank, hit.disposition])).toEqual([
+      ["skill", 1, "loaded"],
+      ["skill", 2, "loaded"]
+    ]);
+    const near = hits[0]?.distance ?? Number.NaN;
+    const far = hits[1]?.distance ?? Number.NaN;
+    expect(near).toBeGreaterThan(0);
+    expect(near).toBeLessThan(far);
+  });
+
+  // The disposition a skill has and a summary cannot: the interleave takes
+  // `topK` names off two lists, so the lexical leg can fill the block ahead of a
+  // vector hit that was never far. A distribution that read this as a distance
+  // problem would be reading the fusion instead.
+  it("records a vector hit the fusion never reached as dropped_rank", async () => {
+    skill("roll-a-key", "Swapping client credentials before they expire.");
+    embed("roll-a-key", "Swapping client credentials before they expire.");
+    skill("base-image", "When somebody asks which base image the containers use.");
+    embed("base-image", "When somebody asks which base image the containers use.");
+    // Lexical only — it shares words with the question and has no vector, so it
+    // takes the second of the two slots and pushes the far vector hit out.
+    skill("quiet-channel", "How do we handle a channel that has gone quiet.");
+    const { lines, logger } = capturingLogger();
+
+    const loaded = await retrieverWith({ logger })(
+      ask("how do we roll a new key for a channel", { topK: 2 })
+    );
+
+    expect(loaded.map(entry => entry.name)).toEqual(["roll-a-key", "quiet-channel"]);
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.rank, hit.disposition])).toEqual([
+      [1, "loaded"],
+      [2, "dropped_rank"]
+    ]);
+  });
+
+  // The skill side of the flag that replaced a `break`. The candidate the
+  // aggregate bound cut is a vector hit like any other, and its distance is the
+  // one a cutoff would have had to be judged against.
+  it("records the vector hit the character bound cut", async () => {
+    handWritten(
+      "roll-a-key",
+      "name: roll-a-key\ndescription: Swapping client credentials before they expire.\ncreated: 2026-08-01\nstatus: active\n",
+      "x".repeat(SKILLS_MAX_CHARS - 200)
+    );
+    embed("roll-a-key", "Swapping client credentials before they expire.");
+    handWritten(
+      "base-image",
+      "name: base-image\ndescription: When somebody asks which base image the containers use.\ncreated: 2026-08-01\nstatus: active\n",
+      "y".repeat(500)
+    );
+    embed("base-image", "When somebody asks which base image the containers use.");
+    const { lines, logger } = capturingLogger();
+
+    const loaded = await retrieverWith({ logger })(
+      ask("how do we roll a new key for a channel", { maxSkillChars: SKILLS_MAX_CHARS })
+    );
+
+    expect(loaded.map(entry => entry.name)).toEqual(["roll-a-key"]);
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.rank, hit.disposition])).toEqual([
+      [1, "loaded"],
+      [2, "dropped_chars"]
+    ]);
+  });
+
+  // Its own word rather than `dropped_chars`, because the two are different
+  // facts about a library: one skill is too long to load, where the block as a
+  // whole was full. `skill_oversize` says the first to an operator; this says it
+  // in the same line as the distance, so a hit that never had a chance is not
+  // read as a near miss.
+  it("records a vector hit whose body is past max_skill_chars as oversize", async () => {
+    handWritten(
+      "roll-a-key",
+      "name: roll-a-key\ndescription: Swapping client credentials before they expire.\ncreated: 2026-08-01\nstatus: active\n",
+      "x".repeat(MAX_SKILL_CHARS + 1)
+    );
+    embed("roll-a-key", "Swapping client credentials before they expire.");
+    skill("base-image", "When somebody asks which base image the containers use.");
+    embed("base-image", "When somebody asks which base image the containers use.");
+    const { lines, logger } = capturingLogger();
+
+    const loaded = await retrieverWith({ logger })(ask("how do we roll a new key for a channel"));
+
+    expect(loaded.map(entry => entry.name)).toEqual(["base-image"]);
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits.map(hit => [hit.rank, hit.disposition])).toEqual([
+      [1, "oversize"],
+      [2, "loaded"]
+    ]);
+  });
+
+  it("records nothing when there was no vector to search with", async () => {
+    skill("cut-a-release", "How a release is cut and tagged.");
+    const { lines, logger } = capturingLogger();
+
+    // Retrieval still happens — the lexical leg runs alone — and it produces no
+    // distances, because there were none. A `recall_hit` line here would be a
+    // number invented for a leg that does not measure one.
+    const loaded = await retrieverWith({ logger })(ask("how is a release cut"));
+
+    expect(loaded).toHaveLength(1);
+    expect(lines.filter(line => line.event === "recall_hit")).toEqual([]);
+  });
+
+  it("never carries a skill's name or body on a hit line", async () => {
+    skill(
+      "roll-a-key",
+      "Swapping client credentials before they expire.",
+      "run ./scripts/dev-certs.sh --rotate"
+    );
+    embed("roll-a-key", "Swapping client credentials before they expire.");
+    const { lines, logger } = capturingLogger();
+
+    await retrieverWith({ logger })(ask("how do we roll a new key for a channel"));
+
+    const hits = lines.filter(line => line.event === "recall_hit");
+    expect(hits).toHaveLength(1);
+    // A skill's ref is its name, which is the team's own words and the one
+    // model-authored identifier in the index — so unlike a summary's thread ts
+    // there is nothing here to identify the hit by. The file's header states
+    // what that costs the measurement.
+    expect(JSON.stringify(hits)).not.toContain("roll-a-key");
+    expect(JSON.stringify(hits)).not.toContain("dev-certs");
+  });
 });
 
 describe("what a failure costs", () => {
