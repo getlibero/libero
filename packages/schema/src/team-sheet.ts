@@ -2,7 +2,7 @@ import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { CertificateSha256, CredentialName, ResourceName } from "./names.js";
-import { SKILL_BODY_MAX_CHARS } from "./skill.js";
+import { SKILL_BODY_MAX_CHARS, SkillName } from "./skill.js";
 import { z } from "zod";
 
 /**
@@ -297,6 +297,93 @@ const McpServerList = z.array(McpServer).check(ctx => {
       input: server.name,
       path: [index, "name"],
       message: `"${BUILTIN_SERVER}" is reserved for the proxy's own built-in tools; declare those in [[builtin]]`,
+    });
+  });
+});
+
+/**
+ * How a shared skill reaches a task, and there is no default on purpose (#432).
+ *
+ * The two modes are not two settings of one dial. `always` is charged against
+ * every turn of every task in the channel, whether or not the request had
+ * anything to do with it; `retrieved` is charged only where the request matched,
+ * and competes for `[skills] top_k` with the channel's own playbooks. An
+ * operator holds an opinion about which of those a given skill deserves, and an
+ * entry that does not say is a line somebody half-wrote — a mistake, not a
+ * preference. Defaulting it either way would make the cheap mode a thing you get
+ * by forgetting or the expensive mode a thing you get by forgetting, and both of
+ * those are decisions taken from the operator by the schema.
+ */
+export const SharedSkillLoad = z.enum(["always", "retrieved"]);
+
+/**
+ * One `[[shared_skill]]` block: a name, and how it loads.
+ *
+ * `name` is the same `SkillName` a channel's own playbook is held to, imported
+ * rather than restated, so a name that parses here is a name the store can map to
+ * `<name>.md` in the shared root. Nothing else is here — see the block's own
+ * comment on `shared_skill` below for why there is no path, no digest, and no
+ * existence check.
+ */
+export const SharedSkillEntry = z.object({
+  name: SkillName,
+  load: SharedSkillLoad,
+});
+
+export type SharedSkillLoad = z.infer<typeof SharedSkillLoad>;
+export type SharedSkillEntry = z.infer<typeof SharedSkillEntry>;
+
+/**
+ * The `[[shared_skill]]` list, refusing two blocks that name one skill.
+ *
+ * **A departure from `[[mcp_server]]` and `[[mcp_server.tool]]`, which tolerate
+ * duplicates, and the difference is that something resolves those.** Two tool
+ * entries disagreeing about approval have a most-restrictive reading —
+ * `required` beats `none`, and `resolveApproval` in packages/proxy/src/enforce.ts
+ * applies it — because approval is an ordered quantity.
+ *
+ * `load` is not. Ask which of `always` and `retrieved` is the more restrictive and
+ * there are two defensible answers: `always` puts more text in front of the model
+ * on every turn, which is looser on budget, and it removes a retrieval decision,
+ * which is tighter on what can surprise a channel. A field with two defensible
+ * readings is a field with no most-restrictive rule, and inventing one would put a
+ * coin flip in a resolver that the standing composer and the retrieval pool would
+ * both have to apply the same way forever. The alternative to resolving is
+ * dropping one silently, which is the case `parseSkillFile` already refuses for a
+ * repeated frontmatter key: there is no answer to which one was meant, and taking
+ * the last is how something a human wrote disappears with nothing to read
+ * afterwards.
+ *
+ * **Two entries with the *same* mode are refused too**, which is not pedantry: the
+ * always-count at the foot of this file is arithmetic over this list, and
+ * admitting a repeat would mean deciding whether it counts once or twice — a
+ * second question with no good answer, asked only because the first was ducked.
+ *
+ * The issue lands at `shared_skill.<n>.name` on the *later* block, because that is
+ * the line to delete, and every duplicate is reported rather than the first, which
+ * is `McpServerList`'s rule above. The message names no value out of the file,
+ * also that check's discipline: `parseTeamSheet` reports the path and the code and
+ * never the message, so the path is the whole diagnosis, and a message that
+ * interpolated the name would be a value from the sheet sitting in a string only
+ * a direct zod caller ever sees — which is how the habit starts.
+ *
+ * One consequence worth knowing before writing a test against it: an issue pushed
+ * here suppresses the root `.check()`, so a sheet that is both duplicated and over
+ * the always-count reports the duplicate alone. Both are refusals, so nothing is
+ * lost — but a fixture for the count has to be otherwise valid.
+ */
+const SharedSkillList = z.array(SharedSkillEntry).check(ctx => {
+  const seen = new Set<string>();
+  ctx.value.forEach((entry, index) => {
+    if (!seen.has(entry.name)) {
+      seen.add(entry.name);
+      return;
+    }
+    ctx.issues.push({
+      code: "custom",
+      input: entry.name,
+      path: [index, "name"],
+      message: "this skill is already named above; one shared skill is one entry, in one mode",
     });
   });
 });
@@ -647,6 +734,11 @@ export const TeamSheet = z.object({
   // the decision. Its `DEFAULT_SKILL_SETTINGS` should carry that argument itself
   // rather than assume the reader has read `DEFAULT_MEMORY_SETTINGS` (#292).
   //
+  // `[[shared_skill]]` below takes that standing unchanged, and takes it further:
+  // the proxy does not read one field of it, the way it reads `[ambient] enabled`
+  // only to refuse. There is no tool call whose decision a shared skill could
+  // enter.
+  //
   // **On by default, on the same test `[memory]` is on by.** That test asks
   // whether this is the agent starting work nobody asked for, which is
   // `[ambient]`, or the agent keeping something from work it was already asked
@@ -669,6 +761,13 @@ export const TeamSheet = z.object({
   // every sheet that never mentioned the block**, which is not the additive kind
   // of change the rest of this file's defaults are. Said now, because the moment
   // to notice it is before the first sheet is written.
+  //
+  // **`enabled` governs what this channel grows, and not what its operator
+  // decrees.** It switches off the author turn, the merge curator, the lifecycle
+  // clocks, and the retrieval of the playbooks in this channel's own directory —
+  // the machinery that writes and ages machine-authored text. `[[shared_skill]]`
+  // entries are none of that, and load either way; the argument is on that block,
+  // and it is where the long form of this sentence lives.
   skills: z
     .object({
       enabled: z.boolean().default(true),
@@ -687,10 +786,19 @@ export const TeamSheet = z.object({
       // reads back. That is a draft left on a desk, not an act.
       //
       // **A second switch where the rest of the block is one**, for `[memory]`'s
-      // reason exactly: `enabled = false` freezes the whole feature, and this
-      // stops only the pass that proposes merges. A channel that wants its
+      // reason exactly: `enabled = false` freezes everything this channel grows,
+      // and this stops only the pass that proposes merges. A channel that wants its
       // playbooks written and retrieved but never second-guessed says so here
       // without giving up either.
+      //
+      // "Everything this channel grows" rather than "the whole feature", as this
+      // said before #432: `[[shared_skill]]` entries are operator-decreed and are
+      // honoured either way — see that block for the argument. The curator is
+      // outside that distinction in the other direction, and the reason is worth
+      // stating rather than deriving: it never nominates a pair that crosses the
+      // line between grown and decreed, because the shared file is not this
+      // channel's to rewrite and the proposal's two acts — replace one file, delete
+      // the other — are acts nobody in the channel can perform.
       //
       // What bounds it is not this field: one pair per run, one run per channel
       // per day, a cap on how many proposals may be waiting unread, and the rule
@@ -739,6 +847,12 @@ export const TeamSheet = z.object({
       // not parse: that is `enabled = false` said a second way, and one switch
       // with two spellings is one of them going untested.
       //
+      // **It bounds the whole pool, not this channel's half of it.** A shared skill
+      // in `retrieved` mode competes here with the channel's own playbooks, and it
+      // does so on a channel that has set `enabled = false` as well — which is what
+      // makes this number's meaning independent of that switch. See
+      // `[[shared_skill]]` below.
+      //
       // **What this does not bound is the aggregate**, and the aggregate is what
       // a task actually pays. `top_k` times `max_skill_chars` is a worst case,
       // not a budget, and the counterpart to `RECALL_MAX_CHARS` — a ceiling on
@@ -767,6 +881,73 @@ export const TeamSheet = z.object({
       // past 64k a skill has stopped being a playbook, and unlike `MEMORY.md` it
       // is not one file but one of `max_skills`.
       max_skill_chars: z.number().int().min(SKILL_BODY_MAX_CHARS).max(65_536).default(8_192),
+      // The two caps on the always-loaded set (#432), and they are the only fields
+      // on this block that bound something the sheet does not itself contain.
+      //
+      // **What makes this text different from every other skill figure here: it
+      // is charged on every turn of every task, whether or not it was relevant.**
+      // `top_k` above bounds a pool assembled against a request, so a channel
+      // pays for skills that matched something. A shared skill in `always` mode is
+      // a standing instruction, and the only other thing on this sheet with that
+      // standing is `MEMORY.md` — which is the team's own distillation of their
+      // own work, rather than an operator's text arriving from a root the channel
+      // cannot see.
+      //
+      // **The two caps are enforced in two different places, and that is the point
+      // rather than an inconsistency.** How many entries a sheet declares is a
+      // fact about *this file*, countable while it is open on an operator's
+      // screen, so it is refused there — see the `.check()` at the foot of this
+      // file. How many characters those entries amount to is a fact about files in
+      // another root that can change without this file changing, so it cannot be
+      // checked here and is enforced where the text is assembled, which drops a
+      // breaching skill whole and logs it rather than truncating one. A
+      // half-loaded playbook is a playbook that reads as complete and is missing
+      // its last step.
+      //
+      // **Two, and 8192, which is two at the model's own ceiling.** That is
+      // `SKILLS_MAX_CHARS`' construction in apps/server/src/session/skill-recall.ts
+      // — `top_k` times `SKILL_BODY_MAX_CHARS`, and its comment already gives the
+      // reason it is not the sum of the maxima a sheet permits: a budget that could
+      // never bind would not be a budget. With `max_skill_chars` at its own default
+      // the sum here would be 16384, so the character cap binds first whenever a
+      // standing skill runs past the length the model itself may write, which is
+      // the direction that wants to bind.
+      //
+      // **The floor is `SKILL_BODY_MAX_CHARS`**, so one skill at the model's
+      // ceiling always fits — `max_file_chars`' relationship to
+      // `MEMORY_OP_MAX_TEXT_CHARS`, for its reason, and a bound rather than a
+      // `.check()` so the issue lands on the field an operator edits. Below it, an
+      // entry this sheet permits could never load under any file the shared root
+      // holds, which is the "parses, then cannot serve" class the `McpServer` union
+      // refuses at parse.
+      //
+      // The count's roof is `top_k`'s, so no reading of this sheet lets the
+      // standing set be larger than the largest pool retrieval may load; an
+      // operator who wants more than that wants a library, and `retrieved` is the
+      // library. `min(1)` rather than `min(0)` is `top_k`'s argument again — zero
+      // is "name no entries" said a second way, and one policy with two spellings
+      // is one of them going untested. The character roof is `max_file_chars`'
+      // *default* rather than its roof: past 32k the standing set has stopped being
+      // a standing instruction and become a document, and a block from another root
+      // that can outweigh the channel's whole memory file is the failure this cap
+      // exists to prevent.
+      //
+      // **There is deliberately no `.check()` relating this to `max_skill_chars`.**
+      // The note on `[memory]` rejected two cross-field candidates, and the test it
+      // gives is whether the wrong order expresses a policy somebody meant. An
+      // 8192-character standing region beside a 65536-character per-skill cap says
+      // something coherent and useful — long playbooks are retrieved, short ones may
+      // stand — so a rule would refuse sheets an operator meant. That is the ground
+      // the `max_file_chars`-against-`max_tokens_per_task` candidate was rejected
+      // on, and it is *not* the `archive_after_days >= stale_after_days` case below,
+      // which is one ordered quantity whose wrong order makes a state unreachable.
+      //
+      // Flipping either of these looser later is `enabled`'s hazard in reverse and
+      // worse: a sheet that never mentioned them would start paying more on every
+      // turn of every task with nothing in its own file changed. Said now, because
+      // the moment to notice it is before the first sheet is written.
+      max_always_skills: z.number().int().min(1).max(10).default(2),
+      max_always_chars: z.number().int().min(SKILL_BODY_MAX_CHARS).max(32_768).default(8_192),
       // How many skills a channel may hold.
       //
       // **Nothing else bounds the library's size.** There is no delete
@@ -846,6 +1027,53 @@ export const TeamSheet = z.object({
       });
     })
     .prefault({}),
+  // Skills an operator published, named here by reference (#432). The content
+  // lives in a third root — not the channels root the proxy reads its
+  // authorization from, and not the agent state root the channel's own skills are
+  // written into. This block is the whole of what the sheet says about them: a
+  // name, and how it loads.
+  //
+  // **Addressed as `shared/<name>`, always, and that is structural rather than a
+  // precedence rule.** `sharedSkillRef` in ./skill.ts holds the argument and the
+  // mechanism: `/` is outside `SKILL_NAME_PATTERN`, so a channel skill and a
+  // shared skill of one name can never resolve to each other, and no code has to
+  // arbitrate. It is the reservation `ModelId`'s sentinels get, not the one
+  // `BUILTIN_SERVER` gets from the `.check()` above.
+  //
+  // **`[skills] enabled = false` does not refuse these entries, and that is the
+  // decision rather than an oversight.** That switch governs the channel-grown
+  // machinery — the author turn, the channel's own directory, and the retrieval of
+  // what it holds. A shared skill is not grown; it is decreed, by the same operator
+  // who wrote this file, in a root the channel cannot write. So the combination is
+  // legible rather than contradictory, and it is a configuration somebody wants: no
+  // playbooks of your own, use the house ones. The consequence for whoever builds
+  // retrieval, written here so it is not re-derived: `enabled` gates the *channel
+  // leg* of the pool and never the pool, so a channel with the switch off and a
+  // `retrieved` entry here still resolves that entry, bounded by `top_k` and
+  // `max_skill_chars` exactly as it would be with the switch on.
+  //
+  // **The proxy reads nothing here**, which is `[memory]`'s note and `[skills]`'
+  // restatement of it, holding word for word: that service never opens a skill file
+  // and now never opens a shared one either. Unlike `[ambient]` there is not even a
+  // field it reads only to refuse — there is no tool call whose decision this could
+  // enter.
+  //
+  // **No hash pin, and it was considered.** The `certificate_sha256` precedent pins
+  // because minting material and authorizing it have different actors. Here they do
+  // not: whoever edits this file is whoever edits the shared skill, one trust domain
+  // in one git repository. A digest would make the sheet attest to content it does
+  // not own, and what it would buy is a channel whose standing instructions silently
+  // stop loading the day an operator fixes a typo in their own file — at the cost of
+  // the single-point update that is the entire motivation. If a pin is ever wanted it
+  // is a new optional field, so no sheet written today changes shape.
+  //
+  // **A named skill the root does not hold is not a parse error**, and cannot be:
+  // the file is in another root, read by another process at another time, so a sheet
+  // that parsed on Tuesday would stop parsing on Wednesday because somebody moved a
+  // file this service has no business reading. A dangling name is dropped where the
+  // text is assembled, with a log line naming it — the same outcome an over-long one
+  // gets, and for the same reason. Nothing here should grow an existence check.
+  shared_skill: SharedSkillList.default([]),
   mcp_server: McpServerList.default([]),
   // The tools the proxy implements itself (#64) — flat, because there is one
   // provider and it is the proxy. Named here for the same reason an
@@ -957,6 +1185,62 @@ export const TeamSheet = z.object({
       // a way for a mistake here to reject the whole sheet.
     })
     .prefault({}),
-});
+})
+  // **The first `.check()` on this object, and it is here because there is
+  // nowhere else it could be.** Everything else this file refuses is refusable
+  // inside one block: a transport against its own url, a clock against its own
+  // sibling. This one relates a top-level array, `[[shared_skill]]`, to a field
+  // nested in another block, `[skills] max_always_skills` — and a rule that spans
+  // two keys of this object has to live on this object.
+  //
+  // **A sheet over the cap fails to parse, rather than loading the first two and
+  // dropping the rest.** The sheet is the admin surface and this package's promise
+  // is that an invalid one is rejected loudly while the last valid version stays
+  // in force. Truncating instead would move the failure from an operator's terminal
+  // at edit time to a channel quietly running without the standing instruction its
+  // own file names — and unlike a skill that was too long, which is dropped with a
+  // line an operator can find, nothing would have gone wrong: the sheet would be
+  // doing exactly what a rule nobody wrote said.
+  //
+  // **It is not a second spelling of the character bound beside it.** That one is
+  // about files in a root this parser cannot read, and is enforced where the text is
+  // assembled. This one is about lines in the file already in front of us, and
+  // counting them is free.
+  //
+  // The issue lands on each offending entry's `load` — the word that made it count,
+  // and the one-word edit that makes the sheet parse — rather than on
+  // `skills.max_always_skills`, which is the field whose only fix is to raise what
+  // every turn of every task pays, and which a sheet may never have mentioned.
+  // Landing it on `shared_skill` itself would over-name: the cap counts only the
+  // `always` entries, so a path naming the list implicates the `retrieved` blocks,
+  // which are not at fault, and tells the operator to go and count. Every entry past
+  // the cap is reported rather than the first, per `McpServerList` above — naming
+  // only the first turns a sheet with five standing entries under a cap of two into
+  // fix, reparse, be told again, three times over.
+  //
+  // The guard is `SkillCreated`'s in ./skill.ts, and it is load-bearing rather than
+  // defensive: zod runs this check even when a *continuable* issue was already
+  // recorded, so a sheet whose cap is `0` would otherwise be told its cap is too
+  // small *and* that it has too many entries — one mistake reported as two. A cap
+  // outside its own declared bounds has already been named by the field. (A *fatal*
+  // issue skips this check entirely, and so does an issue pushed by `SharedSkillList`
+  // above, which is why a duplicated name is reported without the count beside it.)
+  .check(ctx => {
+    const cap = ctx.value.skills.max_always_skills;
+    if (!Number.isInteger(cap) || cap < 1) return;
+
+    let standing = 0;
+    ctx.value.shared_skill.forEach((entry, index) => {
+      if (entry.load !== "always") return;
+      standing += 1;
+      if (standing <= cap) return;
+      ctx.issues.push({
+        code: "custom",
+        input: entry.load,
+        path: ["shared_skill", index, "load"],
+        message: `at most ${cap} shared skills may load on every task; the rest belong in "retrieved"`,
+      });
+    });
+  });
 
 export type TeamSheet = z.infer<typeof TeamSheet>;

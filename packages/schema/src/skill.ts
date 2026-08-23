@@ -141,6 +141,70 @@ export const SkillName = z
 export type SkillName = z.infer<typeof SkillName>;
 
 /**
+ * The namespace an operator-published skill is addressed under (#432).
+ *
+ * A shared skill is written `shared/<name>` everywhere it is rendered into a
+ * prompt, keyed in an index, or named in a line a person reads. Never bare.
+ *
+ * **That is structural, and deliberately not a precedence rule.** There is no
+ * contest between a channel's `brand-voice` and an operator's, because they are
+ * not one name. A precedence rule would be a sentence three places have to apply
+ * identically — the standing-text composer, the retrieval pool, and whatever
+ * writes the index row — and the first of the three edited without it is a
+ * channel whose own playbook was silently replaced by an operator's, with no
+ * failure anywhere to notice.
+ *
+ * **The reservation holds at parse, by alphabet exclusion, and costs nothing to
+ * keep.** `/` is not in `SKILL_NAME_PATTERN` — not by an exception carved for
+ * this, but because that alphabet has always been lowercase words joined by
+ * single dashes, chosen against a filename hazard that has nothing to do with
+ * namespaces. So no name that parses can carry the separator, no channel-grown
+ * skill can ever be called `shared/brand-voice`, and no code has to check. That
+ * is `ModelId`'s mechanism in ./names.ts, where the meter's `(legacy)` and
+ * `(unreported)` are reserved by a parenthesis the alphabet does not admit.
+ *
+ * It is **not** `BUILTIN_SERVER`'s mechanism, which `ModelId`'s comment runs
+ * together with this one. `libero` is a perfectly ordinary `ResourceName`; that
+ * reservation is a `.check()` on `McpServerList` in ./team-sheet.ts — code that
+ * had to be written, has to be kept, and has to be remembered by the next person
+ * who adds a list of server names. This one cannot be forgotten, because there is
+ * nothing to remember. The only edit that could break it is widening
+ * `SKILL_NAME_PATTERN` to admit a slash, and that edit breaks the mapping to
+ * `skills/<name>.md` first and far more loudly.
+ *
+ * **The qualified form is an address, never a filename.** A shared skill's file
+ * is `<name>.md` in the shared root, exactly as a channel's is `<name>.md` in its
+ * own — so the rule that the `.md` is not part of the name, above, extends here
+ * unchanged, and so does the rule that a name which parses is already canonical.
+ * Which half of the library a row came from is an `origin` column in the index
+ * (#434), not a prefix to split back apart: the column is the fact, the prefix is
+ * how it is addressed.
+ *
+ * A function rather than a template literal at each site, for
+ * `serializeSkillFile`'s reason: three callers build this string — the index row
+ * (#434), the standing region (#435), and the retrieval pool's dedupe key (#436)
+ * — and three spellings of one key is two of them going untested. It does not
+ * validate, and that is boundary discipline rather than an omission: its input is
+ * a `SkillName` the sheet already parsed, and a throw here would put an exception
+ * on the composition path, where every other failure is a dropped skill and a log
+ * line.
+ *
+ * There is no parser for the qualified form and there should not be one until
+ * something outside this process produces one. Nothing does: a qualified name is
+ * always built here and never read back. A parser with no feed is a second
+ * definition of the vocabulary waiting to drift from this one, and worse, it is
+ * an invitation — the moment one exists, somebody accepts `shared/brand-voice` as
+ * an argument from the model, which is the surface the namespace exists to keep
+ * closed.
+ */
+export const SHARED_SKILL_NAMESPACE = "shared";
+
+/** How an operator-published skill is addressed: `shared/<name>`. */
+export function sharedSkillRef(name: SkillName): string {
+  return `${SHARED_SKILL_NAMESPACE}/${name}`;
+}
+
+/**
  * The most text one skill's body may hold, in characters.
  *
  * A constant rather than a team-sheet field, following `MEMORY_OP_MAX_TEXT_CHARS`

@@ -7,10 +7,12 @@ import {
   SKILL_NAME_PATTERN,
   SkillCreated,
   SkillFrontmatter,
+  SHARED_SKILL_NAMESPACE,
   SkillName,
   SkillStatus,
   parseSkillFile,
-  serializeSkillFile
+  serializeSkillFile,
+  sharedSkillRef
 } from "./skill.js";
 import type { SkillFile } from "./skill.js";
 
@@ -395,5 +397,36 @@ describe("serializing a skill file", () => {
     const text = serializeSkillFile(value);
     expect(text.endsWith("\n")).toBe(true);
     expect(text.endsWith("\n\n")).toBe(false);
+  });
+});
+
+// The namespace an operator-published skill is addressed under, and the mechanism
+// that reserves it. `builtin.test.ts` is the shape: it asserts that
+// `BUILTIN_SERVER` parses as a `ResourceName` rather than assuming it, because the
+// two definitions are in different files and only a test keeps them in step. This
+// is the same relationship inverted — the claim is that the qualified form can
+// *never* parse as a name — and it is the whole reservation, so it is asserted
+// rather than trusted.
+describe("an operator-published skill's name", () => {
+  it("addresses a shared skill under the reserved namespace", () => {
+    expect(sharedSkillRef("brand-voice")).toBe("shared/brand-voice");
+    expect(SHARED_SKILL_NAMESPACE).toBe("shared");
+  });
+
+  each([["a"], ["brand-voice"], ["x".repeat(64)]])(
+    "produces a name no channel skill could ever have: %s",
+    name => {
+      expect(SkillName.safeParse(name).success).toBe(true);
+      expect(SkillName.safeParse(sharedSkillRef(name)).success).toBe(false);
+    }
+  );
+
+  // The separator is what does the reserving, and it does it by being outside the
+  // alphabet rather than by a check anybody has to remember. This case fails the
+  // day somebody widens the pattern, which is the day the reservation stops
+  // holding.
+  it("reserves the namespace by an alphabet that admits no separator", () => {
+    expect(SKILL_NAME_PATTERN.test("shared")).toBe(true);
+    expect(SKILL_NAME_PATTERN.test("shared/brand-voice")).toBe(false);
   });
 });

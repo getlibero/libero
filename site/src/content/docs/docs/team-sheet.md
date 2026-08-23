@@ -175,7 +175,8 @@ summarize_after_idle_minutes = 60
 # ON BY DEFAULT, for the same reason curation is: a skill comes out of a task
 # somebody asked for, into capped text your team can read, edit and delete, on a
 # turn metered like every other. Set enabled = false and no author turn runs and
-# nothing is loaded.
+# none of THIS CHANNEL'S OWN playbooks are loaded. It does not switch off the
+# shared skills your operator publishes to you — see [[shared_skill]] below.
 #
 # Two things to know before leaving it on. A skill is PROCEDURAL where a memory
 # fact is declarative: "the team decided X" steers a reply, "to deploy, run Y
@@ -187,7 +188,9 @@ summarize_after_idle_minutes = 60
 #
 # Like [memory] above, THIS BLOCK IS HONOURED BY THE AGENT AND NOT BY THE PROXY,
 # with everything that follows from it — including that a sheet the agent cannot
-# read falls back to NO skills, the opposite of the default here.
+# read falls back to NO skills, the opposite of the default here. A sheet it
+# cannot read loses its shared skills too, but for a duller reason: the list of
+# them is in the sheet.
 #
 # The files are the source of truth. A skill you edit is re-indexed, one you
 # delete is gone, one you write by hand joins the library. How much text one
@@ -222,15 +225,45 @@ summarize_after_idle_minutes = 60
 # something early or reactivating something it retired both stick, and you get a
 # full stale window before it has an opinion again. What ages a skill is when a
 # task last loaded it, never the `created:` line in the file.
+#
+# max_always_skills and max_always_chars bound something none of the above does:
+# the shared skills your operator publishes with load = "always", which are in
+# front of the model on EVERY TURN OF EVERY TASK whether or not they had anything
+# to do with the request. Naming more than the count permits is a parse error.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
 curate                  = true              # propose merges of overlapping playbooks
 author_after_tool_calls = 5                 # strictly more than this many served calls
 top_k                   = 3                 # how many skills a task may open with
 max_skill_chars         = 8192              # a skill's body; one operation may write 4096
+max_always_skills       = 2                 # standing shared skills; see [[shared_skill]]
+max_always_chars        = 8192              # the whole standing block, two at the model's ceiling
 max_skills              = 100               # the whole library; nothing else bounds it
 stale_after_days        = 30                # unloaded this long and a skill is marked stale
 archive_after_days      = 90                # unloaded this long and it leaves retrieval
+
+# Skills your operator published, named here by reference. The files live in a
+# third root — not this channels directory, and not the agent's state root where
+# your own skills are written — mounted read-only. Nothing here is a path and
+# nothing here is a digest: whoever edits this sheet edits those files, so an
+# update is one edit in one place. They are addressed as shared/<name>, so a
+# shared skill and one of your own with the same name never collide.
+#
+# THE TWO MODES ARE NOT TWO STRENGTHS OF ONE SETTING, and load has no default
+# because of it. "always" is in every task and charged against every turn, whether
+# or not the request had anything to do with it — what a house voice needs, since
+# retrieval will never surface brand-voice for a database migration. "retrieved"
+# joins the same pool your own playbooks are matched against.
+#
+# [skills] enabled = false does NOT switch these off. That switch governs the
+# playbooks this channel grows for itself; these were decreed rather than grown.
+[[shared_skill]]
+name = "brand-voice"
+load = "always"                             # every task, charged against every turn
+
+[[shared_skill]]
+name = "code-review-standards"
+load = "retrieved"                          # joins the pool beside your own skills
 
 # GitHub's hosted MCP server. The url is the server's single MCP endpoint, path
 # and all — and for this server the path is also the only configuration Libero
@@ -711,11 +744,13 @@ loaded into the opening context. Never the whole library.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `enabled` | no | Whether the author turn runs and skills are loaded at all. **Defaults to `true`.** `false` writes nothing and loads nothing. |
+| `enabled` | no | Whether the author turn runs and this channel's own skills are loaded. **Defaults to `true`.** `false` writes nothing and loads none of the channel's own — it does not switch off `[[shared_skill]]` entries, which are your operator's rather than this channel's. |
 | `curate` | no | Whether the merge curator proposes merges of overlapping playbooks. **Defaults to `true`.** `false` stops only that pass. |
 | `author_after_tool_calls` | no | How many tool calls a task must exceed before the author turn runs. Defaults to `5`. Strictly more than this, and it counts calls the proxy served rather than calls the model attempted. |
 | `top_k` | no | How many skills a task may open with. Defaults to `3`. May not be set below `1` or above `10`. |
 | `max_skill_chars` | no | The longest a skill's body may be, in characters. Defaults to `8192`. May not be set below `4096`, the most one operation may write, or above `65536`. |
+| `max_always_skills` | no | How many `[[shared_skill]]` entries may carry `load = "always"`. Defaults to `2`. May not be set below `1` or above `10`. A sheet naming more than this does not parse. |
+| `max_always_chars` | no | What the whole always-loaded set may cost, in characters, on every turn. Defaults to `8192` — two skills at the 4096 the model itself may write. May not be set below `4096` or above `32768`. Enforced when the text is assembled: a skill that would breach it is dropped whole, with a log line naming it, rather than truncated. |
 | `max_skills` | no | How many skills this channel may hold. Defaults to `100`. |
 | `stale_after_days` | no | How long a skill goes unloaded before it is marked `stale`. Defaults to `30`. |
 | `archive_after_days` | no | How long a skill goes unloaded before it is marked `archived` and leaves retrieval. Defaults to `90`. May not be below `stale_after_days`. |
@@ -735,6 +770,11 @@ What a skill cannot do is widen anything. It is text loaded into a model's conte
 induces still meets the proxy's gates — the allowlist, approvals, the budget, egress — exactly as if
 the same words had arrived in a message from a person. A skill that says to run a tool this channel
 does not grant produces a refusal and an audit row, not a tool call.
+
+**`enabled` governs what this channel grows, not what your operator decrees.** It switches off the
+author turn, the merge curator, the lifecycle clocks, and the retrieval of the playbooks in this
+channel's own directory. Shared skills your operator publishes load either way, which is what lets a
+channel use the house playbooks and write none of its own.
 
 **Like `[memory]`, this block is honoured by the agent and not the proxy**, with everything that
 follows: there is no second copy of these numbers, so it has the standing `daily_tokens` has and not
