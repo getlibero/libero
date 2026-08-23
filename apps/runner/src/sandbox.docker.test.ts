@@ -23,17 +23,25 @@
 //
 // ## Which CI job runs this
 //
-// The `e2e` one, since #410 — not the `build` job that runs every other
-// package. This file and `e2e/src/sandbox-attack.test.ts` both pull
-// `python:3.13-alpine` and both build the runner image; on separate jobs that
-// is two daemons paying for the same thing twice, and it put a minute of image
-// fetching on the job everyone waits for. Together they share one.
+// `sandbox`, since #410 — its own, not the `build` job that runs every other
+// package. Two things put it there. It was the largest single item on the
+// critical path, most of it not testing but the `docker pull` and
+// `docker build` below; and `build` was silently depending on a daemon it never
+// said it needed, because the gate above is what makes that dependency real.
+//
+// Not a seat on the `e2e` job either, which also has a daemon. The two suites
+// cannot share one concurrently: the case below asserts that no container on
+// the daemon descends from `python:3.13-alpine`, deliberately daemon-wide,
+// while `e2e/src/sandbox-attack.test.ts` keeps a sink container running on that
+// image. In series they are fine and the job becomes the critical path. A
+// daemon each costs a duplicate fetch on a runner nothing waits for.
 //
 // That leaves the gate above depending on a filter in `.github/workflows/ci.yml`
 // naming this package — delete it and these cases go dark with nothing failing,
 // which is the rule one level up. `packages/test-kit/src/ci-partition.test.ts`
-// is the mechanical answer: it reads the workflow and asserts that the two test
-// steps partition the workspace between them.
+// is the mechanical answer: it reads the workflow, asserts the test steps
+// partition the workspace, and asserts that a package gating on a daemon is
+// never run beside one that does not.
 //
 // ## What is deliberately not here
 //
@@ -261,6 +269,13 @@ describe("a real sandbox container", { skip: !socketPresent }, () => {
     // `docker ps -a` over the whole daemon rather than a recorded id, because
     // the property is "none are left", and a leak would most likely be a
     // container this run never learned the id of.
+    //
+    // That scope is why this package has its own CI job rather than a seat on
+    // `e2e`: `e2e/src/sandbox-attack.test.ts` keeps a sink container running on
+    // this same image, so the two suites cannot share a daemon concurrently.
+    // Narrowing this to a recorded id would let them — and would give up the
+    // only case that can see a container nothing recorded, which is the leak
+    // worth catching.
     const listed = execFileSync("docker", ["ps", "-a", "--filter", `ancestor=${IMAGE}`, "--format", "{{.ID}}"], {
       encoding: "utf8"
     }).trim();
@@ -297,7 +312,7 @@ describe("a sandbox with an egress grant", { skip: !socketPresent }, () => {
    * another job's side effect, which is the kind of coupling that works until
    * somebody reorders a workflow.
    *
-   * The `e2e` job warms the image before the suites start, which is the same
+   * The `sandbox` job warms the image before the suite starts, which is its own
    * daemon rather than another job's, and this `inspect` is what makes that a
    * warm rather than a dependency: take the warm away and this still builds.
    *

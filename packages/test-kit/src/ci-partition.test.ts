@@ -5,37 +5,38 @@
 // all. They are different failures, and this one arrived with #410.
 //
 // The `build` job used to run every package but `e2e`. It now excludes
-// `@getlibero/runner` as well, because that package's container cases need a
-// Docker daemon and belong beside the other suite that does. That split is two
-// lines of YAML, and nothing checked that they agreed:
+// `@getlibero/runner` too, which has a job of its own — three `run:` lines
+// across three jobs, where there was one, and nothing checked that they agreed:
 //
-//   - drop `@getlibero/runner` from the `e2e` job and its cases stop running,
-//     while the build job's filter still excludes them — #395's acceptance goes
-//     dark and CI reports green;
-//   - add a workspace package and neither line mentions it, which is the
-//     "invisible to CI until it has a `test` script" hazard CLAUDE.md already
-//     names, pointed at the workflow instead of at the manifest.
+//   - delete the `sandbox` job and `@getlibero/runner` is run by nothing, while
+//     the build job's filter still excludes it — #395's acceptance goes dark and
+//     CI reports green;
+//   - fold either daemon suite back onto `build` and that job silently acquires
+//     a Docker dependency nothing states, which is the arrangement #410 found;
+//   - add a workspace package and no line mentions it, which is the "invisible
+//     to CI until it has a `test` script" hazard CLAUDE.md already names,
+//     pointed at the workflow instead of at the manifest.
 //
-// Both are the shape this repository calls a test that encodes a gap, and both
-// are invisible in a diff of one file. So the two lines have to *partition* the
-// workspace — every package in exactly one job — and that is asserted here
-// rather than reviewed.
+// All three are the shape this repository calls a test that encodes a gap, and
+// all three are invisible in a diff of one file. So the lines have to
+// *partition* the workspace — every package in exactly one job — and the two
+// that gate on a daemon have to stand alone. Asserted here rather than reviewed.
 //
 // ## Why it parses the YAML rather than reading a list
 //
 // A list of what CI runs, kept beside CI, is a second thing to forget. What
 // makes this worth having is that it reads the file that actually decides. The
 // parser is deliberately small and deliberately brittle: it understands the
-// filter syntax these two lines use and **throws on anything else**, because a
+// filter syntax those lines use and **throws on anything else**, because a
 // parser that quietly mis-models a flag it does not know would report a
 // partition that is not there. A new flag in ci.yml fails this test, which is a
 // one-line fix and a reviewable one; a wrong green is neither.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { expect } from "expect";
-import { ROOT, workspacePackages } from "./workspace.js";
+import { ROOT, workspacePackages, type WorkspacePackage } from "./workspace.js";
 
 const WORKFLOW = join(ROOT, ".github/workflows/ci.yml");
 
@@ -111,10 +112,10 @@ function selects(command: string, all: readonly string[]): Set<string> {
 
 describe("the CI jobs that run the suite", () => {
   it("were found at all, so the checks below are not vacuous", () => {
-    // Two: the `build` job's `Tests` step and the `e2e` job's. A third would be
-    // fine and would still have to partition; none means the regex stopped
-    // matching and everything after this would pass on an empty set.
-    expect(testCommands().length).toBeGreaterThanOrEqual(2);
+    // Three: `build`, `e2e`, `sandbox`. A fourth would be fine and would still
+    // have to partition; none means the regex stopped matching and everything
+    // after this would pass on an empty set.
+    expect(testCommands().length).toBeGreaterThanOrEqual(3);
     expect(workspacePackages().length).toBeGreaterThan(10);
   });
 
@@ -137,20 +138,84 @@ describe("the CI jobs that run the suite", () => {
     });
   });
 
-  it("keep the daemon-needing packages together, and say so", () => {
-    // The narrower claim #410 turns on. `apps/runner`'s container cases and
-    // `e2e`'s both need a Docker daemon; the job that runs them is the one that
-    // documents needing one, and the build job is the one that must not need
-    // one. A future split that separates these two is not wrong, but it is a
-    // decision — this fails so that it is made rather than drifted into.
+  it("never run a suite that gates on a Docker daemon beside one that does not", () => {
+    // The narrower claim #410 turns on, and the reason the daemon-needing
+    // packages are one-per-job rather than grouped.
+    //
+    // Their gates are two-sided: no daemon and `CI=true` throws at import
+    // rather than skipping, so that #395's and #396's acceptance cannot report
+    // green on a runner that lost its socket. That makes *any* job running one
+    // of them a job that must have a daemon — so putting one on the `build`
+    // job silently gives that job a dependency nothing states, which is where
+    // this started.
+    //
+    // One per command, not merely grouped away from `build`. Two of these
+    // suites on one job have to run in series, because
+    // `apps/runner/src/sandbox.docker.test.ts` asserts that nothing on the
+    // daemon descends from `python:3.13-alpine` — daemon-wide on purpose, since
+    // a leaked container is one whose id it never learned — while
+    // `e2e/src/sandbox-attack.test.ts` keeps a sink container running on that
+    // image. Measured: concurrently they collide, in series the job becomes the
+    // critical path. A daemon each is what makes both go away, and this fails
+    // rather than letting the next person rediscover it.
     const all = workspacePackages().map(p => p.name);
-    const withDaemon = testCommands().filter(command => {
-      const selected = selects(command, all);
-      return selected.has("@getlibero/e2e") || selected.has("@getlibero/runner");
-    });
+    const gated = new Set(workspacePackages().filter(gatesOnDocker).map(p => p.name));
 
-    expect(withDaemon).toHaveLength(1);
-    const selected = selects(withDaemon[0] as string, all);
-    expect([...selected].sort()).toEqual(["@getlibero/e2e", "@getlibero/runner"]);
+    // Non-vacuous: the two files this is about are still there and still gate.
+    expect([...gated].sort()).toEqual(["@getlibero/e2e", "@getlibero/runner"]);
+
+    const alongside = Object.fromEntries(
+      testCommands()
+        .map(command => [command, [...selects(command, all)]] as const)
+        .filter(([, selected]) => selected.some(name => gated.has(name)))
+        .map(([command, selected]) => [command, selected.filter(name => !gated.has(name))])
+    );
+
+    expect(alongside).toEqual(
+      Object.fromEntries(Object.keys(alongside).map(command => [command, []]))
+    );
+    expect(Object.keys(alongside)).toHaveLength(gated.size);
   });
 });
+
+/**
+ * Whether a package's suite refuses to run without a Docker daemon.
+ *
+ * Read off the gate rather than listed here, so that a third one added
+ * tomorrow is covered on the day it is written rather than on the day someone
+ * remembers this file. The marker is the sentence both gates throw — they are
+ * worded alike because they are the same decision, and `sandbox-attack.test.ts`
+ * says so in its header.
+ */
+function gatesOnDocker({ directory }: WorkspacePackage): boolean {
+  return sources(join(directory, "src")).some(file =>
+    readFileSync(file, "utf8").includes(DAEMON_GATE)
+  );
+}
+
+/**
+ * The sentence both two-sided gates throw when `CI` is true and no socket is
+ * there.
+ *
+ * Spelled in two halves so that this file is not itself a match. The `build`
+ * job's `workflow-guard` step has the same note for the same reason — a check
+ * that greps for a string has to say the string somewhere, and the somewhere is
+ * inside the thing being searched. Joining at run time is the smaller
+ * instrument than teaching the search to skip a path.
+ */
+const DAEMON_GATE = "must not be" + " skipped in CI";
+
+/** Every `.ts` file below a directory, or none if it is not there. */
+function sources(directory: string): string[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap(entry => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sources(path);
+    return entry.isFile() && path.endsWith(".ts") ? [path] : [];
+  });
+}

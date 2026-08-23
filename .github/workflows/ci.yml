@@ -98,11 +98,10 @@ jobs:
             }
           done
       - name: Tests
-        # Every package except the two the `e2e` job below runs, for the reason
-        # stated there: both need a Docker daemon, and neither belongs on the
-        # job everyone waits for. The exclusions are filters here rather than a
-        # change to the root `test` script, so `pnpm test` on a contributor's
-        # machine still runs everything.
+        # Every package that does not need a Docker daemon — which is every
+        # package but two, each of which has a job below. The exclusions are
+        # filters here rather than a change to the root `test` script, so
+        # `pnpm test` on a contributor's machine still runs everything.
         #
         # `@getlibero/runner` is the one that moved (#410), and it took the
         # whole package rather than one file: its container cases and its five
@@ -113,32 +112,31 @@ jobs:
         # #107-successor hazard that guard exists to catch, moved somewhere
         # nothing checks it.
         #
-        # This line and the `e2e` job's have to partition the workspace between
+        # This line and the two below have to partition the workspace between
         # them, and `packages/test-kit/src/ci-partition.test.ts` asserts that
-        # they do: drop a name from either and its suite stops running with
-        # nothing failing.
+        # they do: drop a name from any of the three and that suite stops
+        # running with nothing failing.
         run: pnpm -r --filter '!@getlibero/e2e' --filter '!@getlibero/runner' test
 
   e2e:
-    # The two packages that need a Docker daemon, and nothing else.
+    # The security suite, alone on a runner with a Docker daemon.
     #
-    # It started as one. `e2e` declares every other workspace package as a
-    # dependency, so `pnpm -r` sorted it last and it ran by itself at the tail
-    # of the build job: 103 seconds of a 191-second test step, with three of the
-    # runner's four vCPUs idle. Nothing about that ordering is load-bearing once
-    # the build has run — it is just how `pnpm -r` sorts — so the suite moved to
-    # a runner of its own.
+    # `e2e` declares every other workspace package as a dependency, so
+    # `pnpm -r` sorted it last and it ran by itself at the tail of the build
+    # job: 103 seconds of a 191-second test step, with three of the runner's
+    # four vCPUs idle. Nothing about that ordering is load-bearing once the
+    # build has run — it is just how `pnpm -r` sorts — so the suite moved to a
+    # runner of its own.
     #
-    # `@getlibero/runner` joined it in #410, and the reason is the fixtures
-    # rather than the clock. Its container cases and `e2e`'s each fetch
-    # `python:3.13-alpine` and each `docker build` this repository's runner
-    # image, both deliberately — the comments at
-    # `apps/runner/src/sandbox.docker.test.ts` and
-    # `e2e/src/harness/runner-process.ts` refuse to depend on another job's side
-    # effect, so a laptop run needs no workflow at all. On two jobs that meant
-    # paying for both twice, once per daemon. On one job the second of each is a
-    # cache hit, and the build job stops needing a daemon it never advertised
-    # needing.
+    # `sandbox` below is its sibling and #410's other half. The two are separate
+    # jobs rather than one, and **that is a correctness requirement, not a
+    # scheduling preference.** Both need a daemon; put them on one and they must
+    # run in series, because `apps/runner/src/sandbox.docker.test.ts` asserts
+    # that no container on the daemon descends from `python:3.13-alpine` — a
+    # deliberately daemon-wide claim, since a leaked container is one whose id
+    # the suite never learned — and this file keeps a long-lived sink container
+    # running on exactly that image. Concurrently they collide; in series the
+    # job is the critical path. A daemon each is what makes both go away.
     #
     # The cost is a second `pnpm -r build`. It is the same trade
     # `lint-and-license` makes below, and it is paid in parallel; the build is
@@ -162,15 +160,18 @@ jobs:
       - name: Build, and fetch the sandbox fixtures beside it
         # `pnpm -r build` is 20 seconds of tsc that touches nothing outside
         # `dist`; the two fixtures are a pull and an image build that touch
-        # nothing but the daemon. Serialised they were about a minute of the
-        # test step with a runner otherwise idle, so they run alongside it.
+        # nothing but the daemon. `prepareSandboxFixtures` fetched them
+        # serially at the head of the suite, which measured a little under a
+        # minute with the rest of the runner idle, so they run alongside the
+        # build instead.
         #
-        # This warms the daemon; it does not become the source of truth. Both
-        # suites still `docker image inspect` and fetch what is absent, which is
-        # what makes a laptop run work and is why deleting these three lines
-        # costs wall clock and nothing else. `.dockerignore` re-excludes
-        # `**/dist` and `**/node_modules`, so the context this sends and the
-        # tree `pnpm -r build` is writing do not overlap.
+        # This warms the daemon; it does not become the source of truth.
+        # `e2e/src/harness/runner-process.ts` still inspects and fetches what is
+        # absent, which is what makes a laptop run need no workflow at all and
+        # is why deleting these lines costs wall clock and nothing else.
+        # `.dockerignore` re-excludes `**/dist` and `**/node_modules`, so the
+        # context this sends and the tree `pnpm -r build` is writing do not
+        # overlap.
         run: |
           docker pull --quiet python:3.13-alpine > "$RUNNER_TEMP/sandbox-pull.log" 2>&1 &
           pull=$!
@@ -180,27 +181,81 @@ jobs:
           pnpm -r build
           wait "$pull" || { cat "$RUNNER_TEMP/sandbox-pull.log"; exit 1; }
           wait "$image" || { cat "$RUNNER_TEMP/runner-image.log"; exit 1; }
-      - name: Security suite and the sandbox acceptance cases
+      - name: Security suite
         # This job needs a Docker daemon, which is not obvious from the step and
-        # is not optional. Both `e2e/src/sandbox-attack.test.ts` (#396) and
-        # `apps/runner/src/sandbox.docker.test.ts` (#395) throw at module load
-        # when `CI` is true and no socket is present, rather than skipping, so
-        # that neither set of acceptance cases can quietly report green. A
+        # is not optional: `e2e/src/sandbox-attack.test.ts` throws at module
+        # load when `CI` is true and no socket is present, rather than skipping,
+        # so that #396's acceptance cases cannot quietly report green. A
         # `runs-on` without a daemon fails this job — which is the intent, not a
         # fragility to route around.
         #
-        # That gate now depends on this line naming both packages: drop one and
-        # its cases stop running with nothing failing, which is the
+        # That gate reaches only as far as this line naming the package: drop it
+        # and the cases stop running with nothing failing, which is the
         # test-that-encodes-a-gap rule one level up.
         # `packages/test-kit/src/ci-partition.test.ts` is what makes that
-        # mechanical — it reads this file and asserts that this line and the
-        # build job's `Tests` line partition the workspace between them.
-        #
-        # `@getlibero/runner` sorts first, because `e2e` declares it as a
-        # dependency. Nothing depends on that order — the fixtures are already
-        # warm — but it does mean the two suites do not contend for the four
-        # vCPUs.
-        run: pnpm --filter @getlibero/runner --filter @getlibero/e2e test
+        # mechanical — it reads this file and asserts that the three test steps
+        # partition the workspace, and that a package whose suite gates on a
+        # daemon is never run beside one that does not.
+        run: pnpm --filter @getlibero/e2e test
+
+  sandbox:
+    # #395's acceptance cases, which need a Docker daemon and nothing else this
+    # repository builds.
+    #
+    # They ran in `build` until #410, where they were the largest single thing
+    # on the critical path: 58.9 seconds of a 103-second test step on run
+    # 32572814070, and for 37 of those the other three vCPUs had nothing to do,
+    # because `apps/runner` is a leaf that everything else was waiting behind.
+    # Most of it was not testing — it was one `docker pull` and one
+    # `docker build` that `e2e` was paying for a second time on its own runner.
+    #
+    # A job of its own rather than a seat on `e2e`: the two suites cannot share
+    # a daemon concurrently, for the reason recorded above that job. So the
+    # choice was series on one runner or parallel on two, and this is the
+    # second. It costs a duplicate fetch of both fixtures, paid on a runner
+    # nothing waits for.
+    #
+    # `pnpm --filter @getlibero/runner... build` and not `pnpm -r build`: unlike
+    # `e2e`, nothing here spawns another package's built entrypoint. `...` is
+    # this package and what it depends on, which is `@getlibero/schema` and
+    # `@getlibero/test-kit` — about five seconds against the twenty a full build
+    # costs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          # The same floor as the build job. Nothing here opens a database, but
+          # a second Node version in one workflow is a thing to explain rather
+          # than a thing to inherit.
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build, and fetch the sandbox fixtures beside it
+        # The same warm as the `e2e` job, and the same caveat: it warms the
+        # daemon and does not become the source of truth, because
+        # `sandbox.docker.test.ts` still inspects and fetches what is absent.
+        # Here the build it overlaps is the short one, so most of the step is
+        # the fixtures.
+        run: |
+          docker pull --quiet python:3.13-alpine > "$RUNNER_TEMP/sandbox-pull.log" 2>&1 &
+          pull=$!
+          docker build --quiet -f apps/runner/Dockerfile -t ghcr.io/getlibero/runner:latest . \
+            > "$RUNNER_TEMP/runner-image.log" 2>&1 &
+          image=$!
+          pnpm --filter @getlibero/runner... build
+          wait "$pull" || { cat "$RUNNER_TEMP/sandbox-pull.log"; exit 1; }
+          wait "$image" || { cat "$RUNNER_TEMP/runner-image.log"; exit 1; }
+      - name: Sandbox acceptance cases
+        # This job needs a Docker daemon for the same reason the `e2e` job does
+        # and with the same two-sided gate:
+        # `apps/runner/src/sandbox.docker.test.ts` throws at module load when
+        # `CI` is true and no socket is present, rather than skipping, so that
+        # #395's acceptance cannot quietly report green. Delete this job and
+        # `ci-partition.test.ts` fails, because nothing would then run
+        # `@getlibero/runner`.
+        run: pnpm --filter @getlibero/runner test
 
   lint-and-license:
     # Lint and the license gate read the source tree and node_modules, never

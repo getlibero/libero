@@ -97,12 +97,15 @@ depends on nothing else in the tree.
   and its `build` and `typecheck` are the invocations that string assumes. The
   hazard is #107's successor: a glob that matches nothing exits 0.
 - **`ci-partition.test.ts`** — every workspace package is run by exactly one job
-  in `.github/workflows/ci.yml`. The hazard is one level out: a package no job
-  runs, which the reporter cannot see because there is no run to report on.
-  #410 created it by moving `@getlibero/runner` to the `e2e` job, where the
-  Docker daemon and the sandbox fixtures already are. Its parser understands the
-  filter syntax those two lines use and **throws on anything else**, because
-  quietly mis-modelling a flag would assert a partition CI does not perform.
+  in `.github/workflows/ci.yml`, and the two whose suites gate on a Docker
+  daemon each stand alone. The hazard is one level out from the reporter's: a
+  package no job runs, which the reporter cannot see because there is no run to
+  report on. #410 created it by giving `@getlibero/runner` a job of its own. Its
+  parser understands the filter syntax those three lines use and **throws on
+  anything else**, because quietly mis-modelling a flag would assert a partition
+  CI does not perform. Which packages gate on a daemon is read off the sentence
+  their gates throw rather than listed, so a third one is covered the day it is
+  written.
 
 Both read the workspace off disk through `workspace.ts`, which is not exported:
 the list neither can hardcode is the same list, and the thing they exist to

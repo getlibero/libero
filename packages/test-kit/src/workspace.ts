@@ -20,6 +20,8 @@ export const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 export interface WorkspacePackage {
   readonly name: string;
   readonly manifest: Record<string, unknown>;
+  /** Absolute path to the package, for a check that reads its sources. */
+  readonly directory: string;
 }
 
 /**
@@ -44,5 +46,5 @@ function read(directory: string): WorkspacePackage {
     string,
     unknown
   >;
-  return { name: String(manifest["name"]), manifest };
+  return { name: String(manifest["name"]), manifest, directory };
 }

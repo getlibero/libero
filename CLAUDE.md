@@ -65,10 +65,17 @@ nobody sees.
 happened; a package CI never invokes produces nothing to report on. So
 `packages/test-kit/src/ci-partition.test.ts` reads `.github/workflows/ci.yml`
 and asserts that its `pnpm ... test` steps partition the workspace — every
-package in exactly one job. Two jobs run the suite: `build` runs everything
-except the two packages that need a Docker daemon, and `e2e` runs those
-(`@getlibero/e2e` and `@getlibero/runner`, #410), warming the sandbox image and
-the runner image once for both.
+package in exactly one job — and that a package whose suite gates on a Docker
+daemon is never run beside one that does not.
+
+Three jobs run the suite (#410). `build` runs everything that needs no daemon;
+`e2e` and `sandbox` each run one package that does, each warming the sandbox
+image and the runner image alongside its own build. They are two jobs rather
+than one because `apps/runner/src/sandbox.docker.test.ts` asserts that no
+container on the daemon descends from `python:3.13-alpine` — daemon-wide, since
+a leaked container is one whose id it never learned — while
+`e2e/src/sandbox-attack.test.ts` keeps a sink container running on that image.
+A daemon each is what lets both run at once.
 
 ## Current state
 
