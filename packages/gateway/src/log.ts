@@ -39,10 +39,13 @@ export interface LogFields {
    * "memory_unavailable", "curated", "curation_failed". Embeddings:
    * "embeddings_ready", "embeddings_unconfigured". Thread summaries:
    * "summarized", "summary_failed", "summary_unusable", "summary_embed_failed".
-   * Recall: "recalled", "recall_failed", "query_embedding_failed"
-   * — and the middle two are deliberately distinct words, because "the provider
-   * is down" and "the model cannot follow the schema" want different answers
-   * from whoever is reading. Skills: "skills_opened", "skills_unavailable",
+   * Recall: "recalled", "recall_hit", "recall_failed", "query_embedding_failed"
+   * — and the summaries' middle two are deliberately distinct words, because
+   * "the provider is down" and "the model cannot follow the schema" want
+   * different answers from whoever is reading. "recall_hit" is one line per
+   * nearest-neighbour hit and the only word in this vocabulary written for an
+   * analysis rather than for an operator (#427); `distance` below says what it
+   * is for, and `recall.ts` says why it is a line rather than a table. Skills: "skills_opened", "skills_unavailable",
    * "skills_loaded", "skills_over_cap", "skill_reconcile_failed",
    * "skill_recall_failed", "skill_oversize", "skill_file_unusable",
    * "skill_file_misnamed", "authored", "authoring_failed", "skills_embedded",
@@ -124,7 +127,15 @@ export interface LogFields {
   user?: string;
   /** Slack's `event_id`. Stable across delivery retries, so a duplicate is greppable. */
   eventId?: string;
-  /** The thread a reply went to, as a Slack ts. */
+  /**
+   * The thread a reply went to, as a Slack ts.
+   *
+   * On `recall_hit` it is the thread a retrieved summary covers, which is the
+   * same kind of fact reached from the other end. It stays one field because a
+   * thread id means one thing here however the line came to carry it — and it is
+   * an id, so the rule at the top of this file about message text is untouched:
+   * it says which conversation was matched, never what was said in it.
+   */
   threadTs?: string;
   /**
    * A card message's own ts — the message `chat.update` edits.
@@ -338,6 +349,100 @@ export interface LogFields {
    * team's own words, and neither goes in a log line.
    */
   count?: number;
+  /**
+   * Which corpus a nearest-neighbour hit came from: `summary` or `skill`. On
+   * `recall_hit` and nothing else (#427).
+   *
+   * `EmbeddingSource.kind`'s vocabulary less the member nothing writes — `fact`
+   * is in that union and no corpus produces one, because curated facts reach a
+   * task through `<channel-memory>` whole. A code from a closed set, and content
+   * in neither direction: it says which index answered, never what the answer
+   * said.
+   *
+   * A field rather than two event words, which is the opposite of the call made
+   * for the summary and skill *embedding* failures above. Those are two words
+   * because the two corpora fail for different reasons and an operator grepping
+   * one is not asking about the other. This is one word because the two corpora
+   * succeed the same way — one k-NN over one vector table — and the question
+   * these lines exist to answer is precisely how their distances compare to each
+   * other. Two words would make that comparison a join.
+   */
+  kind?: string;
+  /**
+   * Where a hit sat in the answer that produced its distance, counting from one.
+   * On `recall_hit` and nothing else (#427).
+   *
+   * The rank *within the vector leg*, not within what the task finally loaded.
+   * Skills fuse two rank lists, so a skill's position in the block is a fact
+   * about the lexical leg as much as this one; `disposition` is what says
+   * whether it survived, and this stays the number the distance is paired with.
+   *
+   * An ordinal, like `turns` on the two spend lines, and it belongs in a named
+   * field for `distance`'s reason rather than `count`'s: it means the same thing
+   * on every line that carries it.
+   */
+  rank?: number;
+  /**
+   * How far a nearest-neighbour hit was, as the L2 distance `packages/memory`
+   * answers with. On `recall_hit` and nothing else (#427).
+   *
+   * **The one field here recorded for an analysis rather than for an operator.**
+   * Nothing acts on it today: retrieval applies no distance cutoff, and #283
+   * cannot decide on one — absolute, relative to the nearest hit, or per-provider
+   * — without a distribution from a real corpus under more than one provider.
+   * The distances were being computed and dropped, so however long a deployment
+   * ran it produced no such distribution. This is the field that keeps them.
+   *
+   * It is not a count, so `count`'s rule does not sort it. That rule asks
+   * whether adding a number to the one on the line above is meaningful, which
+   * separates `totalTokens` from the nine things that were wrongly spelled as
+   * it; nobody sums distances. What makes this a named field is the other half
+   * of the same reasoning: `count` is the bag for a number whose meaning changes
+   * with the `event` word, and a distance means one thing everywhere it appears
+   * — L2 in the units of whatever the configured provider emits. The whole use
+   * of the field is an aggregate over lines that carry it, which is exactly what
+   * `count` cannot support.
+   *
+   * A number and never content. What it measures is a channel's own text, but
+   * the measurement is not the text: a distance is not invertible into a summary
+   * any more than a length is.
+   *
+   * The provider is deliberately not repeated on the line. It is a per-process
+   * constant already on `embeddings_ready` through `embeddingModel`, and putting
+   * it here would suggest this line can tell which model produced the *stored*
+   * vector, which it cannot — a deployment that changed models without
+   * re-embedding is a hazard the query's model would not reveal either.
+   */
+  distance?: number;
+  /**
+   * What became of a nearest-neighbour hit: `loaded`, `dropped_chars`,
+   * `dropped_rank`, `oversize`, or `unresolved`. On `recall_hit` and nothing
+   * else (#427).
+   *
+   * A code from a closed set. It is what makes the distances analysable rather
+   * than merely present, because the cases are not one case: a hit that was near
+   * and got cut for length says something about the character budget, and a hit
+   * that was far says something about the cutoff #283 is trying to find. Reading
+   * a distribution with the two collapsed would answer neither question.
+   *
+   * `unresolved` is the summary that was invalidated between being embedded and
+   * being read, or the skill file that is gone; `dropped_rank` is a vector hit
+   * the skill fusion never reached, which is the lexical leg outranking it
+   * rather than anything about its distance.
+   *
+   * **Not `outcome`**, which is the tool proxy service's spelling for what it
+   * did with a call — the audit log's vocabulary. Where the two loggers share a
+   * field name (`verdict`, `report`, `count`) they share the fact, so that one
+   * grep spans both ends; a second meaning for `outcome` would spend that
+   * property for a synonym.
+   *
+   * Spelled as a union rather than as a `string`, which `sheet` is the
+   * precedent for and most of this vocabulary is not. The others are codes a
+   * reviewer checks; this one is a set an analysis groups by, so a sixth member
+   * arriving by typo would not be a bad line, it would be a bucket. Widening it
+   * is an edit here, which is the review this file exists to get.
+   */
+  disposition?: "loaded" | "dropped_chars" | "dropped_rank" | "oversize" | "unresolved";
   /**
    * How many memory operations a curation turn asked for (#227).
    *

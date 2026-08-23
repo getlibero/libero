@@ -73,6 +73,34 @@
 // tuning knob once a deployment has real distances and a real library to look
 // at; a guessed one today would be the magic number recall already refused.
 //
+// ## The vector leg's distances are recorded, and what they can and cannot say
+//
+// #427 asks for the distance of every hit so that cutoff can be measured, and
+// ./recall.ts's header argues where the lines go and why they are lines. Both
+// corpora write the same `recall_hit` word and separate on `kind`, because the
+// question the lines exist to answer is how the two distributions compare.
+//
+// Two things differ here, and both are about the fusion rather than about the
+// numbers. **A skill's disposition is not its rank's to decide**: the interleave
+// takes `topK` names off two lists, so a vector hit can be outranked out of the
+// block by the lexical leg entirely — `dropped_rank`, which says nothing about
+// how near it was. And the lexical leg's own hits are absent from these lines,
+// because they carry no distance; `searchSkills` answers rank order and
+// `store-db.ts` is explicit that bm25 is deliberately not exposed. So these
+// lines describe the vector leg, and a skill that reached the model on words
+// alone appears in `skills_loaded`'s count and nowhere here.
+//
+// **The hit carries no identity, where a summary's does.** A summary's ref is a
+// thread ts, which is Slack's id and ours to log; a skill's ref is its name,
+// which is the team's own words — the one model-authored identifier in the
+// index, and the reason this file already declines to name a skill on its
+// `skill_oversize` line. So the skill distribution can be read for its shape,
+// for whether the two legs agree, and for a relative cutoff, but a human cannot
+// label a particular hit relevant from the line alone. That is a real limit on
+// what #283 can conclude from this corpus, and it is stated rather than fixed:
+// fixing it means putting a name a model chose into a log line, which is a
+// larger decision than a cutoff.
+//
 // ## A missing vector does not end this, and that is where skills differ
 //
 // ./recall.ts stops dead without one, because a thread summary's only index is
@@ -103,7 +131,7 @@
 // not exist yet, against clocks that nothing is running. When #294 lands it
 // changes this file, deliberately.
 
-import type { Logger } from "@getlibero/gateway";
+import type { LogFields, Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore, SkillFiles } from "@getlibero/memory";
 import { reconcileSkillIndex } from "@getlibero/memory";
@@ -236,23 +264,41 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
       // most `topK` names in total, so over-fetching either side would buy
       // nothing but rows to discard — and `nearest` spends `k` inside the vec0
       // match, which is the cost #290 went to some trouble to keep exact.
-      const byVector =
-        request.vector === null
-          ? []
-          : store.nearest(request.vector, topK, "skill").map(hit => hit.source.ref);
+      const vectorHits =
+        request.vector === null ? [] : store.nearest(request.vector, topK, "skill");
+      const byVector = vectorHits.map(hit => hit.source.ref);
       const byText = store.searchSkills(query, topK);
 
       const loaded: LoadedSkill[] = [];
       let chars = 0;
+      // What the loop decided about each fused candidate, read back afterwards
+      // to say what became of each vector hit (#427). A map rather than a line
+      // written inside the loop, because the loop runs over the *fused* list: a
+      // candidate the lexical leg supplied has no distance to record, and a
+      // vector hit the fusion never reached is never visited at all.
+      const decided = new Map<string, NonNullable<LogFields["disposition"]>>();
+      // ./recall.ts's flag, for its reason: the `break` this replaced ended the
+      // loop, so the candidates behind it went unrecorded. Nothing after the
+      // first refusal loads either way.
+      let full = false;
 
       for (const name of interleaveCandidates(byVector, byText, topK)) {
+        // Before the file is read, so a full block costs no further reads.
+        if (full) {
+          decided.set(name, "dropped_chars");
+          continue;
+        }
+
         // Resolved through the file, one at a time, and `null` is a real answer
         // — the index holds no text a caller reads, by #290's decision, exactly
         // so that a hand-deleted skill's stale body cannot reach a model. A
         // candidate whose file is gone or no longer parses is skipped, which is
         // what recall already does for an invalidated summary.
         const skill = files.read(name);
-        if (skill === null) continue;
+        if (skill === null) {
+          decided.set(name, "unresolved");
+          continue;
+        }
 
         // The channel's own per-skill cap. `packages/memory` declined to take
         // this figure on the grounds that refusing an over-cap file "is the
@@ -270,6 +316,7 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         // one `wc -c` away in a directory they own.
         if (skill.body.length > maxSkillChars) {
           logger.log("warn", { event: "skill_oversize", channel, reason: "max_skill_chars" });
+          decided.set(name, "oversize");
           continue;
         }
 
@@ -278,13 +325,33 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         // what a bound sheds should be the weakest match. Description and body
         // both count, because both are rendered.
         const cost = skill.frontmatter.description.length + skill.body.length;
-        if (chars + cost > SKILLS_MAX_CHARS) break;
+        if (chars + cost > SKILLS_MAX_CHARS) {
+          full = true;
+          decided.set(name, "dropped_chars");
+          continue;
+        }
         chars += cost;
 
         loaded.push({
           name,
           description: skill.frontmatter.description,
           body: skill.body
+        });
+        decided.set(name, "loaded");
+      }
+
+      // Unconditional, and deliberately not folded into the block below: a run
+      // that loaded nothing is exactly the run whose distances say why.
+      for (const [index, hit] of vectorHits.entries()) {
+        logger.log("info", {
+          event: "recall_hit",
+          channel,
+          kind: "skill",
+          rank: index + 1,
+          distance: hit.distance,
+          // No entry means the interleave never took the name — `topK` was
+          // filled by better-placed candidates, most of them the lexical leg's.
+          disposition: decided.get(hit.source.ref) ?? "dropped_rank"
         });
       }
 

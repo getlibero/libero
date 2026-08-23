@@ -61,8 +61,46 @@
 // `RECALL_LIMIT` and `RECALL_MAX_CHARS` are what bound it, and they are
 // deliberately small — the transcript and `MEMORY.md` are competing for the same
 // context, and recall earning its place means displacing something.
+//
+// ## Where the distances go, which is #427's actual question
+//
+// **A log line per hit, and not a table.** `nearest` answers a distance and
+// this file used to drop it, so a deployment could run for a year and produce
+// nothing #283 could decide a cutoff from. Recording it is the precondition;
+// where it is recorded was the choice, and the alternatives lost on the same
+// line #96 and #97 drew.
+//
+// A queryable store is what an analysis wants, and the question is
+// cross-channel — which distances separate a relevant hit from an irrelevant
+// one, over a whole deployment — so the per-channel store is the wrong home for
+// it by this repository's own isolation rule. What is left is a new
+// cross-channel table, and the two that exist are the budget meter's and the
+// audit log's, both in the tool proxy service, both durable operator surfaces
+// with commands over them. This is neither: it is instrumentation for a
+// measurement somebody runs once and then deletes the code path for, and
+// standing up a database on the agent side for it would leave behind a surface
+// nobody owns after the number is known.
+//
+// So it is stdout, with the honest cost stated: "we will grep it out of the
+// logs later" is a sentence that has meant "we never did" before. What makes it
+// defensible here is that the line is written to be gettable — one JSON object
+// per hit, a `distance`, a `rank`, a `kind`, and a `disposition` — rather than
+// a number smuggled into prose. If it turns out an analysis wants more than
+// `jq` over a collector's export, that is the point at which a table is worth
+// arguing for, against a distribution somebody has actually looked at.
+//
+// **Every hit, including the ones that never reached the model.** A hit that
+// was near and got cut by `RECALL_MAX_CHARS` and a hit that was simply far are
+// different cases, and a distribution that collapses them answers neither
+// question — which is why the loop below records the far end of the answer
+// instead of leaving the moment it stops loading.
+//
+// **Never the text**, which is the rule the `recalled` line already keeps and
+// this does not relax. A thread ts is an id and says which conversation was
+// matched; a distance is a measurement and is not invertible into what was
+// said. The summaries themselves stay where they belong.
 
-import type { Logger } from "@getlibero/gateway";
+import type { LogFields, Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
 
@@ -111,6 +149,13 @@ export const RECALL_MAX_CHARS = 6_000;
 // than asserting they do. A measured cutoff is the obvious next tuning knob once
 // there are real embeddings and someone can look at the distances; a guessed one
 // today would be a magic number nobody could defend.
+//
+// Since #427 the distances are recorded, so "someone can look at them" is a
+// grep rather than a change to this file. The cutoff is still absent and still
+// #283's to decide — what changed is that the decision now has somewhere to
+// come from. The test pinning this behaviour stays as it was, deliberately:
+// nothing here filters, and adding one later should read as a change to a
+// stated decision.
 
 /** One summary that came back, and what it was. */
 export interface RecalledSummary {
@@ -175,23 +220,63 @@ export function createRecall(options: RecallOptions): Recall {
       const hits = request.store.nearest(vector, RECALL_LIMIT, "summary");
       const recalled: RecalledSummary[] = [];
       let chars = 0;
+      // Set by the first hit the character budget refuses, and never unset. It
+      // replaces what used to be a `break` and preserves that behaviour exactly:
+      // nothing after the refusal joins the block, including a later summary
+      // short enough to have fit. What it buys is the rest of the answer's
+      // distances, which #427 needs and a `break` would have thrown away.
+      let full = false;
 
-      for (const hit of hits) {
+      for (const [index, hit] of hits.entries()) {
+        const rank = index + 1;
+        // One line per hit, whatever became of it — see the header. `kind` is a
+        // constant here and a variable to whoever reads the lines: ./skill-recall.ts
+        // writes the same word for its own vector leg.
+        const record = (disposition: NonNullable<LogFields["disposition"]>): void => {
+          logger.log("info", {
+            event: "recall_hit",
+            channel: request.channel,
+            kind: "summary",
+            // A summary's `ref` is the thread it covers. An id, so it says which
+            // conversation was matched and nothing about what was said in it —
+            // and the one thing that lets a human reading the distribution judge
+            // a hit relevant or not, which is the whole measurement.
+            threadTs: hit.source.ref,
+            rank,
+            distance: hit.distance,
+            disposition
+          });
+        };
+
+        // Checked before the summary is read, so a full block costs no further
+        // store reads — the `break` this replaced did not make them either.
+        if (full) {
+          record("dropped_chars");
+          continue;
+        }
 
         // Resolved one at a time, and `null` is a real answer: a vector outlives
         // its summary for as long as it takes a trigger to fire, so a hit whose
         // summary was invalidated between the two is skipped rather than fatal.
         const summary = request.store.readThreadSummary(hit.source.ref);
-        if (summary === null || summary.text === "") continue;
+        if (summary === null || summary.text === "") {
+          record("unresolved");
+          continue;
+        }
 
         // Dropped from the far end, which is the *least* similar — the opposite
         // of `assembleContext`, which drops the oldest. Here the ordering is
         // relevance and not time, so what a bound should shed is the weakest
         // match rather than the earliest one.
-        if (chars + summary.text.length > RECALL_MAX_CHARS) break;
+        if (chars + summary.text.length > RECALL_MAX_CHARS) {
+          full = true;
+          record("dropped_chars");
+          continue;
+        }
         chars += summary.text.length;
 
         recalled.push({ thread: summary.thread, shape: summary.shape, text: summary.text });
+        record("loaded");
       }
 
       if (recalled.length > 0) {
