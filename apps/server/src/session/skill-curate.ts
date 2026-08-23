@@ -248,7 +248,7 @@ export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCur
     if (waiting >= MAX_OPEN_PROPOSALS) {
       // An `info` line rather than silence, so an operator asking why a channel
       // stopped proposing gets an answer without reading this file.
-      logger.log("info", { event: "skill_merge_backlog", channel, totalTokens: waiting });
+      logger.log("info", { event: "skill_merge_backlog", channel, count: waiting });
       return 0;
     }
 
@@ -319,7 +319,7 @@ export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCur
     }
 
     if (pruned > 0) {
-      logger.log("info", { event: "skill_merge_pruned", channel, totalTokens: pruned });
+      logger.log("info", { event: "skill_merge_pruned", channel, count: pruned });
     }
   }
 

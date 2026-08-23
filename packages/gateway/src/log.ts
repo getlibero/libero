@@ -276,12 +276,21 @@ export interface LogFields {
    * Tokens the provider reported for a task, summed across its turns. A count,
    * not content.
    *
-   * Carried on three lines, and it means a *task* on one of them and a *turn*
+   * Carried on three lines and nowhere else — `task`, `spend_reported`,
+   * `spend_report_failed` — and it means a *task* on one of them and a *turn*
    * on the other two. On `task` it is the whole task, summed. On
    * `spend_reported` and `spend_report_failed` it is the one turn that line is
    * about, because spend is reported per turn. A task whose reports do not add
    * up to its `task` line is a meter that missed something, which is the shape
    * an operator greps for when a channel's budget stops adding up.
+   *
+   * **Not the general count field** — that is `count` below, and reaching for
+   * this one because a line needed a number is what #429 fixed. It had spread
+   * to nine event words, six of which counted summaries, skills, proposals and
+   * embeddings, and every one of those was a term in the sum above: the
+   * discrepancy that means "the meter missed something" and the one that means
+   * "a sweep embedded eleven things" had become the same number in the same
+   * field. The rule that follows is `count`'s.
    */
   totalTokens?: number;
   /**
@@ -301,6 +310,34 @@ export interface LogFields {
    * back in order and a missing one is visible as a gap.
    */
   turns?: number;
+  /**
+   * How many of the thing the `event` word names (#429).
+   *
+   * Summaries recalled, skills loaded, proposals waiting or pruned, skills
+   * adopted or moved between statuses, embeddings stored. One field for nine
+   * meanings, as the tool proxy service's own logger has one for its listings,
+   * because six named fields would be six ways of writing the same declaration
+   * and the reader needs the `event` word to make sense of the line regardless.
+   *
+   * **The line between this and a named field is whether summing across events
+   * is meaningful.** `totalTokens`, `ops` and `dispatches` each mean one thing
+   * everywhere they appear, so an operator can grep the field and add the values
+   * up — which for `totalTokens` is the entire point of it. `count` means
+   * something different on every line, so nothing sums it and a reader has to
+   * say which event they are asking about. A number that would be wrong to add
+   * to the number on the line above it belongs here; a number that would be
+   * right to add belongs in a field of its own.
+   *
+   * `turns` is the field that field-tests the rule: it is a count on `task` and
+   * an ordinal on the two spend lines, so it sums on one line and not the other
+   * two. It stays named because both meanings are turns and its own doc says
+   * which is which — but a second field wanting that shape should be two.
+   *
+   * A count and never the content, which is the part that was always right:
+   * a summary is a channel's conversation distilled, a playbook's name is the
+   * team's own words, and neither goes in a log line.
+   */
+  count?: number;
   /**
    * How many memory operations a curation turn asked for (#227).
    *

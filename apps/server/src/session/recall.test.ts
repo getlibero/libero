@@ -213,7 +213,10 @@ describe("createRecall", () => {
     await recall(ask("how do we roll a new key for a channel"));
 
     const recalled = lines.find(line => line.event === "recalled");
-    expect(recalled?.totalTokens).toBe(1);
+    expect(recalled?.count).toBe(1);
+    // Through `count` and not `totalTokens` (#429): summaries recalled were a
+    // term in the sum an operator does over the spend field.
+    expect(recalled).not.toHaveProperty("totalTokens");
     expect(JSON.stringify(lines)).not.toContain("--promote");
   });
 

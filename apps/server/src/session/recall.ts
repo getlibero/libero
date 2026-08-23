@@ -200,7 +200,7 @@ export function createRecall(options: RecallOptions): Recall {
           channel: request.channel,
           // A count, never the summaries: those are a channel's conversation
           // distilled, and a log line is not where they go.
-          totalTokens: recalled.length
+          count: recalled.length
         });
       }
       return recalled;
