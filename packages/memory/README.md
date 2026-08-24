@@ -864,18 +864,36 @@ storage the passes above them use: the lifecycle job's file writer and clock rea
 considered-pair table (#295). Both *jobs* live in `apps/server`, because their
 thresholds and intervals are a team sheet's and this package holds no sheet.
 
-`reconcileSkillIndex` has two callers, both in `apps/server` and both inside the
+`reconcileSkillIndex` has four callers, all in `apps/server` and all inside the
 session's lock. `session/skill-recall.ts` runs it at the head of a task, which is
 where it belongs: the moment correctness is required is the moment retrieval
-runs, and outside the lock the pass would race the quiescence sweep's writes and,
-once #291 lands, the previous task's authoring. `session/skill-embed.ts` runs it
-on channel activity as the first half of the embedding pass (#305), and has to:
-this table is what says which skills have no vector standing for them, so a pass
-that only read it could embed nothing a task had not already indexed — a skill
-somebody wrote with an editor would wait for a mention before it could even
-become a candidate. Two callers of one function rather than two paths, and the
-rule above is unaffected: `reconcileSkills` is still the only writer, and neither
-caller writes a file. The fusion itself —
+runs, and outside the lock the pass would race the quiescence sweep's writes and
+the previous task's authoring (#291). `session/skill-embed.ts` runs it on channel
+activity as the first half of the embedding pass (#305), and has to: this table
+is what says which skills have no vector standing for them, so a pass that only
+read it could embed nothing a task had not already indexed — a skill somebody
+wrote with an editor would wait for a mention before it could even become a
+candidate. `session/skill-lifecycle.ts` runs it before reading the clocks (#294),
+because the clocks compare against the status the *file* carried at the last
+reconciliation, and again after its writes — that second one is a window
+shortened rather than a correctness requirement, since recall reconciles at the
+head of the next task either way. `session/skill-curate.ts` runs it before
+nominating (#295), because the index holds both the pair and the description
+hashes the bound is decided on.
+
+Four callers of one function rather than four paths, and the rule above is
+unaffected: `reconcileSkills` is still the only writer, and no caller writes a
+file.
+
+`reconcileSharedSkillIndex` has **none** yet, and neither does
+`openSharedSkillFiles`: #434 built the storage half of shared skills ahead of the
+passes that use it, which is #435 and #436's work. Until they land, the shared
+half of every index is empty and a `[[shared_skill]]` entry in a sheet parses and
+reaches nothing. That is the same shape `skillsNeedingEmbedding` was in before
+#305 and is stated here for the same reason: a method with no caller is a fact
+about the tree, not a gap somebody should fill by inventing one.
+
+The fusion itself —
 a round-robin interleave over the two rank lists, on the argument that an L2
 distance and an FTS5 rank are not comparable — is over there rather than here,
 with the bounds it applies. See `apps/server/README.md`.
