@@ -61,6 +61,22 @@ services:
       # than on the proxy because the proxy mounts it read-only and a cancel is a
       # write.
       AGENT_STORE_ROOT: /data/store
+      # The operator's shared skills: one <name>.md per skill, read by every
+      # channel whose team sheet names it in a [[shared_skill]] entry (#373).
+      #
+      # A THIRD root, and separate from both of the above for two different
+      # reasons. Not the channels root, because that is where the proxy reads
+      # its authorization. Not the store root either, and that is the one worth
+      # reading twice: the store root is the one directory this service writes,
+      # and a shared skill kept under it would be a file a compromised agent
+      # could rewrite. A channel-authored skill it poisoned would poison one
+      # channel's future tasks; a shared skill is read by every channel that
+      # names it, so one writable file would poison all of them at once.
+      #
+      # Hence :ro below, and hence a bind mount from the host beside ../channels
+      # rather than a named volume: what goes in here is authored by you, in
+      # git, the way a team sheet is.
+      AGENT_SHARED_SKILLS_ROOT: /data/shared-skills
       # LLM provider keys go HERE (completion only) — never tool credentials.
       # Each provider's own conventional variable: the one matching
       # AGENT_PROVIDER is required, the other is ignored. The base URLs are
@@ -87,6 +103,12 @@ services:
       # The one writable mount this service has, and it is deliberately not the
       # one above. See AGENT_STORE_ROOT.
       - store-data:/data/store
+      # Read-only, and the reason is AGENT_SHARED_SKILLS_ROOT's rather than the
+      # channels mount's. Empty is a supported state: a deployment that publishes
+      # no shared skills mounts an empty directory and every channel's own skills
+      # work exactly as before. The proxy does not mount this at all — a shared
+      # skill is text for the model, not authorization.
+      - ../shared-skills:/data/shared-skills:ro
       # The trust anchor and the channel client certs — not ./certs whole. The
       # server key would let a compromised agent impersonate the proxy, and the
       # CA key would let it mint an identity for any channel.

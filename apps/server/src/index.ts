@@ -39,6 +39,7 @@ import {
   embeddingConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
+  sharedSkillsRootFromEnv,
   slackTokensFromEnv,
   storeRootFromEnv
 } from "./env.js";
@@ -67,6 +68,21 @@ const channelsRoot = channelsRootFromEnv(process.env);
 // A different root from the sheets, on purpose: this one is written to, and the
 // sheets directory is the tool proxy's authorization source. See env.ts.
 const storeRoot = storeRootFromEnv(process.env);
+// The third root (#433), read-only and optional. Not the channels root the proxy
+// reads authorization from, and not the store root this process writes — see
+// env.ts for why the second of those is a security decision and not filing.
+//
+// `null` is a supported deployment: every channel's own skills work exactly as
+// before and there is no shared half. It says which it got here, once, for
+// `embeddings_unconfigured`'s reason — the alternative is an operator who has
+// written `[[shared_skill]]` into a sheet discovering from a feature quietly
+// doing nothing that the root was never mounted.
+const sharedSkillsRoot = sharedSkillsRootFromEnv(process.env);
+if (sharedSkillsRoot === null) {
+  logger.log("info", { event: "shared_skills_unconfigured", reason: "shared_skills_root_unset" });
+} else {
+  logger.log("info", { event: "shared_skills_ready", file: sharedSkillsRoot });
+}
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
 // Optional, and its absence is a supported deployment rather than a failure:
 // memory Layers 1 and 2 are whole without embeddings, so a process with no

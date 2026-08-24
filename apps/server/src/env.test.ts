@@ -7,6 +7,7 @@ import {
   modelFromEnv,
   proxyConfigFromEnv,
   requiredEnv,
+  sharedSkillsRootFromEnv,
   slackTokensFromEnv,
   storeRootFromEnv
 } from "./env.js";
@@ -103,6 +104,45 @@ describe("storeRootFromEnv", () => {
 
   it("reads nothing from disk", () => {
     expect(storeRootFromEnv({ AGENT_STORE_ROOT: "/nowhere/at/all" })).toBe("/nowhere/at/all");
+  });
+});
+
+describe("sharedSkillsRootFromEnv", () => {
+  it("returns the root as given", () => {
+    expect(sharedSkillsRootFromEnv({ AGENT_SHARED_SKILLS_ROOT: "/data/shared-skills" })).toBe(
+      "/data/shared-skills"
+    );
+  });
+
+  // The second optional variable in this file, and the same test decides it as
+  // decides the embedding provider: a deployment that publishes no shared skills
+  // still answers every mention exactly as before.
+  it("answers null when unset, rather than throwing or defaulting", () => {
+    expect(sharedSkillsRootFromEnv({})).toBeNull();
+  });
+
+  it("reads a blanked-out line as unset", () => {
+    // A commented-out feature in an env file is usually a blanked value rather
+    // than a deleted line, and an empty string is not a path.
+    expect(sharedSkillsRootFromEnv({ AGENT_SHARED_SKILLS_ROOT: "" })).toBeNull();
+  });
+
+  it("is a third variable, separate from both other roots", () => {
+    // The security decision in the smallest form it can be asserted in. One
+    // variable serving this and the store root would put a file every channel
+    // reads inside the one directory the agent writes.
+    const env = {
+      AGENT_CHANNELS_ROOT: "/data/channels",
+      AGENT_STORE_ROOT: "/data/store",
+      AGENT_SHARED_SKILLS_ROOT: "/data/shared-skills"
+    };
+
+    expect(sharedSkillsRootFromEnv(env)).not.toBe(storeRootFromEnv(env));
+    expect(sharedSkillsRootFromEnv(env)).not.toBe(channelsRootFromEnv(env));
+  });
+
+  it("does not fall back to the store root when unset", () => {
+    expect(sharedSkillsRootFromEnv({ AGENT_STORE_ROOT: "/data/store" })).toBeNull();
   });
 });
 
