@@ -80,13 +80,28 @@ A daemon each is what lets both run at once.
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
-last one, so delivery is no longer phase-gated: `v0.3.0` — the release that made
-releases real (#313, #377, #378) — shipped in August 2026, and work is now
-milestone-gated on `v0.4.0`, code execution governed: the sandbox built-in
-(#368 is the tracker), `[egress]`'s first live caller (#219), and the
-correctness items milestoned beside them. There is no phase 6, and inventing
-one to hold ordinary work would be the wrong move; the roadmap's phase list is
-complete rather than paused.
+last one, so delivery is no longer phase-gated, and two releases have shipped
+since: `v0.3.0`, the release that made releases real (#313, #377, #378), and
+`v0.4.0`, code execution governed — the sandbox built-in (#368 is the tracker),
+`[egress]`'s first live caller (#219), and a third service holding the Docker
+socket and no credential at all (#393). Both were August 2026. There is no
+phase 6, and inventing one to hold ordinary work would be the wrong move; the
+roadmap's phase list is complete rather than paused.
+
+Work is now milestone-gated on **`v0.5.0`, shared skills** (#373 is the
+tracker): an operator publishes skills that a channel's team sheet names by
+reference, `load = "always"` for voice and house rules and `load = "retrieved"`
+to join the channel's retrieval pool, with the content in a third root mounted
+read-only to the agent and never in the agent-writable state root. Shared
+skills do not age, the lifecycle job and the merge curator never touch them,
+and the model has no install verb. A marketplace *mechanism* was declined
+rather than deferred — the tracker says why, and it is the kind of decision
+worth reading before re-proposing one.
+
+`v0.4.0` closed with three of its correctness items **moved out rather than
+delivered** (#239, #283, #284), each gated on data or a deployment shape that
+does not exist yet. The roadmap records that rather than ticking a box against
+it; what matters here is that they are parked and pickable rather than lost.
 
 Phase 5 was two workstreams and both are closed. #352 hash-chained the audit
 log (#354), gave an operator a walk over it (#355), and attacked it in the suite
@@ -109,9 +124,9 @@ The roadmap records that difference. It is worth knowing here because the same
 false premise is the obvious thing to re-derive: OAuth is a reason **not** to
 evict, and what made eviction necessary was #150's session state plus key drift.
 
-It was first written as "breadth"; the roadmap records why Discord and Temporal
-were dropped rather than deferred, and advanced scheduling is parked as #358
-beside #348.
+Phase 5 was first written as "breadth"; the roadmap records why Discord and
+Temporal were dropped rather than deferred, and advanced scheduling is parked
+as #358 beside #348.
 
 What exists:
 
