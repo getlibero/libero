@@ -218,6 +218,21 @@ import type { Logger } from "./log.js";
  * the same way a change to what a row holds needs a new column to land with its
  * table. See `skill_merge_proposal`'s comment for the case that surfaced it.
  *
+ * **#434 added a column to `skill` and this number did not move either**, and it
+ * is the first change here that was not additive DDL, so it is worth saying what
+ * was measured. `skill.origin` is a column, which the paragraph above lists as
+ * the kind of change that *does* move this number — but the rule is what a reader
+ * depends on, and the proxy's reader names no skill table, exactly as at #290. So
+ * the measurement came out where the other three did.
+ *
+ * What made it different is the sentence in the paragraph above about a changed
+ * trigger body: a column added later does not land either, because
+ * `CREATE TABLE IF NOT EXISTS` no-ops. That is answered by `migrateSkillOrigin`
+ * below — one guarded `ALTER TABLE`, on the writer's open path only, on a table
+ * that is a cache of files. Read it before concluding that this module now has a
+ * migration path, because it is scoped tightly enough that the next column
+ * elsewhere still does not.
+ *
  * The next change here probably does move it. Anything that alters what
  * `nearest` means — a second vec table, a distance metric that is not L2, a
  * dimension no longer fixed per file — is a reader depending on it. Whoever
@@ -532,7 +547,27 @@ END;
 --
 -- No CHECK pinning \`status\`, for \`thread_summary.shape\`'s reason: the set lives
 -- in the schema package where widening it is a type change rather than a
--- migration.
+-- migration. \`origin\` has no CHECK for the same reason.
+--
+-- \`origin\` says which half of the library a row came from (#434): \`channel\` for a
+-- skill this channel's own tasks authored under \`skills/\`, \`shared\` for one an
+-- operator published into the read-only shared root and this channel's team sheet
+-- named. It is a *fact about the row* rather than something derived from
+-- \`name\` — a shared row's name is already the qualified address
+-- \`shared/<name>\`, and \`packages/schema\`'s \`sharedSkillRef\` header is explicit
+-- that the column is the fact and the prefix is how it is addressed.
+--
+-- What it is load-bearing for is the two passes whose whole job is pruning
+-- machine-authored skills. \`skillClocks\` and \`skillMergeCandidate\` below are
+-- scoped to \`channel\`, so the lifecycle job cannot age an operator's file and the
+-- merge curator cannot nominate one — structurally, rather than by a filter
+-- \`apps/server\` has to remember to apply. Reconciliation is scoped to it too, and
+-- that one is not a nicety: it deletes every row not in \`present\`, so an unscoped
+-- channel pass would drop the shared half of the index four times a task.
+--
+-- **This column arrived after the table did, and it is the one thing in this
+-- module that repairs a file** — see \`migrateSkillOrigin\` below for what that
+-- cost and why the version did not move.
 CREATE TABLE IF NOT EXISTS skill (
   id               INTEGER PRIMARY KEY,
   name             TEXT NOT NULL UNIQUE,
@@ -543,7 +578,8 @@ CREATE TABLE IF NOT EXISTS skill (
   mtime_ms         INTEGER NOT NULL,
   size             INTEGER NOT NULL,
   ino              INTEGER NOT NULL,
-  description_hash TEXT NOT NULL
+  description_hash TEXT NOT NULL,
+  origin           TEXT NOT NULL DEFAULT 'channel'
 );
 
 -- External content over \`skill\`, indexing both columns a query might match:
@@ -598,7 +634,16 @@ END;
 -- method with no caller was not written" rule**, because \`db.exec(SCHEMA)\`
 -- no-ops on a table that already exists, so a column added later is one every
 -- statement naming it throws \`no such column\` on, at open, for every store
--- already on disk, and this module has no migration.
+-- already on disk.
+--
+-- #434 is the exception to the exception and does not retire the rule. It needed
+-- a column on \`skill\` after the fact and paid for one with
+-- \`migrateSkillOrigin\` — a guarded \`ALTER TABLE\` on the writer's open path,
+-- which is available *there* because \`skill\` is a cache of files and a default
+-- can therefore not be wrong about any row. It is not available here: these
+-- columns are the index's own observations, and no default backfills a clock
+-- nobody recorded. So landing a column ahead of its reader is still the cheap
+-- move and still the one to make.
 --
 -- What each holds, precisely, because the two are easy to collapse:
 --
@@ -1302,8 +1347,14 @@ export interface MessageStore {
    * Metadata and never text, for `StaleThread`'s reason and one sharper: the
    * file is the source of truth, so a caller that could render a skill from this
    * table would be a caller rendering whatever the index last saw.
+   *
+   * **`origin` is required and there is no listing of both halves** (#434). Every
+   * caller is diffing one directory against the rows that directory owns, and an
+   * answer spanning both would be one whose only correct use is to filter it —
+   * which is the shape that lets a caller forget to, at the cost of a channel's
+   * reconciliation deleting an operator's rows.
    */
-  listSkills(): readonly StoredSkill[];
+  listSkills(origin: SkillOrigin): readonly StoredSkill[];
   /**
    * Makes the index match the directory, and **it is the only thing that writes
    * the skill tables.**
@@ -1321,11 +1372,15 @@ export interface MessageStore {
    *
    * Three things happen, and the third is the one worth reading twice.
    *
-   *   - Every entry in `changed` is upserted. An UPDATE rather than a
-   *     delete-and-insert, so `skill_use` is untouched and a body edit does not
-   *     reset a skill's counters.
-   *   - Every row whose name is not in `present` is deleted, and the trigger
-   *     takes its vector and its observations with it.
+   *   - Every entry in `changed` is upserted, carrying the state's `origin`. An
+   *     UPDATE rather than a delete-and-insert, so `skill_use` is untouched and a
+   *     body edit does not reset a skill's counters.
+   *   - Every row **of that origin** whose name is not in `present` is deleted,
+   *     and the trigger takes its vector and its observations with it. One pass
+   *     is one half of the library: a channel's reconciliation runs four times a
+   *     task and knows nothing of the shared root, so an unscoped delete here
+   *     would take the shared rows away on the first of them and the shared pass
+   *     would put them back on the next, forever.
    *   - **A skill whose description changed has its vector invalidated**, and so
    *     does one that is now archived. Invalidate rather than regenerate —
    *     `thread_summary_stale_update`'s rule, for its reason: regenerating needs
@@ -1646,14 +1701,36 @@ export interface SkillFingerprint {
 }
 
 /**
+ * Which half of the library a skill came from (#434).
+ *
+ * `channel` is one this channel's own tasks authored under its `skills/`
+ * directory; `shared` is one an operator published into the shared root and this
+ * channel's team sheet named. The difference the index cares about is **who may
+ * write the file**, which is what makes the lifecycle job and the merge curator
+ * wrong about the second kind: both act by rewriting a skill, and the shared root
+ * is mounted read-only.
+ *
+ * A union rather than a zod enum, and it stays in this package rather than moving
+ * to `@getlibero/schema`, because it is a fact about a row in this index and not
+ * a shape the two services agree on over a wire. What *is* in the schema package
+ * is `sharedSkillRef`, which spells the name such a row is keyed under.
+ */
+export type SkillOrigin = "channel" | "shared";
+
+/**
  * A skill as the index knows it — metadata only, never its text.
  *
  * What `listSkills` answers, and deliberately not enough to render a skill with:
  * `StaleThread`'s rule, and here it is also what keeps a stale index harmless.
+ *
+ * `origin` is carried even though `listSkills` is asked for one half at a time,
+ * because a caller holding a row and a caller holding the argument it passed are
+ * different callers as soon as the row is put anywhere.
  */
 export interface StoredSkill extends SkillFingerprint {
   readonly created: string;
   readonly status: SkillStatus;
+  readonly origin: SkillOrigin;
 }
 
 /**
@@ -1728,10 +1805,15 @@ export interface SkillEntry extends SkillFingerprint {
  * on any readdir failure that is not `ENOENT`, so this can never be the answer to
  * a directory that could not be read. That matters here more than there: this is
  * the value the index is deleted against.
+ *
+ * `origin` says which half of the library this pass is about, and it bounds both
+ * halves of what the pass does: rows are written with it, and rows are deleted
+ * only within it. A pass carries one, because a pass reads one directory.
  */
 export interface SkillReconciliation {
   readonly present: readonly string[];
   readonly changed: readonly SkillEntry[];
+  readonly origin: SkillOrigin;
 }
 
 /** What one reconciliation did, for the caller's log. */
@@ -2050,13 +2132,30 @@ const NEAREST_OF_KIND_SQL = `SELECT s.source_kind, s.source_ref, hit.distance
  * *derived* rather than flagged. A dirty bit would be a second fact to keep in
  * step with the first.
  */
-const LIST_SKILLS_SQL = `SELECT name, created, status, mtime_ms, size, ino
+/**
+ * One half of the library, never both.
+ *
+ * The origin is a parameter rather than a column in the result because both
+ * callers of `listSkills` are asking about one half: reconciliation diffs a
+ * directory against the rows that directory owns, and the delete pass inside
+ * `reconcileSkills` walks the same set. A listing of everything would be a shape
+ * whose only safe use is to filter it, which is the shape that lets a caller
+ * forget to.
+ */
+const LIST_SKILLS_SQL = `SELECT name, created, status, mtime_ms, size, ino, origin
      FROM skill
+    WHERE origin = ?
     ORDER BY name`;
 
+/**
+ * `origin` is written on insert and deliberately absent from the update clause: a
+ * row never changes sides. The two halves are keyed apart — a shared skill is
+ * indexed under `sharedSkillRef`'s `shared/<name>`, which no `SkillName` can
+ * spell — so a conflict here is always a row meeting its own file again.
+ */
 const UPSERT_SKILL_SQL = `INSERT INTO skill
-       (name, description, body, created, status, mtime_ms, size, ino, description_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (name, description, body, created, status, mtime_ms, size, ino, description_hash, origin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (name) DO UPDATE SET
          description      = excluded.description,
          body             = excluded.body,
@@ -2124,6 +2223,18 @@ const SKILLS_NEEDING_EMBEDDING_SQL = `SELECT s.name
  *
  * Ordered by name for `LIST_SKILLS_SQL`'s reason: a caller that bounds its writes
  * takes a deterministic prefix rather than whatever the query planner returned.
+ *
+ * **`origin = 'channel'`, so a shared skill has no clock here at all** (#434).
+ * The job exists because machine-authored skills accumulate unattended; an
+ * operator's file is decreed and stays until the sheet or the file drops it, and
+ * the job has nothing to say about it. Scoped in the query rather than filtered
+ * by the job, because the job's next act on what it reads is `setStatus`, which
+ * would be a write into a root mounted read-only — a filter somebody has to
+ * remember is the wrong shape for a rule whose failure is an exception from the
+ * filesystem.
+ *
+ * A shared skill still accumulates `skill_use` rows: uses are recorded and no
+ * clock reads them, which is #373's wording exactly.
  */
 /**
  * `SKILLS_NEEDING_EMBEDDING_SQL` over the other corpus (#282), with one clause
@@ -2150,6 +2261,7 @@ const SKILL_CLOCKS_SQL = `SELECT s.name, s.status, u.first_seen_at, u.last_used_
                                  u.status_by_job, u.status_by_job_at
      FROM skill s
      JOIN skill_use u ON u.name = s.name
+    WHERE s.origin = 'channel'
     ORDER BY s.name`;
 
 /**
@@ -2213,11 +2325,23 @@ const RECORD_SKILL_STATUS_SQL = `UPDATE skill_use
  *
  * ## The shape
  *
- * `live` is the skills that both have a vector and are not archived. An archived
- * skill has no vector anyway, because reconciliation drops one the moment a
- * status reaches `archived`, but the status join is written rather than relied on
- * for `SEARCH_SKILLS_SQL`'s stated reason: a rule applied by its callers is a
- * rule one of them forgets.
+ * `live` is the channel's own skills that both have a vector and are not
+ * archived. An archived skill has no vector anyway, because reconciliation drops
+ * one the moment a status reaches `archived`, but the status join is written
+ * rather than relied on for `SEARCH_SKILLS_SQL`'s stated reason: a rule applied
+ * by its callers is a rule one of them forgets.
+ *
+ * **`origin = 'channel'` is in `live` rather than in the final SELECT**, and the
+ * difference is not cosmetic (#434). A proposal naming a shared skill would be a
+ * draft to rewrite a file in a read-only root, so it has to be unreachable — but
+ * excluding it at the end would leave it in `pair` and in `ranked`, where it can
+ * still be some channel skill's `rn = 1` and take the slot its real nearest
+ * neighbour would have had. A shared skill must not be anybody's nearest
+ * neighbour, which is a statement about the candidate set and belongs where the
+ * candidate set is built.
+ *
+ * That is also the whole of "the merge curator excludes them entirely": nothing
+ * in `apps/server` filters, because nothing it can call returns one.
  *
  * `vec_distance_l2` is a scalar function over the vec0 column rather than a MATCH,
  * so the whole comparison happens in one statement and **no vector crosses into
@@ -2241,6 +2365,7 @@ WITH live AS (
     JOIN skill s ON s.name = e.source_ref
    WHERE e.source_kind = 'skill'
      AND s.status != 'archived'
+     AND s.origin = 'channel'
 ),
 pair AS (
   SELECT la.name AS a, lb.name AS b,
@@ -2485,6 +2610,52 @@ export function loadVec(db: Pick<DatabaseSync, "loadExtension">, file: string): 
  * A file with no row is either brand new or one this build just created, and
  * both are ours to stamp. A row we do not recognise is not.
  */
+/**
+ * The one repair this module runs, and the whole of it.
+ *
+ * `db.exec(SCHEMA)` is `CREATE TABLE IF NOT EXISTS` throughout, so it no-ops
+ * against a table that already exists and a column added to a DDL reaches new
+ * files only. That is stated twice above — on `MESSAGE_STORE_SCHEMA_VERSION` and
+ * on `skill_use` — and until #434 the conclusion drawn from it was that a column
+ * cannot be added to an existing table at all. `skill.origin` is the exception,
+ * and it is worth being precise about what makes it one rather than treating
+ * this as a migration framework that now exists.
+ *
+ * **Additive, idempotent, and on one table that is a cache.** `skill` holds no
+ * fact that is not also in `skills/<name>.md` — its own header is emphatic about
+ * that — so `ADD COLUMN … DEFAULT 'channel'` cannot be wrong about a row: every
+ * row already in a store on disk was written by a channel's own reconciliation
+ * from that channel's own directory, which is what `channel` means. There is no
+ * backfill to compute and no case where the default is a guess.
+ *
+ * **The version did not move**, by the rule on `MESSAGE_STORE_SCHEMA_VERSION`
+ * measured a fourth time: the proxy's reader names no skill table, so no reader
+ * of an older build is wrong about anything it asks for. A bump would have been
+ * every store on disk refusing to open, over a column nothing that reads them
+ * mentions.
+ *
+ * **Writers only, and after the version check.** `openMessageReader` does not
+ * call this and must not — a reader does not migrate, because migrating is
+ * writing, and the read-only connection it holds could not anyway. On the
+ * writer's side it runs after `checkVersion` rather than before, because a file
+ * this build is about to refuse is one it must not have altered on the way to
+ * refusing it.
+ *
+ * Every trigger on `skill` names its columns explicitly, so none is affected and
+ * none needs the new name that a changed trigger body would (see
+ * `skill_merge_proposal`'s comment for that hazard).
+ *
+ * What this is not licence for: the next column on a table that is *not* a cache
+ * — `message`, `thread_summary` — is still a version bump and still needs a
+ * migration written before it, because there the row is the fact rather than a
+ * copy of one.
+ */
+function migrateSkillOrigin(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(skill)").all() as { name: string }[];
+  if (columns.some((column) => column.name === "origin")) return;
+  db.exec("ALTER TABLE skill ADD COLUMN origin TEXT NOT NULL DEFAULT 'channel'");
+}
+
 function checkVersion(db: DatabaseSync, file: string): void {
   const row = db.prepare("SELECT version FROM schema_version").get() as
     | { version: number }
@@ -2599,6 +2770,7 @@ type SkillRow = {
   readonly mtime_ms: number | bigint;
   readonly size: number | bigint;
   readonly ino: number | bigint;
+  readonly origin: string;
 };
 
 /** A `SKILL_CLOCKS_SQL` row. `MessageRow`'s reasons apply. */
@@ -2698,6 +2870,9 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     db.enableLoadExtension(false);
     db.exec(SCHEMA);
     checkVersion(db, file);
+    // After the version check, never before: a file this build is about to
+    // refuse is one it must not have altered on the way to refusing it.
+    migrateSkillOrigin(db);
   } catch (error) {
     db.close();
     throw error;
@@ -3163,15 +3338,16 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       return held;
     },
 
-    listSkills() {
-      const rows = statements.listSkills.all() as SkillRow[];
+    listSkills(origin) {
+      const rows = statements.listSkills.all(origin) as SkillRow[];
       return rows.map(row => ({
         name: row.name,
         created: row.created,
         status: row.status as SkillStatus,
         mtimeMs: Number(row.mtime_ms),
         size: Number(row.size),
-        ino: Number(row.ino)
+        ino: Number(row.ino),
+        origin: row.origin as SkillOrigin
       }));
     },
 
@@ -3202,7 +3378,8 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
             entry.mtimeMs,
             entry.size,
             entry.ino,
-            hash
+            hash,
+            state.origin
           );
           statements.seenSkill.run(entry.name, at);
           indexed += 1;
@@ -3220,7 +3397,11 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         // placeholder run whose length is the size of the directory. The listing
         // is already bounded by the caller and this is one statement per row that
         // actually goes.
-        for (const stored of statements.listSkills.all() as SkillRow[]) {
+        //
+        // The listing is scoped to this pass's origin, which is what stops a
+        // channel pass — four of them a task — from reading the shared half of
+        // the index as a directory that emptied.
+        for (const stored of statements.listSkills.all(state.origin) as SkillRow[]) {
           if (present.has(stored.name)) continue;
           dropped += Number(statements.deleteSkill.run(stored.name).changes);
         }
@@ -3393,13 +3574,19 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
  * SQLite's own `no such table` names the table but not the file. This says which
  * file, because the caller passed a root and a channel and never a path.
  *
- * **There is no migration anywhere in this module, in either direction, and this
- * message no longer implies one.** It used to say the gateway migrates an older
- * file the first time it opens one; it does not — `checkVersion` stamps an
- * *unstamped* file and throws on any version it does not recognise. Nothing
- * repairs a store. That is why the rule on `MESSAGE_STORE_SCHEMA_VERSION` is
- * worth following rather than working around: a bump is not a migration to be
- * written later, it is every store on disk refusing to open until one is.
+ * **No reader migrates, and this message no longer implies one.** It used to say
+ * the gateway migrates an older file the first time it opens one; it does not —
+ * `checkVersion` stamps an *unstamped* file and throws on any version it does not
+ * recognise. That is why the rule on `MESSAGE_STORE_SCHEMA_VERSION` is worth
+ * following rather than working around: a bump is not a migration to be written
+ * later, it is every store on disk refusing to open until one is.
+ *
+ * The writer's side of that sentence used to be just as absolute and is now one
+ * step narrower: `migrateSkillOrigin` runs on a writer open and adds one column
+ * to `skill`, which is a cache of the files under `skills/`. It is not a version
+ * step and there is nothing here it could be — it repairs a table nothing in this
+ * function's connection may even name. Anything that would need `readVersion` to
+ * know about it is still a migration nobody has written.
  */
 function readVersion(db: DatabaseSync, file: string): void {
   let row: { version: number } | undefined;

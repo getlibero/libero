@@ -215,13 +215,13 @@ describe("createSkillEmbedSweep", () => {
     skill("rotate-a-cert", CREDENTIALS);
 
     // Nothing has run: no reconciliation, so the index does not know the file.
-    expect(store.listSkills()).toHaveLength(0);
+    expect(store.listSkills("channel")).toHaveLength(0);
 
     const { sweep } = sweepWith();
     expect(await sweep(CHANNEL, store)).toBe(1);
 
     // Both halves of the pass, and the first is what makes the second possible.
-    expect(store.listSkills().map(entry => entry.name)).toEqual(["rotate-a-cert"]);
+    expect(store.listSkills("channel").map(entry => entry.name)).toEqual(["rotate-a-cert"]);
     expect(embedded()).toEqual(["rotate-a-cert"]);
   });
 
@@ -404,7 +404,7 @@ describe("createSkillEmbedSweep", () => {
     expect(embedded()).toEqual([]);
     expect(reported).toEqual([]);
     // …and the library is still indexed, which is the half that must survive.
-    expect(store.listSkills().map(entry => entry.name)).toEqual(["base-images"]);
+    expect(store.listSkills("channel").map(entry => entry.name)).toEqual(["base-images"]);
   });
 
   it("does not ask about a budget when there is nothing to embed", async () => {
@@ -447,7 +447,7 @@ describe("createSkillEmbedSweep", () => {
     // No sheet read, no reconciliation, no log line, and nothing to report. The
     // deployment behaves exactly as it did before this file existed.
     expect(asked).toBe(0);
-    expect(store.listSkills()).toEqual([]);
+    expect(store.listSkills("channel")).toEqual([]);
     expect(lines).toEqual([]);
     expect(reported).toEqual([]);
   });
@@ -465,7 +465,7 @@ describe("createSkillEmbedSweep", () => {
     expect(calls()).toBe(0);
     // Not reconciled either: a channel that turned skills off should not acquire
     // an index of them.
-    expect(store.listSkills()).toEqual([]);
+    expect(store.listSkills("channel")).toEqual([]);
   });
 
   it("does nothing for a channel with no sheet, and nothing for a directory it cannot open", async () => {

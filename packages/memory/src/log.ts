@@ -41,7 +41,16 @@ export interface LogFields {
    * files, and whether it can write to it, is the first thing an operator reading
    * these lines wants.
    *
-   * Two more say a skill file in that directory was **skipped** —
+   * A sixth says a directory that belongs to no channel was opened:
+   * "shared_skills_opened", for the operator's shared-skill root (#434). It is
+   * the only one of these whose line carries no `channel`, which is the honest
+   * shape — one root serves every channel that names something in it — and the
+   * reason it is a sixth word rather than "skills_opened" against a different
+   * path is the same reason the other five are separate: an operator reading
+   * these wants to know which file was opened and whether the process can write
+   * to it, and this is the one that can never write.
+   *
+   * Two more say a skill file in either of those directories was **skipped** —
    * "skill_file_unusable" for one that does not parse, "skill_file_misnamed" for
    * one whose frontmatter names a different skill. Kept apart because the fix is
    * different, and they exist at all because a skipped file is otherwise
@@ -61,6 +70,12 @@ export interface LogFields {
    * id rather than content: `<root>/<channel>/store.db`,
    * `<root>/<channel>/MEMORY.md`, `<root>/<channel>/skills/<name>.md`, or
    * `<root>/<channel>/proposals/<name>--<name>.md`.
+   *
+   * Since #434 it is also a path under the *shared* root —
+   * `<shared>/<name>.md` — which has no channel segment because it belongs to
+   * no channel. The admission is the same one, made once more: the only variable
+   * segment is a `SkillName`, and the root itself is an operator's own
+   * configuration rather than anybody's content.
    *
    * **A skill's name is the second variable segment, and it is model-authored**,
    * so it is worth saying why it is admitted here. `SkillName` bounds it to a

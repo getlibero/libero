@@ -22,6 +22,14 @@
 // `loadVec` is absent for `assertFts5`'s reason exactly: both openers already
 // run it, and a caller holding it would be a caller loading a native extension
 // into a connection of its own.
+//
+// `openSkillDirectory` in ./skill-dir.ts is absent, and it is the one whose
+// absence is about writing rather than about a caller deciding something for
+// itself. It is the read half two openers share, and what makes
+// `openSharedSkillFiles` a read-only handle is that it composes that half and
+// nothing else. A caller holding the helper could point it at a channel's own
+// `skills/` and get a reader of it that no team sheet gated, which is a second
+// route to a directory these openers exist to be the only route to.
 
 export {
   MAX_EMBEDDING_DIMS,
@@ -39,6 +47,7 @@ export type {
   SkillPairKey,
   SkillEntry,
   SkillFingerprint,
+  SkillOrigin,
   SkillReconcileResult,
   SkillReconciliation,
   SkillStatusStamp,
@@ -61,12 +70,14 @@ export { openMemoryFile } from "./memory-file.js";
 export type { MemoryFile, MemoryFileOptions } from "./memory-file.js";
 
 export { openSkillFiles } from "./skill-file.js";
+export { openSharedSkillFiles } from "./shared-skill-file.js";
+export type { SharedSkillFiles, SharedSkillFilesOptions } from "./shared-skill-file.js";
 export { PROPOSALS_DIRNAME, openSkillProposals, skillProposalFilename } from "./skill-proposal.js";
 export type { SkillMergeProposal, SkillProposals, SkillProposalsOptions } from "./skill-proposal.js";
 export type { SkillFiles, SkillFilesOptions, SkillStatusResult } from "./skill-file.js";
 
-export { reconcileSkillIndex } from "./skill-store.js";
-export type { SkillReconcileOptions } from "./skill-store.js";
+export { reconcileSharedSkillIndex, reconcileSkillIndex } from "./skill-store.js";
+export type { SharedSkillReconcileOptions, SkillReconcileOptions } from "./skill-store.js";
 
 export { createSilentLogger } from "./log.js";
 export type { LogFields, LogLevel, Logger } from "./log.js";

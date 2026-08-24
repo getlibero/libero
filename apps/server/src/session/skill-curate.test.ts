@@ -308,7 +308,7 @@ describe("what bounds it", () => {
     expect(proposals.count()).toBe(0);
     // The library is still indexed, which is what a task at the head of the next
     // mention will read.
-    expect(store.listSkills().length).toBeGreaterThan(0);
+    expect(store.listSkills("channel").length).toBeGreaterThan(0);
   });
 
   // And it does not record the pair as considered, so the question comes back
