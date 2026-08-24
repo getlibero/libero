@@ -85,6 +85,23 @@ function repin(fingerprint: string): void {
   writeFileSync(sheetPath(), readFileSync(sheetPath(), "utf8").replace(/"[0-9A-F:]{95}"/, `"${fingerprint}"`));
 }
 
+/** Adds a [[shared_skill]] entry to the fixture's sheet, as an operator would. */
+function nameSharedSkill(name: string, load: "always" | "retrieved" = "retrieved"): void {
+  writeFileSync(
+    sheetPath(),
+    `${readFileSync(sheetPath(), "utf8")}\n[[shared_skill]]\nname = "${name}"\nload = "${load}"\n`
+  );
+}
+
+/** Publishes one into the host-side shared root, as a vendoring step would. */
+function publishSharedSkill(name: string, root = "shared-skills"): void {
+  mkdirSync(join(dir, root), { recursive: true });
+  writeFileSync(
+    join(dir, root, `${name}.md`),
+    `---\nname: ${name}\ndescription: How this company writes.\ncreated: 2026-01-01\nstatus: active\n---\n\nSay it plainly.\n`
+  );
+}
+
 const OTHER_PIN = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
 
 beforeAll(() => {
@@ -267,6 +284,135 @@ describe("the roots", () => {
     expect(unwritable.code).toBe(EXIT_ERROR);
     expect(check(unwritable, "store writable").status).toBe("fail");
     expect(check(unwritable, "store writable").detail).toContain("-wal");
+  });
+});
+
+describe("the shared-skills root", () => {
+  // Optional, and its absence is a deployment that publishes none — so an
+  // unset variable is not a finding and there is no line for it here.
+  it("passes when it has its own directory", async () => {
+    writeEnv(
+      {
+        AGENT_CHANNELS_ROOT: "channels",
+        PROXY_CHANNELS_ROOT: "channels",
+        AGENT_STORE_ROOT: "store",
+        PROXY_STORE_ROOT: "store",
+        AGENT_SHARED_SKILLS_ROOT: "shared-skills"
+      },
+      "direct.env"
+    );
+
+    const result = await doctor(["--file", "direct.env"]);
+
+    expect(check(result, "shared root").status).toBe("ok");
+  });
+
+  // The check this exists for: the store root is the one directory the agent
+  // writes, and a shared skill is read by every channel that names it.
+  it("fails when it is the store root", async () => {
+    writeEnv(
+      {
+        AGENT_CHANNELS_ROOT: "channels",
+        PROXY_CHANNELS_ROOT: "channels",
+        AGENT_STORE_ROOT: "store",
+        PROXY_STORE_ROOT: "store",
+        AGENT_SHARED_SKILLS_ROOT: "store"
+      },
+      "direct.env"
+    );
+
+    const result = await doctor(["--file", "direct.env"]);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared root").status).toBe("fail");
+    expect(check(result, "shared root").detail).toContain("is the store root");
+    expect(check(result, "shared root").detail).toContain("every channel that names it");
+  });
+
+  it("fails when it is the channels root", async () => {
+    writeEnv(
+      {
+        AGENT_CHANNELS_ROOT: "channels",
+        PROXY_CHANNELS_ROOT: "channels",
+        AGENT_STORE_ROOT: "store",
+        PROXY_STORE_ROOT: "store",
+        AGENT_SHARED_SKILLS_ROOT: "channels"
+      },
+      "direct.env"
+    );
+
+    const result = await doctor(["--file", "direct.env"]);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared root").detail).toContain("is the channels root");
+  });
+});
+
+describe("shared skills a sheet names", () => {
+  it("says so when no sheet names one", async () => {
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+    expect(check(result, "shared skills").detail).toBe("no sheet names one");
+  });
+
+  // The quiet failure this check exists for: the sheet parses, the deployment
+  // starts, and the channel gets a prompt with nothing in it where its brand
+  // voice should have been.
+  it("fails when a named skill was never published", async () => {
+    nameSharedSkill("brand-voice");
+    publishSharedSkill("code-review-standards");
+
+    const result = await doctor();
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared skills").status).toBe("fail");
+    expect(check(result, "shared skills").detail).toContain("brand-voice");
+    expect(check(result, "shared skills").detail).not.toContain("code-review-standards");
+  });
+
+  it("fails when the root itself is not there", async () => {
+    nameSharedSkill("brand-voice");
+
+    const result = await doctor();
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared skills").detail).toContain("does not exist");
+    expect(check(result, "shared skills").detail).toContain("brand-voice");
+  });
+
+  it("passes when every named skill is published", async () => {
+    nameSharedSkill("brand-voice", "always");
+    nameSharedSkill("code-review-standards");
+    publishSharedSkill("brand-voice");
+    publishSharedSkill("code-review-standards");
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+    expect(check(result, "shared skills").detail).toContain("2 named and published");
+  });
+
+  // A published file no sheet names is not a finding: an operator may publish
+  // ahead of the sheets that will name it, and there is no key material lying
+  // around the way a stray certificate is.
+  it("says nothing about a published skill no sheet names", async () => {
+    publishSharedSkill("brand-voice");
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+    expect(result.out.filter(line => line.startsWith("fail"))).toEqual([]);
+  });
+
+  it("takes the root as a flag, since the compose path is a container path", async () => {
+    nameSharedSkill("brand-voice");
+    publishSharedSkill("brand-voice", "vendored");
+
+    const result = await doctor(["--shared-skills-root", "vendored"]);
+
+    expect(check(result, "shared skills").status).toBe("ok");
+    expect(check(result, "shared skills").detail).toContain("vendored");
   });
 });
 

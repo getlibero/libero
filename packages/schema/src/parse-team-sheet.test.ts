@@ -2,8 +2,13 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { expect } from "expect";
 import { parseTeamSheet } from "./parse-team-sheet.js";
+import { parseSkillFile } from "./skill.js";
 
 const examplePath = new URL("../../../channels/example/channel.toml", import.meta.url);
+
+/** The shared root the starter sheet's `[[shared_skill]]` entries name into. */
+const sharedSkillPath = (name: string): URL =>
+  new URL(`../../../shared-skills/${name}.md`, import.meta.url);
 
 /**
  * The smallest `[channel]` block that parses, as TOML text.
@@ -29,6 +34,28 @@ describe("parsing a team sheet", () => {
       { name: "brand-voice", load: "always" },
       { name: "code-review-standards", load: "retrieved" }
     ]);
+  });
+
+  // The starter sheet names two shared skills, and `shared-skills/` is what a
+  // deployment mounts read-only at `AGENT_SHARED_SKILLS_ROOT` (#433). A name
+  // with no file there is the exact failure `libero doctor` exists to catch and
+  // the runtime can only log — so the documented example must not be the first
+  // instance of it. Bound here rather than left to a reader, because the two
+  // halves are in different directories and nothing else looks at both.
+  it("names shared skills the shared root actually holds", () => {
+    const result = parseTeamSheet(readFileSync(examplePath, "utf8"));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    for (const entry of result.sheet.shared_skill) {
+      const parsed = parseSkillFile(readFileSync(sharedSkillPath(entry.name), "utf8"));
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) continue;
+      // The filename is the identity and the frontmatter is not, so a file whose
+      // frontmatter disagrees is one the runtime skips — which would make the
+      // published example unloadable while still parsing.
+      expect(parsed.skill.frontmatter.name).toBe(entry.name);
+    }
   });
 
   it("fills defaults from a minimal sheet", () => {

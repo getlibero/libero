@@ -37,7 +37,12 @@ export interface LogFields {
    * than as a sheet. Message store: "store_opened",
    * "store_unavailable", "store_write_failed". Memory: "memory_file_opened",
    * "memory_unavailable", "curated", "curation_failed". Embeddings:
-   * "embeddings_ready", "embeddings_unconfigured". Thread summaries:
+   * "embeddings_ready", "embeddings_unconfigured". Shared skills:
+   * "shared_skills_ready", "shared_skills_unconfigured" (#433) — the same two
+   * words for the same reason one root up, because a deployment that publishes
+   * no shared skills and a deployment whose shared root was never mounted look
+   * identical from a channel and want different answers from whoever reads the
+   * log. Thread summaries:
    * "summarized", "summary_failed", "summary_unusable", "summary_embed_failed".
    * Recall: "recalled", "recall_hit", "recall_failed", "query_embedding_failed"
    * — and the summaries' middle two are deliberately distinct words, because

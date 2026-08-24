@@ -113,6 +113,44 @@ export function storeRootFromEnv(env: Env): string {
 }
 
 /**
+ * Where the operator's shared skills live: `AGENT_SHARED_SKILLS_ROOT`, holding
+ * one `<name>.md` per skill — or `null` when this deployment publishes none.
+ *
+ * **A third root, and the third one is a third security decision** (#373). It is
+ * not `AGENT_CHANNELS_ROOT`, for that variable's stated reason: the proxy reads
+ * its authorization there. It is not `AGENT_STORE_ROOT` either, and that is the
+ * new half. The store root is the one directory this process *writes*, so a
+ * shared skill kept under it would be a file a compromised agent could rewrite —
+ * and unlike a channel-authored skill, which poisons one channel's future tasks,
+ * a shared skill is read by every channel whose sheet names it. One writable file
+ * poisoning every channel at once is exactly the cross-channel amplification the
+ * per-channel layout exists to prevent, so this root is mounted read-only and
+ * nothing in this process opens it for writing.
+ *
+ * **`null` rather than a throw when unset**, which is `embeddingConfigFromEnv`'s
+ * departure and for its reason. A deployment that publishes no shared skills is
+ * a supported deployment rather than a broken one: every channel's own skills
+ * work exactly as before and there is simply no shared half. It is the second
+ * optional variable in this file, and the test for whether an absence should
+ * throw is the same one — does the process still do the thing it exists to do?
+ *
+ * What an unset root must not become is a silent empty load. A sheet naming a
+ * `[[shared_skill]]` in a deployment with no root is an operator who configured
+ * one half of a feature, and the channel is told rather than quietly served a
+ * prompt with nothing in it. Saying so is the business of whatever assembles the
+ * text (#435, #436) — this function's part is answering `null` distinctly rather
+ * than defaulting to a path, so there is something to say it about.
+ *
+ * Nothing here reads or creates the directory. An empty root is the ordinary
+ * state of a deployment that has mounted one and published nothing into it yet;
+ * a root that is named and absent is `libero doctor`'s to report.
+ */
+export function sharedSkillsRootFromEnv(env: Env): string | null {
+  const value = env["AGENT_SHARED_SKILLS_ROOT"];
+  return value === undefined || value === "" ? null : value;
+}
+
+/**
  * How to reach the tool proxy: `PROXY_URL`, `PROXY_TLS_CA`, `PROXY_CLIENT_CERT_DIR`.
  *
  * All three required, none defaulted, and this is the variable set that decides

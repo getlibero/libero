@@ -115,6 +115,29 @@ every open on the proxy's side is read-only, because a WAL reader creates the
 `-shm`/`-wal` sidecars and `:ro` would fail at the first search. The read-only-ness
 is `{ readOnly: true }` on the connection, not the mount.
 
+`../shared-skills` is bind-mounted `:ro` into the **server alone**
+(`AGENT_SHARED_SKILLS_ROOT`, #433), and it is the third root rather than a corner
+of either of the first two. Not the channels root, because that is the proxy's
+authorization source. Not the store root either, and that is the half worth
+reading twice: the store root is the one directory the server *writes*, so a
+shared skill kept there would be a file a compromised agent could rewrite — and
+where a poisoned channel-authored skill costs one channel's future tasks, a
+shared skill is read by every channel whose sheet names it. One writable file
+poisoning all of them at once is the cross-channel amplification the per-channel
+layout exists to prevent. The proxy does not mount it at all: a shared skill is
+text for the model, not authorization.
+
+An empty directory is a supported deployment, and so is an unset variable — the
+server logs `shared_skills_unconfigured` once and every channel's own skills work
+exactly as before.
+
+**Content gets in here by vendoring, not fetching.** Your CI copies a skill file
+into this directory in your own repository, pinned however you pin, so an update
+is a reviewed diff rather than text that changed under the model overnight. A
+`libero skill vendor` command that would do the copying is filed and parked as
+[#439](https://github.com/getlibero/libero/issues/439); `shared-skills/README.md`
+has the format and the sheet syntax.
+
 `../prices` is bind-mounted `:ro` into the proxy alone, beside the channels
 directory and for the same reason: both are host-authored, reviewed, and written
 by nobody at runtime. It is inert until `PROXY_PRICE_TABLE` names a file inside

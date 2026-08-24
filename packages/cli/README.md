@@ -113,6 +113,7 @@ fail  provider key     ANTHROPIC_API_KEY is empty, and AGENT_PROVIDER is anthrop
 ok    vault key        32 bytes, base64
 skip  roots            not in this file; compose sets them to /data/channels and /data/store inside the containers
 ok    C024BE91L        sheet parses, certificate pinned, expires in 364 days
+fail  shared skills    shared-skills does not hold brand-voice — a sheet names it and the channel gets nothing
 fail  stray certs      no sheet pins client-C0OLD.pem. Key material nothing will accept — delete it, or pin it
 ```
 
@@ -132,6 +133,28 @@ The certificate check runs in **both directions**. A sheet pinning a fingerprint
 is a channel answered 401 on every call, which is loud. A certificate on disk that no sheet pins is
 key material nothing will accept — what a retired channel or a half-finished rotation leaves
 behind — and nothing else in the system would ever mention it.
+
+**Shared skills are checked from the sheets inward** (#433). Every `[[shared_skill]]` entry in every
+sheet names a file the shared root has to hold, and a name with no file is the quiet failure: the
+sheet parses, the deployment starts, and the channel gets a prompt with nothing in it where its
+brand voice should have been. Nothing at runtime can do better than log it, because by then the file
+is simply not there.
+
+The root it reads is the **host** directory — `shared-skills` by default, `--shared-skills-root`
+otherwise — and not the container path `AGENT_SHARED_SKILLS_ROOT` names under compose. That is the
+same line the rest of this package keeps: the CLI owns what the operator authors on the host, and a
+shared skill is authored, arriving by a copy into a git repository that is reviewed as a diff. The
+one thing about the *variable* that can be wrong on the host is which other root it collides with,
+and that is checked with the other roots: naming the store root is refused, because the store root is
+the one directory the agent writes and a shared skill is read by every channel that names it.
+
+**What it refuses to check here** is whether a published file parses as a skill. That grammar is
+`packages/schema`'s and the runtime's to apply, and a second opinion in this command would be a
+second parser to keep in step with the first — the same reason `doctor` reads a team sheet with
+`parseTeamSheet` rather than having an opinion of its own about TOML. It also says nothing about a
+published skill no sheet names, which is unlike the stray-certificate check on purpose: a file
+nobody names is an operator publishing ahead of the sheets that will name it, not key material
+lying around.
 
 The last check is a real mutual-TLS `GET /v1/whoami`, which proves the whole chain at once: the
 connection authenticated, the CN resolved to a channel, and the sheet pins the fingerprint that
