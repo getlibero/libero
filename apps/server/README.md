@@ -574,6 +574,94 @@ and the two cross-channel tables that exist are the tool proxy service's durable
 operator surfaces where this is instrumentation for a measurement somebody runs
 once.
 
+## The standing region: one place, not three (#435)
+
+`systemPromptFor` in `src/session/task.ts` composes the system prompt, and since
+#435 it composes a **region** rather than appending one field. What goes in it,
+in order, and the order is the argument:
+
+1. `SYSTEM_PROMPT` — what the agent is. Static.
+2. The sheet's `[channel] description` — where it is. One operator-authored
+   sentence about the channel itself (#369).
+3. The `[[shared_skill]] load = "always"` entries — how it should work here. A
+   voice, a house style, a standard playbook, published once by the operator into
+   the third root and named by this sheet, wrapped in `<shared-skills>`.
+
+#270's persona will be the fourth, saying *who* it is, and it slots in without a
+second composition point. That is what this function was already for — the note
+about persona has been on it since #369 — and #373 settled the rest: persona as
+inline sheet text and shared voice skills as named files are one abstraction
+apart, so they belong in one region with one ceiling rather than three fields
+appended in three places by three features.
+
+**Why the system prompt at all**, when `<channel-skills>` sits in a `user`
+message: `context.ts` argues that untrusted text stays there, and this is the
+deliberate exception for text that is *not* untrusted, because it arrives through
+a sheet and a root in the operator's own git repository. A channel-grown skill —
+written by a model, from a task — never gets that placement, and the two are
+addressed apart so they cannot be confused. `shared/<name>` is a form no
+channel-grown name can spell, since `/` is outside `SKILL_NAME_PATTERN`.
+
+**The tag names the origin**, which is why it is `<shared-skills>` and not the
+same tag as retrieval's. The model is being told which text is operator-decreed
+and which is its own channel's notes. The sentence about grants beside it is a
+**statement of fact and not a mitigation**, exactly as `context.ts` insists about
+its own: what holds is the proxy's gates, which consult neither this text nor the
+model's cooperation.
+
+### What fills it, and the three ways a name loads nothing
+
+`src/session/shared-skills.ts` resolves the entries. It reads the shared root
+through `openSharedSkillFiles`, which has three methods and no writer, and it
+writes nothing, indexes nothing, and embeds nothing: an always-loaded skill is
+never in a channel's index at all — #434 holds the retrieved half only — so there
+is no row for a counter to sit on. Opened per task rather than once at startup,
+so publishing a skill or fixing a mount does not need a restart; it is an
+`existsSync` and a closure.
+
+A named skill fails to load in three ways, and **all three are log lines and none
+reaches the channel**. The root is unset or absent (`shared_skills_unavailable`);
+the file is missing or does not parse (`shared_skill_missing`); the file would
+breach the region's ceiling (`shared_skill_oversize`). Three words because the
+fixes are three different acts — mount the root, publish the file, raise the cap
+or shorten the skill.
+
+That a **dangling name is a log line rather than something the channel sees** is
+`packages/schema/src/team-sheet.ts`'s decision, made when the entries landed: a
+dangling name cannot be a parse error, because the file is in another root read
+by another process at another time, and it is dropped where the text is assembled
+with a log line naming it — the same outcome an over-long one gets. It is the
+operator's failure and it reaches the operator's log. `libero doctor` (#433) is
+what catches it before a deploy; what reaches here is a root that changed after
+that ran. The channel is told nothing because the channel cannot fix it, and the
+text would be charged against every turn of every task for as long as the mistake
+stood.
+
+`shared_skill_loaded` is **one line per skill**, `recall_hit`'s shape. It is the
+whole answer to "what is this channel standing on", and a count does not give the
+names — which is why the issue's original ask for a use count on the index was
+answered this way instead: the counter would have had no row, and giving it one
+would mean `packages/memory` learning load modes for something no clock reads.
+
+### Two bounds, and only one of them can live here
+
+`[skills] max_always_skills` is the **schema's**: its root check refuses a sheet
+naming more `always` entries than the cap, so a sheet that parsed is already
+inside it. It is applied again at composition because it costs a `slice`, and
+what that buys is a region that bounds itself whatever it is one day assembled
+from — #270 is what stops that being hypothetical.
+
+`[skills] max_always_chars` can only live here. The schema can see how many
+entries a sheet names and cannot see what those files weigh, and the weight is
+what matters: this text is in the input of *every* turn for the rest of the task,
+competing with the transcript and `MEMORY.md`. A skill that would breach it is
+dropped **whole**, never truncated — half a playbook reads as complete and the
+sentence that mattered may be the one that went, which is `max_skill_chars`' rule
+arriving at the region rather than at the file. A breaching skill does not stop
+the region: the entries are in the sheet's order rather than in size order, so
+stopping at the first that does not fit would make which skills load depend on
+where an operator put a long one in their file.
+
 ## Skill retrieval: the same shape, and the three things that differ
 
 `src/session/skill-recall.ts` answers #292, and it is recall's sibling in every

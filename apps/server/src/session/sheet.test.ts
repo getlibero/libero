@@ -94,6 +94,7 @@ describe("settingsFrom", () => {
     expect(settingsFrom(sheetOf(VALID), MODEL)).toEqual({
       model: "sheet-model",
       description: "",
+      sharedSkills: [],
       caps: {
         maxToolCalls: 7,
         // One of the two conversions rather than a rename, and the only kind of
@@ -118,6 +119,8 @@ describe("settingsFrom", () => {
         curate: true,
         authorAfterToolCalls: 5,
         topK: 3,
+        maxAlwaysSkills: 2,
+        maxAlwaysChars: 8_192,
         maxSkillChars: 8_192,
         maxSkills: 100,
         staleAfterMs: 30 * 86_400_000,
@@ -143,6 +146,7 @@ describe("settingsFrom", () => {
     expect(settingsFrom(sheetOf(NO_LLM_BLOCK), MODEL)).toEqual({
       model: MODEL,
       description: "",
+      sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -162,6 +166,8 @@ describe("settingsFrom", () => {
         curate: true,
         authorAfterToolCalls: 5,
         topK: 3,
+        maxAlwaysSkills: 2,
+        maxAlwaysChars: 8_192,
         maxSkillChars: 8_192,
         maxSkills: 100,
         staleAfterMs: 30 * 86_400_000,
@@ -202,6 +208,38 @@ describe("settingsFrom", () => {
     );
 
     expect(settings.description).toBe("Deploys and incident response.");
+  });
+
+  // Names and load modes, in the order the sheet named them, both modes unsplit:
+  // the standing region reads the `always` half (#435) and retrieval reads the
+  // other (#436), and splitting here would put the sheet's own ordering into two
+  // lists that each remember half of it.
+  it("carries the sheet's shared-skill entries in order, both modes (#432)", () => {
+    const settings = settingsFrom(
+      sheetOf(
+        `[channel]\nname = "ops"\n${PIN}\n\n` +
+          `[[shared_skill]]\nname = "code-review-standards"\nload = "retrieved"\n\n` +
+          `[[shared_skill]]\nname = "brand-voice"\nload = "always"\n`
+      ),
+      MODEL
+    );
+
+    expect(settings.sharedSkills).toEqual([
+      { name: "code-review-standards", load: "retrieved" },
+      { name: "brand-voice", load: "always" }
+    ]);
+  });
+
+  it("carries the two standing-region caps out of the [skills] block (#435)", () => {
+    const settings = settingsFrom(
+      sheetOf(
+        `[channel]\nname = "ops"\n${PIN}\n\n[skills]\nmax_always_skills = 4\nmax_always_chars = 20000\n`
+      ),
+      MODEL
+    );
+
+    expect(settings.skills.maxAlwaysSkills).toBe(4);
+    expect(settings.skills.maxAlwaysChars).toBe(20_000);
   });
 
   // Two switches rather than one: a channel may want the agent to remember what
@@ -257,6 +295,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: "sheet-model",
       description: "",
+      sharedSkills: [],
       caps: {
         maxToolCalls: 7,
         maxWallTimeMs: 30_000,
@@ -278,6 +317,8 @@ describe("createSheetResolver", () => {
         curate: true,
         authorAfterToolCalls: 5,
         topK: 3,
+        maxAlwaysSkills: 2,
+        maxAlwaysChars: 8_192,
         maxSkillChars: 8_192,
         maxSkills: 100,
         staleAfterMs: 30 * 86_400_000,
@@ -317,6 +358,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -333,6 +375,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -353,6 +396,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -392,6 +436,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -420,6 +465,7 @@ describe("createSheetResolver", () => {
       await expect(resolve(channel)).resolves.toEqual({
         model: MODEL,
         description: "",
+        sharedSkills: [],
         caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
       followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -509,6 +555,8 @@ describe("the skills fallback", () => {
       curate: false,
       authorAfterToolCalls: 5,
       topK: 3,
+      maxAlwaysSkills: 2,
+      maxAlwaysChars: 8_192,
       maxSkillChars: 8_192,
       maxSkills: 100,
       staleAfterMs: 30 * 86_400_000,

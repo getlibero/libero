@@ -47,6 +47,7 @@ const MODEL = "test-model";
 const SETTINGS: TaskSettings = {
   model: MODEL,
   description: "",
+  sharedSkills: [],
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },
   followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
@@ -297,7 +298,140 @@ describe("createMentionHandler", () => {
     expect(requests[0]?.system).toBe(
       `${SYSTEM_PROMPT} The channel describes itself: Deploys, code review, incident response.`
     );
-    expect(systemPromptFor("")).toBe(SYSTEM_PROMPT);
+    expect(systemPromptFor({ description: "", sharedSkills: [] })).toBe(SYSTEM_PROMPT);
+  });
+
+  describe("the standing region (#435)", () => {
+    /** One resolved shared skill, as ./shared-skills.ts hands them over. */
+    const voice = {
+      name: "shared/brand-voice",
+      description: "How this company writes.",
+      body: "Say it plainly."
+    };
+
+    /** A runner whose reader answers these, whatever it is asked. */
+    const runnerLoading = (skills: readonly (typeof voice)[]) => {
+      const { client, requests } = fakeCompletion({ text: "pong" });
+      const runner = createTaskRunner({
+        completion: client,
+        transport: fakeTransport().transport,
+        sharedSkills: () => skills
+      });
+      return { runner, requests };
+    };
+
+    const ask = (runner: ReturnType<typeof createTaskRunner>, over = {}) =>
+      runner(taskRequest("<@U0BOT> ping"), {
+        ...SETTINGS,
+        messages: [{ role: "user", content: "@alice asks: @libero ping" }],
+        ...over
+      });
+
+    it("renders an always-loaded skill under its own tag", async () => {
+      const { runner, requests } = runnerLoading([voice]);
+
+      await ask(runner);
+
+      // A different tag from `<channel-skills>`, because the model is being told
+      // which text is operator-decreed and which is its own channel's notes.
+      expect(requests[0]?.system).toContain("<shared-skills>");
+      expect(requests[0]?.system).toContain("## shared/brand-voice");
+      expect(requests[0]?.system).toContain("Say it plainly.");
+      expect(requests[0]?.system).toContain("</shared-skills>");
+      expect(requests[0]?.system).not.toContain("<channel-skills>");
+    });
+
+    // The whole point of one region rather than three: description and shared
+    // skills compose in one place, so #270's persona has somewhere to land.
+    it("composes with the channel description rather than replacing it", async () => {
+      const { runner, requests } = runnerLoading([voice]);
+
+      await ask(runner, { description: "Deploys and incident response." });
+
+      const system = requests[0]?.system ?? "";
+      expect(system).toContain("The channel describes itself: Deploys and incident response.");
+      expect(system.indexOf("describes itself")).toBeLessThan(system.indexOf("<shared-skills>"));
+    });
+
+    // A statement of fact and not a mitigation — what holds is the proxy's
+    // gates, which consult neither this text nor the model's cooperation.
+    it("says a standing instruction is not a grant", async () => {
+      const { runner, requests } = runnerLoading([voice]);
+
+      await ask(runner);
+
+      expect(requests[0]?.system).toContain("not a grant");
+    });
+
+    it("leaves the prompt exactly as it was when nothing stands", async () => {
+      const { runner, requests } = runnerLoading([]);
+
+      await ask(runner);
+
+      expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
+    });
+
+    // The deployment that publishes none, and every task before #435.
+    it("leaves it alone when no reader is wired at all", async () => {
+      const { client, requests } = fakeCompletion({ text: "pong" });
+      const runner = createTaskRunner({
+        completion: client,
+        transport: fakeTransport().transport
+      });
+
+      await ask(runner);
+
+      expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
+    });
+
+    it("hands the reader the sheet's entries and both caps", async () => {
+      const asked: unknown[] = [];
+      const { client } = fakeCompletion({ text: "pong" });
+      const runner = createTaskRunner({
+        completion: client,
+        transport: fakeTransport().transport,
+        sharedSkills: request => {
+          asked.push(request);
+          return [];
+        }
+      });
+
+      await ask(runner, {
+        sharedSkills: [{ name: "brand-voice", load: "always" as const }],
+        skills: { ...SETTINGS.skills, maxAlwaysSkills: 4, maxAlwaysChars: 999 }
+      });
+
+      expect(asked[0]).toEqual({
+        channel: "C024BE91L",
+        entries: [{ name: "brand-voice", load: "always" }],
+        maxSkills: 4,
+        maxChars: 999
+      });
+    });
+
+    it("renders every skill it is handed, in order", async () => {
+      const { runner, requests } = runnerLoading([
+        voice,
+        { name: "shared/house-style", description: "House style.", body: "Short sentences." }
+      ]);
+
+      await ask(runner);
+
+      const system = requests[0]?.system ?? "";
+      expect(system.indexOf("## shared/brand-voice")).toBeLessThan(
+        system.indexOf("## shared/house-style")
+      );
+    });
+
+    // The description is the retrieval hook and nothing retrieves these, so it
+    // is not printed — and the ceiling in ./shared-skills.ts does not count it.
+    it("prints the body and not the description", async () => {
+      const { runner, requests } = runnerLoading([voice]);
+
+      await ask(runner);
+
+      expect(requests[0]?.system).not.toContain("How this company writes.");
+    });
   });
 
   it("does not put the raw request text in the transcript itself", async () => {

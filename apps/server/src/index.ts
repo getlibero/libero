@@ -31,7 +31,12 @@ import {
 } from "@getlibero/agent";
 import type { CompletedTurn } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
-import { createAmbientHeartbeat, createAmbientTaskFire, createServer } from "./compose.js";
+import {
+  createAmbientHeartbeat,
+  createAmbientTaskFire,
+  createServer,
+  createSharedSkillReader
+} from "./compose.js";
 import type { AmbientHeartbeat, AmbientTaskFire, ProactivePoster } from "./compose.js";
 import {
   channelsRootFromEnv,
@@ -83,6 +88,10 @@ if (sharedSkillsRoot === null) {
 } else {
   logger.log("info", { event: "shared_skills_ready", file: sharedSkillsRoot });
 }
+// Built even when the root is null, because the reader is what turns a sheet
+// that names a shared skill in a deployment with no root into a log line saying
+// so. Omitting it there would make the two indistinguishable from inside a task.
+const sharedSkills = createSharedSkillReader({ root: sharedSkillsRoot, logger });
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
 // Optional, and its absence is a supported deployment rather than a failure:
 // memory Layers 1 and 2 are whole without embeddings, so a process with no
@@ -459,6 +468,7 @@ const { gateway, ambient } = createServer({
   recall,
   embed,
   skillRecall,
+  sharedSkills,
   signal: tasks.signal,
   logger
 });

@@ -101,6 +101,7 @@ function rig(perTurn: string[], maxToolCalls = 25) {
       Promise.resolve({
         model: "test-model",
         description: "",
+        sharedSkills: [],
         caps: { ...DEFAULT_AGENT_LOOP_CAPS, maxToolCalls },
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,

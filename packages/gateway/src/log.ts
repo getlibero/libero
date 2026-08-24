@@ -42,7 +42,16 @@ export interface LogFields {
    * words for the same reason one root up, because a deployment that publishes
    * no shared skills and a deployment whose shared root was never mounted look
    * identical from a channel and want different answers from whoever reads the
-   * log. Thread summaries:
+   * log. Then four more for the standing region (#435):
+   * "shared_skill_loaded" is **one line per skill**, `recall_hit`'s shape and
+   * for the operator's version of its reason — this is the whole answer to "what
+   * is this channel standing on", and a count does not give the names.
+   * "shared_skill_missing" is a name the sheet asked for that the root does not
+   * hold, "shared_skill_oversize" is one dropped whole for the region's
+   * character ceiling, and "shared_skills_unavailable" is the root itself being
+   * unset or absent. Three words for three ways to load nothing, because the
+   * fixes are three different acts: publish the file, raise the cap or shorten
+   * the skill, and mount the root. Thread summaries:
    * "summarized", "summary_failed", "summary_unusable", "summary_embed_failed".
    * Recall: "recalled", "recall_hit", "recall_failed", "query_embedding_failed"
    * — and the summaries' middle two are deliberately distinct words, because

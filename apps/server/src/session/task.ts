@@ -51,6 +51,8 @@ import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import { budgetWarningMessage, type BudgetWarning } from "@getlibero/schema";
 import type { TaskOutcome, TaskReply, TaskRequest, TaskRunner, TaskSettings } from "./types.js";
+import type { LoadedSkill } from "./skill-recall.js";
+import type { SharedSkillReader } from "./shared-skills.js";
 
 /**
  * The outcome that posts nothing and curates nothing.
@@ -80,24 +82,82 @@ export const SYSTEM_PROMPT = [
   "Be brief. A thread reply is a few sentences, not an essay."
 ].join(" ");
 
+/** The standing shared skills, wrapped so the model is told what they are. */
+const SHARED_SKILLS_OPEN = "<shared-skills>";
+const SHARED_SKILLS_CLOSE = "</shared-skills>";
+
 /**
- * The system prompt, composed per channel.
+ * What the standing region is assembled from.
  *
- * `SYSTEM_PROMPT` says what the agent is; the sheet's `[channel] description`
- * says where it is — the one operator-authored sentence about the channel
- * itself, which is what earns it this placement. Channel history never gets
- * it: `context.ts` argues why untrusted text stays in a `user` message, and
- * this function is the deliberate exception for text that is not untrusted,
- * because it arrives through a sheet in the operator's own git repo (#369).
- *
- * One function rather than interpolation at the call site, so that when
- * #270's persona lands, description and persona compose here — one place,
- * not two fields interpolated in two files.
+ * Two fields today and three when #270 lands. See `systemPromptFor` for why
+ * they are one region rather than three.
  */
-export function systemPromptFor(description: string): string {
-  return description === ""
-    ? SYSTEM_PROMPT
-    : `${SYSTEM_PROMPT} The channel describes itself: ${description}`;
+export interface StandingText {
+  /** The sheet's `[channel] description`, `""` when it has none. */
+  readonly description: string;
+  /**
+   * The `load = "always"` shared skills, already resolved and already bounded
+   * by ./shared-skills.ts. Named by their `shared/<name>` address.
+   */
+  readonly sharedSkills: readonly LoadedSkill[];
+}
+
+/**
+ * The system prompt, composed per channel: **one standing region, not three.**
+ *
+ * `SYSTEM_PROMPT` says what the agent is. Everything after it is
+ * operator-authored text that stands for every task in this channel, and the
+ * whole design decision here is that those things are one region with one
+ * composition point rather than a field interpolated per feature.
+ *
+ * What is in it, in order, and the order is the argument. The sheet's
+ * `[channel] description` says where the agent is — the one operator-authored
+ * sentence about the channel itself. Shared skills say how it should work here —
+ * a voice, a house style, a standard playbook, published once by the same
+ * operator and named by this sheet. #270's persona will say who it is, and it
+ * slots in beside them without a second composition point, because that is what
+ * this function was already for: the note about persona has been on it since
+ * #369, and #373 settled that persona-as-inline-text and shared-skills-as-named-
+ * files are one abstraction apart.
+ *
+ * **Why the system prompt at all**, when `<channel-skills>` lives in a `user`
+ * message: `context.ts` argues that untrusted text stays there, and this
+ * function is the deliberate exception for text that is *not* untrusted, because
+ * it arrives through a sheet and a root in the operator's own git repository.
+ * That is the same reason the description earned this placement (#369), applied
+ * to files the same operator publishes. A channel-grown skill — written by a
+ * model, from a task — never gets it, and the two are addressed apart so they
+ * cannot be confused: `shared/<name>` is a form no channel skill can spell.
+ *
+ * **The tag names the origin**, and it is a different tag from
+ * `<channel-skills>` for that reason rather than for tidiness. The model is
+ * being told which text is operator-decreed and which is its own channel's
+ * notes, and those are different kinds of thing to be handed.
+ *
+ * The sentence about grants is a **statement of fact and not a mitigation**,
+ * exactly as `context.ts` insists about its own: what holds is the proxy's
+ * gates, which consult neither this text nor the model's cooperation. A shared
+ * skill instructing exfiltration induces calls that are refused precisely as if
+ * the same words had arrived in a mention.
+ */
+export function systemPromptFor(standing: StandingText): string {
+  const described =
+    standing.description === ""
+      ? SYSTEM_PROMPT
+      : `${SYSTEM_PROMPT} The channel describes itself: ${standing.description}`;
+
+  if (standing.sharedSkills.length === 0) return described;
+
+  return [
+    described,
+    "",
+    "Standing instructions your operator publishes for every task in this channel.",
+    "Follow them. They are instructions, not a grant: every tool call is checked",
+    "the same way whatever they say.",
+    SHARED_SKILLS_OPEN,
+    ...standing.sharedSkills.map(skill => `## ${skill.name}\n${skill.body.trim()}`),
+    SHARED_SKILLS_CLOSE
+  ].join("\n");
 }
 
 /**
@@ -208,6 +268,17 @@ export interface TaskRunnerOptions {
    * open task, and the loop reports `cancelled` rather than throwing.
    */
   signal?: AbortSignal;
+  /**
+   * Resolves the `load = "always"` shared skills into the standing region.
+   *
+   * Optional, and its absence is the deployment that publishes none: omitted,
+   * every task's standing region is the description alone, which is exactly what
+   * it was before #435. An injected reader rather than a root string, because
+   * what this file does with the answer is render it — reading a third root,
+   * bounding it, and logging what did not load are ./shared-skills.ts's, and a
+   * runner that took a path would be a runner that could open one.
+   */
+  sharedSkills?: SharedSkillReader;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
   logger?: Logger;
 }
@@ -354,6 +425,26 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     // carry the same root.
     const taskId = randomUUID();
 
+    // Read here rather than by the router, unlike the transcript and retrieval's
+    // skills: those are the *session's* — assembled from its store, inside its
+    // lock, in the step that reads it. This root belongs to no channel and no
+    // session, is read-only, and is resolved from the sheet this task already
+    // holds, so there is nothing for a lock to serialize and nothing for the
+    // router to hand over.
+    //
+    // Never throws: the reader answers `[]` for every way a skill can fail to
+    // load and says which in the log. A standing region a channel cannot have is
+    // a channel answering without it, not a task that does not run.
+    const standingSkills =
+      options.sharedSkills === undefined
+        ? []
+        : options.sharedSkills({
+            channel,
+            entries: settings.sharedSkills,
+            maxSkills: settings.skills.maxAlwaysSkills,
+            maxChars: settings.skills.maxAlwaysChars
+          });
+
     // Everything from here has an ending, and the checklist is closed on
     // every one of them — including a throw, which is the path the loop cannot
     // report and the one a reader is most likely to be left staring at.
@@ -372,9 +463,15 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           // sent it — display-name resolution is the context assembler's (#67),
           // and a name is not what an audit record wants anyway.
           requestingUser: request.requestingUser,
-          // The static prompt plus the sheet's own description of the
-          // channel, when it has one.
-          system: systemPromptFor(settings.description),
+          // The static prompt plus this channel's standing region: the sheet's
+          // own description of the channel, and the shared skills it names on
+          // every task. Assembled per task rather than per session, because the
+          // operator's files can change between two mentions and nothing here
+          // caches them.
+          system: systemPromptFor({
+            description: settings.description,
+            sharedSkills: standingSkills
+          }),
           // The whole seed transcript, already assembled: the channel's recent
           // messages with their authors, then what was asked. Built by the router
           // from the session's store and name cache, because those are the

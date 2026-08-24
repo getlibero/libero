@@ -90,6 +90,7 @@ function rig(options: { users?: Record<string, string>; history?: Partial<Histor
       Promise.resolve({
         model: "test-model",
         description: "",
+        sharedSkills: [],
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS, ...options.history },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,
