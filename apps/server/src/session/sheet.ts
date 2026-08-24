@@ -132,6 +132,8 @@ export const DEFAULT_SKILL_SETTINGS = {
   curate: false,
   authorAfterToolCalls: 5,
   topK: 3,
+  maxAlwaysSkills: 2,
+  maxAlwaysChars: 8_192,
   maxSkillChars: 8_192,
   maxSkills: 100,
   staleAfterMs: 30 * 86_400_000,
@@ -193,6 +195,9 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
   return {
     model: sheet.llm.model ?? fallbackModel,
     description: sheet.channel.description,
+    // Names and load modes, in the order the sheet named them. The content is in
+    // a third root and resolving a name to a file is ./shared-skills.ts's.
+    sharedSkills: sheet.shared_skill,
     caps: {
       maxToolCalls: sheet.llm.max_tool_calls_per_task,
       maxWallTimeMs: sheet.llm.max_task_seconds * 1000,
@@ -231,6 +236,8 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
       curate: sheet.skills.curate,
       authorAfterToolCalls: sheet.skills.author_after_tool_calls,
       topK: sheet.skills.top_k,
+      maxAlwaysSkills: sheet.skills.max_always_skills,
+      maxAlwaysChars: sheet.skills.max_always_chars,
       maxSkillChars: sheet.skills.max_skill_chars,
       maxSkills: sheet.skills.max_skills,
       // Days there, milliseconds here — `summarizeAfterIdleMs`'s conversion,
@@ -274,6 +281,9 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
     model: options.model,
     // No sheet parsed, so no description: the model gets the static prompt.
     description: "",
+    // And no shared skills, for the sharper version of the same reason: naming
+    // one is something a sheet does, so a channel with no sheet has named none.
+    sharedSkills: [],
     // Spread: the constant is an exported mutable object, and handing the same
     // one to every channel is a caller away from one channel's edit becoming
     // every channel's.

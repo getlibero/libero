@@ -51,6 +51,8 @@ const AUTHORING: SkillSettings = {
   curate: false,
   authorAfterToolCalls: 5,
   topK: 3,
+  maxAlwaysSkills: DEFAULT_SKILL_SETTINGS.maxAlwaysSkills,
+  maxAlwaysChars: DEFAULT_SKILL_SETTINGS.maxAlwaysChars,
   maxSkillChars: 8_192,
   maxSkills: 100,
   staleAfterMs: 30 * 86_400_000,
@@ -219,6 +221,7 @@ function rig(perTurn: string[], options: RigOptions = {}) {
       Promise.resolve({
         model: "test-model",
         description: "",
+        sharedSkills: [],
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS },
         followUpWindowMs: DEFAULT_FOLLOW_UP_WINDOW_MS,

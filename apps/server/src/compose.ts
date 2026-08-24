@@ -50,6 +50,7 @@ import type { SkillEmbedSweep } from "./session/skill-embed.js";
 import type { SkillCuratePass } from "./session/skill-curate.js";
 import type { SkillLifecyclePass } from "./session/skill-lifecycle.js";
 import type { SkillRecall } from "./session/skill-recall.js";
+import type { SharedSkillReader } from "./session/shared-skills.js";
 import type { SkillFilesOpener } from "./session/skills.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { DisplayNameLookup } from "./session/names.js";
@@ -237,6 +238,17 @@ export interface ServerDeps {
    */
   readonly skillRecall?: SkillRecall;
   /**
+   * The standing region's shared skills (#435).
+   *
+   * `skillRecall`'s standing: buildable here in principle — it needs no model
+   * and no embedding client — and a dependency anyway, so a deployment can wire
+   * the third root without the rest and a test can supply either half. Its
+   * absence is a task whose standing region is the channel description alone,
+   * which is every task before #435 and every deployment that publishes no
+   * shared skills.
+   */
+  readonly sharedSkills?: SharedSkillReader;
+  /**
    * The skill-embedding pass (#305), run on channel activity beside `summarize`.
    *
    * Built by the process for `summarize`'s reason — it needs an embedding client
@@ -393,6 +405,8 @@ export type { MessageStoreOpener, MessageStoreOpenerOptions } from "./session/st
 export { createSkillFilesOpener } from "./session/skills.js";
 export type { SkillFilesOpener, SkillFilesOpenerOptions } from "./session/skills.js";
 export { SKILLS_MAX_CHARS, createSkillRecall } from "./session/skill-recall.js";
+export { createSharedSkillReader } from "./session/shared-skills.js";
+export type { SharedSkillReader, SharedSkillRequest } from "./session/shared-skills.js";
 export type { LoadedSkill, SkillRecall } from "./session/skill-recall.js";
 export { createQueryEmbedder } from "./session/embed.js";
 export type { QueryEmbedder } from "./session/embed.js";
@@ -559,6 +573,7 @@ export function createServer(deps: ServerDeps): Server {
       completion: deps.completion,
       transport: deps.transport,
       logger,
+      ...(deps.sharedSkills !== undefined ? { sharedSkills: deps.sharedSkills } : {}),
       ...(deps.signal !== undefined ? { signal: deps.signal } : {})
     }),
     logger,

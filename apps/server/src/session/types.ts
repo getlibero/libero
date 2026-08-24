@@ -14,6 +14,7 @@
 // the team sheet is keyed on and what the client certificate's `CN=channel:<id>`
 // carries.
 
+import type { SharedSkillEntry } from "@getlibero/schema";
 import type { AgentLoopCaps, CompletionMessage, HeldCallPrompter } from "@getlibero/agent";
 import type { MemoryFile, SkillFiles } from "@getlibero/memory";
 import type { ChecklistReporter } from "../checklist/checklist.js";
@@ -222,6 +223,31 @@ export interface SkillSettings {
   /** `[skills] top_k`. How many skills a task may open with. */
   readonly topK: number;
   /**
+   * `[skills] max_always_skills`. How many shared skills may load on every task.
+   *
+   * The count bound on the standing region (#435), and the only one of these
+   * numbers the *schema* also enforces: its root `.check()` refuses a sheet with
+   * more `load = "always"` entries than this. So a sheet that parsed is already
+   * within it, and `session/shared-skills.ts` applies it a second time anyway —
+   * one `slice`, and what it buys is a region that bounds itself whatever it is
+   * one day assembled from. #270's persona is the case that makes that not
+   * hypothetical.
+   */
+  readonly maxAlwaysSkills: number;
+  /**
+   * `[skills] max_always_chars`. The whole standing region's ceiling.
+   *
+   * Enforced at composition and nowhere else, because it is a fact about the
+   * assembled text rather than about any one file: the schema can see how many
+   * entries a sheet names and cannot see what they will weigh.
+   *
+   * **A skill that would breach it is dropped whole**, never truncated. Half a
+   * playbook is worse than none of it — the half that survives reads as complete
+   * and the sentence that mattered may be the one that went — which is
+   * `max_skill_chars`' rule arriving at the region rather than at the file.
+   */
+  readonly maxAlwaysChars: number;
+  /**
    * `[skills] max_skill_chars`. The longest a single skill's body may be.
    *
    * **Read here rather than in `packages/memory`, which is where #300 said it
@@ -326,6 +352,19 @@ export interface ChannelSettings {
    * a *next* task at all. `0` is a channel that answers only when addressed.
    */
   readonly followUpWindowMs: number;
+  /**
+   * The sheet's `[[shared_skill]]` entries, in the order it named them (#432).
+   *
+   * Names and load modes — never text: the content is in a third root this
+   * process reads read-only, and resolving a name to a file is
+   * `session/shared-skills.ts`'s. `[]` when the sheet names none, and when no
+   * sheet resolved at all.
+   *
+   * Both modes, unsplit. The standing region reads the `always` half (#435) and
+   * retrieval reads the other (#436), and splitting here would put the sheet's
+   * own ordering into two lists that each remember half of it.
+   */
+  readonly sharedSkills: readonly SharedSkillEntry[];
   /** The `[memory]` block. See `MemorySettings` for why it is not like the rest. */
   readonly memory: MemorySettings;
   /** The `[skills]` block, which is not like the rest for the same reason. */
