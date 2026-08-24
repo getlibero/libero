@@ -84,7 +84,18 @@ rule. Two things make that structural rather than a convention:
   and `openMemoryFile` each close over one file, so reaching a second channel is
   not something `MessageStore`, `MessageReader` or `MemoryFile` can express.
 
-## Five openers, and what each one may touch
+`openSharedSkillFiles` (#434) is the one opener that closes over a directory
+belonging to no channel, and it does not weaken either rule. The rule is about
+channel *content* — whose data it is and who reads it — and an operator's
+published playbook is neither: it is configuration, it is the same canonical file
+for every channel that names it, and nothing in a channel's store or conversation
+reaches it. What is per-channel about a shared skill is which ones a sheet named
+and what that channel's own index and vectors hold, and both stay on the channel's
+side of the seam. The handle is read-only besides, so the direction that would
+matter — one channel's agent writing something another channel's agent reads — is
+not expressible either.
+
+## Six openers, and what each one may touch
 
 `openMessageStore` is the gateway's: it creates the schema, stamps the version,
 and holds the six statements that write and read a channel's messages.
@@ -172,7 +183,37 @@ Neither is the model's — the operation shapes have no field for either — so
 restamping them would reset a date the team can see and un-archive a skill the
 lifecycle job had retired.
 
-`openSkillProposals` is the fifth opener and the merge curator's (#295), over
+`openSharedSkillFiles` is the fifth (#434), and it is the only opener here over
+a directory that belongs to **no channel**: the operator's shared-skill root,
+`<root>/<name>.md`, mounted read-only into the agent service (#433). A team sheet
+names which of those skills a channel gets, and the content is one canonical file
+rather than a copy per channel.
+
+It has three methods — `list`, `fingerprints`, `read` — and no fourth. `SkillFiles`
+has five, and the two that are missing are the point rather than an omission:
+there is no `apply` and no `setStatus`, so a write is not something the calling
+code can express. That is #373's blast-radius argument made structural. A
+compromised agent that poisons a channel-authored skill poisons one channel's
+future tasks; a writable shared skill would be one file poisoning every channel at
+once, which is the cross-channel amplification the per-channel layout exists to
+prevent. The `:ro` mount is the enforcement and this interface is the second lock,
+and neither alone is enough — a mount an operator got wrong leaves only the code,
+and code in a process an attacker controls is no guard at all.
+
+Two smaller decisions. It answers **`null` for a root that does not exist**,
+`openMessageReader`'s shape, so "the operator scaffolded the directory and
+published nothing" and "the mount did not happen" are not the same silence — the
+first is a working deployment and the second is #433's `doctor` check firing. And
+`read` takes the **bare** name, because that is the filename: `shared/<name>` is
+an address the index keys on, and the two forms are converted at one seam and
+nowhere else.
+
+The read half it shares with `openSkillFiles` — the `SkillName` round-trip on the
+stem, the `stat` fingerprint, the parse — lives in `skill-dir.ts`, which is not
+exported. A caller holding it could point it at a channel's own `skills/` and get
+a reader of it that no team sheet gated.
+
+`openSkillProposals` is the sixth opener and the merge curator's (#295), over
 `proposals/` beside `skills/`. **A sibling and never a child**, which is
 load-bearing rather than tidy: `openSkillFiles` lists its directory by
 round-tripping each filename stem through `SkillName`, so a proposal dropped in
@@ -433,7 +474,8 @@ before a maintainer did.
 ## The skill index, and the one rule it exists to keep
 
 `skill`, `skill_fts` and `skill_use` are the retrieval half of #290, and
-`reconcileSkillIndex` is what keeps them true. The rule they encode is one
+`reconcileSkillIndex` — with `reconcileSharedSkillIndex` beside it since #434 —
+is what keeps them true. The rule they encode is one
 sentence: **the file is the source of truth for everything a human authored, the
 index for everything the runtime observed about it, and reconciliation reads
 files and never writes them.**
@@ -485,11 +527,95 @@ skills than the sheet allows is **truncated rather than refused**: the first
 `max_skills` by name are the library and the rest are logged and left on disk,
 because losing retrieval entirely is a worse answer than a deterministic subset.
 
+### Two halves of one index, and the column that keeps them apart (#434)
+
+Since v0.5.0 a channel's index holds two kinds of skill. One is the kind it grew:
+authored by its own tasks into `<store>/<channel>/skills/`, aged by the lifecycle
+job, nominated for merges by the curator. The other is the kind an operator
+published into the shared root and this channel's team sheet named — the same
+canonical file reaching every channel that asked for it.
+
+`skill.origin` is which. `'channel'` or `'shared'`, and it is a column rather than
+something derived from the name, which the schema package's `sharedSkillRef`
+header settles in a sentence: the column is the fact, the prefix is how it is
+addressed. A shared row *is* keyed under the qualified form — `shared/brand-voice`
+— and that keying is what stops the two halves colliding on `skill.name`'s UNIQUE
+when a channel grows a playbook that shares an operator's name. `/` is not in
+`SKILL_NAME_PATTERN`, so no channel-authored name can ever spell it.
+
+**Three queries are scoped to `'channel'`, and each is a rule about who may write
+a file.** `skillClocks` is, so the lifecycle job cannot see a shared skill at all
+— its next act on what it reads is `setStatus`, which on that half would be a
+write into a read-only mount. `SKILL_MERGE_CANDIDATE_SQL` is, so the curator
+cannot nominate one; the exclusion is in the `live` CTE rather than in the final
+SELECT, because a shared skill left in the candidate set is still some channel
+skill's nearest neighbour and would take the `rn = 1` slot its real pair wanted.
+And `listSkills` takes the origin as a **required** argument, because both its
+callers are diffing one directory against the rows that directory owns.
+
+That last one is not a nicety. `reconcileSkills` deletes every row not in
+`present`, and a channel's reconciliation runs four times a task knowing nothing
+of the shared root — so an unscoped delete would take the shared half away on the
+first of them and the shared pass would put it back on the next, forever. One
+pass is one origin, on both the write and the delete.
+
+What is deliberately *not* scoped: `searchSkills`, `nearest`,
+`skillsNeedingEmbedding` and `recordSkillUse`. A `retrieved` shared skill belongs
+in both retrieval legs and has to earn a vector like any other, and its uses are
+recorded while no clock reads them — which is #373's wording exactly.
+
+The shared pass differs from the channel's in three ways, all in
+`reconcileSharedSkillIndex`. The **sheet** bounds the set rather than
+`[skills] max_skills`, so a published file this channel did not name never enters
+its index. A named skill the root does not hold is simply absent — not an error
+and not a row, because saying so out loud belongs where the prompt text is
+assembled, which is the one place that knows a channel asked and did not get. And
+only `retrieved` entries are indexed at all: an `always` entry is read straight
+from its file into the standing region of the prompt, and indexing one would put
+it in the retrieval pool as well, so a task near its subject would pay for it
+twice in the same prompt. That is why this package never learns what a load mode
+is — the caller has spent it before it gets here.
+
+### The column that arrived after its table, and the repair that let it
+
+`db.exec(SCHEMA)` is `CREATE TABLE IF NOT EXISTS` throughout, so a column added to
+a DDL reaches new files only, and `readVersion` refuses a version mismatch
+outright. Both facts are stated at length in `store-db.ts`, and the conclusion
+drawn from them until #434 was that a column cannot be added to an existing table
+here at all — which is why `skill_use` landed two columns an issue ahead of their
+reader rather than adding them later, and why `skill_merge_notice` is a table
+rather than a column on the row beside it.
+
+`origin` is the exception, and `migrateSkillOrigin` is the whole of it: on the
+**writer's** open path, `PRAGMA table_info(skill)` and one `ALTER TABLE … ADD
+COLUMN origin TEXT NOT NULL DEFAULT 'channel'` if it is absent. Three things make
+that defensible rather than a migration framework arriving by the back door.
+
+It is **on a cache**. `skill` holds no fact that is not also in
+`skills/<name>.md`, so the default cannot be wrong about a row: every row already
+on disk was written by a channel's own reconciliation from that channel's own
+directory, which is what `'channel'` means. There is no backfill to compute.
+
+It is **not a version step**. `MESSAGE_STORE_SCHEMA_VERSION` stayed at 1, by the
+rule that what is versioned is what a *reader* depends on — and the proxy's reader
+names no skill table. That is #229's, #290's, #295's and #323's measurement
+reached a fifth time; a bump would have been every store on disk refusing to open
+over a column nothing that reads them mentions.
+
+And it is **writers only**. `openMessageReader` does not run it and could not: a
+reader does not migrate, because migrating is writing.
+
+What none of this licenses is the next column on a table that is not a cache.
+`message` and `thread_summary` rows *are* the fact rather than a copy of one, so a
+column there is still a version bump and still needs a migration nobody has
+written.
+
 ### The clocks, and the two stamps that are not one
 
-`skillClocks` is the lifecycle job's read (#294): one row per indexed skill,
-joining the status the *file* carries against the two columns recording what the
-job itself last said. Comparing those two is the whole of how the job tells the
+`skillClocks` is the lifecycle job's read (#294): one row per indexed skill the
+channel itself authored — the shared half is not here at all, for the reason two
+sections up — joining the status the *file* carries against the two columns
+recording what the job itself last said. Comparing those two is the whole of how the job tells the
 team's word from its own, and it is a value comparison rather than a timestamp
 one — there is no clock on these files this package trusts, which is why
 `mtime_ms` is compared for inequality and never read as a time.

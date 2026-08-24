@@ -32,6 +32,12 @@
 //     window it exists. That package's `temporaryNameFor` is where the shape
 //     comes from, and its test and this one pin the same spelling.
 //
+// Those three are now ./skill-dir.ts, because #434 gave this tree a second
+// directory of `<name>.md` — the operator's shared root, read by
+// ./shared-skill-file.ts — and the reading of one is the same in both. What
+// stayed here is everything that writes and everything that knows the directory
+// belongs to a channel, which is most of this file.
+//
 // ## The filename is the identity, and the frontmatter is not
 //
 // A `skills/deploy.md` whose frontmatter says `name: rollback` is a hand edit
@@ -75,18 +81,18 @@
 // as an option and never compared against anything would be a mechanism implying
 // it guards a hazard it cannot reach.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   ChannelId,
   SKILL_BODY_MAX_CHARS,
   SKILL_DESCRIPTION_MAX_CHARS,
   SkillName,
-  parseSkillFile,
   serializeSkillFile
 } from "@getlibero/schema";
 import type { SkillFile, SkillOp, SkillOpResult, SkillStatus } from "@getlibero/schema";
 import { replaceFileAtomically } from "@getlibero/atomic-write";
+import { SKILL_SUFFIX, openSkillDirectory } from "./skill-dir.js";
 import type { SkillFingerprint } from "./store-db.js";
 import type { Logger } from "./log.js";
 
@@ -99,9 +105,6 @@ import type { Logger } from "./log.js";
  * layout, and one that called our own helper would assert nothing.
  */
 const SKILLS_DIRNAME = "skills";
-
-/** The suffix a skill file carries. Not part of the name — see `SkillName`. */
-const SKILL_SUFFIX = ".md";
 
 export interface SkillFilesOptions {
   /**
@@ -387,62 +390,12 @@ export function openSkillFiles(options: SkillFilesOptions): SkillFiles {
 
   const fileFor = (name: string): string => join(directory, `${name}${SKILL_SUFFIX}`);
 
-  /**
-   * The directory's entries, or `[]` when there is no directory yet.
-   *
-   * **Only `ENOENT` reads as empty.** Every other errno throws, and the
-   * distinction is load-bearing for ./memory-file.ts's reason made sharper: this
-   * listing is what an operation is decided against and what a reconciliation
-   * would diff an index against, so answering "no skills" to a directory we
-   * could not read is how a channel's whole library gets treated as deleted.
-   * `EACCES` is the live case.
-   */
-  const names = (): string[] => {
-    let entries;
-    try {
-      entries = readdirSync(directory, { withFileTypes: true });
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) return [];
-      throw error;
-    }
-
-    const found: string[] = [];
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      if (!entry.name.endsWith(SKILL_SUFFIX)) continue;
-      const stem = entry.name.slice(0, -SKILL_SUFFIX.length);
-      // The filter, and it is a name rule rather than a suffix rule. A stem that
-      // does not parse is not a skill this store can address, so it is not one
-      // it will count, list, or index.
-      if (!SkillName.safeParse(stem).success) continue;
-      found.push(stem);
-    }
-    return found.sort();
-  };
-
-  const readFile = (name: string): SkillFile | null => {
-    let text: string;
-    try {
-      text = readFileSync(fileFor(name), "utf8");
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) return null;
-      throw error;
-    }
-
-    const parsed = parseSkillFile(text);
-    if (!parsed.ok) {
-      logger?.log("warn", { event: "skill_file_unusable", channel, file: fileFor(name) });
-      return null;
-    }
-    if (parsed.skill.frontmatter.name !== name) {
-      // The stem wins and the file is left alone — see the header. Logged
-      // distinctly from a parse failure, because the fix is different: one is a
-      // broken file, the other is two names for one skill.
-      logger?.log("warn", { event: "skill_file_misnamed", channel, file: fileFor(name) });
-      return null;
-    }
-    return parsed.skill;
-  };
+  // The three read-only acts, which ./shared-skill-file.ts performs over its own
+  // directory. What stays here is everything that writes, and everything that
+  // knows this directory belongs to a channel.
+  const reads = openSkillDirectory({ directory, channel, ...(logger ? { logger } : {}) });
+  const names = reads.names;
+  const readFile = reads.read;
 
   logger?.log("info", { event: "skills_opened", channel, file: directory });
 
@@ -452,20 +405,7 @@ export function openSkillFiles(options: SkillFilesOptions): SkillFiles {
     },
 
     fingerprints() {
-      const found: SkillFingerprint[] = [];
-      for (const name of names()) {
-        let stat;
-        try {
-          stat = statSync(fileFor(name));
-        } catch (error) {
-          // Gone between the listing and the stat. Dropping it says the same
-          // thing the next listing would.
-          if (isErrno(error, "ENOENT")) continue;
-          throw error;
-        }
-        found.push({ name, mtimeMs: stat.mtimeMs, size: stat.size, ino: Number(stat.ino) });
-      }
-      return found;
+      return reads.fingerprints();
     },
 
     read(name) {

@@ -23,7 +23,9 @@ import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { openSkillFiles } from "./skill-file.js";
 import type { SkillFiles } from "./skill-file.js";
-import { reconcileSkillIndex } from "./skill-store.js";
+import { openSharedSkillFiles } from "./shared-skill-file.js";
+import type { SharedSkillFiles } from "./shared-skill-file.js";
+import { reconcileSharedSkillIndex, reconcileSkillIndex } from "./skill-store.js";
 import { openMessageStore } from "./store-db.js";
 import type { MessageStore } from "./store-db.js";
 
@@ -113,7 +115,7 @@ describe("the index follows the directory", () => {
     create("rotate-a-cert");
 
     expect(reconcile()).toEqual({ indexed: 1, dropped: 0, invalidated: 0 });
-    expect(store.listSkills().map(skill => skill.name)).toEqual(["rotate-a-cert"]);
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["rotate-a-cert"]);
   });
 
   // #290's acceptance in one line: the file is the source of truth, so a skill
@@ -123,7 +125,7 @@ describe("the index follows the directory", () => {
     handWrite("hand-written", skillText("hand-written"));
 
     expect(reconcile()).toMatchObject({ indexed: 1 });
-    expect(store.listSkills().map(skill => skill.name)).toEqual(["hand-written"]);
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["hand-written"]);
   });
 
   it("drops a skill a person deleted, and its vector with it", () => {
@@ -135,7 +137,7 @@ describe("the index follows the directory", () => {
     unlinkSync(join(directory, "rotate-a-cert.md"));
 
     expect(reconcile()).toMatchObject({ dropped: 1 });
-    expect(store.listSkills()).toEqual([]);
+    expect(store.listSkills("channel")).toEqual([]);
     // Through a second connection rather than the interface: the trigger is the
     // mechanism, and asserting it through `listSkills` would assert nothing.
     expect(sources()).toEqual([]);
@@ -214,7 +216,7 @@ describe("the index follows the directory", () => {
     handWrite("rotate-a-cert", "no frontmatter at all");
 
     expect(reconcile()).toEqual({ indexed: 0, dropped: 0, invalidated: 0 });
-    expect(store.listSkills().map(skill => skill.name)).toEqual(["rotate-a-cert"]);
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["rotate-a-cert"]);
     expect(store.searchSkills("findable", 5)).toEqual(["rotate-a-cert"]);
     expect(uses("rotate-a-cert")?.uses).toBe(1);
   });
@@ -223,7 +225,7 @@ describe("the index follows the directory", () => {
     handWrite("deploy", skillText("rollback"));
 
     expect(reconcile()).toEqual({ indexed: 0, dropped: 0, invalidated: 0 });
-    expect(store.listSkills()).toEqual([]);
+    expect(store.listSkills("channel")).toEqual([]);
   });
 
   // Deterministic rather than directory order, and the rest are left on disk
@@ -233,7 +235,7 @@ describe("the index follows the directory", () => {
     for (const name of ["e", "d", "c", "b", "a"]) create(name);
 
     expect(reconcile(3)).toMatchObject({ indexed: 3 });
-    expect(store.listSkills().map(skill => skill.name)).toEqual(["a", "b", "c"]);
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["a", "b", "c"]);
     expect(readdirSync(directory).sort()).toHaveLength(5);
   });
 });
@@ -419,7 +421,7 @@ describe("skills needing embedding", () => {
     handWrite("rotate-a-cert", skillText("rotate-a-cert", { status: "archived" }));
     reconcile();
 
-    expect(store.listSkills()).toHaveLength(1);
+    expect(store.listSkills("channel")).toHaveLength(1);
     expect(store.skillsNeedingEmbedding(10)).toEqual([]);
   });
 });
@@ -522,7 +524,7 @@ describe("the lifecycle clocks", () => {
     handWrite("hand-written", skillText("hand-written"));
     reconcile();
 
-    expect(store.skillClocks()).toHaveLength(store.listSkills().length);
+    expect(store.skillClocks()).toHaveLength(store.listSkills("channel").length);
   });
 
   it("loses the clock when the file goes", () => {
@@ -778,11 +780,11 @@ describe("a merge somebody applied by hand", () => {
 
     reconcile(MAX_SKILLS, NOW + DAY);
 
-    expect(store.listSkills().map(skill => skill.name)).toEqual(["deploy-runbook"]);
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["deploy-runbook"]);
     // The merged text is what a later task now matches against, and the dropped
     // name reaches nothing.
     expect(store.searchSkills("rollback smoke test", 5)).toEqual(["deploy-runbook"]);
-    expect(store.listSkills()[0]?.name).not.toBe("deploy-rollback");
+    expect(store.listSkills("channel")[0]?.name).not.toBe("deploy-rollback");
     // The dropped skill took its observations and its vector with it.
     expect(uses("deploy-rollback")).toBeUndefined();
     expect(sources()).toEqual([]);
@@ -827,5 +829,252 @@ describe("a merge somebody applied by hand", () => {
     }
 
     expect(store.orphanedSkillMergeProposals(2)).toHaveLength(2);
+  });
+});
+
+// The shared half of the index (#434).
+//
+// One store, two directories, and the whole of what this block is about is that
+// the two halves cannot reach each other: not through reconciliation's delete,
+// not through the lifecycle clocks, and not through the merge curator's
+// nomination. Both directories are real, for this file's stated reason.
+describe("the shared half of the index", () => {
+  const DAY = 86_400_000;
+
+  let sharedRoot: string;
+  let shared: SharedSkillFiles;
+
+  /** The operator's act, from outside this package entirely. */
+  const publish = (name: string, description = "How this company writes.", body = "Say it plainly."): void => {
+    writeFileSync(
+      join(sharedRoot, `${name}.md`),
+      skillText(name, { description }, body),
+      "utf8"
+    );
+  };
+
+  /** One shared pass, over the names a channel's sheet asked for. */
+  const reconcileShared = (names: string[], at = NOW) =>
+    reconcileSharedSkillIndex({ files: shared, store, names, at });
+
+  beforeEach(() => {
+    sharedRoot = mkdtempSync(join(tmpdir(), "libero-shared-root-"));
+    const files = openSharedSkillFiles({ root: sharedRoot });
+    if (files === null) throw new Error("the fixture shared root did not open");
+    shared = files;
+  });
+
+  afterEach(() => {
+    rmSync(sharedRoot, { recursive: true, force: true });
+  });
+
+  describe("what a pass indexes", () => {
+    // The address is the key, and it is applied at this seam and nowhere else:
+    // the file is `brand-voice.md` and the row is `shared/brand-voice`.
+    it("indexes a named skill under its address", () => {
+      publish("brand-voice");
+
+      expect(reconcileShared(["brand-voice"])).toMatchObject({ indexed: 1, dropped: 0 });
+      expect(store.listSkills("shared").map(skill => skill.name)).toEqual(["shared/brand-voice"]);
+      expect(store.listSkills("shared")[0]?.origin).toBe("shared");
+    });
+
+    // The sheet bounds the set, not a cap: a published file this channel did not
+    // ask for is not this channel's skill.
+    it("passes over a file the sheet did not name", () => {
+      publish("brand-voice");
+      publish("code-review-standards");
+
+      reconcileShared(["brand-voice"]);
+
+      expect(store.listSkills("shared").map(skill => skill.name)).toEqual(["shared/brand-voice"]);
+    });
+
+    // Not an error and not a row. Saying so out loud belongs where the prompt
+    // text is assembled — this pass has nothing of its own to say.
+    it("indexes nothing for a name the root does not hold", () => {
+      expect(reconcileShared(["brand-voice"])).toMatchObject({ indexed: 0, dropped: 0 });
+      expect(store.listSkills("shared")).toEqual([]);
+    });
+
+    it("drops the row when the sheet stops naming it", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      expect(reconcileShared([], NOW + DAY)).toMatchObject({ dropped: 1 });
+      expect(store.listSkills("shared")).toEqual([]);
+    });
+
+    it("drops the row when the operator unpublishes the file", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      unlinkSync(join(sharedRoot, "brand-voice.md"));
+
+      expect(reconcileShared(["brand-voice"], NOW + DAY)).toMatchObject({ dropped: 1 });
+      expect(store.listSkills("shared")).toEqual([]);
+    });
+
+    // A steady-state pass is `stat` calls: the fingerprint has not moved, so
+    // nothing is re-read and nothing is re-indexed.
+    it("re-indexes nothing when no file moved", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      expect(reconcileShared(["brand-voice"], NOW + DAY)).toMatchObject({
+        indexed: 0,
+        dropped: 0
+      });
+    });
+
+    // The same rule the channel half keeps: a half-deployed file keeps its last
+    // good row rather than taking a vector down with it.
+    it("keeps the last good row for a file that stopped parsing", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      writeFileSync(join(sharedRoot, "brand-voice.md"), "half a deploy\n", "utf8");
+      reconcileShared(["brand-voice"], NOW + DAY);
+
+      expect(store.listSkills("shared").map(skill => skill.name)).toEqual(["shared/brand-voice"]);
+    });
+  });
+
+  describe("the two halves do not reach each other", () => {
+    // The hazard the origin scoping exists for: a channel's own reconciliation
+    // runs four times a task and knows nothing of the shared root, so an
+    // unscoped delete would read the shared half as a directory that emptied.
+    it("survives the channel's own pass", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+      create("rotate-a-cert");
+
+      expect(reconcile(MAX_SKILLS, NOW + DAY)).toMatchObject({ dropped: 0 });
+      expect(store.listSkills("shared").map(skill => skill.name)).toEqual(["shared/brand-voice"]);
+    });
+
+    it("leaves the channel's own skills alone", () => {
+      create("rotate-a-cert");
+      reconcile();
+      publish("brand-voice");
+
+      expect(reconcileShared(["brand-voice"], NOW + DAY)).toMatchObject({ dropped: 0 });
+      expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["rotate-a-cert"]);
+    });
+
+    // `/` is not in `SKILL_NAME_PATTERN`, so no channel-grown name can spell the
+    // qualified form and the UNIQUE on `skill.name` never has to arbitrate.
+    it("holds a shared and a channel skill of the same name at once", () => {
+      publish("brand-voice");
+      handWrite("brand-voice", skillText("brand-voice", { description: "How this channel writes." }));
+      reconcile();
+      reconcileShared(["brand-voice"]);
+
+      expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["brand-voice"]);
+      expect(store.listSkills("shared").map(skill => skill.name)).toEqual(["shared/brand-voice"]);
+    });
+  });
+
+  describe("no clock acts on a shared skill", () => {
+    // The acceptance criterion in two halves: uses are recorded, and no clock
+    // reads them. The lifecycle job's next act on what it reads is `setStatus`,
+    // which on this half would be a write into a read-only mount.
+    it("keeps a shared skill out of the clocks", () => {
+      publish("brand-voice");
+      create("rotate-a-cert");
+      reconcile();
+      reconcileShared(["brand-voice"]);
+
+      expect(store.skillClocks().map(clock => clock.name)).toEqual(["rotate-a-cert"]);
+    });
+
+    it("records its uses all the same", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      store.recordSkillUse(["shared/brand-voice"], NOW + DAY);
+
+      expect(uses("shared/brand-voice")).toMatchObject({ uses: 1 });
+      expect(store.skillClocks()).toEqual([]);
+    });
+  });
+
+  describe("the merge curator cannot see one", () => {
+    // A proposal naming a shared skill would be a draft to rewrite a file in a
+    // read-only root, so the pair has to be unreachable rather than declined.
+    //
+    // One skill on each side, which is the only shape in which "no pair at all"
+    // is a meaningful answer: among two or more live skills the closest pair is
+    // always mutual, so what excluding the shared half does to a larger library
+    // is the case below rather than this one.
+    it("does not nominate a mutual pair that crosses the origin line", () => {
+      handWrite("a-deploy", skillText("a-deploy", { description: "How we ship a release." }));
+      publish("b-deploys", "How we ship releases.");
+      reconcile();
+      reconcileShared(["b-deploys"]);
+      embed("a-deploy", [1, 0, 0]);
+      embed("shared/b-deploys", [1, 0.1, 0]);
+
+      expect(store.skillMergeCandidate()).toBeNull();
+    });
+
+    // And the reason the exclusion is in `live` rather than in the final SELECT.
+    // Left in the candidate set, the shared skill is a-deploy's nearest at 0.1
+    // and c-oncall's pair with a-deploy at 0.6 never reaches `rn = 1` — so the
+    // curator would answer nothing while a real pair stood there.
+    it("does not let one suppress a pair it stands between", () => {
+      handWrite("a-deploy", skillText("a-deploy", { description: "How we ship a release." }));
+      handWrite("c-oncall", skillText("c-oncall", { description: "Who to wake at 3am." }));
+      publish("b-deploys", "How we ship releases.");
+      reconcile();
+      reconcileShared(["b-deploys"]);
+      embed("a-deploy", [1, 0, 0]);
+      embed("shared/b-deploys", [1, 0.1, 0]);
+      embed("c-oncall", [1, 0.6, 0]);
+
+      expect(store.skillMergeCandidate()).toMatchObject({ a: "a-deploy", b: "c-oncall" });
+    });
+
+    // The same pair with both halves the channel's own is nominated, which is
+    // what proves the fixture would otherwise have produced one.
+    it("nominates the same pair when both are the channel's own", () => {
+      handWrite("a-deploy", skillText("a-deploy", { description: "How we ship a release." }));
+      handWrite("b-deploys", skillText("b-deploys", { description: "How we ship releases." }));
+      handWrite("c-oncall", skillText("c-oncall", { description: "Who to wake at 3am." }));
+      reconcile();
+      embed("a-deploy", [1, 0, 0]);
+      embed("b-deploys", [1, 0.1, 0]);
+      embed("c-oncall", [1, 0.6, 0]);
+
+      expect(store.skillMergeCandidate()).toMatchObject({ a: "a-deploy", b: "b-deploys" });
+    });
+  });
+
+  // Retrieval is the point of a `retrieved` entry, so both legs and the
+  // embedding pass see a shared skill exactly as they see a channel one.
+  describe("retrieval reaches one", () => {
+    it("answers it from the lexical leg", () => {
+      publish("brand-voice", "How this company writes its release notes.");
+      reconcileShared(["brand-voice"]);
+
+      expect(store.searchSkills("how do we write release notes", 5)).toEqual(["shared/brand-voice"]);
+    });
+
+    it("offers it to whoever has an embedding provider", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      expect(store.skillsNeedingEmbedding(10)).toEqual(["shared/brand-voice"]);
+    });
+
+    it("answers it from the vector leg, under its address", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+      embed("shared/brand-voice", [1, 0, 0]);
+
+      expect(store.nearest(Float32Array.from([1, 0, 0]), 5, "skill").map(hit => hit.source.ref)).toEqual([
+        "shared/brand-voice"
+      ]);
+    });
   });
 });

@@ -2153,3 +2153,128 @@ describe("scheduled checks", () => {
     expect(MESSAGE_STORE_SCHEMA_VERSION).toBe(1);
   });
 });
+
+// The one repair this module runs (#434).
+//
+// `skill.origin` arrived after the table did, and `CREATE TABLE IF NOT EXISTS`
+// no-ops against a table already on disk — so without `migrateSkillOrigin` every
+// statement naming the column would throw `no such column` on every store an
+// operator already had. What these assert is the shape of that repair: additive,
+// idempotent, writers only, and not a version step.
+describe("the origin column, on a store that predates it", () => {
+  /** The old shape, forged the only way it can be: past the module's API. */
+  function dropOriginColumn(path: string): void {
+    raw(path, db => {
+      db.exec("ALTER TABLE skill DROP COLUMN origin");
+    });
+  }
+
+  function skillColumns(path: string): string[] {
+    return raw(path, db =>
+      (db.prepare("PRAGMA table_info(skill)").all() as { name: string }[]).map(row => row.name)
+    );
+  }
+
+  /** One indexed skill, without a directory to reconcile against. */
+  function indexOne(name: string): void {
+    store.reconcileSkills(
+      {
+        present: [name],
+        changed: [
+          {
+            name,
+            mtimeMs: 1,
+            size: 2,
+            ino: 3,
+            description: "When the thing breaks.",
+            body: "Do the thing.",
+            created: "2026-01-01",
+            status: "active"
+          }
+        ],
+        origin: "channel"
+      },
+      1_700_000_000_000
+    );
+  }
+
+  /** Reopens `store`, which the tests below close to forge the old shape. */
+  function reopen(): void {
+    store = openMessageStore({ channel: CHANNEL, root });
+  }
+
+  it("adds the column when a writer opens the file", () => {
+    store.close();
+    dropOriginColumn(file);
+    expect(skillColumns(file)).not.toContain("origin");
+
+    reopen();
+
+    expect(skillColumns(file)).toContain("origin");
+  });
+
+  // The default is the backfill, and it cannot be wrong: every row already on
+  // disk was written by a channel's own reconciliation from its own directory,
+  // which is what `channel` means.
+  it("reads every row already there as the channel's own", () => {
+    indexOne("rotate-a-cert");
+    store.close();
+    dropOriginColumn(file);
+
+    reopen();
+
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["rotate-a-cert"]);
+    expect(store.listSkills("shared")).toEqual([]);
+  });
+
+  it("does nothing on a store that already has it", () => {
+    indexOne("rotate-a-cert");
+    store.close();
+    reopen();
+    store.close();
+    reopen();
+
+    expect(skillColumns(file).filter(column => column === "origin")).toHaveLength(1);
+    expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["rotate-a-cert"]);
+  });
+
+  // A reader does not migrate, because migrating is writing — and the proxy's
+  // reader names no skill table anyway, which is the whole reason the version
+  // did not have to move.
+  it("is not something a reader does", () => {
+    store.append(message("1.1", "the vault rotates keys"));
+    store.close();
+    dropOriginColumn(file);
+
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("vault", 10).map(hit => hit.ts)).toEqual(["1.1"]);
+    reader?.close();
+
+    expect(skillColumns(file)).not.toContain("origin");
+    reopen();
+  });
+
+  // The ordering, which is the one thing about this that could be wrong without
+  // any test noticing: a file this build refuses is one it must not have altered
+  // on the way to refusing it.
+  it("does not touch a file the version check is about to refuse", () => {
+    store.close();
+    dropOriginColumn(file);
+    bumpVersionTo(file, MESSAGE_STORE_SCHEMA_VERSION + 1);
+
+    expect(() => openMessageStore({ channel: CHANNEL, root })).toThrow(/schema version/);
+
+    expect(skillColumns(file)).not.toContain("origin");
+
+    // Reopened only so afterEach has something to close.
+    bumpVersionTo(file, MESSAGE_STORE_SCHEMA_VERSION);
+    reopen();
+  });
+
+  // #229, #290, #295 and #323 each measured this the same way. This is the first
+  // change here that was not additive DDL and it came out in the same place: the
+  // reader depends on nothing in the skill tables.
+  it("did not move the schema version", () => {
+    expect(MESSAGE_STORE_SCHEMA_VERSION).toBe(1);
+  });
+});
