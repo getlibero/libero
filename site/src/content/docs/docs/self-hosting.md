@@ -12,7 +12,7 @@ run this against a workspace they depend on yet; the section on
 [using a scratch workspace first](#use-a-scratch-workspace-first) is the practical consequence.
 :::
 
-Everything on this page runs as of `v0.4.0`. The proxy speaks mutual TLS, binds every request to
+Everything on this page runs as of `v0.5.0`. The proxy speaks mutual TLS, binds every request to
 a channel, enforces team sheets, holds credentials in an encrypted vault, injects them into
 outbound calls, scrubs them back out of results, meters each channel's daily budget in calls and
 in dollars, and appends a hash-chained audit row for every decided call. The gateway and the

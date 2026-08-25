@@ -564,7 +564,8 @@ npx @getlibero/cli channel add C024BE91L --name engineering
 The sheet it writes grants nothing — the channel authenticates and can call nothing until you add a
 block to `channels/C024BE91L/channel.toml`. See the [team sheet reference](/docs/team-sheet/).
 
-**Pull the images.** Both are published to GHCR on every release since v0.3.0, multi-arch
+**Pull the images.** All three are published to GHCR on every release — the two services since
+v0.3.0, the optional sandbox runner since v0.4.0 — multi-arch
 (`amd64`/`arm64`) and carrying build provenance attestations — `deploy/README.md` has the verify
 command. Without this step the first `up` builds them from the checkout instead; that works, but the
 pull is what makes the instance run the exact bytes a release published:

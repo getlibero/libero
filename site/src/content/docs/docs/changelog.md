@@ -31,6 +31,78 @@ repository names this page as the changelog step:
   after the fact would duplicate it while numbering things that never had
   numbers.
 
+## v0.5.0 — 2026-08-25
+
+**What shipped.** Shared skills ([#373](https://github.com/getlibero/libero/issues/373) is the
+tracker). An operator publishes a playbook once — one `<name>.md` file in a third root, mounted
+read-only into the agent service and into nothing else — and each channel's team sheet names which
+of them it gets with a `[[shared_skill]]` entry
+([#432](https://github.com/getlibero/libero/issues/432) the sheet grammar,
+[#433](https://github.com/getlibero/libero/issues/433) the root,
+[#434](https://github.com/getlibero/libero/issues/434) the read-only opener and `origin` on the
+skill index, [#438](https://github.com/getlibero/libero/issues/438) the docs). Two load modes,
+because retrieval cannot serve the consistency case: `load = "always"` stands in every task's
+system prompt ([#435](https://github.com/getlibero/libero/issues/435)) — the standing region, which
+reaches the five turns that compose text and none of the turns that keep records
+([#450](https://github.com/getlibero/libero/issues/450)) — and `load = "retrieved"` joins the
+channel's own retrieval pool, fused, ranked and bounded exactly as the channel's own playbooks are
+([#436](https://github.com/getlibero/libero/issues/436)). Everywhere a shared skill is loaded,
+indexed or logged it is addressed as `shared/<name>` — a slash cannot appear in a skill name, so
+the namespace is reserved by the alphabet rather than by a precedence rule. Shared skills do not
+age, the lifecycle job and the merge curator never touch them, and the model has no verb over the
+root. The attack suite reaches them too
+([#437](https://github.com/getlibero/libero/issues/437)): a hostile shared skill is retrieved,
+read, and widens nothing, and the agent cannot write the root. A marketplace *mechanism* was
+declined rather than deferred — auto-updating text that enters a model's context is an injection
+subscription, and #373 records the rest of the argument. Vendoring through git is the answer;
+`libero skill vendor` is parked as [#439](https://github.com/getlibero/libero/issues/439).
+
+Beside the headline: `node dist/skill-purge.js <channel> --yes`, run against the server image, is
+the operator's way to empty a channel's own half of its skill index
+([#452](https://github.com/getlibero/libero/issues/452)) — for the channel that has since set
+`[skills] enabled = false` and keeps dead rows crowding the shared skills its sheet still names. It is a
+command rather than a side effect of the switch, because a sheet that fails to parse falls back to
+skills-off, and state deletion triggered by a typo is the wrong default. `totalTokens` now means
+tokens on every log line that carries it — six lines that rode counts of other things in the spend
+field moved to a general `count` field ([#429](https://github.com/getlibero/libero/issues/429)).
+Every semantic-recall hit now writes a `recall_hit` line carrying its kind, rank and distance
+([#427](https://github.com/getlibero/libero/issues/427)) — the measurement
+[#283](https://github.com/getlibero/libero/issues/283) was parked for want of. A per-channel bound
+on concurrent sandbox runs was closed as declined, with the argument recorded where the paragraph
+that invited it sits ([#425](https://github.com/getlibero/libero/issues/425)). And the two test
+suites that gate on a Docker daemon now run in two CI jobs, because one asserts the daemon holds no
+leaked sandbox container while the other deliberately keeps one running
+([#410](https://github.com/getlibero/libero/issues/410)).
+
+**Upgrading.** The team sheet first, because it is the compatibility surface — and here it is
+**purely additive**: a sheet with no `[[shared_skill]]` entry parses exactly as before, and the new
+`[skills]` keys bounding the standing block (`max_always_skills`, `max_always_chars`) have
+defaults. An entry is a `name` and a `load`, and `load` has no default — the two modes are not two
+strengths of one setting. `[skills] enabled = false` does **not** switch shared skills off: that
+switch governs what a channel grows for itself, and these were decreed rather than grown. Note the
+failure direction on old software: a 0.4.0 service does not reject a sheet carrying
+`[[shared_skill]]` — unknown keys are stripped — so an entry added before the images are upgraded
+is silently inert. Upgrade first, then edit sheets.
+
+New in the environment: `AGENT_SHARED_SKILLS_ROOT`, optional. The shipped compose file sets it and
+bind-mounts `../shared-skills` read-only into the server alone — the proxy does not mount it at
+all, because a shared skill is text for the model, not authorization. A deployment carrying its own
+compose file must add the variable and the mount, or every `[[shared_skill]]` entry resolves to a
+log line naming the dangling skill; the server states once at startup whether the root is
+configured. The repository ships a `shared-skills/` directory with a README and two worked
+examples, and `libero doctor` now checks the root exists when any sheet names a shared skill — and
+refuses a configuration that points it at the store root or the channels root. The two services may
+be upgraded in either order: no wire shape between the agent and the proxy moved. One operator
+number changes meaning: if a dashboard sums `totalTokens` across log lines, the sum drops to the
+correct one, because the six count-carrying lines no longer contribute to it. There are no security
+fixes in this release.
+
+**The suite.** The e2e security suite passes against this tag — now including the shared-skill
+attacks, which run without a daemon: the hostile playbook is served and still bounded by its
+channel's sheet, and the write paths to the shared root do not exist. The one file that requires a
+Docker daemon still fails rather than skips in CI, and its exfiltration cases still run only after
+a positive control proves the surface reaches an allowed host.
+
 ## v0.4.0 — 2026-08-22
 
 **What shipped.** Code execution, governed. A channel whose sheet grants the `run_code` built-in
