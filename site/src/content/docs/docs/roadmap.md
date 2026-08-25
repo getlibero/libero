@@ -115,9 +115,8 @@ and nothing capped how many runs a host held at once
 ([#405](https://github.com/getlibero/libero/issues/405)). That is a gap the workstream named
 before it closed rather than one found afterwards, and it was filled inside the same milestone.
 
-**v0.5.0 — shared skills.** The milestone's work is done; the tag, the
-[changelog](/docs/changelog/) entry and the upgrade notes follow it, per `RELEASING.md`. An
-operator publishes playbooks once into a third root, mounted
+**v0.5.0 — shipped.** Shared skills — the [changelog](/docs/changelog/) entry carries the
+upgrade notes. An operator publishes playbooks once into a third root, mounted
 read-only to the agent and to neither the proxy nor the channels directory, and each channel's team
 sheet names which of them it gets with `[[shared_skill]]`
 ([#373](https://github.com/getlibero/libero/issues/373)). Two load modes, because retrieval cannot
