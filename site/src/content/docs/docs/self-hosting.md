@@ -656,6 +656,27 @@ embedding calls and no completion ones — the summaries are already written, so
 rather than asking the model again — and it is safe to run twice: it embeds whatever has no vector,
 so a run you interrupted continues where it stopped
 ([#282](https://github.com/getlibero/libero/issues/282)).
+
+The same container carries one more, which you will need only if you use shared skills and only on a
+channel that used to grow its own. Both retrieval legs are blind to which half of the library a
+playbook came from, so a channel that has since set `[skills] enabled = false` keeps its old index
+rows — and those rows can crowd out the shared skills its sheet *does* name, while being unreachable
+in every other sense:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm server node dist/skill-purge.js C024BE91L
+```
+
+Without `--yes` that is a read: it says how many skills are in the index, when the oldest was first
+seen, how many have ever been loaded, and that their use counts and both stamps go with the rows
+because nothing re-derives them. Add `--yes` to purge. It leaves the channel's `skills/` files
+alone — the index is rebuilt from them the next time a task runs with skills on, minus the clocks —
+and it leaves shared skills alone entirely.
+
+The switch does not do this by itself on purpose. A sheet that fails to parse falls back to skills
+being off, so an automatic purge would let one typo in a `channel.toml` destroy a channel's use
+counts and first-seen stamps on the next mention
+([#452](https://github.com/getlibero/libero/issues/452)).
 SQLite writes `-wal` and `-shm` files beside it, so the *directory* must be writable and not just
 the file. Nothing in it is a secret.
 
@@ -682,6 +703,26 @@ Unlike the two above, **this one is not "nothing in it is a secret"**: it holds 
 a channel, and it belongs to that channel's members. One SQLite file per channel is the isolation
 boundary — there is no channel column for a query to forget to filter on — and back it up, or not,
 on the terms your Slack retention policy already sets.
+
+`AGENT_SHARED_SKILLS_ROOT` is the third root, optional, and mounted **read-only to the agent
+alone**. It holds the playbooks you publish to channels whose sheets name them with
+`[[shared_skill]]` — one flat directory of `<name>.md` files, no nesting. Unset is a supported
+deployment and so is an empty directory: the server says so once in its log and every channel's own
+skills work exactly as before.
+
+It is neither of the two roots above, and the second exclusion is the one worth reading twice. Not
+the channels root, because that is the proxy's authorization source. Not the store root either,
+because that is the one directory the agent *writes* — a shared skill kept there would be a file a
+compromised agent could rewrite, and where a poisoned channel-authored skill costs one channel's
+future tasks, a shared skill is read by every channel whose sheet names it. The proxy does not mount
+it at all: a shared skill is text for the model, not authorization.
+
+**Content gets in here by vendoring, not fetching.** Copy the file into this directory in your own
+repository, pinned however you pin, so an update is a reviewed diff rather than text that changed
+under the model overnight. There is no runtime marketplace client and no auto-update, which was
+declined rather than deferred — auto-updating text that enters a model's context is an injection
+subscription. A `libero skill vendor` command that would do the copying is filed and parked as
+[#439](https://github.com/getlibero/libero/issues/439).
 
 `PROXY_STORE_ROOT` is the **same directory**, named again on the proxy side, because the proxy
 serves `search_channel_history` and has to read the store to answer it. Two variables for one path

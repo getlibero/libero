@@ -115,6 +115,50 @@ and nothing capped how many runs a host held at once
 ([#405](https://github.com/getlibero/libero/issues/405)). That is a gap the workstream named
 before it closed rather than one found afterwards, and it was filled inside the same milestone.
 
+**v0.5.0 — shared skills.** The milestone's work is done; the tag, the
+[changelog](/docs/changelog/) entry and the upgrade notes follow it, per `RELEASING.md`. An
+operator publishes playbooks once into a third root, mounted
+read-only to the agent and to neither the proxy nor the channels directory, and each channel's team
+sheet names which of them it gets with `[[shared_skill]]`
+([#373](https://github.com/getlibero/libero/issues/373)). Two load modes, because retrieval cannot
+serve the consistency case: `load = "always"` stands in every task's system prompt, where a house
+voice has to be, and `load = "retrieved"` joins the channel's own retrieval pool. `[skills] enabled
+= false` switches off neither — that switch governs what a channel grows for itself, and these were
+decreed rather than grown. Shared skills do not age, the lifecycle job and the merge curator never
+touch them, and the model has no verb over the root. A marketplace *mechanism* was **declined rather
+than deferred**: auto-updating text that enters a model's context is an injection subscription, a
+runtime marketplace client is a new egress surface, and retrieval over content optimized to be
+retrieved is a contest the grown-only corpus does not have. Vendoring through git is the answer, and
+`libero skill vendor` is parked as [#439](https://github.com/getlibero/libero/issues/439).
+
+Three sub-issues landed differently from their own wording, recorded here rather than ticked
+against sentences that turned out to be untrue.
+[#436](https://github.com/getlibero/libero/issues/436) asked that a body edit to a shared file
+re-embed it; it does not, because the vector stands for the skill's *description* — so a body edit
+re-indexes the full-text side, keeps the vector and keeps the use counters, which is the whole of
+what that clause was protecting. Making it re-embed would charge every channel that named the skill
+for a vector identical to the one it replaced, on one operator's typo fix.
+[#437](https://github.com/getlibero/libero/issues/437) asked for a fake embedder to place a hostile
+skill nearest and for an `[egress]` exfiltration leg; the attack suite answers on the lexical leg
+instead, because its one fake embedder deliberately ranks nothing — a ranking fake is the hand-built
+vector space that rule exists to keep out from between an attack and the thing it attacks — and the
+egress leg is attacked at the tool gates, because `[egress]` needs a real sandbox runner and this
+suite confines a Docker daemon to exactly one file.
+[#450](https://github.com/getlibero/libero/issues/450) proposed that the standing region reach the
+task and the proactive post; it reaches **five** turns, because the heartbeat's decision and its
+sentence are one call with no seam between them, and because a shared skill is arbitrary operator
+text rather than only a voice — house rules about how a runbook is written belong at the
+skill-author turn and the merge curator, which that issue's own reading excluded.
+
+One thing landed that the definition of done did not ask for, and it came out of a cost the
+milestone chose to record rather than fix. Retrieval's two legs are blind to which half of the
+library a playbook came from, so a channel that has since turned its own skills off keeps index rows
+that can crowd out the shared skills its sheet names. Purging them automatically on that switch
+would let one unparseable `channel.toml` destroy a channel's use counts and first-seen stamps, since
+a sheet that fails to parse falls back to skills being off — so the answer is an operator-run
+command rather than a config side effect
+([#452](https://github.com/getlibero/libero/issues/452)).
+
 ## What success looks like
 
 Not stars: unaffiliated teams self-hosting the governed core in real workspaces, and the e2e security suite passing against every release.
