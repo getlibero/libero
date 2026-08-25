@@ -226,7 +226,14 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
             files: skills,
             settings: async channel => {
               const settings = await sheets(channel);
-              return { enabled: settings.skills.enabled, maxSkills: settings.skills.maxSkills };
+              return {
+                enabled: settings.skills.enabled,
+                maxSkills: settings.skills.maxSkills,
+                // Carried, and reaching nothing: no `sharedPool` is wired here,
+                // so the rig has no shared half at all. Mounting a third root is
+                // #437's, which is the file that attacks it.
+                sharedSkills: settings.sharedSkills
+              };
             },
             reportTurn,
             maySpend,

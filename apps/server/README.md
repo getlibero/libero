@@ -683,6 +683,70 @@ fingerprint moved, and re-embedded only when its *description* moved. Since #305
 caller of one function inside the same lock rather than a second path, and it is
 below.
 
+### One pool with two halves (#436)
+
+Since shared skills this is not "the channel's skills, retrieved". It is one
+pool whose two halves — the channel's own directory and the `load = "retrieved"`
+shared skills its sheet named — are independently addressable, and either may be
+absent. `src/session/skill-pool.ts` opens the second and holds the membership
+rule; `SkillRecall` answers a pair, `{ channel, shared }`.
+
+**`[skills] enabled` is not this file's gate.** The team sheet settled that when
+the entries landed and wrote it into `[[shared_skill]]`'s own header: the switch
+gates the channel leg of the pool and never the pool, so a channel with it off
+and a `retrieved` entry still resolves that entry, bounded by `top_k` and
+`max_skill_chars` exactly as it would be with the switch on. The router still has
+one place that decides, and what it now decides is which *halves* a channel can
+address rather than whether it has skills at all.
+
+**Membership is filtered before the fusion.** Both legs are origin-blind by
+`packages/memory`'s decision, so a switched-off channel still gets its own
+leftover rows back from them; dropping those at the read loop would be too late,
+because each would have spent one of `top_k`'s slots on the way to resolving as
+nothing. The vector hits are filtered before #427's distance corpus is logged
+too, since a row that is not a pool member is not in the distribution that corpus
+measures.
+
+**What the filter cannot do is un-spend a limit spent upstream, and that is a
+stated cost rather than an oversight.** `searchSkills` and `nearest` apply their
+own limits before this file sees a row, so on a channel that once had skills and
+has since switched them off, leftover rows can crowd a shared skill out of both
+rank lists entirely. It belongs beside "neither leg has a cutoff" below: a known
+weakness of a shape chosen for other reasons. The fix is to purge the channel
+half when the switch is off, and it is deliberately not here — `DEFAULT_SKILL_SETTINGS`
+falls back to `enabled: false` for a sheet that *would not parse*, so an automatic
+purge would let one typo in a `channel.toml` destroy a channel's `skill_use`
+counters and `first_seen_at` clocks on the next mention. State deletion triggered
+by a config flip is the wrong default; state deletion an operator asked for is
+not, and an operator-run purge is filed separately.
+
+**The shared reconcile is unconditional**, including where the channel has no
+shared library at all — that is what `reconcileSharedSkillIndex`'s null library
+accepts. Skipping the call is what strands a `shared/<name>` row when an operator
+deletes a `[[shared_skill]]` block: both legs keep returning it, no opener
+resolves it, and it spends a slot on every task from then on.
+
+**Resolution is a lookup and never a parse.** `sharedSkillRef`'s header forbids a
+parser for the qualified form; a fused candidate is matched against a `Map` built
+from the sheet's entries. It costs one slot in exactly one case — a stale
+`shared/<name>` on a pass whose pool did not open reads as a channel candidate
+and resolves to nothing through `SkillFiles.read`'s own `SkillName` guard — and
+that is the trade the pool's header states rather than buys back.
+
+**The two halves render as two blocks**, `<shared-skills>` before
+`<channel-skills>`, so the model is told which library a playbook came out of.
+The tag is the standing region's, owned in `src/session/context.ts` because one
+vocabulary now wraps two regions. The retrieved block prints the description
+where the standing region does not: it is the line retrieval matched on, so
+printing it says why this arrived, and `SKILLS_MAX_CHARS` already charges it.
+
+**The author turn is given the channel half and cannot be given the other.** The
+model has no verb over a read-only root, so a `skill_revise` naming
+`shared/brand-voice` could only be refused by `SkillName`. `authoringFor`'s
+comment in `src/session/task.ts` records the counter-argument — an unseen shared
+skill is one the turn may duplicate — and why a deletable duplicate beats a
+refusal inside the loop on every task that earns a playbook.
+
 **Two legs, fused by a round-robin interleave.** `nearest` answers by L2 distance
 and `searchSkills` by FTS5 rank, which are not comparable — the same argument
 that stops recall writing down a distance cutoff also stops a weighted blend
@@ -751,6 +815,28 @@ mitigation the words perform.
 vector — `packages/memory` has no model provider, by design — so it leaves rows
 for `skillsNeedingEmbedding` to surface, and until this file nothing surfaced
 them. This is the caller that does.
+
+**Both halves of the pool earn a vector here, in one batch** (#436). The pass
+opens the pool whatever the switch says, reconciles the shared half
+unconditionally, and resolves each name through whichever opener addresses it.
+`turnIdFor`, the batch size, the single `client.embed`, `maySpend` and the
+`skills_embedded` count are unchanged — a mixed batch is one call, and the id
+already hashes the addresses, so a channel skill and a published one with the
+same stem are different turns.
+
+The batch narrows to `origin = 'shared'` exactly when the channel half is
+unaddressable — the switch is off, or the directory would not open. Without that
+narrowing the ten-name window fills with rows this pass can no longer resolve,
+resolves none of them, and finds the same window next time. That is a permanent
+stall rather than a wasted call, and what it stalls is the promise
+`[[shared_skill]]` makes to a switched-off channel.
+
+**A body edit does not re-embed, and #436's acceptance said it would.** Recorded
+rather than quietly satisfied: the vector stands for the *description*, so a body
+edit re-indexes FTS5, keeps the vector and keeps the use counters — which is the
+whole of what that clause was protecting. Making it re-embed would charge every
+channel that named the skill for a vector identical to the one it replaced, on
+one operator's typo fix. The test is named as the decision.
 
 **It runs where the sweep runs, and for the same reason.** A skill file changes
 through somebody saving a file, which fires no event this process can see, so the
