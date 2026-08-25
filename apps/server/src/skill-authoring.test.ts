@@ -126,13 +126,18 @@ function skillOnDisk(name: string): string | null {
   return existsSync(file) ? readFileSync(file, "utf8") : null;
 }
 
+// `startsWith` rather than equality since #450: the operator's standing region is
+// composed *over* this turn's own prompt, so a channel with a published skill has
+// a longer system prompt and is still the author turn.
 const isAuthoring = (request: CompletionRequest): boolean =>
-  request.system === SKILL_AUTHOR_SYSTEM_PROMPT;
+  request.system?.startsWith(SKILL_AUTHOR_SYSTEM_PROMPT) === true;
 const isCuration = (request: CompletionRequest): boolean =>
   request.system === CURATION_SYSTEM_PROMPT;
 
 interface RigOptions {
   readonly skills?: SkillSettings;
+  /** What this channel's operator has published, if a case is about the region. */
+  readonly sharedSkills?: readonly { name: string; description: string; body: string }[];
   readonly memory?: MemorySettings;
   /** What the author turn answers. Writes one skill unless a test says otherwise. */
   readonly authorReply?: () => Promise<CompletionResponse>;
@@ -233,6 +238,9 @@ function rig(perTurn: string[], options: RigOptions = {}) {
     memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
     skills: createSkillFilesOpener({ storeRoot, channelsRoot, logger }),
     skillRecall: createSkillRecall({ logger }),
+    ...(options.sharedSkills === undefined
+      ? {}
+      : { sharedSkills: () => options.sharedSkills ?? [] }),
     logger
   });
 
@@ -570,5 +578,52 @@ describe("what a failure costs", () => {
 
     expect(lines.find(line => line.event === "authored")?.ops).toBe(1);
     expect(JSON.stringify(lines)).not.toContain("Merge needs a human click");
+  });
+});
+
+// #450. The author turn composes a playbook, and house rules about how one
+// should be written are exactly what an operator publishes a shared skill to
+// say — where `SKILL_AUTHOR_SYSTEM_PROMPT` alone is only this build's opinion of
+// what a playbook is. The curation turn keeps a record and gets none of it,
+// which is the other half of the same decision and is asserted here beside it
+// because this rig runs both turns in one task.
+describe("the operator's standing region", () => {
+  const VOICE = {
+    name: "shared/how-we-write-runbooks",
+    description: "How this company writes a runbook.",
+    body: "Every runbook opens with the rollback."
+  };
+
+  it("reaches the skill-author turn", async () => {
+    const { slack, gateway, asked } = rig(SIX_SERVED, { sharedSkills: [VOICE] });
+    await gateway.start();
+
+    await settle(slack, "cut a release please");
+
+    const authoring = asked.filter(isAuthoring);
+    expect(authoring).toHaveLength(1);
+    expect(authoring[0]?.system).toContain("<shared-skills>");
+    expect(authoring[0]?.system).toContain("## shared/how-we-write-runbooks");
+    expect(authoring[0]?.system).toContain("Every runbook opens with the rollback.");
+  });
+
+  // The record half of the line, and the reason it is worth a test rather than a
+  // comment: nothing in the type system stops somebody composing a region here
+  // later, and `isCuration` compares the prompt exactly.
+  it("does not reach the curation turn", async () => {
+    const { slack, gateway, asked } = rig(SIX_SERVED, {
+      sharedSkills: [VOICE],
+      memory: { ...DEFAULT_MEMORY_SETTINGS, enabled: true }
+    });
+    await gateway.start();
+
+    await settle(slack, "cut a release please");
+
+    const curating = asked.filter(isCuration);
+    expect(curating.length).toBeGreaterThan(0);
+    for (const request of curating) {
+      expect(request.system).toBe(CURATION_SYSTEM_PROMPT);
+      expect(request.system).not.toContain("shared-skills");
+    }
   });
 });

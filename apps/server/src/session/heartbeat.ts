@@ -80,7 +80,10 @@
 //   - **The meter.** The turn reports through the same `SpendReport` path every
 //     other turn takes. The backstop, not the mechanism.
 
-import { runHeartbeatTurn } from "@getlibero/agent";
+import { AMBIENT_HEARTBEAT_SYSTEM_PROMPT, runHeartbeatTurn } from "@getlibero/agent";
+import { standingSkillsFor, systemPromptFor } from "./task.js";
+import type { StandingInputs } from "./task.js";
+import type { SharedSkillReader } from "./shared-skills.js";
 import type { CompletedTurn, CompletionClient, HeartbeatMessage } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
@@ -104,6 +107,14 @@ export const MAX_HEARTBEAT_MESSAGES = 40;
 
 /** What the heartbeat needs from a channel's sheet. Resolved by ./sheet.ts. */
 export interface HeartbeatSettings {
+  /**
+   * What this channel's standing region is composed from (#450).
+   *
+   * The operator's own text, resolved per invocation because their files can
+   * change between two of them. See `systemPromptFor` for why this turn composes
+   * a region at all and which two turns deliberately do not.
+   */
+  readonly standing: StandingInputs;
   /** `[ambient] enabled`. False and nothing here runs. */
   readonly enabled: boolean;
   /** `[ambient] answer_after_idle_minutes`, in milliseconds. */
@@ -121,6 +132,15 @@ export interface HeartbeatSettings {
 }
 
 export interface HeartbeatOptions {
+  /**
+   * How this channel's `load = "always"` shared skills are read (#450).
+   *
+   * Absent composes no region, which is every deployment with no third root —
+   * and is why this is optional where `standing` on the settings is not: the
+   * sheet always says something, and whether there is a root to read is the
+   * composition's business rather than the channel's.
+   */
+  sharedSkills?: SharedSkillReader;
   completion: CompletionClient;
   /**
    * Where a finding goes, and the only posting capability in this process.
@@ -345,6 +365,18 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
       result = await runHeartbeatTurn({
         completion: options.completion,
         model: settings.model,
+        // The operator's standing region over this turn's own prompt (#450).
+        // This turn both decides and composes, so the region is present while it
+        // weighs whether to speak — which is the operator's own text influencing
+        // the operator's own channel, and is the same standing `[ambient]
+        // enabled` and `heartbeat_every_minutes` already have.
+        system: systemPromptFor(
+          {
+            description: settings.standing.description,
+            sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
+          },
+          AMBIENT_HEARTBEAT_SYSTEM_PROMPT
+        ),
         messages,
         maxTokens: settings.maxTokens,
         turn: 1,

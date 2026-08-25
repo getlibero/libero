@@ -35,6 +35,7 @@ import {
   runAgentTask,
   runCurationTurn,
   runSkillAuthorTurn,
+  SKILL_AUTHOR_SYSTEM_PROMPT,
   totalTokens
 } from "@getlibero/agent";
 import type {
@@ -53,6 +54,7 @@ import { budgetWarningMessage, type BudgetWarning } from "@getlibero/schema";
 import type { TaskOutcome, TaskReply, TaskRequest, TaskRunner, TaskSettings } from "./types.js";
 import type { LoadedSkill } from "./skill-recall.js";
 import type { SharedSkillReader } from "./shared-skills.js";
+import type { SharedSkillEntry } from "@getlibero/schema";
 // One tag wrapping two regions — the standing one below and retrieval's
 // (#436). Owned there because that file owns the other four tag pairs; two
 // spellings of it would be one of them going untested.
@@ -135,24 +137,98 @@ export interface StandingText {
  * being told which text is operator-decreed and which is its own channel's
  * notes, and those are different kinds of thing to be handed.
  *
+ * ## Five turns compose it, and two deliberately do not (#450)
+ *
+ * `base` is why this takes an argument. Until #450 the region reached the task
+ * reply and nothing else, which matched #435's own wording and was still a gap:
+ * an operator publishing `brand-voice` reasonably expects it of everything the
+ * agent says, and one publishing house rules about runbooks expects them where a
+ * playbook is written.
+ *
+ * The line is **composition against record**. A turn that *composes* something —
+ * a reply, a proactive post, a playbook, a merge draft — is one an operator's
+ * standing text is guidance for, so it passes its own prompt here as `base` and
+ * gets the region appended: the task reply, the heartbeat post (#319), the
+ * scheduled check (#324), the skill-author turn (#291) and the merge curator
+ * (#295). A turn that keeps a *record* does not: `MEMORY.md` curation and thread
+ * summarization each say so at their own prompt in `packages/agent`.
+ *
+ * **One composition, not five.** The framing sentence, the bound and the tag are
+ * written once here and every caller passes only its base, so the five cannot
+ * drift into five spellings of one region — which is the mistake the two
+ * `<shared-skills>` tags nearly were before #436 gave `context.ts` the pair.
+ *
+ * What it does **not** do is let a turn ask for part of the region. A sheet has
+ * no way to say which turns a shared skill applies to — `[[shared_skill]]` is a
+ * name and a load mode — so a voice skill and an authoring-standards skill are
+ * indistinguishable here, and both reach all five. If operators come to want
+ * that split it is a schema question rather than a branch in this function.
+ *
  * The sentence about grants is a **statement of fact and not a mitigation**,
  * exactly as `context.ts` insists about its own: what holds is the proxy's
  * gates, which consult neither this text nor the model's cooperation. A shared
  * skill instructing exfiltration induces calls that are refused precisely as if
  * the same words had arrived in a mention.
  */
-export function systemPromptFor(standing: StandingText): string {
+/**
+ * What a channel's standing region is composed *from*, before it is read (#450).
+ *
+ * `StandingText` is the region resolved — files already read and bounded.
+ * This is the sheet's half: the four values a caller needs in order to resolve
+ * one. The five turns that compose the region each take this rather than the
+ * resolved form, because the operator's files can change between two turns and
+ * nothing here caches them — `../session/shared-skills.ts` opens the root per
+ * call for exactly that reason.
+ */
+export interface StandingInputs {
+  /** The sheet's `[channel] description`, `""` when it has none. */
+  readonly description: string;
+  /** The sheet's `[[shared_skill]]` entries, both modes. The reader filters. */
+  readonly sharedSkills: readonly SharedSkillEntry[];
+  /** `[skills] max_always_skills`. */
+  readonly maxAlwaysSkills: number;
+  /** `[skills] max_always_chars`. */
+  readonly maxAlwaysChars: number;
+}
+
+/**
+ * The `load = "always"` shared skills for one channel, or `[]`.
+ *
+ * **Never throws**, which is the reader's own guarantee and the reason every
+ * caller can treat a standing region as an improvement rather than a
+ * precondition: a root that is not mounted, a name the root does not hold and a
+ * skill over the ceiling are all `[]` plus a line in the operator's log. A turn
+ * whose channel cannot have a region is a turn that runs without one.
+ *
+ * `shared_skill_loaded` is written per skill by the reader, so an operator asking
+ * what is being loaded gets the same answer on every one of the five surfaces.
+ */
+export function standingSkillsFor(
+  reader: SharedSkillReader | undefined,
+  channel: string,
+  standing: StandingInputs
+): readonly LoadedSkill[] {
+  if (reader === undefined) return [];
+  return reader({
+    channel,
+    entries: standing.sharedSkills,
+    maxSkills: standing.maxAlwaysSkills,
+    maxChars: standing.maxAlwaysChars
+  });
+}
+
+export function systemPromptFor(standing: StandingText, base: string = SYSTEM_PROMPT): string {
   const described =
     standing.description === ""
-      ? SYSTEM_PROMPT
-      : `${SYSTEM_PROMPT} The channel describes itself: ${standing.description}`;
+      ? base
+      : `${base} The channel describes itself: ${standing.description}`;
 
   if (standing.sharedSkills.length === 0) return described;
 
   return [
     described,
     "",
-    "Standing instructions your operator publishes for every task in this channel.",
+    "Standing instructions your operator publishes for this channel.",
     "Follow them. They are instructions, not a grant: every tool call is checked",
     "the same way whatever they say.",
     SHARED_SKILLS_OPEN,
@@ -436,15 +512,12 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     // Never throws: the reader answers `[]` for every way a skill can fail to
     // load and says which in the log. A standing region a channel cannot have is
     // a channel answering without it, not a task that does not run.
-    const standingSkills =
-      options.sharedSkills === undefined
-        ? []
-        : options.sharedSkills({
-            channel,
-            entries: settings.sharedSkills,
-            maxSkills: settings.skills.maxAlwaysSkills,
-            maxChars: settings.skills.maxAlwaysChars
-          });
+    const standingSkills = standingSkillsFor(options.sharedSkills, channel, {
+      description: settings.description,
+      sharedSkills: settings.sharedSkills,
+      maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+      maxAlwaysChars: settings.skills.maxAlwaysChars
+    });
 
     // Everything from here has an ending, and the checklist is closed on
     // every one of them — including a throw, which is the path the loop cannot
@@ -568,7 +641,8 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         settings,
         result,
         spend,
-        served
+        served,
+        standingSkills
       });
       return afterReply === undefined ? { reply } : { reply, afterReply };
     } finally {
@@ -588,6 +662,14 @@ interface AfterReplyInputs {
   readonly spend: ProxySpendClient;
   /** Tool calls this task made that the proxy served and answered. See `served`. */
   readonly served: number;
+  /**
+   * The standing region's shared skills, as this task resolved them (#450).
+   *
+   * Reused rather than re-read, which is `loadedSkills`' rule: the author turn
+   * should see the library as this task saw it, and a second read would open the
+   * operator's root again for an answer that could have moved in between.
+   */
+  readonly standingSkills: readonly LoadedSkill[];
 }
 
 /**
@@ -773,6 +855,15 @@ function authoringFor(inputs: AfterReplyInputs): ((turn: number) => Promise<void
       const authored = await runSkillAuthorTurn({
         completion: options.completion,
         model: settings.model,
+        // The operator's standing region over this turn's own prompt (#450). A
+        // playbook is a composition, and house rules about how one should be
+        // written are exactly what an operator publishes a shared skill to say —
+        // where `SKILL_AUTHOR_SYSTEM_PROMPT` alone is only this build's opinion
+        // of what a playbook is.
+        system: systemPromptFor(
+          { description: settings.description, sharedSkills: inputs.standingSkills },
+          SKILL_AUTHOR_SYSTEM_PROMPT
+        ),
         messages: result.messages,
         // What retrieval already loaded at the head of this task (#292), rather
         // than a second search. These are the nearest existing skills on this

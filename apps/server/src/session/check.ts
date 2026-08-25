@@ -73,7 +73,10 @@
 // would be a real widening of what unattended work can do, and it is a decision
 // somebody should have to make on purpose rather than inherit from this file.
 
-import { runScheduledCheckTurn } from "@getlibero/agent";
+import { SCHEDULED_CHECK_SYSTEM_PROMPT, runScheduledCheckTurn } from "@getlibero/agent";
+import { standingSkillsFor, systemPromptFor } from "./task.js";
+import type { StandingInputs } from "./task.js";
+import type { SharedSkillReader } from "./shared-skills.js";
 import type { CompletedTurn, CompletionClient, HeartbeatMessage } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
@@ -94,6 +97,14 @@ export const MAX_CHECK_MESSAGES = 40;
 
 /** What the fire path needs from a channel's sheet. Resolved by ./sheet.ts. */
 export interface CheckSettings {
+  /**
+   * What this channel's standing region is composed from (#450).
+   *
+   * The operator's own text, resolved per invocation because their files can
+   * change between two of them. See `systemPromptFor` for why this turn composes
+   * a region at all and which two turns deliberately do not.
+   */
+  readonly standing: StandingInputs;
   /** `[ambient] enabled`. False and nothing here runs. Defence, not a path. */
   readonly enabled: boolean;
   /** The channel's model, from `[llm] model` or the process default. */
@@ -151,6 +162,15 @@ export function renderCheckFailureNotice(prompt: string, reason: CheckFailure): 
 }
 
 export interface CheckOptions {
+  /**
+   * How this channel's `load = "always"` shared skills are read (#450).
+   *
+   * Absent composes no region, which is every deployment with no third root —
+   * and is why this is optional where `standing` on the settings is not: the
+   * sheet always says something, and whether there is a root to read is the
+   * composition's business rather than the channel's.
+   */
+  sharedSkills?: SharedSkillReader;
   completion: CompletionClient;
   /** Where an answer goes, and the only posting capability in this process. */
   post: ProactivePoster;
@@ -254,6 +274,17 @@ export function createAmbientTaskFire(options: CheckOptions): AmbientTaskFire {
       result = await runScheduledCheckTurn({
         completion: options.completion,
         model: settings.model,
+        // The operator's standing region over this turn's own prompt (#450). A
+        // fired check composes a message a channel reads, and the interrupt was
+        // authorized by a human at the create — so what is left for standing text
+        // to shape is only how it reads.
+        system: systemPromptFor(
+          {
+            description: settings.standing.description,
+            sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
+          },
+          SCHEDULED_CHECK_SYSTEM_PROMPT
+        ),
         prompt: task.prompt,
         messages,
         maxTokens: settings.maxTokens,

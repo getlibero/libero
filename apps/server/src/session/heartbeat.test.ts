@@ -17,6 +17,8 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
 import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
+import { AMBIENT_HEARTBEAT_SYSTEM_PROMPT } from "@getlibero/agent";
+import type { SharedSkillReader } from "./shared-skills.js";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore, SkillPairKey, SkillProposals, StoredMessage } from "@getlibero/memory";
 import { openMessageStore } from "@getlibero/memory";
@@ -31,6 +33,10 @@ const NOW = 1_749_998_700_000;
 const MINUTE = 60_000;
 
 const SETTINGS: HeartbeatSettings = {
+  // No shared skills and no description, which is the channel every case here
+  // is about: what #450 wired is that this turn *can* carry a standing region,
+  // and `standing.test.ts` is where it does.
+  standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
   answerAfterIdleMs: 60 * MINUTE,
   model: "test-model",
@@ -670,5 +676,55 @@ describe("what a proposal notice says", () => {
     // The say-once discipline is a property of the ledger, and a reader who is
     // going to be told once should know that is what happened.
     expect(renderProposalNotice(PAIR)).toContain("only time");
+  });
+});
+
+/**
+ * A shared-skill reader answering one published playbook (#450).
+ *
+ * The operator's half of the standing region, faked at the seam the composition
+ * passes in — `../session/shared-skills.ts` has its own coverage against a real
+ * root, and what these cases are about is whether this turn composes a region at
+ * all.
+ */
+const publishes = (): SharedSkillReader => () => [
+  { name: "shared/brand-voice", description: "How this company writes.", body: "Say it plainly." }
+];
+
+// #450. The line is composition against record, and this turn composes both the
+// decision and the sentence — so the operator's text is present for both, which
+// is the same standing `[ambient] enabled` already has.
+describe("the operator's standing region", () => {
+  it("reaches the heartbeat turn's system prompt", async () => {
+    plantIdleQuestion();
+    const asked = model("Priya's question has had no reply.");
+    const { heartbeat } = heartbeatWith({
+      completion: asked.completion,
+      sharedSkills: publishes(),
+      settings: () =>
+        Promise.resolve({
+          ...SETTINGS,
+          standing: { ...SETTINGS.standing, description: "we ship on Fridays" }
+        })
+    });
+
+    await heartbeat(CHANNEL, store);
+
+    const system = asked.requests[0]?.system ?? "";
+    expect(system).toContain("<shared-skills>");
+    expect(system).toContain("## shared/brand-voice");
+    expect(system).toContain("we ship on Fridays");
+    // The turn's own prompt is still the base it was composed over.
+    expect(system).toContain(AMBIENT_HEARTBEAT_SYSTEM_PROMPT.slice(0, 40));
+  });
+
+  it("composes none where no reader was wired", async () => {
+    plantIdleQuestion();
+    const asked = model("Priya's question has had no reply.");
+    const { heartbeat } = heartbeatWith({ completion: asked.completion });
+
+    await heartbeat(CHANNEL, store);
+
+    expect(asked.requests[0]?.system).toBe(AMBIENT_HEARTBEAT_SYSTEM_PROMPT);
   });
 });

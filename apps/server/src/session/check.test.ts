@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
 import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
+import { SCHEDULED_CHECK_SYSTEM_PROMPT } from "@getlibero/agent";
+import type { SharedSkillReader } from "./shared-skills.js";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore, StoredMessage, StoredScheduledTask } from "@getlibero/memory";
 import { openMessageStore } from "@getlibero/memory";
@@ -29,7 +31,15 @@ import type { ProactivePost, ProactivePoster } from "../proactive/proactive.js";
 const CHANNEL = "C0ENGINEERING";
 const NOW = 1_749_998_700_000;
 
-const SETTINGS: CheckSettings = { enabled: true, model: "test-model", maxTokens: 1024 };
+const SETTINGS: CheckSettings = {
+  // No shared skills and no description, which is the channel every case here
+  // is about: what #450 wired is that this turn *can* carry a standing region,
+  // and `standing.test.ts` is where it does.
+  standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
+  enabled: true,
+  model: "test-model",
+  maxTokens: 1024
+};
 
 const TICKET: StoredScheduledTask = {
   id: "e3f1a2b4-0c5d-4e6f-8a90-1b2c3d4e5f60",
@@ -335,5 +345,50 @@ describe("what it does not do", () => {
 
     expect(store.nextScheduledTaskDueAt()).toBe(TICKET.dueAt);
     expect(lines.some(line => line.event === "check_failed")).toBe(true);
+  });
+});
+
+/**
+ * A shared-skill reader answering one published playbook (#450).
+ *
+ * The operator's half of the standing region, faked at the seam the composition
+ * passes in — `./shared-skills.ts` has its own coverage against a real root.
+ */
+const publishes = (): SharedSkillReader => () => [
+  { name: "shared/brand-voice", description: "How this company writes.", body: "Say it plainly." }
+];
+
+// #450. A fired check composes a message a channel reads, and the interrupt was
+// authorized by a human at the create — so what is left for standing text to
+// shape is only how it reads.
+describe("the operator's standing region", () => {
+  it("reaches the check turn's system prompt", async () => {
+    const asked = model("Nobody has picked up the cert renewal.");
+    const { fire } = fireWith({
+      completion: asked.completion,
+      sharedSkills: publishes(),
+      settings: () =>
+        Promise.resolve({
+          ...SETTINGS,
+          standing: { ...SETTINGS.standing, description: "we ship on Fridays" }
+        })
+    });
+
+    await fire(CHANNEL, store, TICKET);
+
+    const system = asked.requests[0]?.system ?? "";
+    expect(system).toContain("<shared-skills>");
+    expect(system).toContain("## shared/brand-voice");
+    expect(system).toContain("we ship on Fridays");
+    expect(system).toContain(SCHEDULED_CHECK_SYSTEM_PROMPT.slice(0, 40));
+  });
+
+  it("composes none where no reader was wired", async () => {
+    const asked = model("Nobody has picked up the cert renewal.");
+    const { fire } = fireWith({ completion: asked.completion });
+
+    await fire(CHANNEL, store, TICKET);
+
+    expect(asked.requests[0]?.system).toBe(SCHEDULED_CHECK_SYSTEM_PROMPT);
   });
 });

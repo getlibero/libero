@@ -352,11 +352,20 @@ const proposals = createSkillProposalsOpener({ storeRoot, channelsRoot, logger }
 // quoting two playbooks must never become a third.
 const curateSkills = createSkillCuratePass({
   completion,
+  sharedSkills,
   files: skills,
   proposals,
   settings: async channel => {
     const settings = await sheets(channel);
     return {
+      // The operator's own text, carried to every turn that composes something
+      // (#450). The reader below is what turns it into a region.
+      standing: {
+        description: settings.description,
+        sharedSkills: settings.sharedSkills,
+        maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+        maxAlwaysChars: settings.skills.maxAlwaysChars
+      },
       enabled: settings.skills.enabled,
       curate: settings.skills.curate,
       maxSkills: settings.skills.maxSkills,
@@ -386,10 +395,19 @@ const curateSkills = createSkillCuratePass({
 const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
   createAmbientHeartbeat({
     completion,
+    sharedSkills,
     post,
     settings: async channel => {
       const settings = await sheets(channel);
       return {
+      // The operator's own text, carried to every turn that composes something
+      // (#450). The reader below is what turns it into a region.
+      standing: {
+        description: settings.description,
+        sharedSkills: settings.sharedSkills,
+        maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+        maxAlwaysChars: settings.skills.maxAlwaysChars
+      },
         enabled: settings.ambient.enabled,
         answerAfterIdleMs: settings.ambient.answerAfterIdleMs,
         model: settings.model,
@@ -422,10 +440,19 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
 const fireTask = (post: ProactivePoster): AmbientTaskFire =>
   createAmbientTaskFire({
     completion,
+    sharedSkills,
     post,
     settings: async channel => {
       const settings = await sheets(channel);
       return {
+      // The operator's own text, carried to every turn that composes something
+      // (#450). The reader below is what turns it into a region.
+      standing: {
+        description: settings.description,
+        sharedSkills: settings.sharedSkills,
+        maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+        maxAlwaysChars: settings.skills.maxAlwaysChars
+      },
         enabled: settings.ambient.enabled,
         model: settings.model,
         maxTokens: settings.caps.maxOutputTokensPerTurn

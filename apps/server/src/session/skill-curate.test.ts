@@ -28,6 +28,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import { SKILL_MERGE_SYSTEM_PROMPT } from "@getlibero/agent";
+import type { SharedSkillReader } from "./shared-skills.js";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import {
@@ -49,6 +51,10 @@ const CHANNEL = "C024BE91L";
 const MAX_SKILLS = 100;
 
 const SETTINGS: SkillCurateSettings = {
+  // No shared skills and no description, which is the channel every case here
+  // is about: what #450 wired is that this turn *can* carry a standing region,
+  // and `standing.test.ts` is where it does.
+  standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
   curate: true,
   maxSkills: MAX_SKILLS,
@@ -623,5 +629,52 @@ describe("what it costs", () => {
     expect(lines.map(line => line.event)).toContain("skill_merge_proposed");
     expect(JSON.stringify(lines)).not.toContain("a-deploy");
     expect(JSON.stringify(lines)).not.toContain("How we ship");
+  });
+});
+
+/**
+ * A shared-skill reader answering one published playbook (#450).
+ *
+ * The operator's half of the standing region, faked at the seam the composition
+ * passes in — `./shared-skills.ts` has its own coverage against a real root.
+ */
+const publishes = (): SharedSkillReader => () => [
+  { name: "shared/brand-voice", description: "How this company writes.", body: "Say it plainly." }
+];
+
+// #450. A merge draft is a playbook the team will keep, so an operator's house
+// rules about how one should read bear on it exactly as they do on the author
+// turn — the difference is who applies it, not what is being composed.
+describe("the operator's standing region", () => {
+  it("reaches the merge turn's system prompt", async () => {
+    library();
+    const asked = model({ ...DRAFT });
+    const { pass } = passWith({
+      completion: asked.client,
+      sharedSkills: publishes(),
+      settings: () =>
+        Promise.resolve({
+          ...SETTINGS,
+          standing: { ...SETTINGS.standing, description: "we ship on Fridays" }
+        })
+    });
+
+    await runPast(pass);
+
+    const system = asked.requests[0]?.system ?? "";
+    expect(system).toContain("<shared-skills>");
+    expect(system).toContain("## shared/brand-voice");
+    expect(system).toContain("we ship on Fridays");
+    expect(system).toContain(SKILL_MERGE_SYSTEM_PROMPT.slice(0, 40));
+  });
+
+  it("composes none where no reader was wired", async () => {
+    library();
+    const asked = model({ ...DRAFT });
+    const { pass } = passWith({ completion: asked.client });
+
+    await runPast(pass);
+
+    expect(asked.requests[0]?.system).toBe(SKILL_MERGE_SYSTEM_PROMPT);
   });
 });
