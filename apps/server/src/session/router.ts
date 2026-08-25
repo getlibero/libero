@@ -32,11 +32,15 @@ import type { Recall } from "./recall.js";
 import { createScheduledTaskSink } from "./scheduled.js";
 import type { SheetResolver } from "./sheet.js";
 import type { SkillFilesOpener } from "./skills.js";
-import type { SkillRecall } from "./skill-recall.js";
+import type { RetrievedSkills, SkillRecall } from "./skill-recall.js";
+import type { SharedSkillPoolOpener } from "./skill-pool.js";
 import type { TaskReply, TaskRequest, TaskRunner } from "./types.js";
 
 /** Answers `undefined` for everyone. What a front-end with no directory has. */
 const NO_NAMES: DisplayNameLookup = () => Promise.resolve(undefined);
+
+/** Neither half of the pool retrieved anything, because neither was asked. */
+const NO_SKILLS: RetrievedSkills = { channel: [], shared: [] };
 
 export interface ChannelRouterOptions {
   sheets: SheetResolver;
@@ -87,6 +91,14 @@ export interface ChannelRouterOptions {
    * lock — see `session/skills.ts`.
    */
   skills?: SkillFilesOpener;
+  /**
+   * How the retrieved half of the shared library is opened for a channel (#436).
+   *
+   * Optional, on `skills`' pattern, and opened here for its reason — the sheet's
+   * `[[shared_skill]]` entries are read per task inside this lock. Deliberately
+   * **not** gated by `[skills] enabled`: see the call site.
+   */
+  sharedPool?: SharedSkillPoolOpener;
   /**
    * Skill retrieval (#292), run at the head of every task.
    *
@@ -207,6 +219,15 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
             ? (options.skills?.(request.key.channel, settings.skills.maxSkills) ?? undefined)
             : undefined;
 
+        // The other half of the pool (#436), and it is not gated by the switch
+        // above. `[skills] enabled` gates the channel leg and never the pool —
+        // the team sheet's `[[shared_skill]]` header settled that and wrote it
+        // down so it would not be re-derived here. The opener answers null for a
+        // sheet that named no `retrieved` entry, which is the ordinary case and
+        // costs one filter.
+        const sharedPool =
+          options.sharedPool?.(request.key.channel, settings.sharedSkills) ?? null;
+
         const store = session.store;
 
         // Inside the lock, on `memoryFile`'s reason and one of its own: the
@@ -239,7 +260,8 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         const searching =
           store !== null &&
           ((options.recall !== undefined && settings.memory.summarize) ||
-            (options.skillRecall !== undefined && skillFiles !== undefined));
+            (options.skillRecall !== undefined &&
+              (skillFiles !== undefined || sharedPool !== null)));
 
         const vector =
           searching && options.embed !== undefined
@@ -274,16 +296,28 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
         // its own: this is where `reconcileSkillIndex` runs, so the index and the
         // directory are reconciled in the same serialized step that reads them.
         //
-        // Gated by the directory rather than by a second reading of the sheet —
-        // `skillFiles` is `undefined` exactly when the channel disabled skills or
-        // could not be opened, so there is one place that decides.
+        // Still one place that decides, and since #436 what it decides is which
+        // *halves of the pool* this channel can address rather than whether it
+        // has skills at all. `skillFiles` is `undefined` exactly when the channel
+        // disabled skills or the directory could not be opened; `sharedPool` is
+        // null exactly when its sheet named no `retrieved` shared skill, or the
+        // third root is unset or missing. Either one alone is a pool, so what
+        // ends this is neither.
+        //
+        // Both are handed down rather than re-read: a second reading of the
+        // sheet here would be a second place the switch's reach is decided, and
+        // the switch's reach over the shared half is exactly the thing the schema
+        // header is at pains about.
         const skills =
-          options.skillRecall === undefined || store === null || skillFiles === undefined
-            ? []
+          options.skillRecall === undefined ||
+          store === null ||
+          (skillFiles === undefined && sharedPool === null)
+            ? NO_SKILLS
             : await options.skillRecall({
                 channel: request.key.channel,
                 store,
-                files: skillFiles,
+                files: skillFiles ?? null,
+                shared: sharedPool,
                 vector,
                 query: request.text,
                 topK: settings.skills.topK,
@@ -299,7 +333,8 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
           bounds: settings.history,
           memory: memoryFile?.read() ?? "",
           recalled,
-          skills
+          skills: skills.channel,
+          sharedSkills: skills.shared
         });
 
         const outcome = await options.task(request, {
@@ -310,9 +345,12 @@ export function createChannelRouter(options: ChannelRouterOptions): ChannelRoute
           // already loaded out of it. Both are this step's, so the turn that
           // follows the reply sees the library as this task saw it rather than
           // opening it a second time.
+          //
+          // **The channel half only** (#436). The other half is a read-only root
+          // the model has no verb over; see `authoringFor` in ./task.ts.
           ...(skillFiles !== undefined ? { skillFiles } : {}),
           ...(scheduled !== undefined ? { scheduled } : {}),
-          loadedSkills: skills
+          loadedSkills: skills.channel
         });
 
         afterReply = outcome.afterReply;

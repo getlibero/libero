@@ -53,6 +53,10 @@ import { budgetWarningMessage, type BudgetWarning } from "@getlibero/schema";
 import type { TaskOutcome, TaskReply, TaskRequest, TaskRunner, TaskSettings } from "./types.js";
 import type { LoadedSkill } from "./skill-recall.js";
 import type { SharedSkillReader } from "./shared-skills.js";
+// One tag wrapping two regions — the standing one below and retrieval's
+// (#436). Owned there because that file owns the other four tag pairs; two
+// spellings of it would be one of them going untested.
+import { SHARED_SKILLS_CLOSE, SHARED_SKILLS_OPEN } from "./context.js";
 
 /**
  * The outcome that posts nothing and curates nothing.
@@ -82,9 +86,6 @@ export const SYSTEM_PROMPT = [
   "Be brief. A thread reply is a few sentences, not an essay."
 ].join(" ");
 
-/** The standing shared skills, wrapped so the model is told what they are. */
-const SHARED_SKILLS_OPEN = "<shared-skills>";
-const SHARED_SKILLS_CLOSE = "</shared-skills>";
 
 /**
  * What the standing region is assembled from.
@@ -736,6 +737,27 @@ function curationFor(inputs: AfterReplyInputs): ((turn: number) => Promise<void>
  * task that ran no turns served no tool calls either, so the threshold has
  * already refused it, and a second guard on a state the first makes unreachable
  * would be a mechanism implying a hazard it cannot reach.
+ *
+ * ## `nearby` is the channel half of the pool, and not the shared one (#436)
+ *
+ * `settings.loadedSkills` carries what retrieval loaded out of this channel's own
+ * directory. The retrieved shared skills the same pass loaded are not there, and
+ * that is the router's doing rather than a filter here: `SkillRecall` answers a
+ * pair, so the shape of what this turn is given cannot express the other half.
+ *
+ * The reason is that `nearby` is not context — it is *the existing playbooks you
+ * may revise*. The model has no verb over the shared root and should not: a
+ * `skill_revise` naming `shared/brand-voice` could only be refused, by
+ * `SkillName`, since `/` is outside `SKILL_NAME_PATTERN`. Offering one is
+ * inviting an op that must fail.
+ *
+ * The counter-argument is real and worth stating: a shared skill the turn cannot
+ * see is one it may write a duplicate of. The answer is which failure is
+ * cheaper. A duplicate in the channel's own directory is a file the team can
+ * delete, and the merge curator already declines to nominate a pair that crosses
+ * the origin line; a write aimed at a root mounted read-only is a refusal inside
+ * the loop, on every task that earns a playbook, for as long as the shared skill
+ * stands.
  */
 function authoringFor(inputs: AfterReplyInputs): ((turn: number) => Promise<void>) | undefined {
   const { options, logger, request, settings, result, spend, served } = inputs;

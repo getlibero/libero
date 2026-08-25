@@ -23,6 +23,8 @@ import type { MessageStore, SkillFiles } from "@getlibero/memory";
 import { openMessageStore, openSkillFiles } from "@getlibero/memory";
 import { SKILLS_MAX_CHARS, createSkillRecall, interleaveCandidates } from "./skill-recall.js";
 import type { SkillRecallRequest } from "./skill-recall.js";
+import { createSharedSkillPoolOpener } from "./skill-pool.js";
+import type { SharedSkillPool } from "./skill-pool.js";
 
 const CHANNEL = "C0ENGINEERING";
 const MAX_SKILLS = 100;
@@ -32,6 +34,7 @@ const AT = 1_700_000_000_000;
 let root: string;
 let store: MessageStore;
 let files: SkillFiles;
+let sharedRoot: string;
 
 /**
  * A hand-built embedding space, on `recall.test.ts`'s pattern.
@@ -106,7 +109,45 @@ function embed(name: string, description: string): void {
   });
 }
 
+/**
+ * The operator's shared root, and the pool one channel's sheet opens over it.
+ *
+ * A real directory and the real opener rather than a fake pool, for the reason
+ * the channel half uses a real directory: what these cases are about is what a
+ * root and a sheet's entries mean together.
+ */
+function publish(name: string, description: string, body = "Say it plainly."): void {
+  writeFileSync(
+    join(sharedRoot, `${name}.md`),
+    `---\nname: ${name}\ndescription: ${description}\ncreated: 2026-01-01\nstatus: active\n---\n\n${body}\n`
+  );
+}
+
+/** The pool for a sheet naming these skills in `retrieved` mode. */
+function pool(...names: string[]): SharedSkillPool {
+  const opened = createSharedSkillPoolOpener({ root: sharedRoot })(
+    CHANNEL,
+    names.map(name => ({ name, load: "retrieved" as const }))
+  );
+  if (opened === null) throw new Error("the fixture pool did not open");
+  return opened;
+}
+
+/**
+ * A retriever answering the **channel half** of the pool.
+ *
+ * Since #436 one pass answers a pair, and every case below this line predates
+ * the shared half and is about the channel's own directory — so the fixture
+ * takes the half those cases mean rather than each of them saying `.channel`.
+ * The shared half has `poolWith` and asserts on both.
+ */
 function retrieverWith(overrides: { logger?: Logger; now?: () => number } = {}) {
+  const recall = poolWith(overrides);
+  return async (request: SkillRecallRequest) => (await recall(request)).channel;
+}
+
+/** The whole pool, both halves, for the cases that are about the split. */
+function poolWith(overrides: { logger?: Logger; now?: () => number } = {}) {
   return createSkillRecall({ now: () => AT, ...overrides });
 }
 
@@ -137,6 +178,7 @@ function ask(query: string, partial: Partial<SkillRecallRequest> = {}): SkillRec
     channel: CHANNEL,
     store,
     files,
+    shared: null,
     vector: query in EMBEDDINGS ? vectorFor(query) : null,
     query,
     topK: 3,
@@ -148,6 +190,7 @@ function ask(query: string, partial: Partial<SkillRecallRequest> = {}): SkillRec
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "libero-skill-recall-"));
+  sharedRoot = mkdtempSync(join(tmpdir(), "libero-skill-recall-shared-"));
   mkdirSync(join(root, CHANNEL));
   store = openMessageStore({ channel: CHANNEL, root });
   files = openSkillFiles({ channel: CHANNEL, root, maxSkills: MAX_SKILLS, now: () => AT });
@@ -156,6 +199,7 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(root, { recursive: true, force: true });
+  rmSync(sharedRoot, { recursive: true, force: true });
 });
 
 describe("interleaveCandidates", () => {
@@ -493,7 +537,8 @@ describe("what retrieval records", () => {
     skill("cut-a-release", "How a release is cut and tagged.");
     const at = 1_700_000_999_000;
 
-    const loaded = await createSkillRecall({ now: () => at })(ask("how is a release cut"));
+    const loaded = (await createSkillRecall({ now: () => at })(ask("how is a release cut")))
+      .channel;
 
     expect(loaded).toHaveLength(1);
     expect(usesOf("cut-a-release")).toEqual({ uses: 1, last_used_at: at });
@@ -755,3 +800,223 @@ describe("what a failure costs", () => {
     expect(lines.map(line => line.event)).not.toContain("skill_recall_failed");
   });
 });
+
+// #436. The pool has two halves, they are ranked together, and the bounds are
+// the pool's rather than either half's.
+describe("the shared half of the pool", () => {
+  const CREDENTIALS = "Swapping client credentials before they expire.";
+  const QUESTION = "how do we roll a new key for a channel";
+
+  it("loads a shared skill from the lexical leg, under its address", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.", "Say it plainly.");
+
+    const loaded = await poolWith()(
+      ask("how do we roll a certificate", { shared: pool("rotate-a-cert") })
+    );
+
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/rotate-a-cert"]);
+    expect(loaded.channel).toEqual([]);
+  });
+
+  // The vector leg, with the lexical leg run first as the control: not one token
+  // in common, so a pass is a pass on the vector.
+  it("loads one from the vector leg", async () => {
+    publish("rotate-a-cert", CREDENTIALS);
+    // One pass to index it, so the vector has a row to hang off.
+    await poolWith()(ask("unrelated", { shared: pool("rotate-a-cert") }));
+    embed("shared/rotate-a-cert", CREDENTIALS);
+
+    expect(store.searchSkills(QUESTION, 3)).toEqual([]);
+
+    const loaded = await poolWith()(ask(QUESTION, { shared: pool("rotate-a-cert") }));
+
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/rotate-a-cert"]);
+  });
+
+  // Reconciliation runs here, so a skill published between two tasks is
+  // retrievable on the second — and with no embedding provider anywhere, because
+  // the lexical leg needs none.
+  it("indexes a skill published since the last task", async () => {
+    const retrieve = poolWith();
+    expect((await retrieve(ask("how do we roll a certificate", { shared: null }))).shared).toEqual(
+      []
+    );
+
+    publish("rotate-a-cert", "How this company rolls a certificate.");
+
+    const loaded = await retrieve(
+      ask("how do we roll a certificate", { shared: pool("rotate-a-cert") })
+    );
+
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/rotate-a-cert"]);
+  });
+
+  // Scoping is the sheet, at the retrieval seam as well as at the pool's: a file
+  // in the root that this channel did not name is not in this channel's index and
+  // is not in its pool.
+  it("never loads a published skill this sheet did not name", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.");
+    publish("brand-voice", "Prose, tone, register.");
+
+    const loaded = await poolWith()(
+      ask("how do we roll a certificate", { shared: pool("rotate-a-cert") })
+    );
+
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/rotate-a-cert"]);
+    // Not in the pool, and not in the index either: the unnamed file never
+    // reached this channel's store at all.
+    expect(store.searchSkills("prose tone register", 5)).toEqual([]);
+  });
+
+  // The address is the dedupe key, which is what lets both halves hold one stem.
+  it("holds a channel skill and a published one of the same name at once", async () => {
+    skill("cut-a-release", "When shipping a release.", "1. Tag.");
+    publish("cut-a-release", "How this company ships a release.", "1. Ask.");
+
+    const loaded = await poolWith()(
+      ask("how is a release cut", { shared: pool("cut-a-release") })
+    );
+
+    expect(loaded.channel.map(entry => entry.name)).toEqual(["cut-a-release"]);
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/cut-a-release"]);
+  });
+
+  // `top_k` bounds the whole pool, not this channel's half of it — the sheet's
+  // own words for the field.
+  it("cuts at top_k across both halves", async () => {
+    skill("cut-a-release", "When shipping a release.");
+    skill("roll-back-a-release", "When a release must be rolled back.");
+    publish("ship-a-release", "How this company ships a release.");
+    publish("stop-a-release", "How this company stops a release.");
+
+    const loaded = await poolWith()(
+      ask("how is a release cut", { topK: 3, shared: pool("ship-a-release", "stop-a-release") })
+    );
+
+    expect(loaded.channel.length + loaded.shared.length).toBe(3);
+  });
+
+  it("bounds a shared skill by max_skill_chars exactly as it bounds its own", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.", "x".repeat(600));
+
+    const { lines, logger } = capturingLogger();
+    const loaded = await poolWith({ logger })(
+      ask("how do we roll a certificate", { maxSkillChars: 500, shared: pool("rotate-a-cert") })
+    );
+
+    expect(loaded.shared).toEqual([]);
+    expect(lines.filter(line => line.event === "skill_oversize")).toHaveLength(1);
+  });
+
+  it("charges a shared skill against the block's own ceiling", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.", "x".repeat(SKILLS_MAX_CHARS));
+    skill("cut-a-release", "When shipping a release.", "1. Tag.");
+
+    const loaded = await poolWith()(
+      ask("how is a release cut", {
+        maxSkillChars: SKILLS_MAX_CHARS,
+        shared: pool("rotate-a-cert")
+      })
+    );
+
+    expect(loaded.channel.length + loaded.shared.length).toBe(1);
+  });
+
+  it("records a use against the address, where no clock reads it", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.");
+
+    await poolWith()(ask("how do we roll a certificate", { shared: pool("rotate-a-cert") }));
+
+    expect(usesOf("shared/rotate-a-cert")).toMatchObject({ uses: 1 });
+    expect(store.skillClocks()).toEqual([]);
+  });
+
+  it("names each shared skill it loaded, where a channel skill's name stays out", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.");
+    skill("cut-a-release", "When shipping a release.");
+
+    const { lines, logger } = capturingLogger();
+    await poolWith({ logger })(
+      ask("how do we roll a certificate", { shared: pool("rotate-a-cert") })
+    );
+
+    expect(lines.filter(line => line.event === "shared_skill_loaded")).toMatchObject([
+      { level: "info", channel: CHANNEL, file: "shared/rotate-a-cert" }
+    ]);
+  });
+
+  // The purge the unconditional reconcile exists for: an operator deletes a
+  // `[[shared_skill]]` block, and the row goes with it rather than surviving to
+  // spend a slot on every task from then on.
+  it("drops a skill the sheet has stopped naming", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.");
+    const retrieve = poolWith();
+    await retrieve(ask("how do we roll a certificate", { shared: pool("rotate-a-cert") }));
+
+    const loaded = await retrieve(ask("how do we roll a certificate", { shared: null }));
+
+    expect(loaded.shared).toEqual([]);
+    expect(store.searchSkills("how this company rolls a certificate", 5)).toEqual([]);
+  });
+});
+
+// #436. `[skills] enabled = false` gates the channel leg of the pool and never
+// the pool — the team sheet's own words. `files: null` is what "off" looks like
+// here.
+describe("a channel whose own skills are switched off", () => {
+  it("still resolves the shared skills its sheet named", async () => {
+    publish("rotate-a-cert", "How this company rolls a certificate.");
+
+    const loaded = await poolWith()(
+      ask("how do we roll a certificate", { files: null, shared: pool("rotate-a-cert") })
+    );
+
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/rotate-a-cert"]);
+  });
+
+  // The membership filter, and it bites before the fusion: a leftover channel row
+  // this channel can no longer address is not a pool member, so it neither loads
+  // nor takes one of `top_k`'s slots on the way to resolving as nothing.
+  //
+  // What the filter cannot do is un-spend a limit spent upstream. Both legs apply
+  // their own before this file sees a row, so a leftover row ranked above a
+  // shared skill can still crowd it out of the list entirely — recorded in the
+  // header and in `apps/server/README.md` rather than fixed here, because the fix
+  // is a purge and a purge on a config flip would take a channel's counters with
+  // it. This case gives both legs room, which is the ordinary shape.
+  it("does not spend a slot on a leftover channel skill", async () => {
+    skill("cut-a-release", "How a release is cut.");
+    publish("rotate-a-cert", "How a release is cut by this company.");
+    // Index the channel half while the switch is still on, then turn it off.
+    await poolWith()(ask("unrelated", { shared: null }));
+
+    const loaded = await poolWith()(
+      ask("how is a release cut", { topK: 2, files: null, shared: pool("rotate-a-cert") })
+    );
+
+    expect(loaded.shared.map(entry => entry.name)).toEqual(["shared/rotate-a-cert"]);
+    expect(loaded.channel).toEqual([]);
+  });
+
+  it("keeps a non-member out of the distance corpus entirely", async () => {
+    skill("cut-a-release", CREDENTIALS_FOR_CORPUS);
+    await poolWith()(ask("unrelated", { shared: null }));
+    embed("cut-a-release", CREDENTIALS_FOR_CORPUS);
+
+    const { lines, logger } = capturingLogger();
+    await poolWith({ logger })(
+      ask("how do we roll a new key for a channel", { files: null, shared: null })
+    );
+
+    expect(lines.filter(line => line.event === "recall_hit")).toEqual([]);
+  });
+
+  it("answers nothing when neither half is addressable", async () => {
+    const loaded = await poolWith()(ask("how is a release cut", { files: null, shared: null }));
+
+    expect(loaded).toEqual({ channel: [], shared: [] });
+  });
+});
+
+/** One of the fixture's paired phrases, named where the case reads better for it. */
+const CREDENTIALS_FOR_CORPUS = "Swapping client credentials before they expire.";

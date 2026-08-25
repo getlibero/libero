@@ -245,6 +245,7 @@ describe("createSkillEmbedSweep", () => {
       channel: CHANNEL,
       store,
       files,
+      shared: null,
       vector: vectorFor(QUESTION),
       query: QUESTION,
       topK: 3,
@@ -252,7 +253,7 @@ describe("createSkillEmbedSweep", () => {
       maxSkills: MAX_SKILLS
     });
 
-    expect(loaded.map(entry => entry.name)).toEqual(["rotate-a-cert"]);
+    expect(loaded.channel.map(entry => entry.name)).toEqual(["rotate-a-cert"]);
   });
 
   it("never embeds an archived skill", async () => {

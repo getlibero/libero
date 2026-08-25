@@ -13,6 +13,49 @@
 //
 // What follows is only what differs from recall.
 //
+// ## One pool with two halves (#436)
+//
+// Since shared skills, this is not "the channel's skills, retrieved". It is one
+// pool whose two halves — the channel's own directory and the retrieved-mode
+// shared skills its sheet named — are independently addressable, and either may
+// be absent. ./skill-pool.ts holds the membership rule and the argument for it;
+// what matters here is the consequence.
+//
+// **`[skills] enabled` is not this file's gate, and must not become one.** The
+// team sheet settled that when the entries landed: the switch gates the channel
+// leg of the pool and never the pool, so a channel with it off and a `retrieved`
+// entry still resolves that entry, bounded by `top_k` and `max_skill_chars`
+// exactly as it would be with the switch on. `files` being null is what "off"
+// looks like here, and it ends nothing on its own.
+//
+// **Membership is filtered before the fusion, not after.** Both legs are
+// origin-blind by `packages/memory`'s decision, so a channel that turned skills
+// off still gets its own leftover rows back from them. Dropping those at the read
+// loop would be too late: each would have taken one of `topK`'s slots, and the
+// slots are the scarce thing. So the rank lists are filtered by `membershipOf`
+// on the way in, and what the interleave sees is members only.
+//
+// What that cannot do is un-spend a slot spent upstream. `searchSkills` and
+// `nearest` apply their own limits before this file sees a row, so on a channel
+// that once had skills and has since switched them off, leftover rows can crowd
+// a shared skill out of both lists entirely. Recorded rather than fixed:
+// purging the channel half on `enabled = false` would be state deletion
+// triggered by a config flip, and the sheet falls back to `enabled: false` for a
+// sheet that would not parse — so one typo would take a channel's use counters
+// and `first_seen_at` clocks with it. An operator-run purge is the answer and it
+// is filed separately.
+//
+// **The shared reconcile is unconditional**, including when there is no shared
+// library at all. That is what `reconcileSharedSkillIndex`'s null is for: an
+// operator deleting a `[[shared_skill]]` block otherwise strands a row that both
+// legs keep returning, that resolves through no opener, and that spends a slot
+// on every task from then on.
+//
+// **The return is a pair rather than one list with an origin on each item.** The
+// author turn (#291) is given the channel half and cannot be given the other,
+// because the model has no verb over a read-only root; a partition it cannot
+// express is stronger than a `.filter()` somebody later drops.
+//
 // ## Reconciliation runs here, and this is where it has to run
 //
 // `reconcileSkillIndex` had no caller until this file, and #290's PR says why
@@ -134,7 +177,9 @@
 import type { LogFields, Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore, SkillFiles } from "@getlibero/memory";
-import { reconcileSkillIndex } from "@getlibero/memory";
+import { reconcileSharedSkillIndex, reconcileSkillIndex } from "@getlibero/memory";
+import { membershipOf, readCandidate } from "./skill-pool.js";
+import type { SharedSkillPool } from "./skill-pool.js";
 
 /**
  * The most characters the skills block may carry, across all of it.
@@ -178,8 +223,19 @@ export interface SkillRecallOptions {
 export interface SkillRecallRequest {
   readonly channel: string;
   readonly store: MessageStore;
-  /** This channel's skills directory, already gated — see ./skills.ts. */
-  readonly files: SkillFiles;
+  /**
+   * This channel's skills directory, already gated — see ./skills.ts — or `null`
+   * where `[skills] enabled` is false and the channel half is unaddressable.
+   *
+   * Null ends nothing on its own: the shared half may still be a pool, and the
+   * sheet says it resolves either way.
+   */
+  readonly files: SkillFiles | null;
+  /**
+   * The retrieved-mode shared skills this channel's sheet named (#436), or
+   * `null` where it named none, the root is unset, or the root is not there.
+   */
+  readonly shared: SharedSkillPool | null;
   /** The embedded question, from ./embed.ts. `null` runs the lexical leg alone. */
   readonly vector: Float32Array | null;
   /** What was asked, verbatim. The lexical leg's query; the store tokenizes it. */
@@ -232,20 +288,48 @@ export function interleaveCandidates(
  * answer, and a channel with no skills all produce the same thing, which is a
  * task that starts the way it did before phase 3.
  */
-export type SkillRecall = (request: SkillRecallRequest) => Promise<readonly LoadedSkill[]>;
+/**
+ * What one pass loaded, split by which half of the pool it came from.
+ *
+ * A pair rather than one list carrying an origin per item, because the two are
+ * rendered in different blocks and used by different callers: the channel half
+ * is what the author turn may revise, and the shared half is text an operator
+ * decreed that the model has no verb over. See the header.
+ */
+export interface RetrievedSkills {
+  readonly channel: readonly LoadedSkill[];
+  readonly shared: readonly LoadedSkill[];
+}
+
+/** Nothing retrieved, for the paths that answer without looking. */
+const NOTHING_RETRIEVED: RetrievedSkills = Object.freeze({
+  channel: Object.freeze([]) as readonly LoadedSkill[],
+  shared: Object.freeze([]) as readonly LoadedSkill[]
+});
+
+export type SkillRecall = (request: SkillRecallRequest) => Promise<RetrievedSkills>;
 
 export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
 
   return async request => {
-    const { channel, store, files, query, topK, maxSkillChars, maxSkills } = request;
+    const { channel, store, files, shared, query, topK, maxSkillChars, maxSkills } = request;
     // One instant for the whole pass, so a skill first seen by this reconcile and
     // used by this retrieval carries the same figure in both columns.
     const at = now();
 
     try {
-      reconcileSkillIndex({ files, store, maxSkills, at, channel, logger });
+      if (files !== null) reconcileSkillIndex({ files, store, maxSkills, at, channel, logger });
+      // Unconditional, including where there is no shared library: `null` is how
+      // the shared half is emptied, and not calling is what strands a row that
+      // both legs keep returning and no opener can resolve. See the header.
+      reconcileSharedSkillIndex({
+        files: shared?.files ?? null,
+        store,
+        names: shared?.names ?? [],
+        at
+      });
     } catch (error) {
       // A separate word from the search failure below. The two have different
       // fixes — a directory this process cannot read is a mount or a permission,
@@ -256,20 +340,36 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         channel,
         reason: error instanceof Error ? error.name : "unknown"
       });
-      return [];
+      return NOTHING_RETRIEVED;
     }
+
+    // After the reconcile and never before it, or the purge above never runs on
+    // the channel that most needs it: one whose sheet has stopped naming the
+    // shared skills its index still holds.
+    if (files === null && shared === null) return NOTHING_RETRIEVED;
 
     try {
       // Both legs asked for `topK`, not a multiple of it. The interleave takes at
       // most `topK` names in total, so over-fetching either side would buy
       // nothing but rows to discard — and `nearest` spends `k` inside the vec0
       // match, which is the cost #290 went to some trouble to keep exact.
-      const vectorHits =
-        request.vector === null ? [] : store.nearest(request.vector, topK, "skill");
+      //
+      // Both legs are origin-blind by `packages/memory`'s decision, so both are
+      // filtered to pool members on the way in — before the fusion, so a row
+      // this channel cannot address never takes one of `topK`'s slots. The
+      // vector hits are filtered here rather than at the log below for the same
+      // reason in the other direction: #427's distance corpus is a measurement
+      // of the pool, and a non-member is not in the distribution being measured.
+      const vectorHits = (
+        request.vector === null ? [] : store.nearest(request.vector, topK, "skill")
+      ).filter(hit => membershipOf(hit.source.ref, files, shared) !== null);
       const byVector = vectorHits.map(hit => hit.source.ref);
-      const byText = store.searchSkills(query, topK);
+      const byText = store
+        .searchSkills(query, topK)
+        .filter(name => membershipOf(name, files, shared) !== null);
 
       const loaded: LoadedSkill[] = [];
+      const fromShared = new Set<string>();
       let chars = 0;
       // What the loop decided about each fused candidate, read back afterwards
       // to say what became of each vector hit (#427). A map rather than a line
@@ -294,11 +394,12 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         // so that a hand-deleted skill's stale body cannot reach a model. A
         // candidate whose file is gone or no longer parses is skipped, which is
         // what recall already does for an invalidated summary.
-        const skill = files.read(name);
-        if (skill === null) {
+        const resolved = readCandidate(name, files, shared);
+        if (resolved === null) {
           decided.set(name, "unresolved");
           continue;
         }
+        const skill = resolved.file;
 
         // The channel's own per-skill cap. `packages/memory` declined to take
         // this figure on the grounds that refusing an over-cap file "is the
@@ -337,6 +438,15 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
           description: skill.frontmatter.description,
           body: skill.body
         });
+        if (resolved.origin === "shared") {
+          fromShared.add(name);
+          // One line per shared skill, which is the standing region's word and
+          // its reason: a channel skill's name is the model's own words and stays
+          // out of the log, where an operator's is the operator's — and "which
+          // house playbooks is this channel actually pulling in" is a question
+          // only they can be answered.
+          logger.log("info", { event: "shared_skill_loaded", channel, file: name });
+        }
         decided.set(name, "loaded");
       }
 
@@ -376,7 +486,14 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         });
       }
 
-      return loaded;
+      // Split at the end rather than into two lists as it goes: everything above
+      // — the ranking, the character budget, `top_k` — bounds the pool rather
+      // than either half of it, and two accumulators would be two places for a
+      // bound to be applied to one of them by mistake.
+      return {
+        channel: loaded.filter(skill => !fromShared.has(skill.name)),
+        shared: loaded.filter(skill => fromShared.has(skill.name))
+      };
     } catch (error) {
       // A store that cannot answer costs the task its skills and nothing else.
       logger.log("warn", {
@@ -384,7 +501,7 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         channel,
         reason: error instanceof Error ? error.name : "unknown"
       });
-      return [];
+      return NOTHING_RETRIEVED;
     }
   };
 }

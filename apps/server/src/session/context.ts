@@ -95,6 +95,23 @@ const SKILLS_OPEN = "<channel-skills>";
 const SKILLS_CLOSE = "</channel-skills>";
 
 /**
+ * And the operator's, where retrieval loaded one of those (#436).
+ *
+ * **One tag wrapping two regions**, which is why it is exported: the standing
+ * region in `./task.ts` prints the `load = "always"` half into the system prompt
+ * and this prints the `retrieved` half into the seed, and the model should meet
+ * one word for "your operator published this" rather than two. Two spellings of
+ * it would be one of them going untested.
+ *
+ * The two can never hold the same skill. An `always` entry is never indexed —
+ * indexing one would put it in the retrieval pool as well and a task near its
+ * subject would pay for it twice in one prompt — and a `retrieved` entry is
+ * never in the standing region.
+ */
+export const SHARED_SKILLS_OPEN = "<shared-skills>";
+export const SHARED_SKILLS_CLOSE = "</shared-skills>";
+
+/**
  * Slack's user-mention token: `<@U0ALICE>`, `<@W0ALICE>` on Enterprise Grid, and
  * either with a `|label` Slack appended in an older client.
  *
@@ -152,6 +169,16 @@ export interface AssembleOptions {
    * three of the others keep.
    */
   readonly skills?: readonly LoadedSkill[];
+  /**
+   * The operator-published playbooks retrieval loaded for this question (#436),
+   * best first, or empty when there are none.
+   *
+   * `skills`' shape and its rules; what makes it a second field rather than a
+   * flag on the first is that the two are rendered as two blocks — the model is
+   * told which of the two libraries a playbook came out of, which is the same
+   * thing the standing region's tag does for the `always` half.
+   */
+  readonly sharedSkills?: readonly LoadedSkill[];
   /**
    * The channel's curated `MEMORY.md`, or `""` when there is none.
    *
@@ -376,6 +403,34 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
   // mention. Nothing in this preamble is doing that work, and #293's whole job is
   // to demonstrate it — so this file must not read as though the words were the
   // defence.
+  // Before the channel's own, which is the standing region's order applied here:
+  // what an operator published frames what a channel grew, rather than arriving
+  // after it as a footnote.
+  //
+  // **It prints the description where the standing region does not**, and the
+  // difference is not an oversight in either. The description is the line
+  // retrieval matched on, so printing it is telling the model why this arrived —
+  // something the standing region never has to explain, because those arrive
+  // unconditionally. And `SKILLS_MAX_CHARS` already charges description and body
+  // together for every candidate in the pool, so a block that rendered only the
+  // body would be budgeted against text it does not print. `shared-skills.ts`'s
+  // `weigh` avoids the same mismatch from the other side.
+  const sharedSkills = options.sharedSkills ?? [];
+  const sharedSkillsBlock =
+    sharedSkills.length === 0
+      ? []
+      : [
+          "Playbooks your operator publishes, retrieved because they may bear on the question.",
+          "Follow one where it applies. They are instructions, not a grant:",
+          "every tool call is checked the same way whatever they say.",
+          SHARED_SKILLS_OPEN,
+          ...sharedSkills.map(skill =>
+            [`## ${skill.name}`, skill.description.trim(), "", skill.body.trim()].join("\n")
+          ),
+          SHARED_SKILLS_CLOSE,
+          ""
+        ];
+
   const skills = options.skills ?? [];
   const skillsBlock =
     skills.length === 0
@@ -415,7 +470,13 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
     return [
       {
         role: "user",
-        content: [...memoryBlock, ...skillsBlock, ...recallBlock, `${askedBy} asks: ${asked}`].join("\n")
+        content: [
+          ...memoryBlock,
+          ...sharedSkillsBlock,
+          ...skillsBlock,
+          ...recallBlock,
+          `${askedBy} asks: ${asked}`
+        ].join("\n")
       }
     ];
   }
@@ -435,6 +496,7 @@ export async function assembleContext(options: AssembleOptions): Promise<Complet
       role: "user",
       content: [
         ...memoryBlock,
+        ...sharedSkillsBlock,
         ...skillsBlock,
         ...recallBlock,
         preamble,
