@@ -98,6 +98,7 @@ async function assemble(
     lookup?: DisplayNameLookup;
     memory?: string;
     skills?: LoadedSkill[];
+    sharedSkills?: LoadedSkill[];
     recalled?: RecalledSummary[];
   } = {}
 ): Promise<string> {
@@ -109,6 +110,7 @@ async function assemble(
     bounds: { ...BOUNDS, ...overrides.bounds },
     ...(overrides.memory !== undefined ? { memory: overrides.memory } : {}),
     ...(overrides.skills !== undefined ? { skills: overrides.skills } : {}),
+    ...(overrides.sharedSkills !== undefined ? { sharedSkills: overrides.sharedSkills } : {}),
     ...(overrides.recalled !== undefined ? { recalled: overrides.recalled } : {})
   });
 
@@ -567,6 +569,58 @@ describe("the skills block", () => {
     const text = await assemble(null, { skills: [CERTS, DEPLOY] });
 
     expect(text.indexOf("## rotate-a-certificate")).toBeLessThan(text.indexOf("## cut-a-release"));
+  });
+
+  // #436. The operator's half of the pool, in its own block so the model is told
+  // which library a playbook came out of.
+  describe("the operator's half", () => {
+    const HOUSE: LoadedSkill = {
+      name: "shared/code-review-standards",
+      description: "How this company reviews code.",
+      body: "Read the diff before the description."
+    };
+
+    it("renders it with its name, its description and its body", async () => {
+      const text = await assemble(null, { sharedSkills: [HOUSE] });
+
+      expect(text).toContain("<shared-skills>");
+      expect(text).toContain("## shared/code-review-standards");
+      expect(text).toContain("How this company reviews code.");
+      expect(text).toContain("Read the diff before the description.");
+      expect(text).toContain("</shared-skills>");
+    });
+
+    // What an operator published frames what the channel grew, rather than
+    // arriving after it as a footnote — the standing region's order, here.
+    it("sits before the channel's own", async () => {
+      const text = await assemble(null, { skills: [DEPLOY], sharedSkills: [HOUSE] });
+
+      expect(text.indexOf("<shared-skills>")).toBeLessThan(text.indexOf("<channel-skills>"));
+    });
+
+    it("says what following one does not buy, as the other block does", async () => {
+      const text = await assemble(null, { sharedSkills: [HOUSE] });
+
+      const preamble = text.slice(0, text.indexOf("<shared-skills>"));
+      expect(preamble).toContain("not a grant");
+    });
+
+    // The address is what keeps the two halves legible when both are rendered.
+    it("keeps a published skill and a channel one of the same stem apart", async () => {
+      const text = await assemble(null, {
+        skills: [{ ...DEPLOY, name: "code-review-standards" }],
+        sharedSkills: [HOUSE]
+      });
+
+      expect(text).toContain("## shared/code-review-standards");
+      expect(text).toContain("## code-review-standards");
+    });
+
+    it("contributes nothing at all when there are none, not an empty block", async () => {
+      const text = await assemble([stored("U0BOB", "on it")], { skills: [DEPLOY] });
+
+      expect(text).not.toContain("shared-skills");
+    });
   });
 
   // The rule all four blocks keep. An empty `<channel-skills>` would read as

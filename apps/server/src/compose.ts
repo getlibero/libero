@@ -51,6 +51,7 @@ import type { SkillCuratePass } from "./session/skill-curate.js";
 import type { SkillLifecyclePass } from "./session/skill-lifecycle.js";
 import type { SkillRecall } from "./session/skill-recall.js";
 import type { SharedSkillReader } from "./session/shared-skills.js";
+import type { SharedSkillPoolOpener } from "./session/skill-pool.js";
 import type { SkillFilesOpener } from "./session/skills.js";
 import type { SummarySweep } from "./session/summarize.js";
 import type { DisplayNameLookup } from "./session/names.js";
@@ -249,6 +250,14 @@ export interface ServerDeps {
    */
   readonly sharedSkills?: SharedSkillReader;
   /**
+   * How the retrieved half of the shared library is opened for a channel (#436).
+   *
+   * `sharedSkills`' sibling and the same root, wanted by the router rather than
+   * by the task runner: this half is retrieved inside the session's lock, where
+   * the standing half is composed outside it.
+   */
+  readonly sharedSkillPool?: SharedSkillPoolOpener;
+  /**
    * The skill-embedding pass (#305), run on channel activity beside `summarize`.
    *
    * Built by the process for `summarize`'s reason — it needs an embedding client
@@ -407,6 +416,8 @@ export type { SkillFilesOpener, SkillFilesOpenerOptions } from "./session/skills
 export { SKILLS_MAX_CHARS, createSkillRecall } from "./session/skill-recall.js";
 export { createSharedSkillReader } from "./session/shared-skills.js";
 export type { SharedSkillReader, SharedSkillRequest } from "./session/shared-skills.js";
+export { createSharedSkillPoolOpener } from "./session/skill-pool.js";
+export type { SharedSkillPool, SharedSkillPoolOpener } from "./session/skill-pool.js";
 export type { LoadedSkill, SkillRecall } from "./session/skill-recall.js";
 export { createQueryEmbedder } from "./session/embed.js";
 export type { QueryEmbedder } from "./session/embed.js";
@@ -569,6 +580,7 @@ export function createServer(deps: ServerDeps): Server {
     ...(deps.embed !== undefined ? { embed: deps.embed } : {}),
     ...(deps.skills !== undefined ? { skills: deps.skills } : {}),
     ...(deps.skillRecall !== undefined ? { skillRecall: deps.skillRecall } : {}),
+    ...(deps.sharedSkillPool !== undefined ? { sharedPool: deps.sharedSkillPool } : {}),
     task: createTaskRunner({
       completion: deps.completion,
       transport: deps.transport,

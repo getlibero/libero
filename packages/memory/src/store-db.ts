@@ -1430,8 +1430,14 @@ export interface MessageStore {
    * flag, so it cannot go out of step with the vectors it describes.
    *
    * Never includes an archived skill, which has no business being embedded.
+   *
+   * **`origin` narrows it to one half of the library** (#436), and a caller that
+   * omits it gets both, unchanged. Narrowing is for the caller that cannot
+   * address the other half — a channel whose `[skills] enabled` is false has no
+   * opener for its own skills, so leftover rows of that origin would fill the
+   * window and never leave it. See `SKILLS_NEEDING_EMBEDDING_OF_ORIGIN_SQL`.
    */
-  skillsNeedingEmbedding(limit: number): readonly string[];
+  skillsNeedingEmbedding(limit: number, origin?: SkillOrigin): readonly string[];
   /**
    * Every indexed skill with everything a lifecycle clock is read from, in name
    * order (#294).
@@ -2211,6 +2217,38 @@ const SKILLS_NEEDING_EMBEDDING_SQL = `SELECT s.name
     LIMIT ?`;
 
 /**
+ * The same read over one half of the library (#436), and why it is a second
+ * statement rather than the first one with a predicate.
+ *
+ * `NEAREST_OF_KIND_SQL`'s pattern, for a related reason and a different
+ * mechanism: there the predicate has to sit inside the vec0 match to mean
+ * anything, and here it has to sit inside the `LIMIT` to mean anything. The
+ * batch is ten names in name order, and `shared/` sorts after every channel name
+ * from `a` to `r` — so a caller that filtered the unscoped read afterwards would
+ * be filtering a window that the half it cannot address had already filled.
+ *
+ * **What that costs is not a wasted pass but a permanent one.** A channel with
+ * `[skills] enabled = false` has no opener for its own leftover rows, so it
+ * resolves none of them, embeds none of them, and they are still unembedded on
+ * the next pass — holding the window against the shared skills its sheet did
+ * name, forever. The team sheet's `[[shared_skill]]` header promises those
+ * entries resolve on a switched-off channel "exactly as it would be with the
+ * switch on"; on the vector leg, this statement is what keeps that promise.
+ *
+ * The unscoped read above is unchanged, so a caller that can address both halves
+ * pays nothing for a filter it did not ask for.
+ */
+const SKILLS_NEEDING_EMBEDDING_OF_ORIGIN_SQL = `SELECT s.name
+     FROM skill s
+     LEFT JOIN embedding_source e
+       ON e.source_kind = 'skill' AND e.source_ref = s.name
+    WHERE e.id IS NULL
+      AND s.status != 'archived'
+      AND s.origin = ?
+    ORDER BY s.name
+    LIMIT ?`;
+
+/**
  * The lifecycle clocks (#294), and why the join is an inner one.
  *
  * **Every indexed skill has a `skill_use` row**, structurally: the only way into
@@ -2913,6 +2951,7 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     ),
     searchSkills: db.prepare(SEARCH_SKILLS_SQL),
     skillsNeedingEmbedding: db.prepare(SKILLS_NEEDING_EMBEDDING_SQL),
+    skillsNeedingEmbeddingOfOrigin: db.prepare(SKILLS_NEEDING_EMBEDDING_OF_ORIGIN_SQL),
     skillClocks: db.prepare(SKILL_CLOCKS_SQL),
     adoptSkillStatus: db.prepare(ADOPT_SKILL_STATUS_SQL),
     recordSkillStatus: db.prepare(RECORD_SKILL_STATUS_SQL),
@@ -3430,10 +3469,13 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       for (const name of names) statements.recordSkillUse.run(at, name);
     },
 
-    skillsNeedingEmbedding(limit) {
-      const rows = statements.skillsNeedingEmbedding.all(clampLimit(limit)) as Array<{
-        readonly name: string;
-      }>;
+    skillsNeedingEmbedding(limit, origin) {
+      const wanted = clampLimit(limit);
+      const rows = (
+        origin === undefined
+          ? statements.skillsNeedingEmbedding.all(wanted)
+          : statements.skillsNeedingEmbeddingOfOrigin.all(origin, wanted)
+      ) as Array<{ readonly name: string }>;
       return rows.map(row => row.name);
     },
 

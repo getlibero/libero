@@ -35,7 +35,8 @@ import {
   createAmbientHeartbeat,
   createAmbientTaskFire,
   createServer,
-  createSharedSkillReader
+  createSharedSkillReader,
+  createSharedSkillPoolOpener
 } from "./compose.js";
 import type { AmbientHeartbeat, AmbientTaskFire, ProactivePoster } from "./compose.js";
 import {
@@ -92,6 +93,12 @@ if (sharedSkillsRoot === null) {
 // that names a shared skill in a deployment with no root into a log line saying
 // so. Omitting it there would make the two indistinguishable from inside a task.
 const sharedSkills = createSharedSkillReader({ root: sharedSkillsRoot, logger });
+// The retrieved half of the same root (#436). A second opener rather than a
+// second use of the reader above: the standing region reads and weighs in one
+// shot and keeps nothing, where the pool has to survive as a handle across a
+// reconcile, two rank lists and a read loop. Built even when the root is null,
+// for the reader's reason.
+const sharedSkillPool = createSharedSkillPoolOpener({ root: sharedSkillsRoot, logger });
 const completion = createCompletionClient(completionConfigFromEnv(process.env));
 // Optional, and its absence is a supported deployment rather than a failure:
 // memory Layers 1 and 2 are whole without embeddings, so a process with no
@@ -276,8 +283,15 @@ const embedSkills = createSkillEmbedSweep({
   files: skills,
   settings: async channel => {
     const settings = await sheets(channel);
-    return { enabled: settings.skills.enabled, maxSkills: settings.skills.maxSkills };
+    return {
+      enabled: settings.skills.enabled,
+      maxSkills: settings.skills.maxSkills,
+      // Both modes, unsplit — the pool opener filters. Read whatever `enabled`
+      // says, because it gates the channel leg of the pool and never the pool.
+      sharedSkills: settings.sharedSkills
+    };
   },
+  sharedPool: sharedSkillPool,
   reportTurn,
   maySpend,
   signal: tasks.signal,
@@ -469,6 +483,7 @@ const { gateway, ambient } = createServer({
   embed,
   skillRecall,
   sharedSkills,
+  sharedSkillPool,
   signal: tasks.signal,
   logger
 });

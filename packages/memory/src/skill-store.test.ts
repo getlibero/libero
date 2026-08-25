@@ -857,6 +857,10 @@ describe("the shared half of the index", () => {
   const reconcileShared = (names: string[], at = NOW) =>
     reconcileSharedSkillIndex({ files: shared, store, names, at });
 
+  /** The same pass on a channel that has no shared library at all (#436). */
+  const reconcileWithNoLibrary = (at = NOW) =>
+    reconcileSharedSkillIndex({ files: null, store, names: [], at });
+
   beforeEach(() => {
     sharedRoot = mkdtempSync(join(tmpdir(), "libero-shared-root-"));
     const files = openSharedSkillFiles({ root: sharedRoot });
@@ -1075,6 +1079,122 @@ describe("the shared half of the index", () => {
       expect(store.nearest(Float32Array.from([1, 0, 0]), 5, "skill").map(hit => hit.source.ref)).toEqual([
         "shared/brand-voice"
       ]);
+    });
+  });
+
+  // #436. `null` is the third thing a caller can say, and it is what lets both
+  // passes call this unconditionally rather than skipping it — skipping is what
+  // strands a row that no opener can resolve and that both legs keep returning.
+  describe("a channel with no shared library", () => {
+    it("empties the half when the root goes away", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      expect(reconcileWithNoLibrary(NOW + DAY)).toMatchObject({ indexed: 0, dropped: 1 });
+      expect(store.listSkills("shared")).toEqual([]);
+    });
+
+    it("leaves the channel's own skills alone doing it", () => {
+      create("rotate-a-cert");
+      reconcile();
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      reconcileWithNoLibrary(NOW + DAY);
+
+      expect(store.listSkills("channel").map(skill => skill.name)).toEqual(["rotate-a-cert"]);
+    });
+
+    // The ordinary case, and the one that has to be cheap: no third root
+    // configured anywhere, on every task, forever.
+    it("is a no-op on a half that holds nothing", () => {
+      expect(reconcileWithNoLibrary()).toMatchObject({ indexed: 0, dropped: 0, invalidated: 0 });
+    });
+  });
+
+  // The acceptance's "a body edit … without resetting its use counters", against
+  // the mechanism that actually decides it: the vector stands for the
+  // description, so only a description edit invalidates one. See
+  // `apps/server/src/session/skill-embed.ts` for why that is the wanted answer
+  // here rather than a gap — one operator typo fix would otherwise charge every
+  // channel that named the skill for a vector identical to the one it replaced.
+  describe("what an operator's edit costs", () => {
+    it("re-indexes a body edit without invalidating the vector", () => {
+      publish("brand-voice", "How this company writes.", "Say it plainly.");
+      reconcileShared(["brand-voice"]);
+      embed("shared/brand-voice", [1, 0, 0]);
+      store.recordSkillUse(["shared/brand-voice"], NOW);
+
+      publish("brand-voice", "How this company writes.", "Say it plainly, and once.");
+
+      expect(reconcileShared(["brand-voice"], NOW + DAY)).toMatchObject({
+        indexed: 1,
+        dropped: 0,
+        invalidated: 0
+      });
+      expect(store.skillsNeedingEmbedding(10)).toEqual([]);
+      expect(uses("shared/brand-voice")).toMatchObject({ uses: 1 });
+      expect(store.searchSkills("plainly and once", 5)).toEqual(["shared/brand-voice"]);
+    });
+
+    it("invalidates the vector when the description moves", () => {
+      publish("brand-voice", "How this company writes.");
+      reconcileShared(["brand-voice"]);
+      embed("shared/brand-voice", [1, 0, 0]);
+      store.recordSkillUse(["shared/brand-voice"], NOW);
+
+      publish("brand-voice", "How this company writes its release notes.");
+
+      expect(reconcileShared(["brand-voice"], NOW + DAY)).toMatchObject({ invalidated: 1 });
+      expect(store.skillsNeedingEmbedding(10)).toEqual(["shared/brand-voice"]);
+      expect(uses("shared/brand-voice")).toMatchObject({ uses: 1 });
+    });
+  });
+
+  // #436. Both halves compete for one batch of ten in name order, which is fine
+  // on a channel that can address both — and is a permanent stall on one that
+  // cannot. `shared/` sorts after every channel name from `a` to `r`.
+  describe("embedding one half of the library", () => {
+    it("answers only the half the caller asked for", () => {
+      create("rotate-a-cert");
+      reconcile();
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      expect(store.skillsNeedingEmbedding(10, "shared")).toEqual(["shared/brand-voice"]);
+      expect(store.skillsNeedingEmbedding(10, "channel")).toEqual(["rotate-a-cert"]);
+      expect(store.skillsNeedingEmbedding(10)).toEqual(["rotate-a-cert", "shared/brand-voice"]);
+    });
+
+    // The stall, exactly: ten unembeddable channel rows sort ahead of the one
+    // shared row and fill the window, so the unscoped read never reaches it and
+    // the next pass finds the same ten.
+    it("reaches a shared skill the channel half would hold the window against", () => {
+      // Written rather than created, and reconciled against a cap of its own:
+      // the fixture's `[skills] max_skills` is below the batch size, and the
+      // stall needs a full window of channel rows to be a stall.
+      const filling = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+      for (const name of filling) handWrite(`${name}-runbook`, skillText(`${name}-runbook`));
+      reconcile(filling.length);
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+
+      expect(store.skillsNeedingEmbedding(10)).not.toContain("shared/brand-voice");
+      expect(store.skillsNeedingEmbedding(10, "shared")).toEqual(["shared/brand-voice"]);
+    });
+
+    it("never lists an archived skill of the half either", () => {
+      publish("brand-voice");
+      reconcileShared(["brand-voice"]);
+      writeFileSync(
+        join(sharedRoot, "brand-voice.md"),
+        skillText("brand-voice", { status: "archived" }),
+        "utf8"
+      );
+      reconcileShared(["brand-voice"], NOW + DAY);
+
+      expect(store.listSkills("shared")).toHaveLength(1);
+      expect(store.skillsNeedingEmbedding(10, "shared")).toEqual([]);
     });
   });
 });

@@ -445,6 +445,10 @@ export interface TaskSettings extends ChannelSettings {
    * The transcript holds them as one block of prose inside a `user` message; the
    * author turn needs them as structured files, because it shows each one under
    * its own name so a `skill_revise` can address it.
+   *
+   * **The channel half of the pool only** (#436). The retrieved shared skills a
+   * task loaded are rendered into `messages` beside these and are deliberately
+   * absent here — see `authoringFor` in ./task.ts for the argument.
    */
   readonly loadedSkills?: readonly LoadedSkill[];
 }

@@ -144,8 +144,30 @@ export function reconcileSkillIndex(options: SkillReconcileOptions): SkillReconc
 }
 
 export interface SharedSkillReconcileOptions {
-  /** The operator's shared root, opened read-only. */
-  readonly files: SharedSkillFiles;
+  /**
+   * The operator's shared root, opened read-only — or `null` for a channel that
+   * has no shared library right now (#436).
+   *
+   * `null` covers three states the caller cannot tell apart and should not have
+   * to: the root is unset, the root is not there, or this channel's sheet names
+   * no `retrieved` entry. All three mean the same thing to the index, which is
+   * that the shared half of it should be empty.
+   *
+   * **It is a value rather than a reason not to call.** Without it, the only way
+   * to say "empty" is to skip the pass — and skipping is exactly what strands a
+   * `shared/<name>` row when an operator deletes a `[[shared_skill]]` block from
+   * a sheet. That row is returned by both retrieval legs, which are origin-blind
+   * on purpose, resolves through no opener, and spends one of `[skills] top_k`'s
+   * slots on every task from then on. Accepting `null` is what lets both callers
+   * make this call unconditionally, which is what makes the shared half of the
+   * index exactly what the sheet and the root currently say.
+   *
+   * The cost, stated: a root that is transiently unmounted empties the half, and
+   * the next pass with the mount back re-earns it at one embedding per skill per
+   * channel. That is worse than doing nothing and better than every task paying
+   * a slot for rows that can never resolve.
+   */
+  readonly files: SharedSkillFiles | null;
   /** The channel's store, which holds the index — one per channel, as ever. */
   readonly store: MessageStore;
   /**
@@ -209,7 +231,10 @@ export function reconcileSharedSkillIndex(
   // `stat` per file in the root rather than per name this channel wants, which
   // is the same steady-state cost the channel pass pays and is bounded by what
   // one operator publishes.
-  const kept = files.fingerprints().filter(file => wanted.has(file.name));
+  //
+  // No library is the empty intersection rather than an early return, so the
+  // delete pass below still runs and still empties the half — see `files`.
+  const kept = files === null ? [] : files.fingerprints().filter(file => wanted.has(file.name));
 
   const stored = new Map(store.listSkills("shared").map(skill => [skill.name, skill]));
   const changed: SkillEntry[] = [];
@@ -226,8 +251,9 @@ export function reconcileSharedSkillIndex(
       continue;
     }
 
-    // Read by the bare name, indexed under the address.
-    const skill = files.read(file.name);
+    // Read by the bare name, indexed under the address. `files` is non-null
+    // here: `kept` is empty when it is not.
+    const skill = files === null ? null : files.read(file.name);
     if (skill === null) continue;
 
     changed.push({
