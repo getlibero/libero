@@ -41,9 +41,13 @@ Slack (Socket Mode)
       ├─ MEMORY.md       (agent-curated)
       ├─ skills/*.md     (agent-authored)
       └─ proposals/*.md  (merge drafts; the team applies or deletes)
+
+   shared skills root (read-only to the agent;
+   the proxy does not mount it at all)
+   └─ *.md            (operator-published; sheets name which channels get which)
 ```
 
-**Two roots, not one, and the split is load-bearing.** The obvious layout puts a
+**Three roots, and each split is load-bearing.** The obvious layout puts a
 channel's whole state in one directory. It cannot: both services mount the
 channels directory and it is where the proxy reads its authorization from, so an
 agent able to write there could rewrite a `channel.toml` — and the proxy
@@ -54,6 +58,17 @@ first thing on that side, `MEMORY.md` joined it in phase 2 for the same reason,
 `skills/` joined them in phase 3 — with `proposals/` beside it, which is the
 curator's only output and the one directory here the agent writes and never
 reads back.
+
+The third root is the **shared skills** directory, added in v0.5.0 and mounted
+read-only to the agent alone. It is neither of the first two, and the second
+exclusion is the one worth reading twice: the state root is the one directory the
+agent *writes*, so a shared skill kept there would be a file a compromised agent
+could rewrite — and where a poisoned channel-authored skill costs one channel's
+future tasks, a shared skill is read by every channel whose sheet names it. One
+writable file poisoning all of them at once is the cross-channel amplification the
+per-channel layout exists to prevent. The proxy does not mount it at all, because
+a shared skill is text for the model rather than authorization. An unset variable
+and an empty directory are both supported deployments.
 
 **The proxy reads `store.db`, and only that.** `search_channel_history` is
 served by the proxy, so the proxy mounts the agent's state root and opens each
@@ -154,6 +169,20 @@ Slack retention is respected: a message deleted in Slack is deleted from the sto
 ## Skills
 
 After any task exceeding a tool-call threshold (default 5), a skill-author turn decides whether a reusable playbook emerged and, if so, writes a frontmatter-structured `skills/*.md` (name, description, created, status). Loading is by retrieval: at task start the agent embeds the incoming request and retrieves top-k matching skills (sqlite-vec + FTS hybrid), loading only those into context — never the whole library. Lifecycle: stale at 30 days unused and archived at 90 — `[skills] stale_after_days` and `archive_after_days`, tunable per channel — run by a maintenance job that makes no model call and spends nothing, plus a curator pass that proposes merges of overlapping skills for human review rather than silently rewriting institutional knowledge. Skills are text in the channel's directory under the agent state root, beside `MEMORY.md` — the root the agent writes, not the channels root the proxy reads its authorization from: reviewable, editable, deletable by the team that owns them.
+
+**Shared skills are the operator's half of the same library** (v0.5.0). An operator publishes a playbook once into the third root — through git, vendored into their own repository, so an update is a reviewed diff rather than text that changed under the model overnight — and each channel's team sheet names which of them it gets, with `[[shared_skill]]`. One canonical file; the sheet is the scope, so a file nobody names reaches nobody.
+
+Two load modes, because retrieval cannot serve the consistency case. `load = "always"` puts a playbook in the system prompt of every task in that channel — what a house voice needs, since retrieval will never surface `brand-voice` for a database migration — bounded by `max_always_skills` and `max_always_chars`. `load = "retrieved"` joins the channel's own retrieval pool, bounded by `top_k` and `max_skill_chars` exactly as the channel's own are; `top_k` bounds the whole pool rather than either half. `[skills] enabled = false` does not switch either off: that switch governs what a channel grows for itself, and these were decreed rather than grown.
+
+An always-loaded playbook is part of the agent's **standing region** — the static prompt, the sheet's `[channel] description`, and the always-loaded shared skills, composed in one place. Five turns compose it, and the line between them and the rest is composition against record: a turn that composes something a person will read or a playbook the team will keep gets it, because an operator's standing text is guidance for how that thing should read. So the task reply, both kinds of proactive post, the skill-author turn and the merge curator all carry it — house rules about how a runbook is written belong where a runbook is written. `MEMORY.md` curation and thread summarization do not: those keep a record, and standing text there is either noise or a thumb on the scale.
+
+The sheet has no way to say which turns a shared skill applies to, so a voice skill and an authoring-standards skill are indistinguishable and both reach all five. That is a stated cost rather than one worked around.
+
+Addressed as `shared/<name>` wherever the agent refers to one, so a shared playbook and a channel's own of the same name never collide — `/` is not a character a channel-grown name may contain. The model is told which library it is reading: shared skills render under `<shared-skills>` and the channel's own under `<channel-skills>`.
+
+**They do not age, and the model has no verb over them.** The lifecycle clocks and the merge curator are scoped to the channel's own half, so a decreed playbook stays until the sheet or the file drops it; uses are recorded and no clock acts on them. Nothing in the agent can write the shared root — there is no operation that names it, and in the deployment it is bind-mounted read-only. A **marketplace mechanism** — runtime fetch, discovery surface, auto-update — was declined rather than deferred: auto-updating text that enters a model's context is an injection subscription, a runtime marketplace client is a new egress surface, and retrieval over content optimized to be retrieved is a contest the grown-only corpus does not have.
+
+The trust claim, written narrowly: a sheet-named shared skill is operator-authored through git, so it survives a prompt-injected model and does not survive a compromised operator repository — which was already true of the team sheets themselves. What holds regardless is containment: a hostile shared skill widens nothing, because every call it induces meets the same gates, in the same order, as if the same words had arrived in a mention.
 
 **The file carries what a human authored; the index carries what the runtime observed.** Use counts and last-used timestamps are columns in `store.db`, not frontmatter — an earlier draft of this page listed `uses` among the frontmatter fields, and #289 moved it. Retrieval records a use at the head of every task, for every skill it loaded, so in frontmatter that would be top-k rewrites of team-owned markdown per task, each one able to lose an edit somebody made in between. The rule that leaves: reconciliation reads these files and never writes them, and `created` is documentation — no clock reads it, because it is a model-authored line in a file the team may edit. What the clocks run on is the index's own record of when it first saw a skill and when a task last loaded one.
 

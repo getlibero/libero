@@ -834,6 +834,51 @@ A deployment with **no embedding provider proposes nothing at all**. Unlike retr
 back to full text, there is no lexical answer to "are these two playbooks near each other" — so this
 is off in practice wherever `AGENT_EMBEDDING_PROVIDER` is unset, without a setting saying so.
 
+### `[[shared_skill]]`
+
+One block per playbook your **operator** publishes to this channel. Where `[skills]` governs the
+playbooks a channel grows for itself, these are written once by whoever runs your deployment, kept
+in a third directory mounted read-only to the agent, and named per channel by the blocks below. One
+canonical file; which channels get it is each channel's sheet.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | The file's name in the shared directory, without `.md`. Lower-case letters, digits and single hyphens, as a skill name always is. |
+| `load` | yes | `"always"` or `"retrieved"`. **No default** — see below. |
+
+**The two modes are not two strengths of one setting**, which is why `load` has no default and a
+block that omits it does not parse.
+
+`"always"` puts the playbook in the system prompt of every task in this channel, charged against
+every turn, whether or not the request had anything to do with it. That is what a house voice needs:
+retrieval will never surface `brand-voice` for a database migration. `[skills] max_always_skills`
+bounds how many may do this and `max_always_chars` bounds what the set may weigh — a skill that
+would breach the second is dropped whole, with a log line naming it, rather than truncated.
+
+`"retrieved"` joins the same pool your channel's own playbooks are matched against, so it arrives
+when the request looks like it and costs nothing when it does not. `[skills] top_k` and
+`max_skill_chars` bound it exactly as they bound your own — `top_k` bounds the **whole pool**, so a
+shared skill in this mode competes with your own for those slots.
+
+**`[skills] enabled = false` does not switch these off.** That switch governs what this channel
+grows for itself; these were decreed rather than grown, and they resolve either way — bounded by
+`top_k` and `max_skill_chars` exactly as they would be with the switch on.
+
+**Names are namespaced, so nothing collides.** A shared skill is addressed as `shared/<name>`
+wherever the agent refers to one, and `/` is not a character a channel's own skill name may contain
+— so a shared `brand-voice` and one of your own with the same name are two different playbooks and
+always were. The model is told which is which: shared skills are rendered under `<shared-skills>`
+and your own under `<channel-skills>`.
+
+**A name your operator has not published loads nothing**, and that is not a parse error: the file
+lives in another directory, read by another process at another time, so a sheet that parsed on
+Tuesday would stop parsing on Wednesday because somebody moved a file. It is dropped with a line in
+the operator's log naming it. `libero doctor` catches it before a deploy.
+
+Nothing a shared skill says widens what this channel may do. Every call one induces is checked
+exactly as if the same words had arrived in a mention — that is a statement of what the tool proxy
+enforces, not a promise about the text.
+
 ### `[[mcp_server]]`
 
 One block per MCP server this channel may reach. `credential` is a name; the proxy resolves it
