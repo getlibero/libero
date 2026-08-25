@@ -158,6 +158,56 @@ a sheet that fails to parse falls back to skills being off — so the answer is 
 command rather than a config side effect
 ([#452](https://github.com/getlibero/libero/issues/452)).
 
+## The road to 1.0
+
+Planned 2026-08-25. Four releases remain before 1.0, and the plan's aim is that **1.0 is a
+validation release rather than a feature release**: by the time v0.9.0 closes, every open issue is
+decided — shipped, scheduled, or recorded as post-1.0 with its reason — and what 1.0 adds is proof,
+which is the success criterion below rather than a feature list.
+
+The ordering has one structural argument. Validation needs deployments, and deployments generate
+exactly the data three parked issues are gated on — the recall distance cutoff
+([#283](https://github.com/getlibero/libero/issues/283)) wants a real corpus, thread segmentation
+([#284](https://github.com/getlibero/libero/issues/284)) wants real thread lengths, and cost
+reconciliation ([#239](https://github.com/getlibero/libero/issues/239)) wants a sidecar reporting
+figures. So the arc front-loads what makes deployments possible and lands the data-gated work last,
+once pilot usage has produced its inputs.
+
+**v0.6.0 — scheduling.** The open milestone. Recurring turns at a clock time, operator-authored
+([#358](https://github.com/getlibero/libero/issues/358)): `[[ambient.rule]]` in the team sheet,
+every rule an ask firing the bounded check-turn shape, and a heartbeat switch for rules-only
+channels. Beside it, [#348](https://github.com/getlibero/libero/issues/348) is decided — built with
+answers to its two questions, or declined with the reasons recorded — and the example-sheet suite
+learns to tell a documented figure from an inherited default
+([#445](https://github.com/getlibero/libero/issues/445)).
+
+**v0.7 — deployment shapes.** The LiteLLM sidecar becomes first-class beside the native adapters
+([#428](https://github.com/getlibero/libero/issues/428)), which unblocks the cost-drift recorder
+([#239](https://github.com/getlibero/libero/issues/239)), and the vault and token store gain
+external secrets-manager backends ([#261](https://github.com/getlibero/libero/issues/261)). This is
+the release pilot deployments run from.
+
+**v0.8 — richer tools, wider adoption.** Tool results stop being a string — image, audio and
+resource content relayed to the model ([#160](https://github.com/getlibero/libero/issues/160)) — a
+channel gets a name, an icon and a persona
+([#270](https://github.com/getlibero/libero/issues/270)), and OAuth upstreams get
+sender-constrained tokens ([#260](https://github.com/getlibero/libero/issues/260)).
+
+**v0.9 — close-out.** The data-gated items, now buildable against pilot data (#283, and #284 if the
+numbers say so); `libero skill vendor` ([#439](https://github.com/getlibero/libero/issues/439));
+the native adapters pilot demand actually named, from
+[#56](https://github.com/getlibero/libero/issues/56)–[#58](https://github.com/getlibero/libero/issues/58);
+and a disposition pass over whatever remains, so each surviving parked issue carries an explicit
+post-1.0 reason. "Done" here means no open issue is undecided, not that all of them were built.
+
+Some things stay demand-driven, decided rather than drifted: Windows support for the CLI
+([#249](https://github.com/getlibero/libero/issues/249)), the adapters no pilot asked for, and
+event-driven ambient — MCP subscriptions
+([#155](https://github.com/getlibero/libero/issues/155)) paired with tool access for fired checks
+(#348, if declined) — which is a post-1.0 workstream rather than a hardening item, because a
+subscription wake that can look nothing up is thin and both halves carry the same governance
+questions.
+
 ## What success looks like
 
 Not stars: unaffiliated teams self-hosting the governed core in real workspaces, and the e2e security suite passing against every release.
