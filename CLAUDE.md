@@ -80,17 +80,18 @@ A daemon each is what lets both run at once.
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
-last one, so delivery is no longer phase-gated, and two releases have shipped
-since: `v0.3.0`, the release that made releases real (#313, #377, #378), and
+last one, so delivery is no longer phase-gated, and three releases have shipped
+since: `v0.3.0`, the release that made releases real (#313, #377, #378);
 `v0.4.0`, code execution governed — the sandbox built-in (#368 is the tracker),
 `[egress]`'s first live caller (#219), and a third service holding the Docker
-socket and no credential at all (#393). Both were August 2026. There is no
+socket and no credential at all (#393); and `v0.5.0`, shared skills (below).
+All three were August 2026. There is no
 phase 6, and inventing one to hold ordinary work would be the wrong move; the
 roadmap's phase list is complete rather than paused.
 
-**`v0.5.0`, shared skills, is built and untagged.** Its milestone has no open
-issues and its tracker (#373) is closed; the tag, the changelog entry and the
-upgrade notes follow per `RELEASING.md`. An operator publishes skills that a
+**`v0.5.0`, shared skills, shipped 2026-08-25** — tagged, published and its
+milestone closed, with the changelog entry carrying the upgrade notes. An
+operator publishes skills that a
 channel's team sheet names by reference, `load = "always"` for voice and house
 rules and `load = "retrieved"` to join the channel's retrieval pool, with the
 content in a third root mounted read-only to the agent and never in the
