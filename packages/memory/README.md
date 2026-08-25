@@ -559,10 +559,25 @@ of the shared root — so an unscoped delete would take the shared half away on 
 first of them and the shared pass would put it back on the next, forever. One
 pass is one origin, on both the write and the delete.
 
-What is deliberately *not* scoped: `searchSkills`, `nearest`,
-`skillsNeedingEmbedding` and `recordSkillUse`. A `retrieved` shared skill belongs
-in both retrieval legs and has to earn a vector like any other, and its uses are
-recorded while no clock reads them — which is #373's wording exactly.
+What is deliberately *not* scoped: `searchSkills`, `nearest` and
+`recordSkillUse`. A `retrieved` shared skill belongs in both retrieval legs and
+has to earn a vector like any other, and its uses are recorded while no clock
+reads them — which is #373's wording exactly.
+
+`skillsNeedingEmbedding` is the fourth of those and is not scoped *by default*
+(#436): a caller that omits the origin gets both halves, and the query is
+unchanged. What the argument is for is the caller that cannot address one half.
+The batch is ten names in name order and `shared/` sorts after every channel name
+from `a` to `r`, so a caller filtering the unscoped read afterwards would be
+filtering a window the unaddressable half had already filled — and, because it
+embeds none of what filled it, would find the same window on the next pass and
+every pass after. That is not a wasted call but a permanent stall, and the
+channel it stalls is the one with `[skills] enabled = false` and a `[[shared_skill]]`
+entry, whose sheet promises exactly that the entry resolves anyway. Scoping
+`nearest` or `searchSkills` the same way is a different question and the answer
+is no: the first would mean joining `skill` inside a vec0 match on a method that
+knows nothing of skills beyond a kind string, and the second would put a
+membership rule in the store that the server applies regardless.
 
 The shared pass differs from the channel's in three ways, all in
 `reconcileSharedSkillIndex`. The **sheet** bounds the set rather than
@@ -885,13 +900,22 @@ Four callers of one function rather than four paths, and the rule above is
 unaffected: `reconcileSkills` is still the only writer, and no caller writes a
 file.
 
-`reconcileSharedSkillIndex` has **none** yet, and neither does
-`openSharedSkillFiles`: #434 built the storage half of shared skills ahead of the
-passes that use it, which is #435 and #436's work. Until they land, the shared
-half of every index is empty and a `[[shared_skill]]` entry in a sheet parses and
-reaches nothing. That is the same shape `skillsNeedingEmbedding` was in before
-#305 and is stated here for the same reason: a method with no caller is a fact
-about the tree, not a gap somebody should fill by inventing one.
+`reconcileSharedSkillIndex` has two, both in `apps/server` and both added by
+#436: skill retrieval reconciles the shared half at the head of a task, and the
+embedding pass reconciles it before asking what needs a vector. `openSharedSkillFiles`
+has those two and the standing region's reader (#435), which opens the root and
+indexes nothing.
+
+Both callers pass `files: null` where a channel has no shared library — the root
+is unset, the root is not there, or the sheet names no `retrieved` entry — rather
+than skipping the pass. That is what the null is for. Skipping is what strands a
+`shared/<name>` row when an operator deletes a `[[shared_skill]]` block: the row
+is returned by both retrieval legs, which are origin-blind on purpose, resolves
+through no opener, and spends one of `[skills] top_k`'s slots on every task from
+then on. Accepting a null library is what makes the call unconditional, and an
+unconditional call is what makes the shared half of the index exactly what the
+sheet and the root currently say. It costs a transiently unmounted root the whole
+half, re-earned at one embedding per skill per channel when the mount returns.
 
 The fusion itself —
 a round-robin interleave over the two rank lists, on the argument that an L2
