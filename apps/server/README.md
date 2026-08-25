@@ -1598,7 +1598,9 @@ to wake at a time that has passed.
 `src/tasks-cli.ts` is this process's **first operator entrypoint** — `node
 dist/tasks.js list <channel>`, `cancel <channel> <id>` and `cancelled <channel>`
 — beside the four `apps/proxy-server` already carries; `src/rebuild-cli.ts` is
-the second, and [has its own section](#rebuild-the-way-out-of-a-changed-embedding-model).
+the second, and [has its own section](#rebuild-the-way-out-of-a-changed-embedding-model);
+`src/skill-purge-cli.ts` is the third, and
+[has one too](#skill-purge-the-way-to-empty-a-channels-own-skill-index).
 Where they live was forced twice over.
 
 Not the published `libero` CLI, for the reason #98 gave the audit log: the store
@@ -1677,6 +1679,51 @@ cache of the files — which is that pass, whole, and a second copy of it here
 would be a second implementation of one thing. What it costs is that a channel
 nobody speaks in keeps no skill vectors until somebody does; a channel nobody
 speaks in also runs no task for that to degrade.
+
+### `skill-purge`: the way to empty a channel's own skill index
+
+`src/skill-purge-cli.ts` is the third entrypoint — `node dist/skill-purge.js
+<channel> [--yes]` — and it exists for a cost #436 recorded rather than fixed
+(#452).
+
+`searchSkills` and `nearest` are origin-blind on purpose, and each applies its
+own limit before `session/skill-recall.ts` sees a row. So a channel that once had
+skills and has since set `[skills] enabled = false` keeps its channel-authored
+rows, and those rows still spend those limits — they can crowd a shared skill out
+of both rank lists before the membership filter ever sees them. The filter stops
+such a row taking one of `top_k`'s slots; it cannot un-spend a limit spent
+upstream. And the rows are unreachable in every other sense: with the switch off
+there is no opener for them, so they never resolve, never embed and never age.
+
+**The switch nearly could do this itself, and must not.** `DEFAULT_SKILL_SETTINGS`
+falls back to `enabled: false` for a sheet that *would not parse*, which is the
+direction that header argues is right to fail in — so an automatic purge would
+let one typo in a `channel.toml` destroy a channel's `skill_use` counters and
+`first_seen_at` clocks on the next mention. State deletion triggered by a config
+flip is the wrong default; state deletion an operator asked for is not, and until
+this there was no way to ask.
+
+**It says what it will destroy before destroying it.** Without `--yes` it is a
+read: how many skills, when the oldest was first seen, how many have ever been
+loaded, and that the use counts and both stamps go with the rows because nothing
+re-derives them. That preview is the whole of the confirmation, since a
+`docker compose run` has no terminal to prompt at.
+
+Three things it leaves alone. **`skills/` on disk** — the files are the team's,
+and `reconcileSkillIndex` rebuilds the index from them the next time a task runs
+with the switch on, minus the clocks. **The shared half** — `reconcileSkills`
+deletes by origin, so `shared/*` rows are outside the statement rather than
+filtered out of it. **Every other channel** — one file is one channel, which is
+`packages/memory`'s isolation boundary rather than a check in the command.
+
+**No new writer in `packages/memory`, deliberately.** The purge is
+`reconcileSkills({ present: [], changed: [], origin: "channel" })` — the delete
+pass that module already has, told this origin's directory holds nothing, which
+is exactly the state it reconciles to when a team deletes their `skills/`
+directory. A `purgeSkills` beside it would be a second way to delete a skill row
+in a package whose one rule about those tables is that `reconcileSkills` is their
+only writer. What the command supplies is the decision, and a decision is not a
+storage primitive.
 
 ## The proactive post: the one way this process starts a message
 
