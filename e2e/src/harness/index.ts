@@ -83,6 +83,8 @@ export type { RecordingTransport } from "./transport.js";
 
 export { EMBED_TOKENS, constantEmbeddings } from "./embedding.js";
 export type { ConstantEmbeddings } from "./embedding.js";
+export { sharedSkillRoot } from "./shared-skills.js";
+export type { SharedSkillFile, SharedSkillRoot } from "./shared-skills.js";
 
 export { backgroundPasses } from "./passes.js";
 export type { BackgroundPass, BackgroundPassDeps, BackgroundPassOptions } from "./passes.js";

@@ -33,6 +33,8 @@ import { createCleanup, guarded } from "./cleanup.js";
 import type { Cleanup } from "./cleanup.js";
 import { constantEmbeddings } from "./embedding.js";
 import type { ConstantEmbeddings } from "./embedding.js";
+import { sharedSkillRoot } from "./shared-skills.js";
+import type { SharedSkillFile, SharedSkillRoot } from "./shared-skills.js";
 import type { BackgroundPass } from "./passes.js";
 import { mintCerts } from "./certs.js";
 import type { Certs } from "./certs.js";
@@ -259,6 +261,23 @@ export interface RigOptions {
    */
   readonly embedding?: "constant";
   /**
+   * The skills an operator has published to this deployment's third root (#437).
+   *
+   * Absent leaves `AGENT_SHARED_SKILLS_ROOT` unset, which is `runner`'s and
+   * `ambient`'s rule and is what keeps every other file in this suite unchanged
+   * — a rig that quietly acquired a root would put a standing region in the
+   * system prompt of every channel whose sheet named a skill.
+   *
+   * An empty array is **not** the same as absent: it mounts a root that holds
+   * nothing, which is the deployment an operator has before publishing anything
+   * and is a state worth being able to write a case against.
+   *
+   * The root is only half of it. Which channels see which skill is
+   * `SheetSpec.sharedSkills`, and that the two are separate is the property the
+   * scoping case leans on.
+   */
+  readonly sharedSkills?: readonly SharedSkillFile[];
+  /**
    * How the agent reports token spend to the proxy.
    *
    * Both departures from `"sent"` are compromised agents rather than
@@ -355,6 +374,15 @@ export interface Rig {
    * that a row is in the file.
    */
   readonly storeRoot: string;
+  /**
+   * The operator's shared skill root, when this rig mounted one (#437).
+   *
+   * `null` when `RigOptions.sharedSkills` was absent, which is the deployment
+   * with no third root. `publish` adds one after the rig is up — an operator
+   * with a checkout, mid-deploy — and `fingerprint` is what a case asserts the
+   * agent side wrote nothing with.
+   */
+  readonly sharedSkills: SharedSkillRoot | null;
   /**
    * The fake embedding provider, when this rig composed one (#308).
    *
@@ -587,6 +615,16 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     // fourth returns immediately on.
     const embeddings = options.embedding === undefined ? null : constantEmbeddings();
 
+    // Its own root, beside the other two and belonging to neither service: the
+    // operator publishes here and both services only read — the agent side
+    // through a `:ro` mount in production, and the proxy not at all.
+    const sharedSkills =
+      options.sharedSkills === undefined ? null : sharedSkillRoot(options.sharedSkills);
+    if (sharedSkills !== null) {
+      const root = sharedSkills.path;
+      cleanup.add("shared skills", () => rmSync(root, { recursive: true, force: true }));
+    }
+
     const model = scriptedModel(options.script ?? [], options.onModelTurn);
     const agent = await startAgent(cleanup, {
       proxyUrl: proxy.url,
@@ -603,7 +641,8 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       ...(options.passes !== undefined ? { passes: options.passes } : {}),
       ...(options.ambient !== undefined ? { ambient: options.ambient } : {}),
       ...(options.passClock !== undefined ? { passClock: options.passClock } : {}),
-      ...(embeddings === null ? {} : { embedding: embeddings.client })
+      ...(embeddings === null ? {} : { embedding: embeddings.client }),
+      ...(sharedSkills === null ? {} : { sharedSkillsRoot: sharedSkills.path })
     });
 
     return {
@@ -639,6 +678,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       attemptsDb,
       budgetDb,
       storeRoot,
+      sharedSkills,
       embeddings,
       check: (at: number): Promise<number> => agent.check(at),
       heartbeat: async (at: number): Promise<number> => {
