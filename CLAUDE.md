@@ -123,8 +123,12 @@ origin-blind, so a channel that has since set `[skills] enabled = false` keeps
 rows that can crowd out the shared skills its sheet names, and purging them on
 that switch would let one unparseable sheet destroy a channel's clocks.
 
-**There is no open milestone.** The next one is created when work on it starts,
-which is the convention under "Planning" rather than a gap.
+**The open milestone is `v0.6.0` — scheduling** (#358 and its sub-issues, #348
+decided, #445). It is the first release of the pre-1.0 arc: the roadmap's "The
+road to 1.0" section records the plan — 0.6 scheduling, 0.7 deployment shapes,
+0.8 richer tools and adoption, 0.9 close-out — with 1.0 as a validation release,
+and it is the argued record; do not re-derive the sequencing here. Milestones
+after v0.6.0 are still created only when work on them starts.
 
 `v0.4.0` closed with three of its correctness items **moved out rather than
 delivered** (#239, #283, #284), each gated on data or a deployment shape that
