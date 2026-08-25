@@ -21,10 +21,11 @@ import { expect } from "expect";
 import type { CompletedTurn, EmbeddingClient } from "@getlibero/agent";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore, SkillFiles } from "@getlibero/memory";
-import { openMessageStore, openSkillFiles } from "@getlibero/memory";
+import { openMessageStore, openSkillFiles, reconcileSkillIndex } from "@getlibero/memory";
 import { MAX_SKILLS_PER_EMBED_PASS, createSkillEmbedSweep } from "./skill-embed.js";
 import type { SkillEmbedSweepOptions } from "./skill-embed.js";
 import { createSkillRecall } from "./skill-recall.js";
+import { createSharedSkillPoolOpener } from "./skill-pool.js";
 import { SWEEP_INTERVAL_MS } from "./summarize.js";
 
 const CHANNEL = "C0ENGINEERING";
@@ -32,6 +33,7 @@ const MAX_SKILLS = 100;
 const AT = 1_700_000_000_000;
 
 let root: string;
+let sharedRoot: string;
 let file: string;
 let store: MessageStore;
 let files: SkillFiles;
@@ -184,7 +186,7 @@ function sweepWith(overrides: Partial<SkillEmbedSweepOptions> = {}) {
     embedding: spaced(),
     embeddingModel: "test-embedding-model",
     files: () => files,
-    settings: () => Promise.resolve({ enabled: true, maxSkills: MAX_SKILLS }),
+    settings: () => Promise.resolve({ enabled: true, maxSkills: MAX_SKILLS, sharedSkills: [] }),
     reportTurn: (_channel, turn) => {
       reported.push(turn);
       return Promise.resolve();
@@ -199,6 +201,7 @@ function sweepWith(overrides: Partial<SkillEmbedSweepOptions> = {}) {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "libero-skill-embed-"));
+  sharedRoot = mkdtempSync(join(tmpdir(), "libero-skill-embed-shared-"));
   mkdirSync(join(root, CHANNEL));
   file = join(root, CHANNEL, "store.db");
   store = openMessageStore({ channel: CHANNEL, root });
@@ -208,6 +211,7 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(root, { recursive: true, force: true });
+  rmSync(sharedRoot, { recursive: true, force: true });
 });
 
 describe("createSkillEmbedSweep", () => {
@@ -439,7 +443,7 @@ describe("createSkillEmbedSweep", () => {
       embedding: null,
       settings: () => {
         asked += 1;
-        return Promise.resolve({ enabled: true, maxSkills: MAX_SKILLS });
+        return Promise.resolve({ enabled: true, maxSkills: MAX_SKILLS, sharedSkills: [] });
       },
       logger
     });
@@ -459,7 +463,7 @@ describe("createSkillEmbedSweep", () => {
 
     const { sweep } = sweepWith({
       embedding: client,
-      settings: () => Promise.resolve({ enabled: false, maxSkills: MAX_SKILLS })
+      settings: () => Promise.resolve({ enabled: false, maxSkills: MAX_SKILLS, sharedSkills: [] })
     });
 
     expect(await sweep(CHANNEL, store)).toBe(0);
@@ -511,5 +515,227 @@ describe("createSkillEmbedSweep", () => {
 
     expect(await sweepWith({ logger }).sweep(CHANNEL, broken)).toBe(0);
     expect(lines.map(line => line.event)).toContain("skill_embed_failed");
+  });
+});
+
+// #436. The shared half earns a vector the same way, in the same batch, and on
+// the channels whose own half is switched off as well — the team sheet promises
+// a `retrieved` entry resolves either way, and this is the pass that keeps that
+// promise on the vector leg.
+describe("the shared half of the library", () => {
+  /** The operator's act, from outside this process entirely. */
+  function publish(name: string, description: string, body = "Say it plainly."): void {
+    writeFileSync(
+      join(sharedRoot, `${name}.md`),
+      `---\nname: ${name}\ndescription: ${description}\ncreated: 2026-01-01\nstatus: active\n---\n\n${body}\n`
+    );
+  }
+
+  const HOUSE_STYLE = "How this company writes its release notes.";
+
+  /** The sweep's opener over the fixture's shared root. */
+  const opener = () => createSharedSkillPoolOpener({ root: sharedRoot });
+
+  /** A sheet naming these in `retrieved` mode. */
+  const retrieved = (...names: string[]) =>
+    names.map(name => ({ name, load: "retrieved" as const }));
+
+  it("embeds a retrieved shared skill under its address", async () => {
+    publish("brand-voice", HOUSE_STYLE);
+    const { client, batches } = flat();
+
+    const { sweep } = sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      settings: () =>
+        Promise.resolve({
+          enabled: true,
+          maxSkills: MAX_SKILLS,
+          sharedSkills: retrieved("brand-voice")
+        })
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(1);
+    expect(embedded()).toEqual(["shared/brand-voice"]);
+    expect(batches()).toEqual([[HOUSE_STYLE]]);
+  });
+
+  // One call for a mixed batch, which is what the batching already bought — and
+  // the turn id hashes the addresses, so the two halves cannot collide on a stem.
+  it("carries both halves in one provider call", async () => {
+    skill("brand-voice", CONTAINERS);
+    publish("brand-voice", HOUSE_STYLE);
+    const { client, calls, batches } = flat();
+
+    const { sweep, reported } = sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      settings: () =>
+        Promise.resolve({
+          enabled: true,
+          maxSkills: MAX_SKILLS,
+          sharedSkills: retrieved("brand-voice")
+        })
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(2);
+    expect(calls()).toBe(1);
+    expect(batches()[0]).toHaveLength(2);
+    expect(embedded().sort()).toEqual(["brand-voice", "shared/brand-voice"]);
+    expect(reported[0]?.id).toMatch(/^skills-embed-[0-9a-f]{16}$/);
+  });
+
+  // The standing region's half is never indexed, so it is never embedded: a task
+  // near its subject would otherwise pay for it twice in one prompt.
+  it("never embeds an always entry", async () => {
+    publish("brand-voice", HOUSE_STYLE);
+    const { client, calls } = flat();
+
+    const { sweep } = sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      settings: () =>
+        Promise.resolve({
+          enabled: true,
+          maxSkills: MAX_SKILLS,
+          sharedSkills: [{ name: "brand-voice", load: "always" as const }]
+        })
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(0);
+    expect(calls()).toBe(0);
+    expect(embedded()).toEqual([]);
+  });
+
+  it("runs for a channel whose own skills are switched off", async () => {
+    publish("brand-voice", HOUSE_STYLE);
+    let opened = 0;
+    const { client } = flat();
+
+    const { sweep } = sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      files: () => {
+        opened += 1;
+        return files;
+      },
+      settings: () =>
+        Promise.resolve({
+          enabled: false,
+          maxSkills: MAX_SKILLS,
+          sharedSkills: retrieved("brand-voice")
+        })
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(1);
+    expect(embedded()).toEqual(["shared/brand-voice"]);
+    // The switch still holds over the channel's own half: its directory is never
+    // opened, so a channel that turned skills off does not acquire an index of
+    // them by way of the shared pass.
+    expect(opened).toBe(0);
+    expect(store.listSkills("channel")).toEqual([]);
+  });
+
+  it("still does nothing for a switched-off channel that named none", async () => {
+    skill("base-images", CONTAINERS);
+    const { client, calls } = flat();
+
+    const { sweep } = sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      settings: () =>
+        Promise.resolve({ enabled: false, maxSkills: MAX_SKILLS, sharedSkills: [] })
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(0);
+    expect(calls()).toBe(0);
+    expect(store.listSkills("channel")).toEqual([]);
+  });
+
+  // The stall the origin argument exists for: a full window of channel rows this
+  // pass can no longer resolve would hold the batch against the shared skills the
+  // sheet did name, on this pass and on every pass after it.
+  it("reaches a shared skill a full window of unreachable rows would hold back", async () => {
+    for (let index = 0; index < MAX_SKILLS_PER_EMBED_PASS; index += 1) {
+      skill(`a${index}-runbook`, `When the ${index} thing breaks.`);
+    }
+    // Indexed directly, because the pass that would index them is the one this
+    // case turns off: what the stall needs is a full window of rows already in
+    // the index with no vector and no opener left to resolve them.
+    reconcileSkillIndex({ files, store, maxSkills: MAX_SKILLS, at: AT, channel: CHANNEL });
+    expect(store.skillsNeedingEmbedding(MAX_SKILLS_PER_EMBED_PASS)).toHaveLength(
+      MAX_SKILLS_PER_EMBED_PASS
+    );
+    publish("brand-voice", HOUSE_STYLE);
+    const { client } = flat();
+
+    const { sweep } = sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      now: () => AT + SWEEP_INTERVAL_MS,
+      settings: () =>
+        Promise.resolve({
+          enabled: false,
+          maxSkills: MAX_SKILLS,
+          sharedSkills: retrieved("brand-voice")
+        })
+    });
+
+    expect(await sweep(CHANNEL, store)).toBe(1);
+    expect(embedded()).toEqual(["shared/brand-voice"]);
+  });
+
+  // The acceptance's "a body edit re-embeds it" landed differently, on purpose:
+  // the vector stands for the *description*, so a body edit re-indexes FTS5 and
+  // costs no call — and the counters, which the clause is protecting, survive
+  // either way. Re-embedding on a body edit would charge every channel that
+  // named the skill for a vector identical to the one it replaced.
+  it("re-indexes a shared body edit without a second embedding call", async () => {
+    publish("brand-voice", HOUSE_STYLE, "Say it plainly.");
+    const { client, calls } = flat();
+    const settings = () =>
+      Promise.resolve({
+        enabled: true,
+        maxSkills: MAX_SKILLS,
+        sharedSkills: retrieved("brand-voice")
+      });
+
+    await sweepWith({ embedding: client, sharedPool: opener(), settings }).sweep(CHANNEL, store);
+    expect(calls()).toBe(1);
+
+    publish("brand-voice", HOUSE_STYLE, "Say it plainly, and once.");
+    await sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      settings,
+      now: () => AT + SWEEP_INTERVAL_MS
+    }).sweep(CHANNEL, store);
+
+    expect(calls()).toBe(1);
+    expect(embedded()).toEqual(["shared/brand-voice"]);
+    expect(store.searchSkills("plainly and once", 5)).toEqual(["shared/brand-voice"]);
+  });
+
+  it("re-embeds when the operator rewrites the description", async () => {
+    publish("brand-voice", CREDENTIALS);
+    const { client, calls } = flat();
+    const settings = () =>
+      Promise.resolve({
+        enabled: true,
+        maxSkills: MAX_SKILLS,
+        sharedSkills: retrieved("brand-voice")
+      });
+
+    await sweepWith({ embedding: client, sharedPool: opener(), settings }).sweep(CHANNEL, store);
+
+    publish("brand-voice", CREDENTIALS_REWRITTEN);
+    await sweepWith({
+      embedding: client,
+      sharedPool: opener(),
+      settings,
+      now: () => AT + SWEEP_INTERVAL_MS
+    }).sweep(CHANNEL, store);
+
+    expect(calls()).toBe(2);
   });
 });

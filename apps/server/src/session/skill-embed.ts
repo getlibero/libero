@@ -92,8 +92,11 @@ import type { CompletedTurn, EmbeddingClient } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
-import { reconcileSkillIndex } from "@getlibero/memory";
+import { reconcileSharedSkillIndex, reconcileSkillIndex } from "@getlibero/memory";
+import type { SharedSkillEntry } from "@getlibero/schema";
 import type { SkillFilesOpener } from "./skills.js";
+import { readCandidate } from "./skill-pool.js";
+import type { SharedSkillPoolOpener } from "./skill-pool.js";
 import { SWEEP_INTERVAL_MS } from "./summarize.js";
 
 /**
@@ -120,6 +123,15 @@ export interface SkillEmbedSettings {
   readonly enabled: boolean;
   /** `[skills] max_skills`. What reconciliation truncates the directory to. */
   readonly maxSkills: number;
+  /**
+   * The sheet's `[[shared_skill]]` entries, both modes, in the order it named
+   * them (#436).
+   *
+   * Unsplit, because splitting them is ./skill-pool.ts's job and doing it twice
+   * is doing it two ways. **Read whatever `enabled` says**: the switch gates the
+   * channel leg of the pool and never the pool.
+   */
+  readonly sharedSkills: readonly SharedSkillEntry[];
 }
 
 export interface SkillEmbedSweepOptions {
@@ -149,6 +161,14 @@ export interface SkillEmbedSweepOptions {
    * channel's budget is doing, because the next task reads it.
    */
   maySpend: (channel: string) => Promise<boolean>;
+  /**
+   * How the retrieved half of the shared library is opened for a channel (#436).
+   *
+   * Absent is a deployment with no third root, which is most of them — and is
+   * not the same thing as the opener answering null, which is a channel whose
+   * sheet named no `retrieved` entry.
+   */
+  sharedPool?: SharedSkillPoolOpener;
   logger?: Logger;
   now?: () => number;
   /** Cancels in-flight work when the process is stopping. */
@@ -202,23 +222,45 @@ export function createSkillEmbedSweep(options: SkillEmbedSweepOptions): SkillEmb
       // direction `DEFAULT_SKILL_SETTINGS` already falls in.
       return 0;
     }
-    if (settings === null || !settings.enabled) return 0;
+    if (settings === null) return 0;
 
-    const files = options.files(channel, settings.maxSkills);
-    // Already logged by the opener, with the reason it had.
-    if (files === null) return 0;
+    // Opened whatever the switch says, because `[skills] enabled` gates the
+    // channel leg of the pool and never the pool — the team sheet's own words,
+    // written there so this line would not be the one that quietly disagrees
+    // with them. A channel with skills off and a `retrieved` entry has a pass to
+    // run, and on the vector leg this is the pass that runs it.
+    const pool = options.sharedPool?.(channel, settings.sharedSkills) ?? null;
+    if (!settings.enabled && pool === null) return 0;
+
+    // Null where the switch is off, and null again where the opener failed —
+    // already logged, with the reason it had. Both mean the same thing here: this
+    // channel's own half is unaddressable, so nothing resolves through it and
+    // nothing of it is worth a provider call.
+    const files = settings.enabled ? options.files(channel, settings.maxSkills) : null;
+    if (files === null && pool === null) return 0;
 
     try {
       // The index is what says which skills need a vector, so making it match the
       // directory is the first half of the pass rather than a favour to the next
       // task. One instant for the whole pass, ./skill-recall.ts's rule.
-      reconcileSkillIndex({
-        files,
+      if (files !== null) {
+        reconcileSkillIndex({
+          files,
+          store,
+          maxSkills: settings.maxSkills,
+          at: startedAt,
+          channel,
+          logger
+        });
+      }
+      // Unconditional, on ./skill-recall.ts's reason: a null library is how the
+      // shared half is emptied, and a pass that skipped the call would leave a
+      // row no opener can resolve for both legs to keep returning.
+      reconcileSharedSkillIndex({
+        files: pool?.files ?? null,
         store,
-        maxSkills: settings.maxSkills,
-        at: startedAt,
-        channel,
-        logger
+        names: pool?.names ?? [],
+        at: startedAt
       });
     } catch (error) {
       // ./skill-recall.ts's word, for its reason: a directory this process cannot
@@ -236,7 +278,17 @@ export function createSkillEmbedSweep(options: SkillEmbedSweepOptions): SkillEmb
 
     let names: readonly string[];
     try {
-      names = store.skillsNeedingEmbedding(MAX_SKILLS_PER_EMBED_PASS);
+      // Narrowed to the half this pass can address, and only when it cannot
+      // address the other. The batch is ten in name order, so on a channel whose
+      // own directory is unopenable its leftover rows would fill the window,
+      // resolve to nothing, and be back in the window on the next pass — a
+      // permanent stall rather than a wasted call, and the shared skills its
+      // sheet did name would never earn a vector. One expression covers both ways
+      // the channel half goes unaddressable, because they mean the same thing.
+      names = store.skillsNeedingEmbedding(
+        MAX_SKILLS_PER_EMBED_PASS,
+        files === null ? "shared" : undefined
+      );
     } catch (error) {
       logger.log("warn", { event: "skill_embed_failed", channel, reason: reasonOf(error) });
       return 0;
@@ -250,9 +302,13 @@ export function createSkillEmbedSweep(options: SkillEmbedSweepOptions): SkillEmb
     // that moved underneath the pass rather than an ordinary case.
     const pending: Array<{ readonly name: string; readonly description: string }> = [];
     for (const name of names) {
-      const skill = files.read(name);
-      if (skill === null) continue;
-      pending.push({ name, description: skill.frontmatter.description });
+      // Through whichever opener addresses it — a lookup rather than a parse, on
+      // ./skill-pool.ts's rule. A mixed batch is still one provider call, and
+      // `turnIdFor` hashes the addresses, so a channel skill and a published one
+      // with the same stem are different turns.
+      const resolved = readCandidate(name, files, pool);
+      if (resolved === null) continue;
+      pending.push({ name, description: resolved.file.frontmatter.description });
     }
     if (pending.length === 0) return 0;
 
