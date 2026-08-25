@@ -38,6 +38,8 @@ import {
   createMemoryFileOpener,
   createMessageStoreOpener,
   createServer,
+  createSharedSkillPoolOpener,
+  createSharedSkillReader,
   createSheetResolver,
   createSkillFilesOpener,
   createSkillRecall
@@ -124,6 +126,19 @@ export interface AgentOptions {
    * enumerator, or a `Server.ambient` to drive. See ./ambient.ts.
    */
   readonly ambient?: boolean;
+  /**
+   * `AGENT_SHARED_SKILLS_ROOT` — the operator's shared skill root (#437).
+   *
+   * Absent leaves `createServer` with the two `undefined`s it received before
+   * this existed, so no case that did not ask gains a standing region in its
+   * system prompt or a second half to its retrieval pool. See ./shared-skills.ts.
+   *
+   * **Both halves are composed from one root**, exactly as index.ts does it: the
+   * standing reader for `load = "always"` and the pool opener for the retrieved
+   * half. Wiring one and not the other would be a rig that could only attack
+   * half the feature.
+   */
+  readonly sharedSkillsRoot?: string;
 }
 
 export interface AgentSide {
@@ -375,6 +390,17 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     // refusal was about.
     skills,
     skillRecall: createSkillRecall({ logger }),
+    // The third root, when a case asked for one (#437). Absent composes neither
+    // half — and `createSharedSkillReader` is deliberately not built with a null
+    // root here, unlike index.ts: production wants the log line that tells an
+    // operator their sheet names a skill no root holds, where a rig that never
+    // asked for a root has no operator to tell.
+    ...(options.sharedSkillsRoot === undefined
+      ? {}
+      : {
+          sharedSkills: createSharedSkillReader({ root: options.sharedSkillsRoot, logger }),
+          sharedSkillPool: createSharedSkillPoolOpener({ root: options.sharedSkillsRoot, logger })
+        }),
     // The four background passes, when a case asked for them (#308). Absent
     // otherwise, so `createServer` receives the same four `undefined`s it
     // received before this option existed and no case that did not ask gains a

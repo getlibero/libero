@@ -237,6 +237,21 @@ export interface SheetSpec {
     readonly answerAfterIdleMinutes?: number;
   };
   /**
+   * The `[[shared_skill]]` entries this channel's sheet names (#436).
+   *
+   * **Absent writes no block at all**, which is the sheet a channel has when its
+   * operator publishes nothing to it — and, with `RigOptions.sharedSkills`
+   * absent too, the deployment that mounted no third root. Both halves are
+   * needed: the root is where the file is, and this is which channels get it.
+   * That the two are separate is the property `shared-skill-poisoning.test.ts`
+   * leans on, since a file in the root that no sheet names must reach nothing.
+   *
+   * `load` has no default here because it has none in the schema either — the
+   * two modes are different regions of the prompt, and a spec that let one be
+   * inferred would be a rig choosing which.
+   */
+  readonly sharedSkills?: readonly { readonly name: string; readonly load: "always" | "retrieved" }[];
+  /**
    * The certificates allowed to speak for this channel, as SHA-256 digests
    * (#79).
    *
@@ -361,6 +376,12 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           ...(spec.skills?.archiveAfterDays !== undefined
             ? [`archive_after_days = ${spec.skills.archiveAfterDays}`]
             : []),
+          ...(spec.sharedSkills ?? []).flatMap(shared => [
+            ``,
+            `[[shared_skill]]`,
+            `name = "${shared.name}"`,
+            `load = "${shared.load}"`
+          ]),
           ``,
           `[ambient]`,
           `enabled = ${spec.ambient?.enabled ?? false}`,

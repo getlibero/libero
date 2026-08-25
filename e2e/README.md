@@ -651,6 +651,36 @@ months in the past, so four files would have got up to three summarization turns
 each, three of them against one-entry scripts. `channels.ts` now writes both
 `false` unless a case asks.
 
+**The shared skill root is absent unless a case asks for one, and it is two
+knobs rather than one** (#437). `RigOptions.sharedSkills` mounts the third root
+(#433) and publishes the files an operator put in it;
+`SheetSpec.sharedSkills` writes the `[[shared_skill]]` entries that say which
+channels get which. Both are absent by default, on `runner`'s and `ambient`'s
+terms and for the sharper reason: `load = "always"` puts text in the **system
+prompt of every task in the channel**, so a rig that quietly acquired a root
+would change what every other file in this suite sends the model.
+
+Keeping them separate is not tidiness — it is the property
+`shared-skill-poisoning.test.ts` leans on. One canonical file reaches only the
+channels whose sheets name it, so *scoping is the sheet*, and a case can put a
+hostile playbook in the root and prove it reaches nothing.
+
+The root is written the way an operator's git checkout writes it: bytes into a
+directory, by the rig, because **nothing else in this deployment can**. There is
+no model verb for it, no `SkillFiles.apply` path to it, and in production it is
+bind-mounted `:ro`. `SharedSkillRoot.fingerprint` is how a case asserts that —
+a hash over file *contents* rather than a `readdir`, because the write paths
+differ in what they would disturb: `apply` creates a file where `setStatus`
+rewrites the frontmatter of one that already exists, and only a content hash
+catches both.
+
+**No case may claim a shared skill was retrieved by the vector leg**, which is
+`harness/embedding.ts`'s standing rule applied to this surface rather than a new
+one: word the question to share vocabulary with the skill's *description* and let
+the lexical leg answer. #437's own wording asked for a fake embedder placing a
+hostile skill nearest, and that is exactly the hand-built vector space the rule
+exists to keep out from between an attack and the thing it attacks.
+
 **A curation turn is not finished when the mention that started it is.** It is
 enqueued on the session's queue behind the reply and deliberately not awaited
 (#227), so `deliverMention` resolves while the write is still to happen. Waiting
@@ -767,6 +797,18 @@ outlive the run.
   approval hold, the second with the audit row to show for it; and the surface
   this suite had not met, a skill as a *persistent* place a credential could come
   to rest, attacked over both the elided path and the kept one.
+- `src/shared-skill-poisoning.test.ts` — #437, the same property against text an
+  *operator* published rather than a model: a benign shared skill reaching the
+  standing region and inducing a served call, which is the control the rest of
+  the file needs; a hostile one standing in every task's system prompt and
+  widening nothing at either gate; the same through the retrieval pool on a
+  channel whose own `[skills] enabled` is false; one canonical file reaching no
+  channel whose sheet does not name it; and every path the agent side writes a
+  skill through — the author turn, the lifecycle job's `setStatus`, the merge
+  curator's proposal — driven against a shared root that is byte-identical
+  afterwards.
+- `src/harness/shared-skills.ts` — the operator's third root, its writer, and the
+  content hash that makes "the agent side wrote nothing here" assertable.
 - `src/audit.test.ts` — #98, the read path: three real lifecycles driven through
   the rig and then found again by the spawned `dist/audit.js`, which is the only
   place the *connection* can be shown — a second process opening the log
