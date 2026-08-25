@@ -43,13 +43,22 @@ import {
   createChannelLister,
   createSkillProposalsOpener
 } from "@getlibero/server";
-import type { ServerDeps, SheetResolver } from "@getlibero/server";
+import type { ServerDeps, SharedSkillReader, SheetResolver } from "@getlibero/server";
 import { meteringClosures } from "./passes.js";
 
 /** Exactly the three fields this module fills in on `ServerDeps`. */
 export type AmbientDeps = Pick<ServerDeps, "channels" | "heartbeat" | "fireTask">;
 
 export interface AmbientOptions {
+  /**
+   * How this channel's `load = "always"` shared skills are read (#450).
+   *
+   * Absent composes no region, which is every rig that mounted no third root.
+   * Present, it reaches the turns here that *compose* something — the heartbeat
+   * post, the fired check, the merge curator — and never the two that keep a
+   * record.
+   */
+  readonly sharedSkills?: SharedSkillReader;
   readonly completion: CompletionClient;
   /** The wrapped transport, so a compromised wire reaches the heartbeat's meter. */
   readonly transport: ProxyTransport;
@@ -81,9 +90,18 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
       createAmbientHeartbeat({
         completion: options.completion,
         post,
+        ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
         settings: async channel => {
           const settings = await sheets(channel);
           return {
+            // The operator's own text, carried to every turn that composes
+            // something (#450). `sharedSkills` below is what reads it.
+            standing: {
+              description: settings.description,
+              sharedSkills: settings.sharedSkills,
+              maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+              maxAlwaysChars: settings.skills.maxAlwaysChars
+            },
             enabled: settings.ambient.enabled,
             answerAfterIdleMs: settings.ambient.answerAfterIdleMs,
             model: settings.model,
@@ -114,9 +132,18 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
       createAmbientTaskFire({
         completion: options.completion,
         post,
+        ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
         settings: async channel => {
           const settings = await sheets(channel);
           return {
+            // The operator's own text, carried to every turn that composes
+            // something (#450). `sharedSkills` below is what reads it.
+            standing: {
+              description: settings.description,
+              sharedSkills: settings.sharedSkills,
+              maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+              maxAlwaysChars: settings.skills.maxAlwaysChars
+            },
             enabled: settings.ambient.enabled,
             model: settings.model,
             maxTokens: settings.caps.maxOutputTokensPerTurn

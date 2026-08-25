@@ -65,6 +65,23 @@ import type { CompletedTurn } from "../loop/types.js";
 import type { HeartbeatMessage } from "./turn.js";
 
 export interface ScheduledCheckTurnOptions {
+  /**
+   * The standing region, when this channel has one (#450).
+   *
+   * The operator's own text — `[channel] description` and the `load = "always"`
+   * shared skills — already composed and already bounded by `apps/server`, with
+   * this turn's own prompt as its base. Absent leaves the prompt below exactly
+   * as it is, which is every deployment that publishes no shared skill and every
+   * channel whose sheet describes itself in no words.
+   *
+   * **It replaces rather than extends**, because the caller composed the base
+   * from the constant this module exports: one composition in one place, rather
+   * than a framing sentence written here and again there. The only caller is
+   * `apps/server`, and what it may put here is the operator's text — never a
+   * model's, which is what keeps a published playbook distinguishable from an
+   * instruction this build wrote.
+   */
+  system?: string;
   completion: CompletionClient;
   model: string;
   /**
@@ -161,7 +178,7 @@ export async function runScheduledCheckTurn(
 ): Promise<ScheduledCheckTurnResult> {
   const response = await options.completion.complete({
     model: options.model,
-    system: SCHEDULED_CHECK_SYSTEM_PROMPT,
+    system: options.system ?? SCHEDULED_CHECK_SYSTEM_PROMPT,
     messages: [{ role: "user", content: checkMessage(options.prompt, options.messages) }],
     tools: [scheduledCheckToolDefinition()],
     maxTokens: options.maxTokens,

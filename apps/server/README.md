@@ -609,6 +609,59 @@ and which is its own channel's notes. The sentence about grants beside it is a
 its own: what holds is the proxy's gates, which consult neither this text nor the
 model's cooperation.
 
+### Which turns compose it, and the line that decides (#450)
+
+#435 gave the region one caller, the task runner, which matched its own wording
+and was still a gap: an operator publishing `brand-voice` reasonably expects it
+of everything the agent says, and one publishing house rules about runbooks
+expects them where a playbook is written.
+
+The line is **composition against record**. A turn that *composes* something gets
+the region, because an operator's standing text is guidance for how that thing
+should read. A turn that keeps a *record* does not, because standing text there
+is either noise or a thumb on the scale.
+
+Five compose it, each passing its own prompt to `systemPromptFor` as `base`:
+
+| Turn | What it composes |
+| --- | --- |
+| the task reply (`src/session/task.ts`) | what a channel is told when it asked |
+| the heartbeat post (#319, `src/session/heartbeat.ts`) | what a channel is told when it did not |
+| the scheduled check (#324, `src/session/check.ts`) | what a fired reminder says |
+| the skill-author turn (#291) | a playbook the team will keep |
+| the merge curator (#295, `src/session/skill-curate.ts`) | a draft of two of them |
+
+Two do not, and each says so at its own prompt in `packages/agent` rather than by
+omission: **`MEMORY.md` curation** and **thread summarization**. Curation keeps a
+record of what a team settled — house rules about prose would be a curation turn
+told to care about prose, and house rules about subject matter would be an
+operator deciding which of a channel's own facts are worth keeping. It is also
+the highest-frequency turn in the process, running after every reply. Thread
+summarization does not even need that argument: its output is read back by
+retrieval rather than by anybody, so operator text about how the agent should
+sound has no addressee.
+
+**The heartbeat is the one worth arguing.** That turn decides *whether* to speak
+and composes the sentence in one call — there is no seam to put standing text on
+one side of. It gets the region anyway, because the text is the **operator's
+own**: the same person who set `[ambient] enabled` and `heartbeat_every_minutes`,
+and who is entitled to influence when their agent speaks in their channel. #319's
+pregate is careful about what the *model* is shown of a channel's activity, which
+is a different question. An earlier draft of this split the heartbeat's decision
+from its wording; that would be a second model call per post to buy a distinction
+between two things one turn already does.
+
+**One composition, not five.** The framing sentence, the ceiling and the tag are
+written once in `systemPromptFor`, and a caller passes only its base — so the
+five cannot drift into five spellings of one region.
+
+**A turn cannot ask for part of the region.** `[[shared_skill]]` is a name and a
+load mode, so a voice skill and an authoring-standards skill are indistinguishable
+here and both reach all five. That is a real cost — an operator's runbook rules
+reach the heartbeat, where they have no business — and it is accepted rather than
+approximated with a branch. If operators come to want the split it is a schema
+question.
+
 ### What fills it, and the three ways a name loads nothing
 
 `src/session/shared-skills.ts` resolves the entries. It reads the shared root

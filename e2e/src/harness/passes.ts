@@ -48,7 +48,12 @@ import {
   createSkillProposalsOpener,
   createSummarySweep
 } from "@getlibero/server";
-import type { ServerDeps, SheetResolver, SkillFilesOpener } from "@getlibero/server";
+import type {
+  ServerDeps,
+  SharedSkillReader,
+  SheetResolver,
+  SkillFilesOpener
+} from "@getlibero/server";
 
 /**
  * A background pass, by the name `ServerDeps` gives it.
@@ -66,6 +71,15 @@ export type BackgroundPassDeps = Pick<
 >;
 
 export interface BackgroundPassOptions {
+  /**
+   * How this channel's `load = "always"` shared skills are read (#450).
+   *
+   * Absent composes no region, which is every rig that mounted no third root.
+   * Present, it reaches the turns here that *compose* something — the heartbeat
+   * post, the fired check, the merge curator — and never the two that keep a
+   * record.
+   */
+  readonly sharedSkills?: SharedSkillReader;
   readonly passes: readonly BackgroundPass[];
   readonly completion: CompletionClient;
   /** The rig's fake, or `null` for the deployment that configured none. */
@@ -267,6 +281,7 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
     ...(wanted.has("curateSkills")
       ? {
           curateSkills: createSkillCuratePass({
+            ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
             completion: options.completion,
             files: skills,
             proposals: createSkillProposalsOpener({
@@ -277,6 +292,14 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
             settings: async channel => {
               const settings = await sheets(channel);
               return {
+                // The operator's own text, carried to every turn that composes
+                // something (#450). `sharedSkills` below is what reads it.
+                standing: {
+                  description: settings.description,
+                  sharedSkills: settings.sharedSkills,
+                  maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+                  maxAlwaysChars: settings.skills.maxAlwaysChars
+                },
                 enabled: settings.skills.enabled,
                 curate: settings.skills.curate,
                 maxSkills: settings.skills.maxSkills,

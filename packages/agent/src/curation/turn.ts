@@ -207,6 +207,22 @@ export function curationTranscript(
  * None of it is a mitigation. The tool set, the two caps and the meter hold
  * whatever the model does with these words.
  */
+/**
+ * **No standing region, and that is a decision rather than an omission** (#450).
+ *
+ * Five turns in this process compose the operator's standing text — the task
+ * reply, the two proactive posts, the skill-author turn and the merge curator.
+ * The line between them and this one is **composition against record**: those
+ * five compose something, and what an operator publishes is guidance on how it
+ * should read. This turn keeps a record of what the team settled, and standing
+ * text there is either noise or a thumb on the scale — house rules about prose
+ * would be a curation turn told to care about prose, and house rules about
+ * subject matter would be an operator deciding which of a channel's own facts
+ * are worth keeping.
+ *
+ * It is also the highest-frequency turn here: it runs after every reply, so the
+ * region would be charged against every task twice.
+ */
 export const CURATION_SYSTEM_PROMPT = [
   "You are updating one Slack channel's long-term memory, after the assistant has already",
   "replied to the person who asked. Nobody sees this step and nothing you write here is",

@@ -212,6 +212,15 @@ function summaryToolDefinition(): ToolDefinition {
  *
  * None of it is a mitigation. See the header.
  */
+/**
+ * **No standing region either, and for the simpler half of the reason** (#450).
+ *
+ * `CURATION_SYSTEM_PROMPT`'s note holds, and this turn does not even need the
+ * argument about scales: its output is read back by retrieval rather than by
+ * anybody. A summary has a shape this file fixes, nothing renders it to a
+ * person, and operator standing text about how the agent should sound has no
+ * addressee here at all.
+ */
 export const SUMMARIZATION_SYSTEM_PROMPT = [
   "You are recording what one Slack thread produced, for a searchable team memory. Nobody",
   "sees this step and nothing you write is posted to the channel.",

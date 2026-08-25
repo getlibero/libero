@@ -184,8 +184,12 @@ describe("a skill, end to end", () => {
       // turn logs is what makes every assertion below about a finished write.
       await agent.waitForLog({ event: "authored" }, 1);
 
-      expect(model.seen.filter(request => request.system === SKILL_AUTHOR_SYSTEM_PROMPT))
-        .toHaveLength(1);
+      // `startsWith` rather than equality since #450: the author turn composes
+      // the operator's standing region over its own prompt, and every sheet this
+      // harness writes carries a `[channel] description`.
+      expect(
+        model.seen.filter(request => request.system?.startsWith(SKILL_AUTHOR_SYSTEM_PROMPT) === true)
+      ).toHaveLength(1);
       expect(skillOnDisk(rigOf(rig), BENIGN.name)).toContain("3. Tag.");
 
       // The arrival proof. A second task on the same subject reconciles the

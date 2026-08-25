@@ -79,7 +79,10 @@
 
 import { createHash } from "node:crypto";
 import type { CompletedTurn, CompletionClient, MergeCandidate } from "@getlibero/agent";
-import { runSkillMergeTurn } from "@getlibero/agent";
+import { SKILL_MERGE_SYSTEM_PROMPT, runSkillMergeTurn } from "@getlibero/agent";
+import { standingSkillsFor, systemPromptFor } from "./task.js";
+import type { StandingInputs } from "./task.js";
+import type { SharedSkillReader } from "./shared-skills.js";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore, SkillMergePair } from "@getlibero/memory";
@@ -124,6 +127,14 @@ export const MAX_PROPOSAL_PRUNES_PER_PASS = 8;
 
 /** What the pass needs from a channel's sheet. Resolved by ./sheet.ts. */
 export interface SkillCurateSettings {
+  /**
+   * What this channel's standing region is composed from (#450).
+   *
+   * The operator's own text, resolved per invocation because their files can
+   * change between two of them. See `systemPromptFor` for why this turn composes
+   * a region at all and which two turns deliberately do not.
+   */
+  readonly standing: StandingInputs;
   /** `[skills] enabled`. False stops the whole feature. */
   readonly enabled: boolean;
   /** `[skills] curate`. False stops only this pass. */
@@ -143,6 +154,12 @@ export interface SkillCurateSettings {
 }
 
 export interface SkillCuratePassOptions {
+  /**
+   * How this channel's `load = "always"` shared skills are read (#450).
+   *
+   * Absent composes no region, which is every deployment with no third root.
+   */
+  sharedSkills?: SharedSkillReader;
   completion: CompletionClient;
   /** How the channel's skills directory is opened. Takes the sheet's cap. */
   files: SkillFilesOpener;
@@ -360,6 +377,18 @@ export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCur
       result = await runSkillMergeTurn({
         completion: options.completion,
         model: settings.model,
+        // The operator's standing region over this turn's own prompt (#450). A
+        // merge draft is a playbook the team will keep, so house rules about how
+        // one should read bear on it exactly as they bear on the author turn —
+        // and this turn drafts where that one writes, which is a difference in
+        // who applies it rather than in what is being composed.
+        system: systemPromptFor(
+          {
+            description: settings.standing.description,
+            sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
+          },
+          SKILL_MERGE_SYSTEM_PROMPT
+        ),
         pair: [asCandidate(keepFile), asCandidate(dropFile)],
         maxTokens: settings.maxTokens,
         turn: 0,

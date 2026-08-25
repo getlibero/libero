@@ -119,6 +119,23 @@ export interface SkillAuthorTurnResult {
 }
 
 export interface SkillAuthorTurnOptions {
+  /**
+   * The standing region, when this channel has one (#450).
+   *
+   * The operator's own text — `[channel] description` and the `load = "always"`
+   * shared skills — already composed and already bounded by `apps/server`, with
+   * this turn's own prompt as its base. Absent leaves the prompt below exactly
+   * as it is, which is every deployment that publishes no shared skill and every
+   * channel whose sheet describes itself in no words.
+   *
+   * **It replaces rather than extends**, because the caller composed the base
+   * from the constant this module exports: one composition in one place, rather
+   * than a framing sentence written here and again there. The only caller is
+   * `apps/server`, and what it may put here is the operator's text — never a
+   * model's, which is what keeps a published playbook distinguishable from an
+   * instruction this build wrote.
+   */
+  system?: string;
   completion: CompletionClient;
   /** Model id, passed through verbatim, as the loop passes one. */
   model: string;
@@ -334,7 +351,7 @@ export async function runSkillAuthorTurn(
 ): Promise<SkillAuthorTurnResult> {
   const response = await options.completion.complete({
     model: options.model,
-    system: SKILL_AUTHOR_SYSTEM_PROMPT,
+    system: options.system ?? SKILL_AUTHOR_SYSTEM_PROMPT,
     messages: [...skillTranscript(options.messages), currentLibrary(options)],
     tools: skillToolDefinitions(),
     maxTokens: options.maxTokens,

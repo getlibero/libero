@@ -307,6 +307,15 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     model: options.model ?? "e2e-model",
     logger
   });
+  // One reader, handed to every composition that takes one — the task runner
+  // below, the ambient turns and the merge curator (#450). Built once here for
+  // the reason `sheets` and `skills` are: a second would be a second opening of
+  // the operator's root per turn, answering whatever it held at that moment.
+  const sharedSkillReader =
+    options.sharedSkillsRoot === undefined
+      ? undefined
+      : createSharedSkillReader({ root: options.sharedSkillsRoot, logger });
+
   const skills = createSkillFilesOpener({
     storeRoot: options.storeRoot,
     channelsRoot: options.channelsRoot,
@@ -395,11 +404,14 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     // root here, unlike index.ts: production wants the log line that tells an
     // operator their sheet names a skill no root holds, where a rig that never
     // asked for a root has no operator to tell.
-    ...(options.sharedSkillsRoot === undefined
+    ...(sharedSkillReader === undefined
       ? {}
       : {
-          sharedSkills: createSharedSkillReader({ root: options.sharedSkillsRoot, logger }),
-          sharedSkillPool: createSharedSkillPoolOpener({ root: options.sharedSkillsRoot, logger })
+          sharedSkills: sharedSkillReader,
+          sharedSkillPool: createSharedSkillPoolOpener({
+            root: options.sharedSkillsRoot as string,
+            logger
+          })
         }),
     // The four background passes, when a case asked for them (#308). Absent
     // otherwise, so `createServer` receives the same four `undefined`s it
@@ -409,6 +421,7 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       ? {}
       : backgroundPasses({
           passes: options.passes,
+          ...(sharedSkillReader === undefined ? {} : { sharedSkills: sharedSkillReader }),
           completion: options.completion,
           embedding: options.embedding ?? null,
           transport,
@@ -439,6 +452,7 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
     ...(options.ambient === true
       ? ambientDeps({
           completion: options.completion,
+          ...(sharedSkillReader === undefined ? {} : { sharedSkills: sharedSkillReader }),
           transport,
           sheets,
           storeRoot: options.storeRoot,
