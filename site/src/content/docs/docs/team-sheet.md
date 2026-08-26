@@ -1192,10 +1192,9 @@ the next due instant and reaches a channel through the same session a task does;
 whether a question has sat long enough to be worth answering. Setting `enabled = true` turns
 something on.
 
-**`heartbeat` and `[[ambient.rule]]` are the exception: they parse and bound, and nothing reads them
-yet.** A sheet may declare rules today and they will not fire until the release that gives them a
-clock. The shape ships first on purpose, so a sheet written now does not have to change when the
-reader arrives.
+`heartbeat` and `[[ambient.rule]]` are live too. The clock enumerates each channel's rules at every
+scan and fires the ones that are due, and `heartbeat = false` suppresses the evaluation without
+touching them.
 
 `enabled` is also the one field on this page the **tool proxy** reads, and it reads nothing else
 here. A [`schedule_task`](#builtin) create against a channel with this switched off is refused,

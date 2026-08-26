@@ -165,6 +165,13 @@ export const DEFAULT_SKILL_SETTINGS = {
  */
 export const DEFAULT_AMBIENT_SETTINGS = {
   enabled: false,
+  // The schema's own defaults, for the reason the figures above give — and both
+  // are moot while `enabled` is false, which is what makes carrying the schema's
+  // values here safe rather than a second opinion about them. A channel with no
+  // readable sheet has named no rules, which is the same answer `sharedSkills`
+  // gives to the same question.
+  heartbeat: true,
+  rules: [],
   heartbeatEveryMs: 15 * 60_000,
   answerAfterIdleMs: 60 * 60_000
 } as const;
@@ -252,6 +259,11 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
     // scheduler reads the other two.
     ambient: {
       enabled: sheet.ambient.enabled,
+      heartbeat: sheet.ambient.heartbeat,
+      // Straight through, where everything around it is renamed and converted:
+      // a rule carries clock times rather than durations, so there is no unit to
+      // normalize and `./rule-clock.ts` wants the sheet's own shape.
+      rules: sheet.ambient.rule,
       heartbeatEveryMs: sheet.ambient.heartbeat_every_minutes * 60_000,
       answerAfterIdleMs: sheet.ambient.answer_after_idle_minutes * 60_000
     }

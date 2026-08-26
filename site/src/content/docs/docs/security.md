@@ -233,6 +233,12 @@ and a model may plant a future action, a `schedule_task` check that fires at its
 are model-influenced input in exactly curated memory's sense, and both are bounded the same way:
 by mechanisms that never read what the text says.
 
+A third thing, `[[ambient.rule]]`, belongs on the page for a different reason: it is the one
+standing action here **the model has no part in creating**. A rule is written into the team sheet by
+whoever holds that file, reviewed the way their code is, and there is no verb that plants one — so
+the questions the other two need mechanism to answer, this one answers by where it lives. What is
+left to bound is its cost and its reach, and those are the same bounds everything else here gets.
+
 What bounds unbidden speech, and holds against a model talked into finding everything post-worthy:
 
 - **The switch.** `[ambient] enabled = false` is the default, and off is the one silence — no
@@ -264,8 +270,27 @@ What bounds a scheduled check:
   could not run. Either way the ticket is done; there is no retry state an injection can keep
   alive.
 
+What bounds a standing rule:
+
+- **The sheet is the only way one exists.** No tool creates a rule, no message can plant one, and
+  nothing the model produces reaches the file. The reviewed edit that added the entry is the
+  approval, which is why there is no create to govern and no ticket to cap.
+- **The grammar bounds the flood.** At most four times per rule and eight rules per sheet, so a
+  channel's rules cannot exceed 32 posts a day however they are arranged — arithmetic over two
+  capped list lengths rather than an analysis of an expression. That is the security argument for
+  structured fields over a cron string: `*/5 * * * *` has to be impossible to write, not merely
+  discouraged.
+- **The firing reaches nothing**, and by construction rather than by repetition: a rule runs the
+  same bounded turn a scheduled check does, through the same function, so it has no tool-proxy
+  client for the same reason and not for a parallel one.
+- **Spend, and a capped channel is told once.** The meter is asked before the turn, so a rule over
+  the cap costs nothing and posts a single notice saying so.
+- **Missed occurrences are skipped.** Nothing accumulates across a downtime, so there is no backlog
+  an injection could arrange to have delivered at once.
+
 What is **not** bounded is what the text says, for the reason this page has already given twice:
-injected channel content can steer what a heartbeat finding or a scheduled check's post *says*.
+injected channel content can steer what a heartbeat finding, a scheduled check's post, or a rule's
+answer *says*.
 `e2e/` states the claim exactly that way — steer the words, widen nothing governed — with positive
 controls proving a merited post landed and a check fired on time before any silence is asserted.
 

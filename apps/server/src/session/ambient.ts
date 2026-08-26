@@ -87,7 +87,9 @@
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore, StoredScheduledTask } from "@getlibero/memory";
+import type { AmbientRule } from "@getlibero/schema";
 import type { ChannelLister } from "./channels.js";
+import { nextRuleOccurrence } from "./rule-clock.js";
 import type { SessionRegistry } from "./registry.js";
 
 /**
@@ -151,8 +153,27 @@ const defaultTimer: AmbientTimer = (ms, fn) => {
 export interface AmbientSchedulerSettings {
   /** `[ambient] enabled`. False and the channel is never enumerated into work. */
   readonly enabled: boolean;
+  /**
+   * `[ambient] heartbeat`. False and this channel's cadence is never scheduled
+   * (#461).
+   *
+   * **It suppresses the heartbeat and nothing else.** A channel with this off and
+   * rules written gets its rules; a channel with this off and no rules is enabled
+   * and silent, which the schema admits deliberately. `enabled` stays the one
+   * total silence.
+   */
+  readonly heartbeat: boolean;
   /** `[ambient] heartbeat_every_minutes`, in milliseconds. */
   readonly heartbeatEveryMs: number;
+  /**
+   * `[[ambient.rule]]`, verbatim from the sheet (#461).
+   *
+   * Re-read per scan like everything else here, so adding a rule lands on the
+   * next scan and removing one stops it without a restart. A renamed rule is a
+   * removal and an addition, which is `name` doing its job: the schedule is keyed
+   * by it, so the old entry is dropped and the new one is first-sighted.
+   */
+  readonly rules: readonly AmbientRule[];
 }
 
 /**
@@ -187,21 +208,48 @@ export type AmbientTaskFire = (
   task: StoredScheduledTask
 ) => Promise<void>;
 
+/**
+ * What runs when a standing rule's occurrence comes due (#461).
+ *
+ * `AmbientTaskFire`'s shape with the rule and its occurrence in place of the
+ * ticket, and a *third* reader rather than a nullable argument on the second,
+ * for the reason that one is a third rather than a flag on the first: a check is
+ * a question somebody approved once, and a rule is one an operator wrote into the
+ * sheet and left standing. Folding them would make every caller re-derive which.
+ *
+ * `dueAt` is the **occurrence**, not the instant the scan reached it. The two can
+ * differ by up to `AMBIENT_RESCAN_MS`, and what the firing needs is the one the
+ * clock arithmetic produced: it is stable across whichever scan gets there, which
+ * is what lets the meter's turn id be built from it.
+ *
+ * Optional on the scheduler for `AmbientHeartbeat`'s reason. Absent, a due rule
+ * is logged and nothing runs — and unlike a ticket there is nothing to leave
+ * pending, because the next occurrence is computed rather than stored.
+ */
+export type AmbientRuleFire = (
+  channel: string,
+  store: MessageStore,
+  rule: AmbientRule,
+  dueAt: number
+) => Promise<void>;
+
 /** One thing that will be due at an instant. */
 export interface DueEntry {
   /**
    * What kind of due thing this is.
    *
-   * Two members since #324, and the shape of that addition was the point of the
-   * field: a due task contributes an entry to this same plan and wakes the same
-   * loop at its own instant, rather than bringing a second clock. `earliestDue`
-   * answers over both, so the loop sleeps until whichever comes first.
+   * Two members since #324 and three since #461, and the shape of the first
+   * addition was the point of the field: a due thing contributes an entry to this
+   * same plan and wakes the same loop at its own instant, rather than bringing a
+   * second clock. `earliestDue` answers over all of them, so the loop sleeps until
+   * whichever comes first. That the third member cost this file no new machinery
+   * is the field having been worth having.
    *
    * The same word list `ProactiveSource` uses, deliberately — what wakes the
    * loop, what governs the post, and what the channel is told are three views of
-   * the same two cases.
+   * the same three cases.
    */
-  readonly kind: "heartbeat" | "task";
+  readonly kind: "heartbeat" | "task" | "rule";
   readonly channel: string;
   readonly dueAt: number;
 }
@@ -221,6 +269,14 @@ export interface AmbientScan {
   readonly fired: number;
   /** How many due tickets were run. At most one per channel per scan — see `scan`. */
   readonly checks: number;
+  /**
+   * How many due rules were fired (#461).
+   *
+   * A third number for `checks`' reason: three kinds of due thing, and one total
+   * would make "nothing was due" untestable for any of them. Unlike `checks` this
+   * is **not** bounded to one per channel per scan — see `scan`.
+   */
+  readonly rules: number;
   /** The earliest instant anything is due, or `null` when nothing is. */
   readonly nextDueAt: number | null;
 }
@@ -249,6 +305,8 @@ export interface AmbientSchedulerOptions {
   heartbeat?: AmbientHeartbeat;
   /** What runs a due ticket (#324). Absent, a due ticket is logged and left pending. */
   fireTask?: AmbientTaskFire;
+  /** What runs a due rule (#461). Absent, a due rule is logged and nothing runs. */
+  fireRule?: AmbientRuleFire;
   /** Injected so a test drives the loop without waiting real minutes. */
   timer?: AmbientTimer;
   /** Injected so a test states the clock rather than faking timers. */
@@ -292,6 +350,24 @@ export interface AmbientScheduler {
  * this is the seam a second event source joins at: what wakes the loop is the
  * minimum over *entries*, not a multiple of any one cadence.
  */
+/**
+ * The rule schedule's key: a channel and a rule name, in that order.
+ *
+ * NUL-joined, which is a separator neither half can contain rather than one this
+ * file hopes they will not — a channel id is `CHANNEL_ID_PATTERN` and a rule name
+ * is `SKILL_NAME_PATTERN`, and both are alphanumerics with a little punctuation.
+ * A dash or a colon would be a choice about which of two channels a key belonged
+ * to the day somebody widened either grammar.
+ */
+function ruleKey(channel: string, rule: string): string {
+  return `${channel}\u0000${rule}`;
+}
+
+/** The channel half of a `ruleKey`. */
+function channelOfRuleKey(key: string): string {
+  return key.slice(0, key.indexOf("\u0000"));
+}
+
 export function earliestDue(entries: readonly DueEntry[]): number | null {
   let earliest: number | null = null;
   for (const entry of entries) {
@@ -338,10 +414,31 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
   const timer = options.timer ?? defaultTimer;
   const heartbeat = options.heartbeat;
   const fireTask = options.fireTask;
+  const fireRule = options.fireRule;
   const signal = options.signal;
 
   /** When each enabled channel is next due. Dropped when a channel disables. */
   const schedule = new Map<string, number>();
+  /**
+   * When each rule next fires, keyed by channel and rule name (#461).
+   *
+   * **In memory and never persisted**, which is `schedule`'s posture rather than
+   * `taskDue`'s, and the difference is the same one: a rule's next instant is this
+   * process's own arithmetic over the sheet, so an empty map on a fresh process
+   * *is* the skip-don't-replay rule. A ticket's instant is a fact on disk that
+   * another task can add to at any moment; a rule's is a function of a file the
+   * model cannot write and a wall clock, so there is nothing to miss by computing
+   * it.
+   *
+   * Its first-sight rule differs from `schedule`'s, and that is the whole of what
+   * makes a rule a clock rather than a cadence. A channel first seen enabled is
+   * scheduled at `now + cadence`, so its heartbeat never fires on the scan that
+   * discovered it. A rule first seen is scheduled at its **next occurrence**,
+   * which respects the times the sheet named — so a process that starts at 08:59
+   * fires a 09:00 rule a minute later, and one that starts at 09:05 waits until
+   * tomorrow. Losing that morning is the cost #461 states rather than hides.
+   */
+  const ruleSchedule = new Map<string, number>();
   /**
    * When each enabled channel's earliest unfired check is due, or absent for none.
    *
@@ -491,6 +588,71 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
     }
   }
 
+  /**
+   * One due rule, on its channel's session mutex. Never rejects.
+   *
+   * `runCheck`'s shape with one deliberate difference: **it does not join
+   * `running`.** That set is the overrun rule, and the overrun rule exists to stop
+   * a channel's *cadence* stacking — a heartbeat that runs long would otherwise
+   * queue the next one behind it, and the one after that. A rule has no cadence to
+   * fall behind: its occurrences are named instants an operator wrote down, and
+   * dropping Monday's digest because an unrelated heartbeat happened to be in
+   * flight would be losing the thing somebody asked for to protect against a
+   * problem rules cannot have.
+   *
+   * What stops the pile-up instead is the grammar and the mutex. A sheet's rules
+   * are capped, so at most a handful can be due at one instant, and they queue on
+   * the session's mutex rather than running over each other — which is the same
+   * serialization every other pass in this process gets.
+   */
+  async function runRule(
+    channel: string,
+    workspace: string,
+    rule: AmbientRule,
+    dueAt: number
+  ): Promise<boolean> {
+    try {
+      const session = options.sessions.open({ workspace, channel });
+      const store = session.store;
+      if (store === null) {
+        logger.log("error", {
+          event: "ambient_failed",
+          team: workspace,
+          channel,
+          rule: rule.name,
+          reason: "store_unavailable"
+        });
+        return false;
+      }
+
+      if (fireRule === undefined) {
+        // No reader wired. Logged and nothing runs — and unlike a due ticket
+        // there is nothing left pending, because the next occurrence is computed
+        // rather than stored. A deployment with no fire path simply never speaks.
+        logger.log("info", {
+          event: "ambient_rule_due",
+          team: workspace,
+          channel,
+          rule: rule.name
+        });
+        return false;
+      }
+
+      await session.mutex.run(() => fireRule(channel, store, rule, dueAt));
+      logger.log("info", { event: "ambient_rule_due", team: workspace, channel, rule: rule.name });
+      return true;
+    } catch (error) {
+      logger.log("error", {
+        event: "ambient_failed",
+        team: workspace,
+        channel,
+        rule: rule.name,
+        reason: error instanceof Error ? error.name : "unknown"
+      });
+      return false;
+    }
+  }
+
   async function scan(at: number): Promise<AmbientScan> {
     const workspace = options.workspace();
     if (workspace === undefined) {
@@ -500,13 +662,25 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       // keeps the first-sight rule true rather than seeding a schedule this
       // process could not have acted on.
       logger.log("warn", { event: "ambient_unidentified" });
-      return { fired: 0, checks: 0, nextDueAt: null };
+      return { fired: 0, checks: 0, rules: 0, nextDueAt: null };
     }
 
     const channels = await options.channels();
     const due: string[] = [];
     const checksDue: string[] = [];
+    const rulesDue: { channel: string; rule: AmbientRule; dueAt: number }[] = [];
     const enabled = new Set<string>();
+    /**
+     * Channels whose heartbeat is still wanted: enabled *and* `heartbeat = true`.
+     *
+     * Separate from `enabled` because the two prune different maps. A channel that
+     * turned the heartbeat off keeps its rules and loses its cadence, so the
+     * schedule below is pruned against this and the rule schedule against
+     * `liveRules`.
+     */
+    const heartbeats = new Set<string>();
+    /** Every `channel\0rule` this scan still saw on a sheet. The prune list. */
+    const liveRules = new Set<string>();
     taskDue.clear();
 
     for (const channel of channels) {
@@ -526,6 +700,14 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
           reason: error instanceof Error ? error.name : "unknown"
         });
         enabled.add(channel);
+        heartbeats.add(channel);
+        // And its rules keep theirs, for the same reason: an unreadable sheet is
+        // this scan learning nothing about the channel, not the channel having
+        // withdrawn anything. Pruning here would re-first-sight every rule on the
+        // next readable scan, which silently skips whatever fell in between.
+        for (const key of ruleSchedule.keys()) {
+          if (channelOfRuleKey(key) === channel) liveRules.add(key);
+        }
         continue;
       }
       if (!settings.enabled) continue;
@@ -543,6 +725,44 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
         // stamp, so there is nothing to replay.
         if (ticketAt <= at && !running.has(channel)) checksDue.push(channel);
       }
+
+      // The channel's standing rules (#461), independent of the heartbeat below
+      // and of the ticket above. Read before the heartbeat's own switch, because
+      // a channel with `heartbeat = false` still has these.
+      for (const rule of settings.rules) {
+        const key = ruleKey(channel, rule.name);
+        liveRules.add(key);
+
+        const ruleAt = ruleSchedule.get(key);
+        if (ruleAt === undefined) {
+          // First sight, at the rule's next occurrence rather than at a cadence
+          // from now. It cannot fire on this scan, and that is structural rather
+          // than a rule enforced here: `nextRuleOccurrence` answers strictly after
+          // `at`, so what is stored is always in the future.
+          const first = nextRuleOccurrence(rule, at);
+          if (first !== null) ruleSchedule.set(key, first);
+          continue;
+        }
+        if (ruleAt > at) continue;
+
+        // Advanced before the firing, and from `at` rather than from the
+        // occurrence it missed — `schedule`'s discipline one block down, for its
+        // reason. A process down across three Mondays fires once, and a firing
+        // that throws does not come straight back on the next scan.
+        const next = nextRuleOccurrence(rule, at);
+        if (next === null) ruleSchedule.delete(key);
+        else ruleSchedule.set(key, next);
+
+        rulesDue.push({ channel, rule, dueAt: ruleAt });
+      }
+
+      // `[ambient] heartbeat` (#461). False and the cadence is never scheduled,
+      // which is one of the two things `enabled` turns on rather than a second
+      // spelling of it: the rules above still fire. A channel that switches this
+      // off loses its entry below, so switching it back on starts a fresh cadence
+      // rather than firing immediately off a stale deadline.
+      if (!settings.heartbeat) continue;
+      heartbeats.add(channel);
 
       const dueAt = schedule.get(channel);
       if (dueAt === undefined) {
@@ -567,12 +787,22 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       due.push(channel);
     }
 
-    // A channel that disabled ambient, or whose directory is gone, loses its
-    // entry — so re-enabling starts a fresh cadence rather than firing
-    // immediately off a stale deadline, and the map cannot outgrow the
-    // directory.
+    // A channel that disabled ambient, turned the heartbeat off, or whose
+    // directory is gone, loses its entry — so re-enabling starts a fresh cadence
+    // rather than firing immediately off a stale deadline, and the map cannot
+    // outgrow the directory.
     for (const channel of [...schedule.keys()]) {
-      if (!enabled.has(channel)) schedule.delete(channel);
+      if (!heartbeats.has(channel)) schedule.delete(channel);
+    }
+
+    // The same rule one map over, at the granularity a rule has: an entry
+    // survives only if this scan saw that rule on that channel's sheet. A rule
+    // deleted, renamed, or belonging to a channel that switched ambient off loses
+    // its schedule, so re-adding it is a first sight and fires nothing on the scan
+    // that notices — which is what stops a rule edited at 09:05 from firing the
+    // 09:00 occurrence it was not present for.
+    for (const key of [...ruleSchedule.keys()]) {
+      if (!liveRules.has(key)) ruleSchedule.delete(key);
     }
 
     // Checks before heartbeats, because a check has a deadline and a heartbeat
@@ -590,6 +820,27 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
       await runBounded(checksDue, MAX_CONCURRENT_HEARTBEATS, async channel => {
         if (signal?.aborted === true || stopped) return;
         if (await runCheck(channel, workspace, at)) checks += 1;
+      });
+    }
+
+    // Rules after checks and before heartbeats, which is where their claim on the
+    // channel sits: a check's instant was approved by a person and a rule's was
+    // written into the sheet by one, so both outrank a cadence that is merely due.
+    // Between the two, a check goes first because it is spent after this and a
+    // rule will come round again.
+    //
+    // **Not bounded to one per channel per scan**, unlike a check. That bound
+    // exists because a channel can hold ten tickets that all came due while the
+    // process was down, and firing them together is a burst nobody asked for at
+    // one instant. Rules cannot pile up that way — an occurrence that passed while
+    // this process was down is skipped rather than replayed — so what is due here
+    // is what the sheet says is due now, and holding half of it back would make a
+    // 09:00 pair arrive a minute apart for no reason.
+    let rules = 0;
+    if (rulesDue.length > 0) {
+      await runBounded(rulesDue, MAX_CONCURRENT_HEARTBEATS, async entry => {
+        if (signal?.aborted === true || stopped) return;
+        if (await runRule(entry.channel, workspace, entry.rule, entry.dueAt)) rules += 1;
       });
     }
 
@@ -621,9 +872,22 @@ export function createAmbientScheduler(options: AmbientSchedulerOptions): Ambien
         kind: "task",
         channel,
         dueAt: dueAt <= at ? at + AMBIENT_RESCAN_MS : dueAt
+      })),
+      // Every rule's next occurrence, and these need no spin guard where the
+      // tickets above do. That guard exists because `taskDue` is read from the
+      // store *before* the firing, so an instant already in the past is still in
+      // the map afterwards and would ask the loop to wake at a time that has
+      // passed. A rule's entry was advanced during the enumeration, by arithmetic
+      // that answers strictly after `at` — so every instant here is in the future
+      // by construction, and a `Math.max` would be guarding against a case the
+      // clock cannot produce.
+      ...[...ruleSchedule].map(([key, dueAt]): DueEntry => ({
+        kind: "rule",
+        channel: channelOfRuleKey(key),
+        dueAt
       }))
     ];
-    return { fired, checks, nextDueAt: earliestDue(plan) };
+    return { fired, checks, rules, nextDueAt: earliestDue(plan) };
   }
 
   /** Scan, sleep, repeat. Nothing awaits this; it ends when `stop()` is called. */

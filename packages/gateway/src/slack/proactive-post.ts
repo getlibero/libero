@@ -19,28 +19,41 @@
 // ## The label says what authorized the message
 //
 // A reader meeting an unprompted message needs one thing first: why is this
-// here. The two answers are the two wake reasons, and they are genuinely
+// here. The three answers are the three wake reasons, and they are genuinely
 // different claims — one is the agent having noticed something on a clock
-// nobody watched, the other is a check somebody scheduled and a human approved,
-// arriving when they asked for it. `NOTICED` and `SCHEDULED CHECK` are those
-// two sentences compressed, in the mono-uppercase style `STATUS_LABEL` already
-// uses on the cards.
+// nobody watched, one is a check somebody scheduled and a human approved,
+// arriving when they asked for it, and one is a standing rule in the team sheet
+// that fires every week at this time. `NOTICED`, `SCHEDULED CHECK` and
+// `STANDING RULE` are those three sentences compressed, in the mono-uppercase
+// style `STATUS_LABEL` already uses on the cards.
+//
+// `STANDING RULE` rather than a second `SCHEDULED` anything (#461), because what
+// a reader needs to predict is **whether this happens again**. A scheduled check
+// arrived once and is spent; a standing rule will be back next Monday, and a
+// team that reads the two as the same thing either waits for a repeat that never
+// comes or is surprised by one they did not expect.
 //
 // This is the same `source` discriminant `ProactivePoster` takes and that
-// `DueEntry.kind` in `apps/server/src/session/ambient.ts` names. One word list
-// for the phase: what wakes the process, what governs the post, and what the
-// channel is told are three views of the same two cases, and none of them
-// should need a translation table.
+// `DueEntry.kind` in `apps/server/src/session/ambient.ts` names. One word list:
+// what wakes the process, what governs the post, and what the channel is told are
+// three views of the same three cases, and none of them should need a
+// translation table.
 //
 // ## Only a heartbeat names the switch
 //
 // A `NOTICED` post carries one closing line saying where the setting is. An
 // agent that speaks unprompted and does not say how to stop it is asking a team
 // to go and find out, and the window means a reader sees the line at most twice
-// a working day. A `SCHEDULED CHECK` carries no such line, and the asymmetry is
-// not an oversight: that post was asked for. Its off switch is not `[ambient]`
-// at all — it was a governed, approved `schedule_task` create — so naming that
-// block there would point a reader at the wrong knob.
+// a working day. Neither of the other two carries that line, and the asymmetry
+// is not an oversight: both posts were asked for. A `SCHEDULED CHECK`'s off
+// switch was a governed, approved `schedule_task` create, and a `STANDING RULE`'s
+// is an edit to the team sheet — so naming `[ambient]` on either would point a
+// reader at a knob that is not the one that produced this.
+//
+// A rule is the sharper case of that, because it *does* have a block on that
+// sheet and pointing at it would still be wrong: switching `[ambient]` off to
+// stop one weekly digest would take the channel's heartbeat with it, and the
+// edit a reader actually wants is to the rule's own entry.
 //
 // ## What it does not decide
 //
@@ -51,7 +64,7 @@
 // this package did not author.
 
 /** Why this message exists. The wake reason, and `ProactivePoster`'s discriminant. */
-export type ProactiveSource = "heartbeat" | "task";
+export type ProactiveSource = "heartbeat" | "task" | "rule";
 
 export interface ProactivePostInput {
   readonly source: ProactiveSource;
@@ -67,7 +80,8 @@ export interface ProactivePostInput {
 /** The mono label at the top. Uppercase, and what authorized the post in words. */
 const SOURCE_LABEL: Record<ProactiveSource, string> = {
   heartbeat: "NOTICED",
-  task: "SCHEDULED CHECK"
+  task: "SCHEDULED CHECK",
+  rule: "STANDING RULE"
 };
 
 /**

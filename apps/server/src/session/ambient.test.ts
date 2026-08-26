@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore } from "@getlibero/memory";
+import type { AmbientRule } from "@getlibero/schema";
 import { openMessageStore } from "@getlibero/memory";
 import {
   AMBIENT_RESCAN_MS,
@@ -31,8 +32,8 @@ const WORKSPACE = "T0LIBERO";
 const AT = 1_700_000_000_000;
 const CADENCE_MS = 15 * 60_000;
 
-const ON: AmbientSchedulerSettings = { enabled: true, heartbeatEveryMs: CADENCE_MS };
-const OFF: AmbientSchedulerSettings = { enabled: false, heartbeatEveryMs: CADENCE_MS };
+const ON: AmbientSchedulerSettings = { enabled: true, heartbeat: true, heartbeatEveryMs: CADENCE_MS, rules: [] };
+const OFF: AmbientSchedulerSettings = { enabled: false, heartbeat: true, heartbeatEveryMs: CADENCE_MS, rules: [] };
 
 let root: string;
 let store: MessageStore;
@@ -79,6 +80,14 @@ interface RigOptions {
    * where a due ticket is noticed and deliberately left pending.
    */
   fireTask?: AmbientSchedulerOptions["fireTask"] | null;
+  /**
+   * Overrides the rule fire path. Absent, the rig records the firing.
+   *
+   * `null` composes the scheduler with none, which is the deployment where a due
+   * rule is noticed and nothing runs — and where, unlike a ticket, there is
+   * nothing left pending afterwards.
+   */
+  fireRule?: AmbientSchedulerOptions["fireRule"] | null;
   /** Overrides the workspace, including to `undefined`. */
   workspace?: () => string | undefined;
   signal?: AbortSignal;
@@ -88,6 +97,7 @@ interface RigOptions {
 function rig(options: RigOptions = {}) {
   const fired: string[] = [];
   const checked: string[] = [];
+  const ruled: string[] = [];
   // One store for every channel: nothing here asserts on its contents, and what
   // matters is that the store the session opened is the one the heartbeat gets.
   const sessions = createSessionRegistry({ openStore: () => store });
@@ -117,12 +127,54 @@ function rig(options: RigOptions = {}) {
               return Promise.resolve();
             })
         }),
+    ...(options.fireRule === null
+      ? {}
+      : {
+          fireRule:
+            options.fireRule ??
+            ((channel: string, _store, rule, dueAt): Promise<void> => {
+              // The occurrence, not the scan instant — what the meter's turn id
+              // is built from, so a case can assert the clock handed over the
+              // right one.
+              ruled.push(`${channel}:${rule.name}:${dueAt}`);
+              return Promise.resolve();
+            })
+        }),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.logger !== undefined ? { logger: options.logger } : {})
   });
 
-  return { scheduler, fired, checked, sessions };
+  return { scheduler, fired, checked, ruled, sessions };
 }
+
+/** A rule, with the fields a case is not about left at something innocuous. */
+function makeRule(over: Partial<AmbientRule> = {}): AmbientRule {
+  return { name: "standup-digest", at: ["09:00"], question: "What is blocked?", ...over };
+}
+
+/**
+ * A settings block carrying rules, with the heartbeat off.
+ *
+ * Off by default because these cases assert on `nextDueAt`, and a heartbeat
+ * scheduled fifteen minutes out would be the earlier entry in almost all of them
+ * — so every rule case would be asserting the cadence it did not set. The cases
+ * that are about the two together turn it back on and say so.
+ */
+function withRules(rules: AmbientRule[], over: Partial<AmbientSchedulerSettings> = {}): AmbientSchedulerSettings {
+  return { enabled: true, heartbeat: false, heartbeatEveryMs: CADENCE_MS, rules, ...over };
+}
+
+/**
+ * The instant of a UTC wall-clock time, stated the way the cases read.
+ *
+ * The rule cases cannot use `AT` and an offset the way the cadence cases do: what
+ * a rule fires on is a time of day, so the fixtures have to be anchored to a real
+ * calendar instant or the arithmetic is untestable.
+ */
+const utc = (iso: string): number => Date.parse(`${iso}Z`);
+
+// 2026-08-26 is a Wednesday, and every rule case below is anchored to that week.
+const WED = "2026-08-26T";
 
 /** A ticket in the one store the rig hands every channel. */
 function schedule(id: string, dueAt: number): void {
@@ -135,7 +187,7 @@ describe("the ambient scheduler", () => {
 
     // First sight schedules and never fires — the restart rule, from the other
     // end. A channel this process has only just met has nothing it missed.
-    expect(await scheduler.scan(AT)).toEqual({ fired: 0, checks: 0, nextDueAt: AT + CADENCE_MS });
+    expect(await scheduler.scan(AT)).toEqual({ fired: 0, checks: 0, rules: 0, nextDueAt: AT + CADENCE_MS });
     expect(fired).toEqual([]);
 
     // One tick short.
@@ -145,6 +197,7 @@ describe("the ambient scheduler", () => {
     expect(await scheduler.scan(AT + CADENCE_MS)).toEqual({
       fired: 1,
       checks: 0,
+      rules: 0,
       nextDueAt: AT + 2 * CADENCE_MS
     });
     expect(fired).toEqual(["C0ENGINEERING"]);
@@ -178,7 +231,7 @@ describe("the ambient scheduler", () => {
 
     sheets["C0ENGINEERING"] = OFF;
 
-    expect(await scheduler.scan(AT + 2 * CADENCE_MS)).toEqual({ fired: 0, checks: 0, nextDueAt: null });
+    expect(await scheduler.scan(AT + 2 * CADENCE_MS)).toEqual({ fired: 0, checks: 0, rules: 0, nextDueAt: null });
     expect(fired).toEqual(["C0ENGINEERING"]);
   });
 
@@ -204,7 +257,7 @@ describe("the ambient scheduler", () => {
     const { scheduler } = rig({ sheets });
 
     await scheduler.scan(AT);
-    sheets["C0ENGINEERING"] = { enabled: true, heartbeatEveryMs: 60_000 };
+    sheets["C0ENGINEERING"] = { enabled: true, heartbeat: true, heartbeatEveryMs: 60_000, rules: [] };
 
     // The pending deadline was set from the old cadence, so this fires when the
     // old one said — and reschedules on the new one, which is what an operator
@@ -212,6 +265,7 @@ describe("the ambient scheduler", () => {
     expect(await scheduler.scan(AT + CADENCE_MS)).toEqual({
       fired: 1,
       checks: 0,
+      rules: 0,
       nextDueAt: AT + CADENCE_MS + 60_000
     });
   });
@@ -393,6 +447,7 @@ describe("the ambient scheduler", () => {
     expect(await scheduler.scan(AT + 2 * CADENCE_MS)).toEqual({
       fired: 0,
       checks: 0,
+      rules: 0,
       nextDueAt: AT + 3 * CADENCE_MS
     });
     expect(started).toBe(1);
@@ -407,8 +462,8 @@ describe("the ambient scheduler", () => {
     // a second kind of due thing adds an entry rather than a second clock.
     const { scheduler } = rig({
       sheets: {
-        C0SLOW: { enabled: true, heartbeatEveryMs: 60 * 60_000 },
-        C0BRISK: { enabled: true, heartbeatEveryMs: 60_000 }
+        C0SLOW: { enabled: true, heartbeat: true, heartbeatEveryMs: 60 * 60_000, rules: [] },
+        C0BRISK: { enabled: true, heartbeat: true, heartbeatEveryMs: 60_000, rules: [] }
       }
     });
 
@@ -428,7 +483,7 @@ describe("the ambient scheduler", () => {
       logger
     });
 
-    expect(await scheduler.scan(AT)).toEqual({ fired: 0, checks: 0, nextDueAt: null });
+    expect(await scheduler.scan(AT)).toEqual({ fired: 0, checks: 0, rules: 0, nextDueAt: null });
     expect(lines.map(line => line.event)).toEqual(["ambient_unidentified"]);
 
     // And nothing was scheduled either, so the first scan that can act is also
@@ -470,6 +525,7 @@ describe("the ambient scheduler", () => {
     expect(await scheduler.scan(AT + CADENCE_MS)).toEqual({
       fired: 0,
       checks: 0,
+      rules: 0,
       nextDueAt: AT + 2 * CADENCE_MS
     });
     expect(fired).toEqual([]);
@@ -509,7 +565,7 @@ describe("the ambient scheduler", () => {
         workspace: () => WORKSPACE,
         // A cadence far longer than the rescan bound, so the two are
         // distinguishable: the first sleep is the bound, not the cadence.
-        settings: () => Promise.resolve({ enabled: true, heartbeatEveryMs: 60 * 60_000 }),
+        settings: () => Promise.resolve({ enabled: true, heartbeat: true, heartbeatEveryMs: 60 * 60_000, rules: [] }),
         heartbeat: () => Promise.resolve(),
         timer: clock.timer,
         now: () => at
@@ -538,7 +594,7 @@ describe("the ambient scheduler", () => {
         channels: () => Promise.resolve(["C0ENGINEERING"]),
         sessions,
         workspace: () => WORKSPACE,
-        settings: () => Promise.resolve({ enabled: true, heartbeatEveryMs: 30_000 }),
+        settings: () => Promise.resolve({ enabled: true, heartbeat: true, heartbeatEveryMs: 30_000, rules: [] }),
         heartbeat: () => Promise.resolve(),
         timer: clock.timer,
         now: () => AT
@@ -686,7 +742,7 @@ describe("a due scheduled check", () => {
   it("wakes at a ticket's instant when it beats every cadence", async () => {
     schedule("t1", AT + 60_000);
     const { scheduler } = rig({
-      sheets: { C0ENGINEERING: { enabled: true, heartbeatEveryMs: 60 * 60_000 } }
+      sheets: { C0ENGINEERING: { enabled: true, heartbeat: true, heartbeatEveryMs: 60 * 60_000, rules: [] } }
     });
 
     expect((await scheduler.scan(AT)).nextDueAt).toBe(AT + 60_000);
@@ -717,3 +773,328 @@ describe("a due scheduled check", () => {
   });
 });
 
+
+describe("the ambient scheduler's standing rules", () => {
+  it("fires at the rule's next occurrence, and not on the scan that found it", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule()]) }
+    });
+
+    // First sight, at 08:00 on a day the rule fires. Scheduled at 09:00 and not
+    // fired — but unlike a heartbeat, which is scheduled a whole cadence out, the
+    // instant is the one the sheet named.
+    const first = await scheduler.scan(utc(`${WED}08:00:00`));
+    expect(first.rules).toBe(0);
+    expect(first.nextDueAt).toBe(utc(`${WED}09:00:00`));
+    expect(ruled).toEqual([]);
+
+    // A minute short.
+    expect((await scheduler.scan(utc(`${WED}08:59:00`))).rules).toBe(0);
+    expect(ruled).toEqual([]);
+
+    const fired = await scheduler.scan(utc(`${WED}09:00:00`));
+    expect(fired.rules).toBe(1);
+    expect(ruled).toEqual([`C0ENGINEERING:standup-digest:${utc(`${WED}09:00:00`)}`]);
+    // And rescheduled to tomorrow, off the same arithmetic.
+    expect(fired.nextDueAt).toBe(utc("2026-08-27T09:00:00"));
+  });
+
+  // The whole of skip-don't-replay for rules, and the cost #461 states rather
+  // than hides: a process that was down across 09:00 loses that morning.
+  it("skips an occurrence it was down for rather than firing it late", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule()]) }
+    });
+
+    // The process comes up at 09:05. First sight is the *next* occurrence.
+    const first = await scheduler.scan(utc(`${WED}09:05:00`));
+    expect(first.rules).toBe(0);
+    expect(first.nextDueAt).toBe(utc("2026-08-27T09:00:00"));
+
+    // And nothing fires for the rest of the day, however many scans happen.
+    expect((await scheduler.scan(utc(`${WED}12:00:00`))).rules).toBe(0);
+    expect((await scheduler.scan(utc(`${WED}23:59:00`))).rules).toBe(0);
+    expect(ruled).toEqual([]);
+  });
+
+  // Three windows missed is one firing, which is `schedule`'s rule for the
+  // cadence — and here it falls out of advancing from `at` rather than from the
+  // occurrence that was missed.
+  it("fires once for a run of occurrences it was down for", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule()]) }
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    // Nothing looked for three days. One firing, then next is the day after.
+    const late = await scheduler.scan(utc("2026-08-29T10:00:00"));
+    expect(late.rules).toBe(1);
+    expect(ruled).toHaveLength(1);
+    expect(late.nextDueAt).toBe(utc("2026-08-30T09:00:00"));
+  });
+
+  it("fires every time a rule names, in one day", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule({ at: ["09:00", "17:00"] })]) }
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    expect((await scheduler.scan(utc(`${WED}09:00:00`))).rules).toBe(1);
+    expect((await scheduler.scan(utc(`${WED}12:00:00`))).rules).toBe(0);
+    expect((await scheduler.scan(utc(`${WED}17:00:00`))).rules).toBe(1);
+    expect(ruled).toEqual([
+      `C0ENGINEERING:standup-digest:${utc(`${WED}09:00:00`)}`,
+      `C0ENGINEERING:standup-digest:${utc(`${WED}17:00:00`)}`
+    ]);
+  });
+
+  it("does not fire on a day the rule does not name", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule({ days: ["mon"] })]) }
+    });
+
+    // Wednesday. Next occurrence is the following Monday.
+    const first = await scheduler.scan(utc(`${WED}08:00:00`));
+    expect(first.nextDueAt).toBe(utc("2026-08-31T09:00:00"));
+
+    expect((await scheduler.scan(utc("2026-08-27T09:00:00"))).rules).toBe(0);
+    expect((await scheduler.scan(utc("2026-08-31T09:00:00"))).rules).toBe(1);
+    expect(ruled).toHaveLength(1);
+  });
+
+  // Two rules due at one instant both fire. Not bounded to one per channel per
+  // scan the way tickets are — see `scan`: rules cannot pile up across a
+  // downtime, so what is due is what the sheet says is due now.
+  it("fires every rule due at one instant", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: {
+        C0ENGINEERING: withRules([
+          makeRule({ name: "standup-digest" }),
+          makeRule({ name: "blockers-digest" })
+        ])
+      }
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    expect((await scheduler.scan(utc(`${WED}09:00:00`))).rules).toBe(2);
+    expect(ruled).toHaveLength(2);
+    expect(ruled.map(line => line.split(":")[1]).sort()).toEqual([
+      "blockers-digest",
+      "standup-digest"
+    ]);
+  });
+
+  it("stops firing a rule the sheet no longer carries, with no restart", async () => {
+    const sheets: Record<string, AmbientSchedulerSettings> = {
+      C0ENGINEERING: withRules([makeRule()])
+    };
+    const { scheduler, ruled } = rig({ sheets, channels: ["C0ENGINEERING"] });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    sheets["C0ENGINEERING"] = withRules([]);
+
+    const after = await scheduler.scan(utc(`${WED}09:00:00`));
+    expect(after.rules).toBe(0);
+    // Nothing left to wake for: the rule's entry was pruned and this channel has
+    // no heartbeat.
+    expect(after.nextDueAt).toBeNull();
+    expect(ruled).toEqual([]);
+  });
+
+  // A renamed rule is a removal and an addition, which is what keys the schedule
+  // by name buys: the new name is first-sighted and fires nothing on the scan
+  // that noticed it.
+  it("treats a renamed rule as a new one", async () => {
+    const sheets: Record<string, AmbientSchedulerSettings> = {
+      C0ENGINEERING: withRules([makeRule()])
+    };
+    const { scheduler, ruled } = rig({ sheets, channels: ["C0ENGINEERING"] });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    sheets["C0ENGINEERING"] = withRules([makeRule({ name: "morning-digest" })]);
+
+    expect((await scheduler.scan(utc(`${WED}09:00:00`))).rules).toBe(0);
+    expect(ruled).toEqual([]);
+    // And the new name is scheduled from the scan that saw it, so it fires
+    // tomorrow rather than picking up the old one's occurrence.
+    expect((await scheduler.scan(utc("2026-08-27T09:00:00"))).rules).toBe(1);
+  });
+
+  it("fires nothing for a channel that never enabled ambient", async () => {
+    const { scheduler, ruled } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule()], { enabled: false }) }
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    expect((await scheduler.scan(utc(`${WED}09:00:00`))).rules).toBe(0);
+    expect(ruled).toEqual([]);
+  });
+
+  // `[ambient] enabled = false` is the one silence, and it takes the rules with
+  // it — where `heartbeat = false` takes only the heartbeat. This is the pair.
+  it("drops a rule's schedule when a channel switches ambient off", async () => {
+    const sheets: Record<string, AmbientSchedulerSettings> = {
+      C0ENGINEERING: withRules([makeRule()])
+    };
+    const { scheduler, ruled } = rig({ sheets, channels: ["C0ENGINEERING"] });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    sheets["C0ENGINEERING"] = withRules([makeRule()], { enabled: false });
+
+    const off = await scheduler.scan(utc(`${WED}09:00:00`));
+    expect(off.rules).toBe(0);
+    expect(off.nextDueAt).toBeNull();
+    expect(ruled).toEqual([]);
+  });
+
+  it("notices a due rule and runs nothing when no fire path is wired", async () => {
+    const { logger, lines } = captureLogger();
+    const { scheduler } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule()]) },
+      fireRule: null,
+      logger
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    const fired = await scheduler.scan(utc(`${WED}09:00:00`));
+
+    expect(fired.rules).toBe(0);
+    expect(lines.some(line => line.event === "ambient_rule_due")).toBe(true);
+    // And nothing is left pending: the next occurrence was computed anyway, so
+    // the deployment with no reader simply never speaks.
+    expect(fired.nextDueAt).toBe(utc("2026-08-27T09:00:00"));
+  });
+
+  it("names the rule on every line it logs", async () => {
+    const { logger, lines } = captureLogger();
+    const { scheduler } = rig({
+      sheets: { C0ENGINEERING: withRules([makeRule()]) },
+      logger
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    await scheduler.scan(utc(`${WED}09:00:00`));
+
+    const due = lines.find(line => line.event === "ambient_rule_due");
+    expect(due?.rule).toBe("standup-digest");
+    expect(due?.channel).toBe("C0ENGINEERING");
+  });
+});
+
+describe("the heartbeat switch", () => {
+  // The configuration #461 exists to make possible: Monday digests and no
+  // noticing job. `enabled` stays on, so this is not a second spelling of off.
+  it("fires rules and evaluates no heartbeat when the heartbeat is off", async () => {
+    const { scheduler, fired, ruled } = rig({
+      sheets: {
+        C0ENGINEERING: withRules([makeRule()])
+      }
+    });
+
+    await scheduler.scan(utc(`${WED}08:00:00`));
+    // A whole cadence later, and then some: nothing would stop a heartbeat here
+    // but the switch.
+    const later = await scheduler.scan(utc(`${WED}09:00:00`));
+
+    expect(later.rules).toBe(1);
+    expect(later.fired).toBe(0);
+    expect(fired).toEqual([]);
+    expect(ruled).toHaveLength(1);
+  });
+
+  // The other half: with the heartbeat off and no rules, the channel is enabled
+  // and silent. The schema admits that deliberately, and so does this.
+  it("schedules nothing for an enabled channel with no heartbeat and no rules", async () => {
+    const { scheduler, fired } = rig({
+      sheets: { C0ENGINEERING: withRules([]) }
+    });
+
+    const scan = await scheduler.scan(utc(`${WED}08:00:00`));
+    expect(scan).toEqual({ fired: 0, checks: 0, rules: 0, nextDueAt: null });
+    expect(fired).toEqual([]);
+  });
+
+  it("stops firing the heartbeat when the switch goes off, with no restart", async () => {
+    const sheets: Record<string, AmbientSchedulerSettings> = { C0ENGINEERING: ON };
+    const { scheduler, fired } = rig({ sheets, channels: ["C0ENGINEERING"] });
+
+    await scheduler.scan(AT);
+    expect((await scheduler.scan(AT + CADENCE_MS)).fired).toBe(1);
+
+    sheets["C0ENGINEERING"] = { ...ON, heartbeat: false };
+    const off = await scheduler.scan(AT + 2 * CADENCE_MS);
+    expect(off.fired).toBe(0);
+    expect(fired).toEqual(["C0ENGINEERING"]);
+
+    // And switching it back on starts a fresh cadence rather than firing
+    // immediately off the deadline it kept — the entry was dropped.
+    sheets["C0ENGINEERING"] = ON;
+    const back = await scheduler.scan(AT + 3 * CADENCE_MS);
+    expect(back.fired).toBe(0);
+    expect(back.nextDueAt).toBe(AT + 4 * CADENCE_MS);
+  });
+
+  it("still fires a due ticket for a channel with the heartbeat off", async () => {
+    const { scheduler, checked } = rig({
+      sheets: { C0ENGINEERING: withRules([]) }
+    });
+    schedule("t-1", AT);
+
+    expect((await scheduler.scan(AT + 1_000)).checks).toBe(1);
+    expect(checked).toEqual(["C0ENGINEERING:t-1"]);
+  });
+});
+
+describe("the wake instant across all three sources", () => {
+  // The point of `DueEntry.kind` having three members: one plan, one minimum.
+  it("wakes at whichever of the three comes first", async () => {
+    const { scheduler } = rig({
+      sheets: {
+        C0ENGINEERING: withRules([makeRule({ at: ["09:00"] })], {
+          heartbeat: true,
+          heartbeatEveryMs: 6 * 3_600_000
+        })
+      }
+    });
+
+    const at = utc(`${WED}08:00:00`);
+    // The heartbeat is six hours out and the rule is one, so the rule wins.
+    const ruleFirst = await scheduler.scan(at);
+    expect(ruleFirst.nextDueAt).toBe(utc(`${WED}09:00:00`));
+
+    // A ticket half an hour out beats both.
+    schedule("t-1", utc(`${WED}08:30:00`));
+    const ticketFirst = await scheduler.scan(at);
+    expect(ticketFirst.nextDueAt).toBe(utc(`${WED}08:30:00`));
+  });
+
+  it("wakes at the heartbeat when it is the earliest of the three", async () => {
+    const { scheduler } = rig({
+      sheets: {
+        C0ENGINEERING: withRules([makeRule({ at: ["23:00"] })], {
+          heartbeat: true,
+          heartbeatEveryMs: 60_000
+        })
+      }
+    });
+
+    const at = utc(`${WED}08:00:00`);
+    expect((await scheduler.scan(at)).nextDueAt).toBe(at + 60_000);
+  });
+
+  it("counts the three kinds of due thing apart", async () => {
+    const { scheduler } = rig({
+      sheets: {
+        C0ENGINEERING: withRules([makeRule()], { heartbeat: true, heartbeatEveryMs: 60_000 })
+      }
+    });
+
+    await scheduler.scan(utc(`${WED}08:58:00`));
+    schedule("t-1", utc(`${WED}09:00:00`));
+
+    const scan = await scheduler.scan(utc(`${WED}09:00:00`));
+    expect(scan.rules).toBe(1);
+    expect(scan.checks).toBe(1);
+    expect(scan.fired).toBe(1);
+  });
+});

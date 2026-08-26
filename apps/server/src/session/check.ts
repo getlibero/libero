@@ -72,31 +72,26 @@
 // mention's does" is true by there being none. Giving a check the ReAct loop
 // would be a real widening of what unattended work can do, and it is a decision
 // somebody should have to make on purpose rather than inherit from this file.
+//
+// Since #461 that turn lives in `./fired-turn.ts`, because a standing rule fires
+// the same one. What stayed here is what a *check* does either side of it: the
+// row it stamps, and the notice that says this one is done.
 
-import { SCHEDULED_CHECK_SYSTEM_PROMPT, runScheduledCheckTurn } from "@getlibero/agent";
-import { standingSkillsFor, systemPromptFor } from "./task.js";
+import { runFiredTurn } from "./fired-turn.js";
+import type { FiredTurnSettings } from "./fired-turn.js";
 import type { StandingInputs } from "./task.js";
 import type { SharedSkillReader } from "./shared-skills.js";
-import type { CompletedTurn, CompletionClient, HeartbeatMessage } from "@getlibero/agent";
+import type { CompletedTurn, CompletionClient } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore, ScheduledTaskOutcome, StoredScheduledTask } from "@getlibero/memory";
 import type { AmbientTaskFire } from "./ambient.js";
 import type { ProactivePoster } from "../proactive/proactive.js";
 
-/**
- * How much of a channel's recent conversation one check reads.
- *
- * `MAX_HEARTBEAT_MESSAGES`' counterpart and the same figure, because what it
- * bounds is the same thing: a channel skimmed for whether something is the case.
- * A check asks a narrower question than a heartbeat does, but it asks it of the
- * same material, and two numbers for one quantity is how one of them gets read as
- * the other.
- */
-export const MAX_CHECK_MESSAGES = 40;
+export { MAX_FIRED_TURN_MESSAGES as MAX_CHECK_MESSAGES } from "./fired-turn.js";
 
 /** What the fire path needs from a channel's sheet. Resolved by ./sheet.ts. */
-export interface CheckSettings {
+export interface CheckSettings extends FiredTurnSettings {
   /**
    * What this channel's standing region is composed from (#450).
    *
@@ -238,93 +233,59 @@ export function createAmbientTaskFire(options: CheckOptions): AmbientTaskFire {
     task: StoredScheduledTask,
     settings: CheckSettings
   ): Promise<ScheduledTaskOutcome | null> {
-    // Asked before anything is spent (#335). A channel over its caps runs no
-    // turn — and is *told*, because a notice costs nothing and a check that
-    // vanishes is the thing this design refused to build.
-    if (!(await options.maySpend(channel))) {
-      logger.log("info", { event: "check_declined", channel, reason: "over_budget" });
-      await tell(channel, task, "over_budget");
-      return "over_budget";
-    }
-
-    let recent;
-    try {
-      recent = store.recent(MAX_CHECK_MESSAGES);
-    } catch (error) {
-      logger.log("warn", { event: "check_failed", channel, reason: reasonOf(error) });
-      await tell(channel, task, "failed");
-      return "failed";
-    }
-
-    const messages: HeartbeatMessage[] = recent.map(row => ({
-      // The name captured when the message was stored, falling back to the id:
-      // this pass holds no Slack token. `summarize.ts`'s choice.
-      author: row.displayName ?? row.userId,
-      text: row.text
-    }));
-
-    // The id the meter dedupes on. The ticket's own id, which is minted once by
-    // the tool proxy service and fires once — so a retry after a crash is the
-    // same id and is counted once, and there is no later firing of this check to
-    // collide with.
-    const turnId = `check-${task.id}`;
-
-    let result;
-    try {
-      result = await runScheduledCheckTurn({
+    const outcome = await runFiredTurn(
+      {
         completion: options.completion,
-        model: settings.model,
-        // The operator's standing region over this turn's own prompt (#450). A
-        // fired check composes a message a channel reads, and the interrupt was
-        // authorized by a human at the create — so what is left for standing text
-        // to shape is only how it reads.
-        system: systemPromptFor(
-          {
-            description: settings.standing.description,
-            sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
-          },
-          SCHEDULED_CHECK_SYSTEM_PROMPT
-        ),
-        prompt: task.prompt,
-        messages,
-        maxTokens: settings.maxTokens,
-        turn: 1,
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
-        onTurn: async completed => {
-          await options.reportTurn(channel, { ...completed, id: turnId });
-        }
-      });
-    } catch (error) {
-      if (options.signal?.aborted === true) return null;
-      logger.log("warn", { event: "check_failed", channel, reason: reasonOf(error) });
-      await tell(channel, task, "failed");
-      return "failed";
+        ...(options.sharedSkills !== undefined ? { sharedSkills: options.sharedSkills } : {}),
+        reportTurn: options.reportTurn,
+        maySpend: options.maySpend,
+        ...(options.signal !== undefined ? { signal: options.signal } : {})
+      },
+      {
+        channel,
+        store,
+        question: task.prompt,
+        // The id the meter dedupes on. The ticket's own id, which is minted once
+        // by the tool proxy service and fires once — so a retry after a crash is
+        // the same id and is counted once, and there is no later firing of this
+        // check to collide with.
+        turnId: `check-${task.id}`,
+        settings
+      }
+    );
+
+    switch (outcome.kind) {
+      case "over_budget":
+        // The meter was asked before anything was spent (#335). A channel over
+        // its caps runs no turn — and is *told*, because a notice costs nothing
+        // and a check that vanishes is the thing this design refused to build.
+        logger.log("info", { event: "check_declined", channel, reason: "over_budget" });
+        await tell(channel, task, "over_budget");
+        return "over_budget";
+
+      case "failed":
+        logger.log("warn", { event: "check_failed", channel, reason: outcome.reason });
+        await tell(channel, task, "failed");
+        return "failed";
+
+      case "silent":
+        // The check ran and the answer was that there is nothing to say. Not a
+        // failure and not a notice: recorded apart from `posted` so an operator
+        // can see a check that has never once had anything to say.
+        logger.log("info", { event: "check_silent", channel });
+        return "silent";
+
+      case "aborted":
+        return null;
+
+      case "answer": {
+        const posted = await options.post.post({ channel, text: outcome.text, source: "task" });
+        logger.log("info", { event: posted ? "check_posted" : "check_unposted", channel });
+        // `posted` either way. A Slack failure is not a reason to run the check
+        // again — see the header, and `ProactivePoster`'s refusal to refund.
+        return "posted";
+      }
     }
-
-    if (options.signal?.aborted === true) return null;
-
-    if (result.unusable !== undefined) {
-      // A call that could not be used is a check that did not happen, so the
-      // channel hears about it — unlike the heartbeat, where the same outcome is
-      // a log line, because there nobody was waiting on an answer.
-      logger.log("warn", { event: "check_failed", channel, reason: result.unusable });
-      await tell(channel, task, "failed");
-      return "failed";
-    }
-
-    if (result.finding === null) {
-      // The check ran and the answer was that there is nothing to say. Not a
-      // failure and not a notice: recorded apart from `posted` so an operator can
-      // see a check that has never once had anything to say.
-      logger.log("info", { event: "check_silent", channel });
-      return "silent";
-    }
-
-    const posted = await options.post.post({ channel, text: result.finding.text, source: "task" });
-    logger.log("info", { event: posted ? "check_posted" : "check_unposted", channel });
-    // `posted` either way. A Slack failure is not a reason to run the check
-    // again — see the header, and `ProactivePoster`'s refusal to refund.
-    return "posted";
   }
 
   /** The one post a firing that produced no check is allowed. Never throws. */

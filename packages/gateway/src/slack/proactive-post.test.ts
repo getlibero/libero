@@ -22,15 +22,32 @@ describe("renderProactivePost", () => {
     expect(text.startsWith("`SCHEDULED CHECK`\n")).toBe(true);
   });
 
+  // `STANDING RULE` rather than a second `SCHEDULED` anything, because what a
+  // reader needs to predict is whether this happens again (#461). A check
+  // arrived once and is spent; a rule will be back next Monday.
+  it("labels a standing rule as the recurrence it is", () => {
+    const text = renderProactivePost({
+      source: "rule",
+      text: "Two things moved yesterday; the cert renewal is still blocked."
+    });
+
+    expect(text.startsWith("`STANDING RULE`\n")).toBe(true);
+  });
+
   it("tells a reader where the switch is, but only when nobody asked", () => {
-    // The asymmetry is the decision, not an omission: a scheduled check was
-    // asked for, and its off switch is the governed create rather than
-    // `[ambient]` — so naming that block there would point at the wrong knob.
+    // The asymmetry is the decision, not an omission: both of the others were
+    // asked for. A scheduled check's off switch is the governed create, and a
+    // rule's is the sheet entry that declares it — so naming `[ambient]` on
+    // either would point at the wrong knob. A rule is the sharper case: it does
+    // have a block on that sheet, and switching `[ambient]` off to stop one
+    // weekly digest would take the channel's heartbeat with it.
     const heartbeat = renderProactivePost({ source: "heartbeat", text: "something" });
     const task = renderProactivePost({ source: "task", text: "something" });
+    const rule = renderProactivePost({ source: "rule", text: "something" });
 
     expect(heartbeat).toContain("[ambient]");
     expect(task).not.toContain("[ambient]");
+    expect(rule).not.toContain("[ambient]");
   });
 
   it("neutralizes Slack markup in a body it did not author", () => {
