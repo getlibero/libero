@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { waitFor } from "@getlibero/test-kit";
 import { expect } from "expect";
-import { NO_PRICES, openPriceTableStore } from "./price-table-store.js";
+import { NO_PRICES, openPriceTableStore, watchDirectory } from "./price-table-store.js";
+import type { FileWatcher } from "./price-table-store.js";
 import type { LogFields, LogLevel, Logger } from "./log.js";
 
 const SONNET = `
@@ -44,20 +45,42 @@ afterEach(() => {
 const events = (): string[] => lines.map(line => line.fields.event);
 
 /**
- * Let a queued `fs.watch` event reach its listener.
+ * A watcher a case drives, in place of `fs.watch` (#474).
  *
- * Only the one case that depends on the watcher waits. Every other case here
- * changes the file's length, so the stat sees it and the answer does not depend
- * on timing at all — which is the pairing doing its job.
+ * **This replaced a timeout, and the history is the argument.** The one case that
+ * depends on a watcher used to wait for a real `fs.watch` event: first a flat
+ * 50 ms, then — when that lost on a loaded machine — a polled second, with the
+ * comment claiming a second was "far longer than delivery ever takes". A
+ * full-workspace run falsified that too. Raising it a third time would be the
+ * same fix with the same expiry ahead of it, and each raise makes a genuine
+ * regression slower to surface.
  *
- * **Polled rather than slept.** This was a flat 50 ms, which is a race the suite
- * loses on a loaded machine: `fs.watch` delivery is at the platform's
- * discretion, and the files here run in parallel with cases that hold real
- * timers. It failed intermittently with the store still answering the *old*
- * price, which reads as a broken watcher rather than as a slow one. A second is
- * far longer than delivery ever takes and costs nothing when it arrives on time.
+ * So the store takes the watcher as a seam, and the property under test —
+ * *an edit the stat cannot see still reaches the store* — is asserted with no
+ * timing in it at all. That is `AmbientTimer`'s reason in apps/server: a test
+ * should drive the clock rather than wait out the platform's.
+ *
+ * What this must not become is the seam proving itself, so one case below still
+ * runs a real `fs.watch` end to end. See `describe("the real watcher")`.
  */
-const watcherToSee = (check: () => void): Promise<void> => waitFor(check, { timeout: 1_000 });
+function drivenWatcher(): { watch: FileWatcher; change: (name: string | null) => void; stopped: () => number } {
+  let listener: ((name: string | null) => void) | null = null;
+  let stops = 0;
+  return {
+    stopped: () => stops,
+    watch: (_directory, onChange) => {
+      listener = onChange;
+      return () => {
+        stops += 1;
+        listener = null;
+      };
+    },
+    change: name => {
+      if (listener === null) throw new Error("test: no watcher was established");
+      listener(name);
+    }
+  };
+}
 
 describe("a deployment with no price table", () => {
   // The common case for a while: nothing sets `daily_usd`, so nothing needs a
@@ -147,7 +170,7 @@ describe("an edit while the proxy is running", () => {
   // watcher deleted — a test that encoded the gap instead of catching it. Putting
   // the timestamp back makes every field the stat compares identical, so the
   // watcher is the only thing that can answer, on every host.
-  it("sees an in-place edit that changes neither size, inode, nor mtime", async () => {
+  it("sees an in-place edit that changes neither size, inode, nor mtime", () => {
     // Pinned to a whole second before the store ever reads it, because
     // `utimesSync` does not round-trip a sub-millisecond mtime — restoring one
     // captured from a live write leaves a fraction of a millisecond of
@@ -156,7 +179,8 @@ describe("an edit while the proxy is running", () => {
     writeFileSync(file, SONNET);
     utimesSync(file, PINNED, PINNED);
 
-    const store = openPriceTableStore({ file, logger });
+    const driven = drivenWatcher();
+    const store = openPriceTableStore({ file, logger, watch: driven.watch });
     expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(3_000_000);
 
     const before = statSync(file);
@@ -173,10 +197,60 @@ describe("an edit while the proxy is running", () => {
     expect(after.size).toBe(before.size);
     expect(after.ino).toBe(before.ino);
 
-    await watcherToSee(() => {
-      expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(9_000_000);
-    });
+    // Still the old price: the bytes changed and nothing has told the store.
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(3_000_000);
+
+    driven.change(basename(file));
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(9_000_000);
     store.close();
+  });
+
+  // An unnamed event is treated as possibly ours. A platform that does not say
+  // which file changed would otherwise stop covering the one edit the stat
+  // cannot see, and it would do it silently.
+  it("takes an unnamed change as possibly its own", () => {
+    const PINNED = new Date(1_700_000_000_000);
+    writeFileSync(file, SONNET);
+    utimesSync(file, PINNED, PINNED);
+
+    const driven = drivenWatcher();
+    const store = openPriceTableStore({ file, logger, watch: driven.watch });
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(3_000_000);
+
+    writeFileSync(file, SONNET.replace("3_000_000", "9_000_000"));
+    utimesSync(file, PINNED, PINNED);
+
+    driven.change(null);
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(9_000_000);
+    store.close();
+  });
+
+  it("ignores a change to some other file in the directory", () => {
+    const PINNED = new Date(1_700_000_000_000);
+    writeFileSync(file, SONNET);
+    utimesSync(file, PINNED, PINNED);
+
+    const driven = drivenWatcher();
+    const store = openPriceTableStore({ file, logger, watch: driven.watch });
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(3_000_000);
+
+    writeFileSync(file, SONNET.replace("3_000_000", "9_000_000"));
+    utimesSync(file, PINNED, PINNED);
+
+    driven.change("something-else.toml");
+    // Unchanged: the stat cannot see this edit and the event was not ours.
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(3_000_000);
+    store.close();
+  });
+
+  it("stops watching when it is closed", () => {
+    writeFileSync(file, SONNET);
+    const driven = drivenWatcher();
+    const store = openPriceTableStore({ file, logger, watch: driven.watch });
+
+    expect(driven.stopped()).toBe(0);
+    store.close();
+    expect(driven.stopped()).toBe(1);
   });
 
   // A syntax error is an operator mid-edit. Widening every channel to
@@ -245,6 +319,62 @@ describe("a table that does not start", () => {
 
     expect(store.current().priceFor("claude-sonnet-4-6")).toBeUndefined();
     expect(events()).toContain("price_table_invalid");
+    store.close();
+  });
+});
+
+/**
+ * The one place a real `fs.watch` is exercised (#474).
+ *
+ * The seam above removed the platform's timing from every case that was about
+ * the *store*. This is what stops that becoming the seam proving itself: the
+ * default `watchDirectory` is what every deployment runs, and a mistake in it —
+ * the wrong directory, a basename that never matches, an error handler that
+ * swallows — would otherwise ship with a green suite.
+ *
+ * It asserts the notifier and nothing downstream of it, so a failure here means
+ * one thing rather than three. And its bound is **ten seconds**, deliberately far
+ * past anything a working platform takes: this is the one assertion in the file
+ * that waits on the operating system, so its timeout should be long enough that
+ * reaching it is news. `waitFor` polls, so an event that arrives in a
+ * millisecond costs a millisecond.
+ */
+describe("the real watcher", () => {
+  it("tells the caller which file in the directory changed", async () => {
+    const seen: (string | null)[] = [];
+    writeFileSync(file, SONNET);
+    const stop = watchDirectory(dir, name => seen.push(name));
+
+    try {
+      writeFileSync(file, `${SONNET}\n# touched\n`);
+      await waitFor(
+        () => {
+          // `null` is a platform that did not say, which the store treats as
+          // possibly its own — so either answer is the watcher working.
+          expect(seen.some(name => name === null || name === basename(file))).toBe(true);
+        },
+        { timeout: 10_000 }
+      );
+    } finally {
+      stop();
+    }
+  });
+
+  // Establishing one must never be a startup failure: the stat covers every
+  // ordinary edit, and a proxy must not refuse to start because a filesystem
+  // does not support inotify.
+  it("is a log line rather than a failure when it cannot be established", () => {
+    const store = openPriceTableStore({
+      file,
+      logger,
+      watch: () => {
+        throw new Error("inotify unavailable");
+      }
+    });
+
+    writeFileSync(file, SONNET);
+    expect(store.current().priceFor("claude-sonnet-4-6")?.input).toBe(3_000_000);
+    expect(events()).toContain("price_table_unwatched");
     store.close();
   });
 });
