@@ -128,8 +128,10 @@ milestone closed, with the changelog entry carrying the upgrade notes. It is the
 first release of the pre-1.0 arc, and
 the roadmap's "The road to 1.0" section is the argued record of that plan (0.6
 scheduling, 0.7 deployment shapes, 0.8 richer tools and adoption, 0.9 close-out,
-1.0 a validation release). Do not re-derive the sequencing here. **There is no
-open milestone**; `v0.7.0` is next and is created when work on it starts.
+1.0 a validation release). Do not re-derive the sequencing here. **`v0.7.0`,
+deployment shapes, is the open milestone** — #428 and #261 are its two
+trackers, #239 stands beside them blocked by the first, and the sub-issues
+carry the plan.
 
 An operator declares `[[ambient.rule]]` in a team sheet — at these times, on
 these days, ask this question — and the ambient clock fires it as a third

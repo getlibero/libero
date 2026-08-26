@@ -209,7 +209,7 @@ test that had been given a longer timeout twice was rebuilt on a seam
 ([#474](https://github.com/getlibero/libero/issues/474)), which is the difference between fixing a
 flake and postponing it a third time.
 
-**v0.7 — deployment shapes.** The next milestone. The LiteLLM sidecar becomes first-class beside the native adapters
+**v0.7 — deployment shapes.** The open milestone. The LiteLLM sidecar becomes first-class beside the native adapters
 ([#428](https://github.com/getlibero/libero/issues/428)), which unblocks the cost-drift recorder
 ([#239](https://github.com/getlibero/libero/issues/239)), and the vault and token store gain
 external secrets-manager backends ([#261](https://github.com/getlibero/libero/issues/261)). This is
