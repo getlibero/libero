@@ -105,6 +105,7 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
     heartbeat: post =>
       createAmbientHeartbeat({
         completion: options.completion,
+        firedTools,
         post,
         ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
         settings: async channel => {
@@ -120,6 +121,9 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
             },
             enabled: settings.ambient.enabled,
             answerAfterIdleMs: settings.ambient.answerAfterIdleMs,
+            // The same switch the two fired paths read (#471).
+            tools: settings.ambient.tools,
+            caps: settings.caps,
             model: settings.model,
             maxTokens: settings.caps.maxOutputTokensPerTurn
           };

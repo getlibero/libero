@@ -1425,6 +1425,25 @@ call with a single tool that writes nothing. A channel that writes
 `[ambient] tools = true` gets `runAgentTask` instead, over the allowlist its
 sheet already carries.
 
+Since #471 the **heartbeat evaluation reads the same switch**, and it is the same
+switch rather than one of its own: all three are turns this block fires, and a
+channel that decided unattended work may look things up did not decide it three
+times. What that buys the heartbeat is the question it could not previously ask —
+*the release branch went red an hour ago and nobody has noticed* — which is
+exactly the limitation #348 named for a fired check.
+
+**The pregate still runs first, and that is the ordering neither change may
+disturb.** The shape is chosen *after* the heartbeat has decided there is
+material, the window is open, and the channel can afford it — so a quiet channel
+still costs a map lookup and a `LIMIT 1`, and never a tool listing. That is what
+makes a brisk cadence affordable, and it is now the thing most easily broken:
+three unit cases and one e2e case assert that a tick the pregate stops reaches
+the proxy not at all.
+
+The watermark advances exactly once per evaluation, tools or not, including when
+a cap ends the loop — because the question it answers is "has this material been
+weighed", and running the loop answered it.
+
 **The switch decides who may use that list, not what is on it.** An opted-in
 firing reaches exactly what a mention reaches, resolved per call in the proxy
 from the same file — so turning it on cannot widen a channel past what its

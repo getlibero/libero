@@ -402,6 +402,7 @@ const curateSkills = createSkillCuratePass({
 const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
   createAmbientHeartbeat({
     completion,
+    firedTools,
     sharedSkills,
     post,
     settings: async channel => {
@@ -417,6 +418,10 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
       },
         enabled: settings.ambient.enabled,
         answerAfterIdleMs: settings.ambient.answerAfterIdleMs,
+        // The same switch the two fired paths read (#471): a channel decided
+        // once whether unattended work may look things up.
+        tools: settings.ambient.tools,
+        caps: settings.caps,
         model: settings.model,
         maxTokens: settings.caps.maxOutputTokensPerTurn
       };

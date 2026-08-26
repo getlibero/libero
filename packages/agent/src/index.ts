@@ -99,6 +99,7 @@ export type {
 
 export {
   AMBIENT_HEARTBEAT_SYSTEM_PROMPT,
+  activityMessage,
   ambientFindingToolDefinition,
   runHeartbeatTurn
 } from "./ambient/turn.js";

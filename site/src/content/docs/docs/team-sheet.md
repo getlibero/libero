@@ -1206,7 +1206,7 @@ that no clock will enumerate is worse than a refusal, since a human clicked Appr
 | --- | --- | --- |
 | `enabled` | no | Whether this block does anything at all. **Defaults to `false`** — the block every other `enabled` on this page argues its own default against. |
 | `heartbeat` | no | Whether the heartbeat evaluation runs. Defaults to `true`. Set it `false` to run [rules](#ambientrule) and nothing else. |
-| `tools` | no | Whether a fired check or rule may call this channel's tools. **Defaults to `false`** — see below. |
+| `tools` | no | Whether a turn this block fires — a heartbeat, a check, or a rule — may call this channel's tools. **Defaults to `false`** — see below. |
 | `heartbeat_every_minutes` | no | How often the agent looks. Defaults to `15`. May not be set below `1` or above `1440` (a day). |
 | `answer_after_idle_minutes` | no | How long a question must sit before the heartbeat may answer it. Defaults to `60`. May not be set below `5` or above `10080` (a week). |
 
@@ -1254,8 +1254,8 @@ against unbidden, not proactive against reactive: nobody asked for a heartbeat's
 for a rule's — here, in a file your team reviews before it runs. What bounds a rule instead is its
 own shape, below.
 
-**Unattended tool use is off until you turn it on.** With `tools = false` a fired check or rule is
-one model call over this channel's recent messages: it can answer "has anyone replied to Priya" and
+**Unattended tool use is off until you turn it on.** With `tools = false` a heartbeat, a fired check
+or a rule is one model call over this channel's recent messages: it can answer "has anyone replied to Priya" and
 cannot answer "is the release branch still red". With `tools = true` it runs the same loop a mention
 runs, over the **same** tool list your team already has — the switch decides who may use that list,
 not what is on it, so turning it on cannot reach anything your members could not already ask for by
@@ -1270,6 +1270,11 @@ nobody asked for this turn — there is no thread to put a card in and no one wa
 practical line is **read yes, write no**: tools with destructive-sounding names are held by default
 and therefore simply fail here. To let an unattended turn call one, write `approval = "none"` on
 that tool, where the decision shows up in your diff.
+
+**A heartbeat still costs nothing when there is nothing to weigh.** Before anything is spent it
+decides — deterministically, without a model call and without listing a tool — whether there is new
+material, whether the rate window is open, and whether the channel can afford it. Turning this on
+does not put a tool listing on every tick; it puts one on the ticks that were already going to think.
 
 **What bounds it is [`daily_tool_calls`](#budget)**, counted by the proxy from calls it actually
 served — so it holds even against a compromised agent process. That is the number to look at before

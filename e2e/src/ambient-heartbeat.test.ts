@@ -33,9 +33,19 @@ import { DatabaseSync } from "node:sqlite";
 import { after as afterAll, before as beforeAll, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
-import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
+import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER } from "@getlibero/schema";
 import { HEARTBEAT_POST_WINDOW_MS, toSlackTs } from "@getlibero/server";
-import { CHANNEL, OTHER_CHANNEL, calls, rigOf, spendFor, startRig, withUsage } from "./harness/index.js";
+import {
+  CHANNEL,
+  OTHER_CHANNEL,
+  auditRows,
+  calls,
+  rigOf,
+  says,
+  spendFor,
+  startRig,
+  withUsage
+} from "./harness/index.js";
 import type { Rig } from "./harness/index.js";
 
 const SETUP_MS = 60_000;
@@ -322,6 +332,123 @@ describe("a channel at its budget cap", () => {
       expect(agent.slack.channelPosts).toHaveLength(1);
       const spend = spendFor(budgetDb, CHANNEL);
       expect(spend.inputTokens + spend.outputTokens).toBe(HEARTBEAT_TOKENS);
+    });
+});
+
+describe("a heartbeat whose channel opted into tools", () => {
+  beforeAll(async () => {
+    at = Date.now();
+    rig = await startRig({
+      ambient: true,
+      passClock: () => at,
+      catalog: [
+        { name: "list_prs", description: "Lists pull requests.", inputSchema: { type: "object", properties: {} } },
+        { name: "delete_branch", description: "Deletes a branch.", inputSchema: { type: "object", properties: {} } }
+      ],
+      script: [
+        // The evaluation looks something up, then speaks. Three turns, because
+        // the loop dispatches on `tool_use` and stops on `end_turn`.
+        calls("list_prs", {}),
+        posts("Two pull requests have been open since Friday."),
+        // The turn that ends the loop: no tool call, so it stops.
+        withUsage(says(""), { ...HEARTBEAT_USAGE })
+      ],
+      sheets: {
+        [CHANNEL]: {
+          credential: "e2e_canary",
+          tools: [{ name: "list_prs" }, { name: "delete_branch" }],
+          ambient: {
+            enabled: true,
+            heartbeatEveryMinutes: 15,
+            answerAfterIdleMinutes: 60,
+            tools: true
+          }
+        }
+      }
+    });
+  }, { timeout: SETUP_MS });
+
+  afterAll(async () => {
+    await rig?.stop();
+  });
+
+  it(
+    "serves its calls through the proxy, attributed to the clock",
+    { timeout: CASE_MS },
+    async () => {
+      const { agent, auditDb } = rigOf(rig);
+
+      await agent.slack.deliverMessage(
+        message("why is staging refusing certs?", toSlackTs(at - 3 * HOUR))
+      );
+
+      expect(await rig?.heartbeat(at)).toBe(1);
+      await agent.waitForLog({ event: "heartbeat_posted", channel: CHANNEL }, 1);
+
+      // **The call was really served**, by the other process, from this
+      // channel's own sheet — the half a unit test cannot claim.
+      const rows = auditRows(auditDb);
+      expect(rows.some(row => row.tool === "list_prs" && row.outcome === "ran")).toBe(true);
+
+      // **And the audit log says no person asked.** A row naming a user would be
+      // this process asserting a fact about a human who was not there.
+      expect(rows.find(row => row.tool === "list_prs")?.requesting_user).toBe(
+        AMBIENT_REQUESTING_USER
+      );
+
+      expect(agent.slack.channelPosts).toHaveLength(1);
+      expect(agent.slack.channelPosts[0]?.text).toContain("open since Friday");
+    });
+});
+
+describe("a quiet channel that opted into tools", () => {
+  beforeAll(async () => {
+    at = Date.now();
+    rig = await startRig({
+      ambient: true,
+      passClock: () => at,
+      catalog: [
+        { name: "list_prs", description: "Lists pull requests.", inputSchema: { type: "object", properties: {} } }
+      ],
+      script: [posts("This must never be reached.")],
+      sheets: {
+        [CHANNEL]: {
+          credential: "e2e_canary",
+          tools: [{ name: "list_prs" }],
+          ambient: {
+            enabled: true,
+            heartbeatEveryMinutes: 15,
+            answerAfterIdleMinutes: 60,
+            tools: true
+          }
+        }
+      }
+    });
+  }, { timeout: SETUP_MS });
+
+  afterAll(async () => {
+    await rig?.stop();
+  });
+
+  // **The ordering the whole design rests on**, proven across two processes: a
+  // tick with nothing to weigh reaches the proxy not at all. Without it, every
+  // enabled channel would pay a tool listing every cadence — which is what makes
+  // a brisk cadence affordable, and it is now the thing most easily broken.
+  it(
+    "reaches the proxy not at all when there is nothing to weigh",
+    { timeout: CASE_MS },
+    async () => {
+      const { agent, auditDb, model } = rigOf(rig);
+
+      // The control is the describe above: on the same shape of rig, a channel
+      // with material does call.
+      expect(await rig?.heartbeat(at)).toBe(1);
+
+      // No listing, no call, no row — and the script entry unconsumed, which is
+      // what proves no model turn ran either.
+      expect(auditRows(auditDb)).toHaveLength(0);
+      expect(model.seen).toHaveLength(0);
+      expect(agent.slack.channelPosts).toHaveLength(0);
     });
 });
 
