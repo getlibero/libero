@@ -34,11 +34,20 @@
 // on the scan that invents it; a ticket's instant is already on disk when the
 // scan starts, so the first scan past it fires. `Rig.check` scans once, and that
 // difference is the thing it exists to make visible. See `Rig.check`.
+//
+// **A due rule has a first-sight rule of its own, and it is neither of those**
+// (#461). Like a heartbeat, its next instant is the scheduler's arithmetic, so a
+// rule cannot fire on the scan that first saw it. Unlike a heartbeat, that
+// instant is a *clock time* rather than a cadence from now — so the sighting scan
+// has to fall shortly before the occurrence a case wants, not a day before it,
+// or the rule schedules to some earlier occurrence and fires against that.
+// `Rig.rule` scans a minute early and then at the instant. See `Rig.rule`.
 
 import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import {
   createAmbientHeartbeat,
+  createAmbientRuleFire,
   createAmbientTaskFire,
   createChannelLister,
   createSkillProposalsOpener
@@ -46,8 +55,8 @@ import {
 import type { ServerDeps, SharedSkillReader, SheetResolver } from "@getlibero/server";
 import { meteringClosures } from "./passes.js";
 
-/** Exactly the three fields this module fills in on `ServerDeps`. */
-export type AmbientDeps = Pick<ServerDeps, "channels" | "heartbeat" | "fireTask">;
+/** Exactly the four fields this module fills in on `ServerDeps`. */
+export type AmbientDeps = Pick<ServerDeps, "channels" | "heartbeat" | "fireTask" | "fireRule">;
 
 export interface AmbientOptions {
   /**
@@ -157,6 +166,43 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
         signal,
         logger,
         ...(options.now === undefined ? {} : { now: options.now })
+      }),
+
+    // The third factory over the same poster (#461). Wired unconditionally
+    // beside the other two, for `fireTask`'s reason and a sharper one: a rule
+    // needs `[ambient] enabled = true` *and* a `[[ambient.rule]]` entry on the
+    // channel's sheet before anything here runs, and the second of those is the
+    // property `ambient-rule.test.ts` attacks — that only a sheet can declare a
+    // rule. A rig knob gating it would put a switch in front of the surface
+    // whose absence is the thing being proved.
+    fireRule: post =>
+      createAmbientRuleFire({
+        completion: options.completion,
+        post,
+        ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
+        settings: async channel => {
+          const settings = await sheets(channel);
+          return {
+            // The operator's own text, carried to every turn that composes
+            // something (#450). `sharedSkills` below is what reads it.
+            standing: {
+              description: settings.description,
+              sharedSkills: settings.sharedSkills,
+              maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+              maxAlwaysChars: settings.skills.maxAlwaysChars
+            },
+            enabled: settings.ambient.enabled,
+            model: settings.model,
+            maxTokens: settings.caps.maxOutputTokensPerTurn
+          };
+        },
+        // The same closures again, over the wrapped transport, so "a capped
+        // channel's rule spends nothing and still says so" is a claim about two
+        // processes rather than about a stub.
+        reportTurn,
+        maySpend,
+        signal,
+        logger
       })
   };
 }

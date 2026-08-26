@@ -563,6 +563,31 @@ per scan, earliest first. The event words are `check_posted`, `check_silent`,
 `check_declined`, `check_failed` and `check_unposted`, plus `ambient_check_due`
 from the clock.
 
+**Fire a due standing rule with `rig.rule(at)`, which scans twice — but not the
+way `heartbeat` does.** A rule has a first-sight rule, so like a heartbeat it
+cannot fire on the scan that computed its instant; unlike a heartbeat that
+instant is a **clock time** rather than a cadence from now. So the sighting scan
+falls one minute before `at` rather than a day before it: sight any earlier and
+the rule schedules to some previous occurrence and fires against that one
+instead. `at` must therefore be *exactly* an occurrence — one of the rule's `at`
+times, to the minute, on a day its `days` list allows — and a case that passes
+anything else gets `0`. The event words are `rule_posted`, `rule_silent`,
+`rule_declined`, `rule_failed` and `rule_unposted`, plus `ambient_rule_due` from
+the clock, and every one of them carries a `rule` field naming which of the
+sheet's rules it was.
+
+**Derive a rule's `"HH:MM"` from the instant, never the other way round.** The
+suite runs at whatever time of day CI reaches it, so a sheet hardcoding `09:00`
+passes at 08:00 and hangs at 09:30. `ambient-rule.test.ts` picks an occurrence a
+few minutes out and computes the sheet's time from it — and computes it *once*,
+into a variable, because two `Date.now()` calls either side of a minute boundary
+give a sheet that names a time the case never drives to.
+
+**`[[ambient.rule]]` is nested, so the writer places it inside `[ambient]`.** TOML
+reads the placement rather than the name: written below `[[mcp_server]]` the
+entries would belong to something else or fail to parse. `ChannelSpec.ambient.rules`
+handles that; a case writing raw TOML has to.
+
 **Do not scan at exactly the instant you asked for.** A ticket's due time is the
 *proxy's* clock at the moment the create was served, which is your `at` plus
 however long the rig took to start — so a case proving a check fired should scan

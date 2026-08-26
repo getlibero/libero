@@ -170,6 +170,16 @@ export interface AgentSide {
    * first scan past it fires. There is no sighting scan to do.
    */
   check(at: number): Promise<number>;
+  /**
+   * One scan at `at`, answering how many due *rules* fired (#461).
+   *
+   * The same scan again, counting the third kind of due thing. A rule *does*
+   * have a first-sight rule — its instant is the scheduler's arithmetic, so it
+   * cannot fire on the scan that computed it — but unlike a heartbeat the
+   * instant is a clock time, so the sighting scan has to fall just before the
+   * occurrence rather than a cadence before it. `Rig.rule` does both.
+   */
+  rule(at: number): Promise<number>;
   /** Every structured log line this side emitted — one of the canary surfaces. */
   log(): Array<{ level: LogLevel; fields: LogFields }>;
   /**
@@ -517,6 +527,16 @@ export async function startAgent(cleanup: Cleanup, options: AgentOptions): Promi
       // check did not fire must not be satisfied by a heartbeat that did.
       const { checks } = await ambient.scan(at);
       return checks;
+    },
+    async rule(at: number): Promise<number> {
+      if (ambient === undefined) {
+        throw new Error("e2e: this rig composed no ambient clock — see RigOptions.ambient");
+      }
+      // The same scan again, counting the third kind. A third counter for the
+      // reason there is a second: a case proving a rule did not fire must not be
+      // satisfied by a heartbeat or a check that did.
+      const { rules } = await ambient.scan(at);
+      return rules;
     }
   };
 }
