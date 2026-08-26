@@ -467,10 +467,60 @@ export const AmbientRuleName = z
  * read up from. What does not carry is where it gets reviewed: a check's question
  * is read on an approval card, and a rule's is read in a pull request.
  */
+/**
+ * An IANA time zone name, as the runtime that will do the arithmetic knows it.
+ *
+ * **Membership of the runtime's own list, not a pattern and not a round trip**
+ * (#470). A regex over `Region/City` accepts `Europe/Atlantis`, and a name list
+ * bundled here is a copy of the tz database that goes stale between releases.
+ * `Intl.supportedValuesOf` is the canonical set the same runtime will resolve
+ * against at firing time, so a sheet that parses is a sheet that can fire.
+ *
+ * **A round trip through `resolvedOptions()` was the first attempt and is not
+ * enough**, which is worth recording because it looks sufficient. `Intl` accepts
+ * a fixed offset — `+01:00` resolves to itself, canonically — so that check
+ * admits a value that never observes daylight saving. An operator writing
+ * `+01:00` for London would get permanent British Summer Time and a digest an
+ * hour out for five months of the year, which is precisely the bug this field
+ * exists to fix. The list has no offsets in it.
+ *
+ * `UTC` is added because it is *not* in that list and is the default this field
+ * makes explicit. `Etc/UTC` and `GMT` are absent and stay refused: they resolve
+ * to the same instant and are second spellings of it, which is `ClockTime`'s
+ * one-spelling argument one shape up and `SkillName`'s two packages over.
+ *
+ * This is the one shape in this file validated against a *runtime capability*
+ * rather than against itself. That is a real dependency and worth naming: a
+ * build with no full ICU data would offer a shorter list and reject zones a
+ * fuller build accepts. Node ships full ICU by default and this repository's
+ * floor is 24, so the case is theoretical — but it is the reason this is not a
+ * `.regex()`, and a reader wondering why should not have to re-derive it.
+ */
+const NAMED_ZONES = new Set<string>(["UTC", ...Intl.supportedValuesOf("timeZone")]);
+
+export const TimeZoneName = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(zone => NAMED_ZONES.has(zone), {
+    message: 'must be a canonical IANA time zone name, like "Europe/London"'
+  });
+
 export const AmbientRule = z.object({
   name: AmbientRuleName,
   at: z.array(ClockTime).min(1).max(4),
   days: z.array(AmbientRuleDay).min(1).max(7).optional(),
+  /**
+   * The zone `at` and `days` are read in. Absent means UTC (#470).
+   *
+   * **Optional rather than defaulted to `"UTC"`**, which is `days`' choice and
+   * for its reason: a sheet that says nothing and a sheet that says UTC stay
+   * distinguishable in the file an operator reads. It also keeps the promise
+   * `ClockTime`'s header made when this shipped without one — every rule written
+   * before this field existed means exactly what it meant, because absent is the
+   * behaviour they had.
+   */
+  timezone: TimeZoneName.optional(),
   question: z.string().min(1).max(SCHEDULED_TASK_MAX_PROMPT_CHARS),
 });
 

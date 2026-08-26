@@ -128,3 +128,122 @@ describe("the next occurrence of a rule", () => {
     expect(new Set(seen).size).toBe(5);
   });
 });
+
+describe("a rule that names a zone", () => {
+  // Europe/London springs forward 2027-03-28 at 01:00 UTC (local 01:00 → 02:00)
+  // and falls back 2027-10-31 at 01:00 UTC (local 02:00 → 01:00). Every case
+  // below is anchored to one of those two, so a reader can check the arithmetic
+  // against a calendar rather than against this file.
+  const zoned = (over: Partial<AmbientRule> = {}): AmbientRule =>
+    rule({ timezone: "Europe/London", ...over });
+
+  // The property the whole one-path decision rests on: a rule that names no zone
+  // and one that names UTC are the same rule. Two implementations would be two
+  // chances to disagree, and the disagreement would be an hour on one channel.
+  it("answers identically with no zone and with UTC", () => {
+    const at = utc("2026-08-26T08:00:00");
+    for (const times of [["09:00"], ["23:59"], ["00:00", "12:00"]]) {
+      expect(nextRuleOccurrence(rule({ at: times }), at)).toBe(
+        nextRuleOccurrence(rule({ at: times, timezone: "UTC" }), at)
+      );
+    }
+  });
+
+  it("fires at the zone's wall clock, not at UTC's", () => {
+    // Mid-summer, so London is one hour ahead: 09:00 local is 08:00 UTC.
+    expect(nextRuleOccurrence(zoned(), utc("2027-07-14T06:00:00"))).toBe(
+      utc("2027-07-14T08:00:00")
+    );
+    // Mid-winter, where the two agree.
+    expect(nextRuleOccurrence(zoned(), utc("2027-01-14T06:00:00"))).toBe(
+      utc("2027-01-14T09:00:00")
+    );
+  });
+
+  // The point of the whole change: a 09:00 digest stays a 09:00 digest across a
+  // transition, where a UTC rule drifts by an hour.
+  it("keeps its wall-clock time across a spring forward", () => {
+    const before = nextRuleOccurrence(zoned(), utc("2027-03-27T06:00:00"));
+    const after = nextRuleOccurrence(zoned(), utc("2027-03-29T06:00:00"));
+    expect(before).toBe(utc("2027-03-27T09:00:00"));
+    // The day after the transition, 09:00 local is 08:00 UTC — a different
+    // instant for the same wall time, which is the drift being fixed.
+    expect(after).toBe(utc("2027-03-29T08:00:00"));
+  });
+
+  it("keeps its wall-clock time across a fall back", () => {
+    expect(nextRuleOccurrence(zoned(), utc("2027-10-30T06:00:00"))).toBe(
+      utc("2027-10-30T08:00:00")
+    );
+    expect(nextRuleOccurrence(zoned(), utc("2027-11-01T06:00:00"))).toBe(
+      utc("2027-11-01T09:00:00")
+    );
+  });
+
+  // A local time the day did not contain is a missed window, and this module's
+  // standing answer to a missed window is to skip it.
+  it("skips a time the spring forward deleted", () => {
+    // Local 01:30 does not exist on 2027-03-28: the clock goes 00:59 to 02:00.
+    const gap = zoned({ at: ["01:30"] });
+    const next = nextRuleOccurrence(gap, utc("2027-03-27T23:00:00"));
+    // Not that day at all — the following one, at its ordinary instant.
+    expect(next).toBe(utc("2027-03-29T00:30:00"));
+  });
+
+  // The reason skipping matters beyond losing one firing: resolving a deleted
+  // time anyway lands it on the instant a real one already occupies.
+  it("does not collide a deleted time with a real one on the same rule", () => {
+    const both = zoned({ at: ["01:30", "02:30"] });
+    const next = nextRuleOccurrence(both, utc("2027-03-27T23:00:00"));
+    // 02:30 local exists that day and is 01:30 UTC. The deleted 01:30 must not
+    // have produced that same instant and been taken as the earlier of the two.
+    expect(next).toBe(utc("2027-03-28T01:30:00"));
+  });
+
+  // Twice on the clock, once as a firing. Which of the two is arbitrary; that
+  // there is exactly one is not.
+  it("fires once for a time the fall back repeats", () => {
+    const repeated = zoned({ at: ["01:30"] });
+    const first = nextRuleOccurrence(repeated, utc("2027-10-30T23:00:00"));
+    expect(first).toBe(utc("2027-10-31T01:30:00"));
+    // And asking again from that answer moves to the next day rather than to the
+    // hour's other reading.
+    expect(nextRuleOccurrence(repeated, first ?? 0)).toBe(utc("2027-11-01T01:30:00"));
+  });
+
+  // A day is a calendar day in the rule's zone. Adding 86_400_000 across the
+  // transition would land the walk an hour out and pick the wrong weekday edge.
+  it("walks calendar days rather than fixed offsets", () => {
+    // Sunday 2027-03-28 is the transition. A Monday rule asked on the Saturday
+    // has to cross it and still land on Monday's 09:00 local.
+    const monday = zoned({ days: ["mon"] });
+    expect(nextRuleOccurrence(monday, utc("2027-03-27T12:00:00"))).toBe(
+      utc("2027-03-29T08:00:00")
+    );
+  });
+
+  // The zone decides which calendar day it is, which is not UTC's day for most
+  // of the world for much of the day.
+  it("reads the candidate day in the rule's zone, not in UTC", () => {
+    // 2027-07-13T03:00Z is Tuesday in UTC and still Monday evening in Los
+    // Angeles — 20:00 on Monday the 12th.
+    const monday = rule({ days: ["mon"], at: ["21:00"], timezone: "America/Los_Angeles" });
+    // So the next Monday 21:00 is an hour later on that same local Monday, not a
+    // week out. A walk that took UTC's day would have read Tuesday and answered
+    // the 19th.
+    expect(nextRuleOccurrence(monday, utc("2027-07-13T03:00:00"))).toBe(
+      utc("2027-07-13T04:00:00")
+    );
+  });
+
+  it("handles a zone with no daylight saving at all", () => {
+    const fixed = rule({ timezone: "Asia/Tokyo" });
+    // Tokyo is UTC+9 year-round, so 09:00 local is midnight UTC, always.
+    expect(nextRuleOccurrence(fixed, utc("2027-03-27T12:00:00"))).toBe(
+      utc("2027-03-28T00:00:00")
+    );
+    expect(nextRuleOccurrence(fixed, utc("2027-10-30T12:00:00"))).toBe(
+      utc("2027-10-31T00:00:00")
+    );
+  });
+});

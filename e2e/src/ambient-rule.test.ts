@@ -100,6 +100,7 @@ type SheetAmbientRule = {
   readonly name: string;
   readonly at: readonly string[];
   readonly days?: readonly string[];
+  readonly timezone?: string;
   readonly question: string;
 };
 
