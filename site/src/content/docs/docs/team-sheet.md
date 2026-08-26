@@ -434,28 +434,39 @@ allow = ["api.github.com", "*.internal.example.com"]
 # its own. Off by default, always — every other block on this sheet argues its
 # own default by contrast with this one.
 #
-# Every field here has a reader: the agent process wakes on a clock, enumerates
-# the channels that opted in, and runs a heartbeat for each one that is due. The
-# evaluation weighs what changed since it last spoke, answers a question only
-# once it has sat idle past the threshold below, and its ordinary answer is
-# nothing — a post happens when something merits one, at most once per rate
-# window.
+# Turning this on buys two different things, and the switch beside each says so.
+# The HEARTBEAT is a judgement: the agent process wakes on a clock, enumerates
+# the channels that opted in, and for each one that is due weighs what changed
+# since it last spoke. It answers a question only once that question has sat idle
+# past the threshold below, and its ordinary answer is nothing — a post happens
+# when something merits one, at most once per rate window. RULES are a clock:
+# at these times, on these days, ask this question and post the answer. See
+# [[ambient.rule]] at the foot of this block.
 #
-# Two things follow from how the clock is built. A newly enabled channel waits
-# one full cadence before its first heartbeat, and so does every enabled channel
-# after a restart: windows the process was down for are skipped rather than
-# replayed, because a heartbeat asks what merits a post *now*. And an edit here
-# lands on the next tick — nothing caches this file, and nothing restarts.
+# Two things follow from how the clock is built, and they are true of both
+# sources. A newly enabled channel waits one full cadence before its first
+# heartbeat, and so does every enabled channel after a restart: windows the
+# process was down for are skipped rather than replayed. A restart spanning
+# Monday 09:00 loses that Monday's digest and does not fire it late — the next
+# occurrence is already coming, which is what makes a rule different from the
+# one-shot check schedule_task creates. And an edit here lands on the next tick:
+# nothing caches this file, and nothing restarts.
 #
-# The cadence is an interval, not a cron expression, and there are no quiet
-# hours and no timezone. A tick with nothing new to weigh is silent and spends
-# nothing, so 03:00 already costs you nothing and says nothing — which is the
-# whole thing a schedule with sleeping hours would have bought.
+# The heartbeat's cadence is an interval, not a cron expression, and it has no
+# quiet hours. A tick with nothing new to weigh is silent and spends nothing, so
+# 03:00 already costs you nothing and says nothing — which is the whole thing a
+# schedule with sleeping hours would have bought. A rule is the other case: it
+# SPEAKS at its instant rather than looking at it, so a clock time is exactly
+# what it needs, and the hours it does not name are quiet by construction.
 [ambient]
 enabled                 = false             # off by default, always. Also the
                                             # precondition for [[builtin]]
                                             # schedule_task above: with this
                                             # false, a create is refused.
+heartbeat               = true              # false runs your rules and skips the
+                                            # heartbeat evaluation entirely. Off
+                                            # here means one source, not silence;
+                                            # enabled = false is silence.
 heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 
 # How long a question must sit before the heartbeat may answer it — the sibling
@@ -474,6 +485,60 @@ answer_after_idle_minutes = 60              # five minutes to a week
 # heartbeat-initiated post per channel per rate window, stated in time rather
 # than in ticks, fixed in the architecture and enforced where the post is made —
 # so tightening the cadence above cannot quietly loosen the throttle.
+#
+# A rule's post is not throttled by that window and does not draw on it. The line
+# is bidden against unbidden, not proactive against reactive: nobody asked for a
+# heartbeat's post, and you asked for a rule's — here, in a file your team
+# reviews before it runs. What bounds a rule instead is its own shape, below.
+
+# Recurring turns at a clock time: at these times, on these days, ask this
+# question and post the answer. "Every Monday at 09:00, post the standup digest"
+# is this block and nothing else on this sheet.
+#
+# EVERY RULE IS A QUESTION, NOT A MESSAGE. There is no field for text to repeat
+# verbatim, and that is a decision rather than an omission: replaying fixed text
+# on a clock is what Slack's own reminders do, and what a rule buys instead is an
+# answer composed from your channel's state at the moment it fires. If you want
+# the same words every Monday, use a reminder.
+#
+# WHAT A RULE MAY DO IS BOUNDED BY ITS SHAPE. One post per firing, and the firing
+# is one turn with no tools: a rule reads your channel's recent messages and
+# answers. It cannot call GitHub, open a file, or spend against a tool budget. A
+# rule that could look things up would be unattended tool use, which is a
+# different decision and not this one.
+#
+# THE MODEL CANNOT WRITE A RULE. Not with a tool, not by being persuaded, not by
+# anything in a message. This file is the only way one exists, which is also what
+# makes it approved: the edit adding it was reviewed the way your code is. Asked
+# in-channel for a standing weekly reminder, the agent points you here.
+#
+# Times are UTC and 24-hour, zero-padded — "09:00", not "9:00" or "9am". One
+# honest limit: UTC does not observe your summer time, so a rule written by a
+# team in a DST zone drifts by an hour twice a year. A timezone field is planned
+# and will read absent as UTC, so nothing you write today changes meaning.
+#
+# The caps are what makes a flood impossible rather than merely discouraged: at
+# most 4 times per rule, at most 8 rules, so at most 32 posts a day however you
+# arrange them. Repeating a time or a day inside one rule is refused, because a
+# cap that counts listed times has to be counting firings.
+#
+# days is optional and absent means every day. Each example below shows the cron
+# expression it corresponds to, for readers who think in cron — the fields are
+# what this sheet takes, and there is no cron = field.
+
+[[ambient.rule]]
+name     = "standup-digest"                 # 0 9 * * 1-5
+at       = ["09:00"]
+days     = ["mon", "tue", "wed", "thu", "fri"]
+question = """
+What moved yesterday, what is blocked, and who is waiting on whom? \
+Two or three sentences. Say nothing if the channel was quiet."""
+
+[[ambient.rule]]
+name     = "friday-release-check"           # 0 16 * * 5
+at       = ["16:00"]
+days     = ["fri"]
+question = "Is anything still open that we said would ship this week?"
 ```
 
 ## What each block does
@@ -1127,6 +1192,11 @@ the next due instant and reaches a channel through the same session a task does;
 whether a question has sat long enough to be worth answering. Setting `enabled = true` turns
 something on.
 
+**`heartbeat` and `[[ambient.rule]]` are the exception: they parse and bound, and nothing reads them
+yet.** A sheet may declare rules today and they will not fire until the release that gives them a
+clock. The shape ships first on purpose, so a sheet written now does not have to change when the
+reader arrives.
+
 `enabled` is also the one field on this page the **tool proxy** reads, and it reads nothing else
 here. A [`schedule_task`](#builtin) create against a channel with this switched off is refused,
 because nothing would ever run the check — and a channel quietly accumulating approved future work
@@ -1135,7 +1205,8 @@ that no clock will enumerate is worse than a refusal, since a human clicked Appr
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `enabled` | no | Whether the heartbeat runs at all. **Defaults to `false`** — the block every other `enabled` on this page argues its own default against. |
+| `enabled` | no | Whether this block does anything at all. **Defaults to `false`** — the block every other `enabled` on this page argues its own default against. |
+| `heartbeat` | no | Whether the heartbeat evaluation runs. Defaults to `true`. Set it `false` to run [rules](#ambientrule) and nothing else. |
 | `heartbeat_every_minutes` | no | How often the agent looks. Defaults to `15`. May not be set below `1` or above `1440` (a day). |
 | `answer_after_idle_minutes` | no | How long a question must sit before the heartbeat may answer it. Defaults to `60`. May not be set below `5` or above `10080` (a week). |
 
@@ -1143,11 +1214,21 @@ Off by default, always, and it is the one block on this page where that is the w
 Turning it on is one line, and the figures beside it default like every other figure on this
 sheet — `enabled = true` on its own is a valid sheet, not an error.
 
-**The cadence is an interval, not a cron expression.** There are no quiet hours and no timezone,
-and they are not omissions. A tick with nothing new to weigh is silent by construction and spends
-nothing, so a 03:00 tick already costs you nothing and says nothing — which is everything a
-schedule with sleeping hours would have bought. What it would have cost is a timezone on your
-sheet, because `0 9 * * 1-5` is 09:00 for nobody in particular.
+**The cadence is an interval, not a cron expression**, and there are no quiet hours. That is not an
+omission: a tick with nothing new to weigh is silent by construction and spends nothing, so a 03:00
+tick already costs you nothing and says nothing — which is everything a schedule with sleeping hours
+would have bought.
+
+That argument is about the heartbeat, and it does not carry to [rules](#ambientrule). What it says is
+that an interval has nothing more to say, and a rule has more to say, because a rule *speaks* at its
+instant rather than looking at it: an 03:00 heartbeat is free, and an 03:00 digest is a post at
+03:00. So a clock time is exactly what a rule needs, and the two live in one block without
+contradicting each other.
+
+**The two switches are not one dial.** `enabled = false` is silence — nothing in this block runs.
+`heartbeat = false` stops one of the two sources and leaves your rules firing. A channel that is
+enabled with no heartbeat and no rules is accepted and simply says nothing; it is not refused,
+because that is what a sheet looks like between two edits that both work.
 
 **A question is not unanswered until it has sat.** Sampled at an instant, "unanswered" is
 meaningless: a question typed thirty seconds before a tick looks exactly like one your team has
@@ -1167,6 +1248,55 @@ channel per rate window, stated in time rather than in ticks — one post per ti
 once ticks are minutes apart — and it is fixed in the architecture, enforced where the post is
 made rather than asked of the model. So tightening `heartbeat_every_minutes` cannot quietly loosen
 the throttle.
+
+**A rule's post is not throttled by that window and does not draw on it.** The line is bidden
+against unbidden, not proactive against reactive: nobody asked for a heartbeat's post, and you asked
+for a rule's — here, in a file your team reviews before it runs. What bounds a rule instead is its
+own shape, below.
+
+### `[[ambient.rule]]`
+
+One block per recurring turn: at these times, on these days, ask this question and post the answer.
+"Every Monday at 09:00, post the standup digest" is this block and nothing else on this page. Nested
+under `[ambient]`, so the entries must follow that block's own keys.
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | What the rule is called. Lower-case words joined by single dashes, as a skill name is. A firing is metered and logged under it, so two rules may not share one. |
+| `at` | yes | The times it fires, `"HH:MM"`, 24-hour, zero-padded, **UTC**. At least one and at most four, and a time may not be repeated. |
+| `days` | no | Which days it fires on, from `mon` to `sun`. **Absent means every day.** A day may not be repeated. |
+| `question` | yes | What the fired turn is asked. At most 500 characters — the same bound a [`schedule_task`](#builtin) check's question carries, because it is the same turn. |
+
+At most **eight rules** per sheet, so at most 32 posts a day however you arrange them.
+
+**Every rule is a question, not a message.** There is no field for text to repeat verbatim, and that
+is a decision rather than an omission: replaying fixed text on a clock is what Slack's own reminders
+do, and what a rule buys instead is an answer composed from your channel's state at the moment it
+fires. If you want the same words every Monday, use a reminder.
+
+**The caps are what makes a flood impossible rather than merely discouraged**, and they are the
+reason this is fields rather than a cron string. `*/5 * * * *` is exactly the flood this design has
+to forbid, and forbidding it in a string means parsing the expression and computing its minimum
+firing interval — a rule somebody has to write correctly. Two capped list lengths forbid it by
+arithmetic. Neither cap is a field: here you are both the author and the setter, and a cap you raise
+on yourself is a comment.
+
+**A rule cannot look anything up.** The firing is one turn with no tools — it reads your channel's
+recent messages and answers. It cannot call GitHub, open a file, or spend against a tool budget.
+
+**The model cannot write a rule.** Not with a tool, not by being persuaded, not by anything in a
+message. This file is the only way one exists, which is also what makes it approved: the edit adding
+it was reviewed the way your code is. Asked in-channel for a standing weekly reminder, the agent
+points you here.
+
+**Times are UTC, and the limit is stated rather than hidden.** UTC does not observe your summer
+time, so a rule written by a team in a DST zone drifts by an hour twice a year. A `timezone` field is
+planned and will read absent as UTC, so nothing you write today changes meaning when it lands.
+
+**Missed windows are skipped, never replayed.** A restart spanning Monday 09:00 loses that Monday's
+digest and does not fire it late. That is where a rule differs from a one-shot check: a check fires
+once late because a person approved that instant and gets nothing else, and a rule is standing, so
+the next occurrence is already coming.
 
 ## How changes are applied
 

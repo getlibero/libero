@@ -34,6 +34,23 @@ describe("parsing a team sheet", () => {
       { name: "brand-voice", load: "always" },
       { name: "code-review-standards", load: "retrieved" }
     ]);
+    expect(result.sheet.ambient.rule.map(rule => rule.name)).toEqual([
+      "standup-digest",
+      "friday-release-check"
+    ]);
+  });
+
+  // `[[ambient.rule]]` is the first array of tables the starter nests inside
+  // another block, and TOML reads that placement rather than the name: the
+  // entries have to follow `[ambient]`'s own keys, and a later `[block]` would
+  // end them. Worth an assertion of its own, because a sheet that got this wrong
+  // parses fine as TOML and simply loses the block it meant to write.
+  it("keeps the nested rules inside the ambient block", () => {
+    const result = parseTeamSheet(readFileSync(examplePath, "utf8"));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sheet.ambient.rule).toHaveLength(2);
+    expect(result.sheet.ambient.heartbeat_every_minutes).toBe(15);
   });
 
   // The starter sheet names two shared skills, and `shared-skills/` is what a

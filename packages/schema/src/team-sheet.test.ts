@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
+import { SCHEDULED_TASK_MAX_PROMPT_CHARS } from "./schedule-task.js";
 import { SKILL_BODY_MAX_CHARS } from "./skill.js";
 import { TeamSheet } from "./team-sheet.js";
 
@@ -221,19 +222,43 @@ describe("the example team sheet", () => {
 
   // The starter had no assertion at all on this block until #316, which is how
   // it kept shipping `schedule = "0 9 * * 1-5"` — a cron expression nothing
-  // validated and nothing read. It is off, and the two figures it documents are
-  // the schema's own defaults, so the sheet an operator copies asks for nothing
-  // they did not already have — and that is exactly why the parsed assertion
-  // needs the written one beside it.
+  // validated and nothing read. It is off, and every figure it documents is the
+  // schema's own default, so the sheet an operator copies asks for nothing they
+  // did not already have — and that is exactly why the parsed assertion needs the
+  // written one beside it. `heartbeat` joined the list in #460 and is the case in
+  // point: it defaults `true`, so the parse cannot tell whether the starter still
+  // mentions the switch that turns the heartbeat off.
   it("does not post proactively, and documents the schema's own figures", () => {
-    expect(sheet.ambient).toEqual({
-      enabled: false,
-      heartbeat_every_minutes: 15,
-      answer_after_idle_minutes: 60
-    });
+    expect(sheet.ambient.enabled).toBe(false);
+    expect(sheet.ambient.heartbeat).toBe(true);
+    expect(sheet.ambient.heartbeat_every_minutes).toBe(15);
+    expect(sheet.ambient.answer_after_idle_minutes).toBe(60);
     expect(written("ambient")).toEqual(
-      expect.arrayContaining(["enabled", "heartbeat_every_minutes", "answer_after_idle_minutes"])
+      expect.arrayContaining([
+        "enabled",
+        "heartbeat",
+        "heartbeat_every_minutes",
+        "answer_after_idle_minutes"
+      ])
     );
+  });
+
+  // The rules are entries rather than figures, so they are held by the parse
+  // alone — `written()`'s own account of why `[[shared_skill]]` gets no call.
+  // What this asserts is what the starter is teaching: the shape of a rule, both
+  // spellings of `days`, and a question that is a question.
+  it("documents two recurring rules, one of them not daily", () => {
+    expect(sheet.ambient.rule).toHaveLength(2);
+    const [standup, release] = sheet.ambient.rule;
+    expect(standup?.name).toBe("standup-digest");
+    expect(standup?.at).toEqual(["09:00"]);
+    expect(standup?.days).toEqual(["mon", "tue", "wed", "thu", "fri"]);
+    expect(release?.name).toBe("friday-release-check");
+    expect(release?.days).toEqual(["fri"]);
+    // The starter must not teach a rule that recites text: every rule is an ask,
+    // and the deterministic kind was declined rather than deferred.
+    expect(standup?.question).toContain("?");
+    expect(release?.question).toContain("?");
   });
 
   it("carries the documented tool allowlist, approval mode, and result bound", () => {
@@ -814,8 +839,10 @@ describe("the ambient block", () => {
   it("is off by default, with a cadence and a threshold beside it", () => {
     expect(TeamSheet.parse({ channel: minimalChannel() }).ambient).toEqual({
       enabled: false,
+      heartbeat: true,
       heartbeat_every_minutes: 15,
-      answer_after_idle_minutes: 60
+      answer_after_idle_minutes: 60,
+      rule: []
     });
   });
 
@@ -825,9 +852,25 @@ describe("the ambient block", () => {
   it("accepts a channel that opts in and writes no figures", () => {
     expect(TeamSheet.parse(ambientSheet({ enabled: true })).ambient).toEqual({
       enabled: true,
+      heartbeat: true,
       heartbeat_every_minutes: 15,
-      answer_after_idle_minutes: 60
+      answer_after_idle_minutes: 60,
+      rule: []
     });
+  });
+
+  // `heartbeat` defaults the opposite way to `enabled`, and the reason is that by
+  // the time it is read the operator has already opted in. A default of `false`
+  // would change what `enabled = true` means for every sheet written before #460.
+  it("runs the heartbeat unless a sheet says otherwise", () => {
+    expect(TeamSheet.parse(ambientSheet({ enabled: true })).ambient.heartbeat).toBe(true);
+    expect(
+      TeamSheet.parse(ambientSheet({ enabled: true, heartbeat: false })).ambient.heartbeat
+    ).toBe(false);
+  });
+
+  it("refuses a non-boolean heartbeat switch", () => {
+    expect(paths(ambientSheet({ heartbeat: "no" }))).toEqual(["ambient.heartbeat: invalid_type"]);
   });
 
   // The other direction, which [memory]'s note relies on staying true: a channel
@@ -899,6 +942,178 @@ describe("the ambient block", () => {
     const sheet = TeamSheet.parse(ambientSheet({ schedule: "0 9 * * 1-5" }));
     expect(sheet.ambient).not.toHaveProperty("schedule");
   });
+
+  // The state that most looks like it wants refusing: enabled, no heartbeat, no
+  // rules is a channel that is on and silent, which reads as a third spelling of
+  // `enabled = false`. It parses, because the two switches are not one dial and
+  // because it is what a sheet looks like between two edits that both work.
+  it("accepts a channel that is enabled and has nothing to say", () => {
+    expect(paths(ambientSheet({ enabled: true, heartbeat: false }))).toBeNull();
+  });
+});
+
+describe("the ambient rule list", () => {
+  const rule = (over: Record<string, unknown> = {}) => ({
+    name: "standup-digest",
+    at: ["09:00"],
+    question: "What is blocked?",
+    ...over
+  });
+
+  const rules = (value: unknown) => ({
+    channel: minimalChannel(),
+    ambient: { enabled: true, rule: value }
+  });
+
+  const paths = (data: unknown) => {
+    const result = TeamSheet.safeParse(data);
+    if (result.success) return null;
+    return result.error.issues.map(issue => `${issue.path.join(".")}: ${issue.code}`);
+  };
+
+  it("defaults to no rules, so a sheet that never mentions them is a sheet", () => {
+    const sheet = { channel: minimalChannel(), ambient: { enabled: true } };
+    expect(TeamSheet.parse(sheet).ambient.rule).toEqual([]);
+  });
+
+  it("accepts a rule and leaves days absent when none are written", () => {
+    const parsed = TeamSheet.parse(rules([rule()])).ambient.rule[0];
+    expect(parsed).toEqual({
+      name: "standup-digest",
+      at: ["09:00"],
+      question: "What is blocked?"
+    });
+    expect(parsed).not.toHaveProperty("days");
+  });
+
+  // Four times a day per rule and eight rules per sheet is thirty-two posts a
+  // day, and the cap is the whole reason this is fields rather than a cron
+  // string: `*/5 * * * *` is refused by arithmetic over two list lengths instead
+  // of by an analysis somebody has to write correctly.
+  it("refuses a fifth time on one rule", () => {
+    const at = ["01:00", "02:00", "03:00", "04:00"];
+    expect(paths(rules([rule({ at })]))).toBeNull();
+    expect(paths(rules([rule({ at: [...at, "05:00"] })]))).toEqual([
+      "ambient.rule.0.at: too_big"
+    ]);
+  });
+
+  it("refuses a ninth rule on one sheet", () => {
+    const eight = Array.from({ length: 8 }, (_, index) => rule({ name: `rule-${index}` }));
+    expect(paths(rules(eight))).toBeNull();
+    expect(paths(rules([...eight, rule({ name: "rule-8" })]))).toEqual(["ambient.rule: too_big"]);
+  });
+
+  // A rule with no times fires never, which is the entry not being there — the
+  // `min(1)` argument this sheet makes for every other list it bounds.
+  it("refuses a rule that names no time", () => {
+    expect(paths(rules([rule({ at: [] })]))).toEqual(["ambient.rule.0.at: too_small"]);
+  });
+
+  it("refuses a rule with no days rather than an empty list", () => {
+    expect(paths(rules([rule({ days: [] })]))).toEqual(["ambient.rule.0.days: too_small"]);
+  });
+
+  each([
+    ["an unpadded hour", "9:00"],
+    ["a 24th hour", "24:00"],
+    ["a 60th minute", "09:60"],
+    ["seconds", "09:00:00"],
+    ["a 12-hour clock", "9am"],
+    ["a zone", "09:00Z"],
+    ["nothing", ""]
+  ])("refuses %s as a time", (_label, at) => {
+    expect(paths(rules([rule({ at: [at] })]))).toEqual(["ambient.rule.0.at.0: invalid_format"]);
+  });
+
+  each([
+    ["midnight", "00:00"],
+    ["the last minute", "23:59"],
+    ["a padded hour", "09:05"]
+  ])("accepts %s", (_label, at) => {
+    expect(paths(rules([rule({ at: [at] })]))).toBeNull();
+  });
+
+  it("takes the seven days and refuses anything else", () => {
+    const days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    expect(paths(rules([rule({ days })]))).toBeNull();
+    expect(paths(rules([rule({ days: ["Mon"] })]))).toEqual(["ambient.rule.0.days.0: invalid_value"]);
+    expect(paths(rules([rule({ days: [1] })]))).toEqual(["ambient.rule.0.days.0: invalid_value"]);
+  });
+
+  // A repeat is refused rather than resolved, which is `SharedSkillList`'s rule:
+  // the alternative is deciding in the server whether a repeated time fires once
+  // or twice, a second question asked only because the first was ducked. It also
+  // keeps the cap honest — a cap counting listed times has to count firings.
+  it("refuses a time listed twice in one rule", () => {
+    expect(paths(rules([rule({ at: ["09:00", "09:00"] })]))).toEqual([
+      "ambient.rule.0.at.1: custom"
+    ]);
+  });
+
+  it("refuses a day listed twice in one rule", () => {
+    expect(paths(rules([rule({ days: ["mon", "mon"] })]))).toEqual([
+      "ambient.rule.0.days.1: custom"
+    ]);
+  });
+
+  // Names are refused for the reason that made `name` a field at all: a firing is
+  // metered and logged under it, so two rules sharing one name are two costs
+  // nobody can tell apart afterwards. The issue lands on the later entry, which
+  // is the line to delete.
+  it("refuses two rules with one name", () => {
+    expect(paths(rules([rule(), rule({ at: ["17:00"] })]))).toEqual([
+      "ambient.rule.1.name: custom"
+    ]);
+  });
+
+  it("accepts two rules that differ only in name", () => {
+    expect(paths(rules([rule(), rule({ name: "evening-digest" })]))).toBeNull();
+  });
+
+  each([
+    ["capitals", "Standup"],
+    ["an underscore", "standup_digest"],
+    ["a trailing dash", "standup-"],
+    ["a path segment", "shared/standup"],
+    ["nothing", ""]
+  ])("refuses %s as a rule name", (_label, name) => {
+    expect(TeamSheet.safeParse(rules([rule({ name })])).success).toBe(false);
+  });
+
+  // The bound is imported rather than restated, because the turn a rule fires is
+  // the one a scheduled check fires and that turn does no capping of its own.
+  // Two independent five-hundreds would be a drift waiting to happen.
+  it("bounds the question by the cap the fired turn already assumes", () => {
+    expect(paths(rules([rule({ question: "q".repeat(SCHEDULED_TASK_MAX_PROMPT_CHARS) })]))).toBeNull();
+    expect(
+      paths(rules([rule({ question: "q".repeat(SCHEDULED_TASK_MAX_PROMPT_CHARS + 1) })]))
+    ).toEqual(["ambient.rule.0.question: too_big"]);
+  });
+
+  it("refuses a rule with no question", () => {
+    expect(paths(rules([rule({ question: "" })]))).toEqual([
+      "ambient.rule.0.question: too_small"
+    ]);
+  });
+
+  // There is one kind of rule and it is an ask. A `text` field for verbatim
+  // recital was declined rather than deferred, so an unknown key strips and the
+  // sheet keeps a rule that still has to have a question.
+  it("has no field for text to repeat verbatim", () => {
+    const parsed = TeamSheet.parse(rules([rule({ text: "standup time" })])).ambient.rule[0];
+    expect(parsed).not.toHaveProperty("text");
+    expect(paths(rules([{ name: "standup", at: ["09:00"], text: "standup time" }]))).toEqual([
+      "ambient.rule.0.question: invalid_type"
+    ]);
+  });
+
+  // UTC-only first, and the field is absent rather than reserved: a sheet that
+  // writes one today is telling itself something the server will not read.
+  it("carries no timezone yet", () => {
+    const parsed = TeamSheet.parse(rules([rule({ timezone: "Europe/London" })])).ambient.rule[0];
+    expect(parsed).not.toHaveProperty("timezone");
+  });
 });
 
 describe("defaults", () => {
@@ -951,8 +1166,10 @@ describe("defaults", () => {
     expect(sheet.egress.allow).toEqual([]);
     expect(sheet.ambient).toEqual({
       enabled: false,
+      heartbeat: true,
       heartbeat_every_minutes: 15,
-      answer_after_idle_minutes: 60
+      answer_after_idle_minutes: 60,
+      rule: []
     });
     expect(sheet.memory).toEqual({
       enabled: true,

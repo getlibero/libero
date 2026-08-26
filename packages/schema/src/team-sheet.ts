@@ -2,7 +2,8 @@ import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { CertificateSha256, CredentialName, ResourceName } from "./names.js";
-import { SKILL_BODY_MAX_CHARS, SkillName } from "./skill.js";
+import { SCHEDULED_TASK_MAX_PROMPT_CHARS } from "./schedule-task.js";
+import { SKILL_BODY_MAX_CHARS, SKILL_NAME_PATTERN, SkillName } from "./skill.js";
 import { z } from "zod";
 
 /**
@@ -387,6 +388,165 @@ const SharedSkillList = z.array(SharedSkillEntry).check(ctx => {
     });
   });
 });
+
+/**
+ * A time of day on a 24-hour clock, `HH:MM`, in UTC.
+ *
+ * The first time-of-day shape in this package, and it is a string rather than an
+ * hour and a minute because the operator writing it is copying a clock:
+ * `at = ["09:00"]` is the thing a person means, and `hour = 9, minute = 0` is
+ * that thing taken apart for the parser's convenience.
+ *
+ * **Zero-padded, and `"9:00"` does not parse.** One spelling per instant, which
+ * is the rule `SkillName` keeps for names and `normalizeCertificateSha256` keeps
+ * for digests, and the cost of two spellings is paid downstream forever: the
+ * duplicate check on the list below would have to normalize before it could
+ * compare, and every log line and rendered rule would have to pick one anyway.
+ * Refusing is a character class.
+ *
+ * **UTC, and the zone is not written on the rule.** `"0 9 * * 1-5"` is 09:00 for
+ * nobody in particular, which is the half of `heartbeat_every_minutes`' argument
+ * against cron that survives; this shape answers it by naming one zone for
+ * everybody rather than by leaving it to be guessed. The honest cost, stated
+ * here rather than discovered by an operator: a rule written by a team in a DST
+ * zone drifts by an hour twice a year.
+ *
+ * A `timezone` field is the fix and it is additive — the server does the
+ * next-occurrence arithmetic, where Node's built-in `Intl` handles IANA zones
+ * with no dependency, so nothing about this package's dependency-free bundle
+ * blocks it. Shipping UTC first is a scope decision, not a limitation of the
+ * shape, and a rule written today keeps its meaning when the zone arrives:
+ * absent means UTC.
+ */
+export const ClockTime = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'must be a zero-padded 24-hour time in UTC, like "09:00"');
+
+/**
+ * The days a rule may name.
+ *
+ * Lower-case three-letter abbreviations, which is one spelling of each day for
+ * `ClockTime`'s reason. An enum rather than a number so that nothing here has an
+ * off-by-one about which day a week starts on — cron's `0` is Sunday in most
+ * dialects and Monday in some, and a silent disagreement about that is a rule
+ * that fires on the wrong day while parsing perfectly.
+ */
+export const AmbientRuleDay = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+
+/**
+ * What a rule is called.
+ *
+ * The grammar is `SKILL_NAME_PATTERN`, imported rather than restated, because a
+ * name a human types and a machine renders should look the same everywhere in
+ * this tree. The *schema* is not imported: `SkillName`'s own header argues bounds
+ * for a name that is also a path segment and an index key, and a rule name is
+ * neither — it is the word an operator reads in a diff and the word a firing is
+ * metered under.
+ */
+export const AmbientRuleName = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(SKILL_NAME_PATTERN, "must be lowercase words joined by single dashes: letters and digits only");
+
+/**
+ * One `[[ambient.rule]]` block: a name, when it fires, and what it asks.
+ *
+ * `days` is optional and absent means daily, which is the one shape here that
+ * could have been a default instead. It is left optional so that a sheet saying
+ * nothing about days and a sheet listing all seven stay distinguishable in the
+ * file an operator reads — the same reason the example sheet writes figures it
+ * would otherwise inherit.
+ *
+ * `question` is bounded by `SCHEDULED_TASK_MAX_PROMPT_CHARS` rather than by a
+ * number of its own, and the import is the point: the turn a rule fires is the
+ * one a scheduled check fires, and that turn does no capping of its own because
+ * its caller already did. Two independent five-hundreds would be a drift waiting
+ * to happen. The argument for the figure carries over whole — this is the *whole*
+ * context the fired turn gets, with no thread, nobody who asked, and no reply to
+ * read up from. What does not carry is where it gets reviewed: a check's question
+ * is read on an approval card, and a rule's is read in a pull request.
+ */
+export const AmbientRule = z.object({
+  name: AmbientRuleName,
+  at: z.array(ClockTime).min(1).max(4),
+  days: z.array(AmbientRuleDay).min(1).max(7).optional(),
+  question: z.string().min(1).max(SCHEDULED_TASK_MAX_PROMPT_CHARS),
+});
+
+export type AmbientRuleDay = z.infer<typeof AmbientRuleDay>;
+export type AmbientRule = z.infer<typeof AmbientRule>;
+
+/**
+ * The `[[ambient.rule]]` list, capped, refusing a repeat anywhere in it.
+ *
+ * **The cap is the cadence floor and the duplicate check is what keeps it
+ * honest.** Eight rules of four times each is thirty-two firings a day, and that
+ * arithmetic is only true if a listed time is a firing. `at = ["09:00", "09:00"]`
+ * would be two slots holding one instant, so a cap counting slots would be
+ * counting something other than what it promises to bound — and the alternative
+ * to refusing is deciding, in the server, whether a repeat fires once or twice,
+ * which is a second question asked only because the first was ducked. That is
+ * `SharedSkillList`'s reasoning above, applied to a list of times instead of a
+ * list of modes. Days are refused the same way and for the same sentence.
+ *
+ * Names are refused for a different reason, and it is the one that made `name` a
+ * field: a firing is metered and logged under it, so two rules sharing one name
+ * are two costs nobody can tell apart afterwards.
+ *
+ * Every duplicate is reported rather than the first, and the issue lands on the
+ * later one — the line to delete — which is `McpServerList`'s rule and
+ * `SharedSkillList`'s. The messages name nothing out of the file, that check's
+ * other discipline: `parseTeamSheet` reports the path and the code and never the
+ * message, so a message interpolating a value from the sheet would sit in a
+ * string only a direct zod caller ever reads.
+ */
+const AmbientRuleList = z
+  .array(AmbientRule)
+  .max(8)
+  .check(ctx => {
+    const names = new Set<string>();
+    ctx.value.forEach((rule, index) => {
+      if (names.has(rule.name)) {
+        ctx.issues.push({
+          code: "custom",
+          input: rule.name,
+          path: [index, "name"],
+          message: "this rule is already named above; one rule is one entry",
+        });
+      } else {
+        names.add(rule.name);
+      }
+
+      const times = new Set<string>();
+      rule.at.forEach((time, position) => {
+        if (!times.has(time)) {
+          times.add(time);
+          return;
+        }
+        ctx.issues.push({
+          code: "custom",
+          input: time,
+          path: [index, "at", position],
+          message: "this time is already listed; a rule fires once per occurrence",
+        });
+      });
+
+      const days = new Set<string>();
+      rule.days?.forEach((day, position) => {
+        if (!days.has(day)) {
+          days.add(day);
+          return;
+        }
+        ctx.issues.push({
+          code: "custom",
+          input: day,
+          path: [index, "days", position],
+          message: "this day is already listed; a rule fires once per occurrence",
+        });
+      });
+    });
+  });
 
 export const TeamSheet = z.object({
   channel: z.object({
@@ -1092,7 +1252,7 @@ export const TeamSheet = z.object({
   // its own. Off by default, and the block every other `enabled` on this sheet
   // argues by contrast with — see `[memory]` above.
   //
-  // **Two of the three fields are read as of #317**, which is the ambient
+  // **Three of its five keys have readers, as of #317**, which is the ambient
   // scheduler: `enabled` decides whether a channel is enumerated into work at
   // all, and `heartbeat_every_minutes` is the cadence it is enumerated on. The
   // agent process re-reads this block per scan, so an edit lands on the next
@@ -1100,6 +1260,12 @@ export const TeamSheet = z.object({
   // enforcement. `answer_after_idle_minutes` is the evaluation turn's, read
   // before any model call to decide whether a question has sat long enough to
   // be worth answering.
+  //
+  // **`heartbeat` and `rule` have no reader yet (#460), and the order is
+  // deliberate.** #461 gives them one. The shape lands first so that a sheet
+  // written today does not change when the clock learns to read it — which is
+  // `[[shared_skill]]`'s posture one release ago, and which this block itself was
+  // built in, one issue before #317 gave it a reader.
   //
   // **The tool proxy service reads `enabled`, and nothing else here.** An earlier
   // draft of this comment said it read none of it and never would, on the
@@ -1112,12 +1278,39 @@ export const TeamSheet = z.object({
   // The distinction that keeps `[memory]`'s standing intact for the rest of it:
   // the field is read there **only to refuse, never to permit**. Nothing an agent
   // process could do to its own copy of this block widens anything, because the
-  // only thing the proxy does with it is say no. The cadence and the idle
-  // threshold are still the agent's alone, and a heartbeat is still a thing that
-  // service never sees.
+  // only thing the proxy does with it is say no. The cadence, the idle threshold
+  // and the rules are still the agent's alone, and a heartbeat is still a thing
+  // that service never sees. A rule is a question put to a model, not an
+  // authorization — so nothing added here in #460 reaches a gate either, and
+  // `enabled` stays the single field that crosses.
   ambient: z
     .object({
       enabled: z.boolean().default(false),
+      // Whether the heartbeat evaluation runs — one of the two things `enabled`
+      // turns on, now that there are two.
+      //
+      // **A channel wanting Monday digests and no heartbeat is a real
+      // configuration**, which is what this field exists for (#358). The two
+      // sources are different in kind rather than in cadence: the rules below are
+      // a clock, and the heartbeat is a judgement about whether anything merits
+      // saying at all. A team can want the first without the second.
+      //
+      // **Default `true`, which is the opposite of `enabled`'s default and not an
+      // inconsistency.** `enabled` defaults off because unbidden speech is the
+      // thing an operator has to ask for. This defaults on because by the time it
+      // is read the operator has already asked, and a sheet that opted in and said
+      // nothing else meant the behaviour this block has had since #317. Defaulting
+      // it `false` would quietly change what `enabled = true` means for every
+      // sheet already written, which is the hazard `[skills]`' caps state against
+      // themselves.
+      //
+      // **`false` is not a second spelling of `enabled = false`**, the objection
+      // this block's own `min(1)` bounds raise elsewhere. It stops one source;
+      // `enabled` stops the block. What it *can* combine into — enabled, no
+      // heartbeat, no rules — is a channel that is on and silent, and that is
+      // taken up with the rest of the no-`.check()` argument at the foot of this
+      // block.
+      heartbeat: z.boolean().default(true),
       // How often anyone looks. **An interval rather than a cron expression,
       // and therefore a number rather than a grammar.**
       //
@@ -1125,12 +1318,23 @@ export const TeamSheet = z.object({
       // the first away for free: a tick with nothing new since the last
       // evaluated position is silent by construction and spends nothing, so an
       // 03:00 tick already costs nothing and says nothing. There is nothing left
-      // for the expression to protect. What it would cost is a `timezone` field
-      // — `"0 9 * * 1-5"` is 09:00 for nobody, and this tree refuses zoneless
-      // instants everywhere else it parses one (see ./skill.ts on `created`, and
-      // the audit log's read path) — plus DST-correct next-after-instant
-      // arithmetic, hand-written, because the CLI inlines this package and
-      // publishes no dependencies.
+      // for the expression to protect.
+      //
+      // **That is an argument about this field, and it does not carry to `rule`
+      // below (#358).** What it says is that an interval has nothing more to say.
+      // A rule has more to say, because a rule *speaks* at its instant rather than
+      // looking at it — an 03:00 heartbeat is free, and an 03:00 digest is a post
+      // at 03:00. The clock time this field refuses is the whole point of a rule,
+      // and the two sit in one block without contradicting each other.
+      //
+      // Half of what cron would have cost has weakened since, and this comment
+      // says so rather than repeating itself. `"0 9 * * 1-5"` is still 09:00 for
+      // nobody, and this tree still refuses zoneless instants everywhere else it
+      // parses one (see ./skill.ts on `created`, and the audit log's read path) —
+      // which is why `rule` names UTC rather than leaving the zone to be guessed.
+      // But the DST-correct next-after-instant arithmetic is the *server's* and
+      // not this package's, and Node's built-in `Intl` does it with no dependency,
+      // so it was never the CLI's dependency-free bundle that stood in the way.
       //
       // Which leaves an interval, and this sheet already spells those: an
       // integer with the unit in the field name, like
@@ -1165,6 +1369,46 @@ export const TeamSheet = z.object({
       // proactive answer is their sum**: seventy-five minutes at the defaults.
       // Bounds are that sibling's, for the same reasons it gives.
       answer_after_idle_minutes: z.number().int().min(5).max(10_080).default(60),
+      // The clock times this channel speaks at, if any (#358).
+      //
+      // **Operator-authored, and that is the design rather than a detail of it.**
+      // Every hard question about recurrence is a question about authority, and
+      // putting the rules in this file answers each without machinery: the caps
+      // are sanity bounds rather than injection bounds because rules are
+      // human-grown; the approval is the reviewed edit that added the entry; and
+      // a prompt-injected model cannot plant one, because the model has no write
+      // path to this file. `schedule_task` had to answer all three with
+      // mechanism — a pending cap, an approval card, a horizon. This answers them
+      // by being here, which is why recurrence landed as a sheet block rather
+      // than as a second verb.
+      //
+      // **Every rule is an ask, and the deterministic kind was declined rather
+      // than deferred.** A `post` kind replaying verbatim text on a clock is
+      // Slack's own reminder feature, which every workspace already has; what a
+      // rule buys is an answer composed from the channel's state at the instant
+      // it fires. So there is one kind, `question` is required, and there is no
+      // `text` field for a later reader to wonder about.
+      //
+      // **The caps are the cadence floor, and they hold by construction.** Four
+      // times a day per rule and eight rules per sheet, so no reading of this
+      // block speaks more than thirty-two times a day — arithmetic over two list
+      // lengths rather than an analysis somebody has to write correctly. That is
+      // the reason this is fields rather than a cron string: `*/5 * * * *` is
+      // exactly the flood this design must forbid, and forbidding it in a string
+      // means parsing the expression and computing its minimum firing interval.
+      // Four because a rule is one question, and a question worth asking at five
+      // separate clock times is two rules; eight because a sheet with nine
+      // standing rules has a scheduling problem rather than a tooling one, which
+      // is `SCHEDULED_TASK_MAX_PENDING`'s judgement in its own words.
+      //
+      // **Neither cap is a field, and that is `max_skills`' rule read from the
+      // other side.** How many rules a sheet may hold is not a figure to hand the
+      // operator, because here the operator is both the author and the setter — a
+      // cap you raise on yourself is a comment, and the floor above stops being
+      // structural the moment a sheet can restate it. `[skills] max_skills` is a
+      // field precisely because it bounds what the *machine* grows on a team's
+      // behalf, which is two parties. This is one.
+      rule: AmbientRuleList.default([]),
       // **The rate limit on unbidden posts is deliberately not a field**, and
       // the first implementer should not add one. At most one heartbeat-initiated
       // post per channel per rate window — stated in time rather than in ticks,
@@ -1174,15 +1418,43 @@ export const TeamSheet = z.object({
       // belongs beside its mechanism, the way `APPROVAL_TTL_MS` does. Nothing
       // named `posts_per_hour` goes on this block.
       //
-      // **Quiet hours and a timezone are not fields either**, for the reason
+      // **A rule's post neither draws on that window nor is blocked by it**, and
+      // the line is bidden against unbidden rather than proactive against
+      // reactive. The throttle exists because nobody asked for a heartbeat's
+      // post. A rule was asked for — in this file, by the operator whose edit is
+      // reviewed before it runs — which is the standing a fired `schedule_task`
+      // check's post already has. What bounds it instead is its own shape: one
+      // post per firing, one firing per occurrence, occurrences bounded by `at`
+      // and `days`, and rules bounded by the cap on the list.
+      //
+      // **Quiet hours are still not fields**, for the reason
       // `heartbeat_every_minutes` gives: a tick with nothing to weigh is already
-      // silent, so the hours a channel sleeps cost it nothing to leave open.
+      // silent, so the hours a channel sleeps cost it nothing to leave open. A
+      // rule does not want them either, for the opposite reason — it names the
+      // hours it speaks at, so every hour it does not name is quiet already.
+      //
+      // **A timezone is not a field *yet***, where before it was not a field at
+      // all. UTC first, with the limit stated rather than left to be discovered:
+      // a team in a DST zone writes a rule that drifts by an hour twice a year.
+      // `ClockTime` above carries why that is a scope decision rather than a
+      // property of the shape, and what an added zone would not break.
       //
       // No `.check()` on this block. `enabled = true` with no cadence written is
       // not an error: the switch is `enabled` and the figures beside it default,
       // as they do on `[memory]` and `[skills]`. Requiring a cadence would add
       // no consent — the sheet has already said "speak unbidden" — and would add
       // a way for a mistake here to reject the whole sheet.
+      //
+      // **`enabled = true` with `heartbeat = false` and no rules parses too**, and
+      // it is the case that most looks like it wants refusing: a channel that is
+      // on and silent reads as a third spelling of `enabled = false`, which is an
+      // objection this file takes seriously enough to bound two other fields
+      // with. It is admitted anyway, for the reason above and one more. The two
+      // switches are not one dial, so there is no single field to land the issue
+      // on; and the state is what a sheet looks like *between* two edits that both
+      // work — the heartbeat turned off in the commit that adds the rules — so
+      // refusing it would fail a sheet mid-thought. Nothing is lost by admitting
+      // it: silence is what it asks for and silence is what it gets.
     })
     .prefault({}),
 })
