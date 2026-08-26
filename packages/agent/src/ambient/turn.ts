@@ -233,8 +233,19 @@ export async function runHeartbeatTurn(
  * Untrusted text, in a `user` message, inside a block that says what it is —
  * `assembleContext`'s rule in `apps/server`. The ask comes last, after the
  * transcript, so what it refers to is above it.
+ *
+ * **Exported since #471**, for `checkMessage`'s reason one file over: a
+ * heartbeat now has two shapes — this single call, and the loop a channel opts
+ * into — and the two must put the *same* question to the model, or a channel's
+ * heartbeat would weigh differently with tools on than with them off. Restating
+ * these six lines in `apps/server` is how that divergence starts.
+ *
+ * The closing sentence stays exactly as it is under both, and it is *more*
+ * load-bearing with a tool list than without one: "if not, call no tool" is the
+ * whole of how this turn stays silent, and a model that has just looked
+ * something up has more reason to think it owes the channel a report.
  */
-function activityMessage(messages: readonly HeartbeatMessage[]): string {
+export function activityMessage(messages: readonly HeartbeatMessage[]): string {
   return [
     "Recent activity in this channel, oldest first:",
     "",

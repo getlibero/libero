@@ -80,11 +80,25 @@
 //   - **The meter.** The turn reports through the same `SpendReport` path every
 //     other turn takes. The backstop, not the mechanism.
 
-import { AMBIENT_HEARTBEAT_SYSTEM_PROMPT, runHeartbeatTurn } from "@getlibero/agent";
+import {
+  AMBIENT_HEARTBEAT_SYSTEM_PROMPT,
+  activityMessage,
+  runAgentTask,
+  runHeartbeatTurn
+} from "@getlibero/agent";
+import { AMBIENT_REQUESTING_USER } from "@getlibero/schema";
+import { createFiredTools } from "./fired-tools.js";
 import { standingSkillsFor, systemPromptFor } from "./task.js";
 import type { StandingInputs } from "./task.js";
 import type { SharedSkillReader } from "./shared-skills.js";
-import type { CompletedTurn, CompletionClient, HeartbeatMessage } from "@getlibero/agent";
+import type {
+  AgentLoopCaps,
+  CompletedTurn,
+  CompletionClient,
+  HeartbeatMessage,
+  ToolExecutor,
+  ToolSource
+} from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import { PROPOSALS_DIRNAME, skillProposalFilename } from "@getlibero/memory";
@@ -129,6 +143,28 @@ export interface HeartbeatSettings {
    * is the one bounding a single answer.
    */
   readonly maxTokens: number;
+  /**
+   * `[ambient] tools`. Whether this evaluation runs the loop over the channel's
+   * tools (#471).
+   *
+   * The **same switch** a fired check and a standing rule read, not one of its
+   * own. All three are turns this block fires, and a channel that decided
+   * unattended work may look things up did not decide it three times — a second
+   * field would be an operator being asked the same question twice and getting
+   * to answer it differently by accident.
+   *
+   * What it selects is the shape of the turn, never what may be called: the
+   * allowlist is the sheet's either way, and the proxy resolves it per call.
+   */
+  readonly tools: boolean;
+  /**
+   * The caps a tool-using evaluation runs under, from `[llm]`.
+   *
+   * The channel's own, unmodified — `FiredTurnSettings.caps`' reason: a
+   * heartbeat is not a cheaper kind of task and should not get a second set of
+   * numbers to drift from the first.
+   */
+  readonly caps: AgentLoopCaps;
 }
 
 export interface HeartbeatOptions {
@@ -162,6 +198,15 @@ export interface HeartbeatOptions {
    * visible spend of any of them.
    */
   maySpend: (channel: string) => Promise<boolean>;
+  /**
+   * The channel's tool client, built with **no prompter** (#471).
+   *
+   * `FiredTurnDeps.firedTools`' contract exactly, and the same client: a
+   * heartbeat that may look things up is unattended in precisely the way a fired
+   * check is, so it is handed the same capability with the same thing left out.
+   * Absent, a sheet that opted in gets the single-call shape anyway.
+   */
+  firedTools?: (channel: string) => ToolSource & ToolExecutor;
   /**
    * How a channel's `proposals/` directory is opened (#320).
    *
@@ -335,6 +380,79 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
   }
 
   /**
+   * One evaluation, over the channel's tools (#471).
+   *
+   * `evaluate`'s second half, and it keeps that one's two commitments rather
+   * than restating them. **The watermark advances exactly once**, on the same
+   * rule — whatever the loop produced, including a cap that ended it — because
+   * the question the watermark answers is "has this material been weighed", and
+   * running the loop answered it. **Silence is still calling no tool**, which
+   * `createFiredTools` keeps structural: `post_finding` sits on the list beside
+   * the channel's real tools and the model either calls it before stopping or
+   * does not.
+   *
+   * The message is `activityMessage`'s, imported rather than restated, so this
+   * shape and the single call put the same question to the model. A heartbeat
+   * that weighed differently with tools on would be a channel's behaviour
+   * changing for a reason its sheet does not describe.
+   */
+  async function evaluateWithTools(
+    channel: string,
+    settings: HeartbeatSettings,
+    messages: readonly HeartbeatMessage[],
+    turnId: string,
+    newest: string | undefined
+  ): Promise<string | null> {
+    const client = options.firedTools?.(channel);
+    if (client === undefined) return null;
+    const tools = createFiredTools({ tools: client });
+
+    try {
+      await runAgentTask({
+        completion: options.completion,
+        toolSource: tools.source,
+        toolExecutor: tools.executor,
+        model: settings.model,
+        // No person asked, and the audit log says so in one word (#348).
+        requestingUser: AMBIENT_REQUESTING_USER,
+        taskId: turnId,
+        system: systemPromptFor(
+          {
+            description: settings.standing.description,
+            sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
+          },
+          AMBIENT_HEARTBEAT_SYSTEM_PROMPT
+        ),
+        messages: [{ role: "user", content: activityMessage(messages) }],
+        caps: settings.caps,
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        onTurn: async completed => {
+          await options.reportTurn(channel, { ...completed, id: `${turnId}.${completed.turn}` });
+        }
+      });
+    } catch (error) {
+      // The watermark stays put, exactly as it does for a failed single call, so
+      // the same material is weighed again rather than skipped because a provider
+      // was down.
+      logger.log("warn", { event: "heartbeat_failed", channel, reason: reasonOf(error) });
+      return null;
+    }
+
+    if (newest !== undefined) watermark.set(channel, newest);
+
+    const outcome = tools.outcome();
+    if (outcome.unusable !== undefined) {
+      logger.log("warn", { event: "heartbeat_unusable", channel, reason: outcome.unusable });
+      return null;
+    }
+    if (outcome.finding === null) {
+      logger.log("info", { event: "heartbeat_silent", channel });
+      return null;
+    }
+    return outcome.finding.text;
+  }
+
+  /**
    * One evaluation: the model call, the meter, and the watermark.
    *
    * Answers the finding's text, or `null` for silence and for an answer that
@@ -359,6 +477,15 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
     // counter, so a retry after a crash is the same id and is counted once,
     // while a genuinely later evaluation — the channel said more — is a new one.
     const turnId = `ambient-${channel}-${newest ?? String(at)}`;
+
+    // The opted-in shape (#471). Chosen *here*, after the pregate has already
+    // decided there is material and the window is open and the channel can
+    // afford it — so a quiet channel still costs a map lookup and a `LIMIT 1`,
+    // and never a tool listing. That ordering is the whole reason a brisk cadence
+    // is affordable, and it is the one thing this addition must not disturb.
+    if (settings.tools && options.firedTools !== undefined) {
+      return evaluateWithTools(channel, settings, messages, turnId, newest);
+    }
 
     let result;
     try {

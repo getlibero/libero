@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
-import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
+import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER } from "@getlibero/schema";
 import { AMBIENT_HEARTBEAT_SYSTEM_PROMPT } from "@getlibero/agent";
 import type { SharedSkillReader } from "./shared-skills.js";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
@@ -38,6 +38,15 @@ const SETTINGS: HeartbeatSettings = {
   // and `standing.test.ts` is where it does.
   standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
+  // Off, which is every sheet that has not opted in (#471) — so every case in
+  // this file is about the single-call shape unless it says otherwise.
+  tools: false,
+  caps: {
+    maxToolCalls: 5,
+    maxWallTimeMs: 30_000,
+    maxTokens: 60_000,
+    maxOutputTokensPerTurn: 1024
+  },
   answerAfterIdleMs: 60 * MINUTE,
   model: "test-model",
   maxTokens: 1024
@@ -726,5 +735,203 @@ describe("the operator's standing region", () => {
     await heartbeat(CHANNEL, store);
 
     expect(asked.requests[0]?.system).toBe(AMBIENT_HEARTBEAT_SYSTEM_PROMPT);
+  });
+});
+
+describe("a heartbeat whose channel opted into tools", () => {
+  const WITH_TOOLS: HeartbeatSettings = { ...SETTINGS, tools: true };
+
+  /** A stub proxy client: lists one tool, records what was executed. */
+  function client() {
+    const executed: Array<{ name: string; requestingUser: string }> = [];
+    let listed = 0;
+    return {
+      executed,
+      listedCount: () => listed,
+      tools: {
+        list: () => {
+          listed += 1;
+          return Promise.resolve([
+            {
+              name: "ci_status",
+              description: "CI status.",
+              inputSchema: { type: "object" as const, properties: {} }
+            }
+          ]);
+        },
+        execute: (call: { name: string }, attribution: { requestingUser: string }) => {
+          executed.push({ name: call.name, requestingUser: attribution.requestingUser });
+          return Promise.resolve({ content: "main has been red for an hour" });
+        }
+      }
+    };
+  }
+
+  /** A model that looks something up, then either speaks or does not. */
+  const looks = (finding: string | null): CompletionClient => {
+    let turn = 0;
+    return {
+      complete() {
+        turn += 1;
+        if (turn === 1) {
+          return Promise.resolve({
+            text: "",
+            toolCalls: [{ id: "t1", name: "ci_status", arguments: {} }],
+            stopReason: "tool_use" as const,
+            usage: { inputTokens: 100, outputTokens: 10 },
+            model: "served-model"
+          });
+        }
+        if (turn === 2 && finding !== null) {
+          return Promise.resolve({
+            text: "",
+            toolCalls: [{ id: "t2", name: AMBIENT_FINDING_TOOL, arguments: { text: finding } }],
+            stopReason: "tool_use" as const,
+            usage: { inputTokens: 120, outputTokens: 12 },
+            model: "served-model"
+          });
+        }
+        return Promise.resolve({
+          text: "",
+          toolCalls: [],
+          stopReason: "end_turn" as const,
+          usage: { inputTokens: 120, outputTokens: 12 },
+          model: "served-model"
+        });
+      }
+    };
+  };
+
+  it("looks something up and posts what it found", async () => {
+    const stub = client();
+    const { heartbeat, surface } = heartbeatWith({
+      completion: looks("main has been red for an hour and nobody has said so."),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools
+    });
+
+    plantIdleQuestion("deploying now");
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.executed.map(call => call.name)).toEqual(["ci_status"]);
+    expect(surface.sent).toHaveLength(1);
+    expect(surface.sent[0]?.text).toContain("red for an hour");
+  });
+
+  it("attributes every call to the clock rather than to a person", async () => {
+    const stub = client();
+    const { heartbeat } = heartbeatWith({
+      completion: looks("something"),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools
+    });
+
+    plantIdleQuestion("deploying now");
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.executed[0]?.requestingUser).toBe(AMBIENT_REQUESTING_USER);
+  });
+
+  // Silence survives the loop, and it matters more here than anywhere: a model
+  // that has just looked something up has every reason to think it owes the
+  // channel a report, and the ordinary outcome of a heartbeat is saying nothing.
+  it("says nothing when it looked and found nothing worth saying", async () => {
+    const stub = client();
+    const { heartbeat, surface } = heartbeatWith({
+      completion: looks(null),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools
+    });
+
+    plantIdleQuestion("deploying now");
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.executed).toHaveLength(1);
+    expect(surface.sent).toEqual([]);
+  });
+
+  // **The ordering this change must not disturb.** A tick with nothing to weigh
+  // spends nothing — and "nothing" now has to include the tool listing, which is
+  // a network round trip the single-call shape never made.
+  it("lists no tools on a tick the pregate stops", async () => {
+    const stub = client();
+    const { heartbeat, surface } = heartbeatWith({
+      completion: looks("this must never be reached"),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools
+    });
+
+    // An empty channel: nothing for the pregate's third question to find, so the
+    // tick stops before anything is spent.
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.listedCount()).toBe(0);
+    expect(stub.executed).toEqual([]);
+    expect(surface.sent).toEqual([]);
+  });
+
+  it("lists no tools when the rate window is shut", async () => {
+    const stub = client();
+    const { heartbeat } = heartbeatWith({
+      completion: looks("something"),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools,
+      post: poster(false).post
+    });
+
+    plantIdleQuestion("deploying now");
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.listedCount()).toBe(0);
+  });
+
+  it("lists no tools when the channel is over its budget", async () => {
+    const stub = client();
+    const { heartbeat } = heartbeatWith({
+      completion: looks("something"),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools,
+      maySpend: () => Promise.resolve(false)
+    });
+
+    plantIdleQuestion("deploying now");
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.listedCount()).toBe(0);
+  });
+
+  // The watermark answers "has this material been weighed", and running the loop
+  // answered it — so it advances once, and a second tick over the same material
+  // evaluates nothing.
+  it("advances the watermark exactly once, so the same material is not reweighed", async () => {
+    const stub = client();
+    const { heartbeat, surface } = heartbeatWith({
+      completion: looks("something"),
+      settings: () => Promise.resolve(WITH_TOOLS),
+      firedTools: () => stub.tools
+    });
+    plantIdleQuestion("deploying now");
+
+    await heartbeat(CHANNEL, store);
+    const after = stub.listedCount();
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.listedCount()).toBe(after);
+    expect(surface.sent).toHaveLength(1);
+  });
+
+  it("runs the single call when the sheet did not opt in", async () => {
+    const stub = client();
+    const { heartbeat, surface } = heartbeatWith({
+      completion: model("Priya's question has had no reply.").completion,
+      firedTools: () => stub.tools
+    });
+
+    plantIdleQuestion();
+    await heartbeat(CHANNEL, store);
+
+    expect(stub.executed).toEqual([]);
+    expect(stub.listedCount()).toBe(0);
+    expect(surface.sent).toHaveLength(1);
   });
 });

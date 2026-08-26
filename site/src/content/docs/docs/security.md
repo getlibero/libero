@@ -256,12 +256,18 @@ What bounds a scheduled check:
 - **The create is governed.** `schedule_task` is a proxied built-in: allowlisted per sheet, held
   for a human by default, refused outright in a channel whose `[ambient]` is off, capped in
   pending count and in horizon by constants a sheet cannot raise, and audited like any call.
-- **The firing reaches nothing, unless the channel asked.** By default a fired check is one bounded
-  turn over the channel's recent messages with a single tool that posts — no tool-proxy client at
-  all — so "every call it induces meets the proxy's gates" is true because it induces none. A sheet
-  that writes `[ambient] tools = true` gets the ReAct loop over the allowlist it already carries
-  ([#348](https://github.com/getlibero/libero/issues/348)); the switch is off by default, so no
-  channel gained this by upgrading, and it grants nothing its members could not already ask for.
+- **The firing reaches nothing, unless the channel asked.** By default a heartbeat, a fired check
+  and a standing rule are each one bounded turn over the channel's recent messages with a single
+  tool that posts — no tool-proxy client at all — so "every call it induces meets the proxy's gates"
+  is true because it induces none. A sheet that writes `[ambient] tools = true` gets the ReAct loop
+  over the allowlist it already carries ([#348](https://github.com/getlibero/libero/issues/348),
+  [#471](https://github.com/getlibero/libero/issues/471)); one switch for all three, off by default,
+  so no channel gained this by upgrading, and it grants nothing its members could not already ask
+  for.
+- **A heartbeat that opts in still spends nothing on a quiet tick.** The pregate runs before the
+  shape is chosen, so a channel with no new material reaches the proxy not at all — no listing and
+  no call. That is asserted rather than assumed, because it is what keeps an always-on cadence from
+  becoming an always-on cost.
 - **An unattended call is never held, and never attributed to a person.** There is nobody to click
   an approval card for a turn nobody asked for, so a held call is refused rather than waited on —
   which makes the practical line read-yes-write-no, since a destructive name is held by default.
