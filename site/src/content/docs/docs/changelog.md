@@ -31,6 +31,59 @@ repository names this page as the changelog step:
   after the fact would duplicate it while numbering things that never had
   numbers.
 
+## v0.6.0 — 2026-08-26
+
+**What shipped.** Scheduling ([#358](https://github.com/getlibero/libero/issues/358) is the
+tracker). An operator writes recurrence into the team sheet: an `[[ambient.rule]]` entry says at
+these times, on these days, ask this question
+([#460](https://github.com/getlibero/libero/issues/460) the sheet grammar,
+[#461](https://github.com/getlibero/libero/issues/461) the ambient clock firing it as a third kind
+of due entry, [#462](https://github.com/getlibero/libero/issues/462) the attack suite reaching it).
+Every rule is an ask — a question put to a bounded turn over the channel's recent messages — and a
+deterministic post kind was declined rather than deferred: fixed text on a timer is a cron job, and
+judgment at the moment of firing is the one thing a rule's turn adds over cron. Rules read their
+times in an IANA `timezone` ([#470](https://github.com/getlibero/libero/issues/470)), absent
+meaning UTC so no rule written earlier changed meaning; a time the zone skips does not fire that
+day, and a time the zone repeats fires once. Occurrences are computed from the wall clock with no
+last-fired stamp, so a restart cannot double-fire and a missed window is skipped rather than
+replayed — a restart spanning Monday 09:00 loses that digest, and the next occurrence is already
+coming. `[ambient] heartbeat = false` runs rules and no heartbeat evaluation — the channel that
+wants Monday digests and no noticing job — while `enabled = false` stays the one silence.
+
+**An unattended turn can now use the channel's tools, and only if the sheet says so.**
+[#348](https://github.com/getlibero/libero/issues/348) was decided by being built: `[ambient]
+tools = true` gives a fired check, a standing rule and the heartbeat evaluation
+([#471](https://github.com/getlibero/libero/issues/471) — one switch, because a channel decides
+unattended lookup once, not three times) the ReAct loop over the allowlist its sheet already
+carries. The switch decides who may use that list, not what is on it. An unattended turn has no
+prompter, so a call that would raise an approval card is refused rather than waited on —
+read-yes-write-no, drawn off the same destructive-name default that governs holds — and every such
+call carries `ambient:clock` as its requesting user, a name reserved by an alphabet no Slack id
+can spell, so the audit log says plainly that a clock asked.
+
+Beside the headline: the example-sheet suite learned to tell a documented figure from an inherited
+default ([#445](https://github.com/getlibero/libero/issues/445)), and the price-table watcher test
+was rebuilt on a seam rather than given a third, longer timeout
+([#474](https://github.com/getlibero/libero/issues/474)).
+
+**Upgrading.** The team sheet is **purely additive**: a sheet with no `[[ambient.rule]]` entry and
+none of the new keys parses exactly as before, and every new key defaults to the old behaviour —
+`[ambient] tools = false`, so no sheet gained an unattended caller by upgrading; `heartbeat =
+true`; `timezone` absent meaning UTC. The failure direction on old software is the same as
+v0.5.0's: a 0.5.0 service does not reject a sheet carrying `[[ambient.rule]]` — unknown keys are
+stripped — so a rule added before the images are upgraded is silently inert. Upgrade first, then
+edit sheets. No environment variables, volumes or services changed, no wire shape between the
+agent and the proxy moved, so the two services may be upgraded in either order, and the CLI at
+0.6.0 pairs with the images at 0.6.0 as always. There are no security fixes in this release.
+
+**The suite.** The e2e security suite passes against this tag — now including the rule attacks,
+which run without a daemon: channel content that tries to plant a rule plants nothing, because the
+sheet is the only write path and the model has none; a fired turn on a sheet that never wrote
+`tools = true` induces no served calls; a rule's turn that did opt in meets the same gates a
+mention's calls do, and a call that would need a human click is refused rather than held. Each
+runs after a positive control proves a rule fires and posts at all. The one file that requires a
+Docker daemon still fails rather than skips in CI.
+
 ## v0.5.0 — 2026-08-25
 
 **What shipped.** Shared skills ([#373](https://github.com/getlibero/libero/issues/373) is the
