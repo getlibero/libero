@@ -273,6 +273,8 @@ export interface SheetSpec {
       readonly name: string;
       readonly at: readonly string[];
       readonly days?: readonly string[];
+      /** `timezone` (#470). Absent writes no line, which is the rule read in UTC. */
+      readonly timezone?: string;
       readonly question: string;
     }[];
   };
@@ -447,6 +449,7 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
             ...(rule.days === undefined
               ? []
               : [`days = [${rule.days.map(day => `"${day}"`).join(", ")}]`]),
+            ...(rule.timezone === undefined ? [] : [`timezone = "${rule.timezone}"`]),
             `question = "${rule.question}"`
           ]),
           ``,

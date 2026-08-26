@@ -1122,11 +1122,48 @@ describe("the ambient rule list", () => {
     ]);
   });
 
-  // UTC-only first, and the field is absent rather than reserved: a sheet that
-  // writes one today is telling itself something the server will not read.
-  it("carries no timezone yet", () => {
-    const parsed = TeamSheet.parse(rules([rule({ timezone: "Europe/London" })])).ambient.rule[0];
-    expect(parsed).not.toHaveProperty("timezone");
+  // #470. Optional rather than defaulted to "UTC", so a sheet that says nothing
+  // and one that says UTC stay distinguishable in the file an operator reads —
+  // and so every rule written before the field existed means what it meant.
+  it("takes a canonical IANA zone, and leaves it absent when none is written", () => {
+    const zoned = TeamSheet.parse(rules([rule({ timezone: "Europe/London" })])).ambient.rule[0];
+    expect(zoned?.timezone).toBe("Europe/London");
+    expect(TeamSheet.parse(rules([rule()])).ambient.rule[0]).not.toHaveProperty("timezone");
+  });
+
+  // Asked of the runtime that will resolve it at firing time, rather than matched
+  // against a pattern — so a sheet that parses is a sheet that can fire.
+  each([
+    ["a zone that does not exist", "Europe/Atlantis"],
+    ["a region with no city", "Europe"],
+    ["prose", "British Summer Time"],
+    ["an offset", "+01:00"],
+    ["nothing", ""]
+  ])("refuses %s as a zone", (_label, timezone) => {
+    expect(TeamSheet.safeParse(rules([rule({ timezone })])).success).toBe(false);
+  });
+
+  // One spelling per zone, which is `ClockTime`'s rule and `SkillName`'s. Both of
+  // these resolve — to `Europe/London` and to `UTC` — so accepting them would be
+  // two ways to write one zone.
+  each([
+    ["the wrong case", "europe/london"],
+    ["a non-canonical alias", "Etc/UTC"],
+    ["a legacy abbreviation", "GMT"]
+  ])("refuses %s", (_label, timezone) => {
+    expect(TeamSheet.safeParse(rules([rule({ timezone })])).success).toBe(false);
+  });
+
+  // The case that made the check a list rather than a round trip: `Intl` accepts
+  // a fixed offset and resolves it to itself, so a round-trip check admits a
+  // value that never observes daylight saving — permanent BST for an operator who
+  // wrote `+01:00` meaning London.
+  it("refuses a fixed offset, which is a zone that never springs forward", () => {
+    expect(TeamSheet.safeParse(rules([rule({ timezone: "+01:00" })])).success).toBe(false);
+  });
+
+  it("accepts UTC, which the runtime's own list does not carry", () => {
+    expect(TeamSheet.parse(rules([rule({ timezone: "UTC" })])).ambient.rule[0]?.timezone).toBe("UTC");
   });
 });
 

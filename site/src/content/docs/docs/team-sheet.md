@@ -1286,6 +1286,7 @@ under `[ambient]`, so the entries must follow that block's own keys.
 | `name` | yes | What the rule is called. Lower-case words joined by single dashes, as a skill name is. A firing is metered and logged under it, so two rules may not share one. |
 | `at` | yes | The times it fires, `"HH:MM"`, 24-hour, zero-padded, **UTC**. At least one and at most four, and a time may not be repeated. |
 | `days` | no | Which days it fires on, from `mon` to `sun`. **Absent means every day.** A day may not be repeated. |
+| `timezone` | no | The zone `at` and `days` are read in, as a canonical IANA name. **Absent means UTC.** |
 | `question` | yes | What the fired turn is asked. At most 500 characters — the same bound a [`schedule_task`](#builtin) check's question carries, because it is the same turn. |
 
 At most **eight rules** per sheet, so at most 32 posts a day however you arrange them.
@@ -1310,9 +1311,19 @@ message. This file is the only way one exists, which is also what makes it appro
 it was reviewed the way your code is. Asked in-channel for a standing weekly reminder, the agent
 points you here.
 
-**Times are UTC, and the limit is stated rather than hidden.** UTC does not observe your summer
-time, so a rule written by a team in a DST zone drifts by an hour twice a year. A `timezone` field is
-planned and will read absent as UTC, so nothing you write today changes meaning when it lands.
+**Times are read in the rule's own zone**, or in UTC when it names none — so a rule written before
+`timezone` existed still means exactly what it meant.
+
+Write a canonical IANA name: `Europe/London`, not `GMT`, `BST`, or `+01:00`. A fixed offset is
+refused deliberately — it is precisely the thing that does *not* follow your summer time, which is
+what the field is for, and an operator who wrote `+01:00` meaning London would get permanent British
+Summer Time for five months a year.
+
+**Two days a year need a rule, and both are decided.** A wall-clock time your zone *skips* does not
+fire that day: on a spring forward `01:30` never happens, and firing it at `02:30` instead would post
+under a label saying `01:30`. That is the same skip-don't-replay rule a missed window already gets,
+and the next occurrence is a day away. A time your zone *repeats* on a fall back fires **once**, not
+twice.
 
 **Missed windows are skipped, never replayed.** A restart spanning Monday 09:00 loses that Monday's
 digest and does not fire it late. That is where a rule differs from a one-shot check: a check fires

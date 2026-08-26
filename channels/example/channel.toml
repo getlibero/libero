@@ -591,10 +591,18 @@ answer_after_idle_minutes = 60              # five minutes to a week
 # makes it approved: the edit adding it was reviewed the way your code is. Asked
 # in-channel for a standing weekly reminder, the agent points you here.
 #
-# Times are UTC and 24-hour, zero-padded — "09:00", not "9:00" or "9am". One
-# honest limit: UTC does not observe your summer time, so a rule written by a
-# team in a DST zone drifts by an hour twice a year. A timezone field is planned
-# and will read absent as UTC, so nothing you write today changes meaning.
+# Times are 24-hour, zero-padded — "09:00", not "9:00" or "9am" — and read in
+# the rule's own timezone. Leave timezone out and they are UTC, which is what
+# every rule written before that field existed still means.
+#
+# Write a canonical IANA name: "Europe/London", not "GMT", "BST" or "+01:00". A
+# fixed offset is refused on purpose — it is exactly the thing that does NOT
+# follow your summer time, which is what the field is for.
+#
+# Two days a year need a rule, and here they are. A time your clocks SKIP does
+# not fire that day: on a spring forward 01:30 never happens, and firing it at
+# 02:30 instead would post under a label saying 01:30. A time your clocks REPEAT
+# fires once, not twice.
 #
 # The caps are what makes a flood impossible rather than merely discouraged: at
 # most 4 times per rule, at most 8 rules, so at most 32 posts a day however you
@@ -614,7 +622,8 @@ What moved yesterday, what is blocked, and who is waiting on whom? \
 Two or three sentences. Say nothing if the channel was quiet."""
 
 [[ambient.rule]]
-name     = "friday-release-check"           # 0 16 * * 5
+name     = "friday-release-check"           # 0 16 * * 5, London time
 at       = ["16:00"]
 days     = ["fri"]
+timezone = "Europe/London"                  # omit for UTC
 question = "Is anything still open that we said would ship this week?"

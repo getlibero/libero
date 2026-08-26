@@ -1393,6 +1393,22 @@ already coming.
 
 Two smaller consequences of the same choice:
 
+Since #470 a rule reads its times in `timezone`, or in UTC when it names none —
+so a 09:00 digest stays a 09:00 digest across a transition, where a UTC rule
+drifts by an hour. There is **one code path** and UTC is simply the default zone:
+two implementations of "the next Monday at 09:00" are two chances to disagree,
+and the disagreement would be a digest an hour out on one channel and not
+another. A case asserts the two spellings answer identically.
+
+The two days a year need a decision rather than whatever the arithmetic produces,
+and both are in that module's header. **A time the zone skips does not fire that
+day** — on a spring forward 01:30 never happens, resolving it anyway lands it at
+02:30 under a label saying 01:30, and it can collide with an `at` entry that
+genuinely is 02:30. That is this design's own skip-don't-replay rule applied to a
+window the day did not contain. **A time the zone repeats fires once**, because
+one firing per occurrence is the invariant and which of the two readings is
+arbitrary.
+
 - **First sight schedules at the next occurrence**, not at a cadence from now,
   which is where the rule schedule's rule differs from the heartbeat's. A process
   starting at 08:59 fires a 09:00 rule a minute later; one starting at 09:05
@@ -2162,8 +2178,10 @@ brings it back once the environment is fixed.
   than a replay. `scan(at)` is the whole of the behaviour; `start()` is a sleep
   wrapped around it. Three due sources since #461.
 - `src/session/rule-clock.ts` — when a `[[ambient.rule]]` next fires. One pure
-  function over a rule and an instant, UTC, holding no state — which is the whole
-  design of recurring rules restated as a signature.
+  function over a rule and an instant, holding no state — which is the whole
+  design of recurring rules restated as a signature. Zoned since #470, with one
+  path and UTC as the default zone, and a decided answer for each of the two days
+  a year a wall-clock time is not a function of an instant.
 - `src/session/rule.ts` — what a due rule does: the turn, the one post, and the
   notice that says the rule still stands.
 - `src/session/fired-turn.ts` — the one turn a check and a rule both run, in
