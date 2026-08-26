@@ -35,7 +35,12 @@ import { createSilentLogger } from "@getlibero/gateway";
 import { createProactivePoster } from "./proactive/proactive.js";
 import type { ProactivePoster } from "./proactive/proactive.js";
 import { createAmbientScheduler } from "./session/ambient.js";
-import type { AmbientHeartbeat, AmbientScheduler, AmbientTaskFire } from "./session/ambient.js";
+import type {
+  AmbientHeartbeat,
+  AmbientRuleFire,
+  AmbientScheduler,
+  AmbientTaskFire
+} from "./session/ambient.js";
 import type { ChannelLister } from "./session/channels.js";
 import { createDecisionHandler } from "./approvals/decisions.js";
 import { createHeldCallPrompter } from "./approvals/prompter.js";
@@ -162,10 +167,21 @@ export type AmbientHeartbeatFactory = (post: ProactivePoster) => AmbientHeartbea
  *
  * It takes the poster for `AmbientHeartbeatFactory`'s reason, which is the whole
  * withholding discipline: the capability is minted in `createServer` and reaches
- * exactly the two consumers that produce posts, so the four background passes
- * still cannot name the type.
+ * exactly the consumers that produce posts, so the four background passes still
+ * cannot name the type.
  */
 export type AmbientTaskFireFactory = (post: ProactivePoster) => AmbientTaskFire;
+
+/**
+ * Running a due standing rule (#461). The third of these, and the same shape.
+ *
+ * A third factory for the second's reason, sharpened by there now being three:
+ * every combination of the three is a legitimate deployment. Rules with no
+ * heartbeat is a channel that writes `heartbeat = false`, and it is the
+ * configuration #461 exists to make possible — so a single factory returning a
+ * triple would spell each of those as a `null` in a tuple.
+ */
+export type AmbientRuleFireFactory = (post: ProactivePoster) => AmbientRuleFire;
 
 export interface ServerDeps {
   readonly slack: SlackSurfaceFactory;
@@ -338,6 +354,17 @@ export interface ServerDeps {
    * running it would be the silent loss this design refused to build.
    */
   readonly fireTask?: AmbientTaskFireFactory;
+  /**
+   * Runs a due standing rule (#461). The same shape and the same discipline, and
+   * the third caller is what makes the factory pattern's claim checkable rather
+   * than a coincidence of there having been two.
+   *
+   * Absent, the clock notices a due rule and logs `ambient_rule_due`, and there is
+   * nothing to leave pending — a rule's next occurrence is computed rather than
+   * stored, so a deployment with no fire path simply never speaks and loses
+   * nothing it was holding.
+   */
+  readonly fireRule?: AmbientRuleFireFactory;
   /** Cancels every task in flight. Omitted by a caller with no shutdown to run. */
   readonly signal?: AbortSignal;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
@@ -387,6 +414,9 @@ export interface ServerDeps {
 // asserting a number nobody named.
 export { HEARTBEAT_POST_WINDOW_MS, createProactivePoster } from "./proactive/proactive.js";
 export { MAX_CHECK_MESSAGES, createAmbientTaskFire, renderCheckFailureNotice } from "./session/check.js";
+export { createAmbientRuleFire, renderRuleFailureNotice } from "./session/rule.js";
+export type { RuleOptions, RuleSettings } from "./session/rule.js";
+export { nextRuleOccurrence } from "./session/rule-clock.js";
 export type { CheckOptions, CheckSettings } from "./session/check.js";
 export { MAX_HEARTBEAT_MESSAGES, createAmbientHeartbeat } from "./session/heartbeat.js";
 export { renderProposalNotice } from "./session/heartbeat.js";
@@ -486,6 +516,7 @@ export {
 } from "./session/ambient.js";
 export type {
   AmbientHeartbeat,
+  AmbientRuleFire,
   AmbientScan,
   AmbientScheduler,
   AmbientSchedulerOptions,
@@ -712,6 +743,16 @@ export function createServer(deps: ServerDeps): Server {
       ? deps.fireTask(proactive)
       : undefined;
 
+  // And a third time, for a standing rule (#461). Same rule, same reason: a rule's
+  // whole output is a post, so one built without a poster would spend a model call
+  // to reach a surface it does not have. Without it the clock logs a due rule and
+  // runs nothing — and unlike a ticket there is nothing left pending, because the
+  // next occurrence is computed rather than stored.
+  const fireRule =
+    deps.fireRule !== undefined && proactive !== undefined
+      ? deps.fireRule(proactive)
+      : undefined;
+
   const ambient =
     deps.channels === undefined
       ? undefined
@@ -723,11 +764,14 @@ export function createServer(deps: ServerDeps): Server {
             const settings = await deps.sheets(channel);
             return {
               enabled: settings.ambient.enabled,
-              heartbeatEveryMs: settings.ambient.heartbeatEveryMs
+              heartbeat: settings.ambient.heartbeat,
+              heartbeatEveryMs: settings.ambient.heartbeatEveryMs,
+              rules: settings.ambient.rules
             };
           },
           ...(heartbeat !== undefined ? { heartbeat } : {}),
           ...(fireTask !== undefined ? { fireTask } : {}),
+          ...(fireRule !== undefined ? { fireRule } : {}),
           ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
           logger
         });

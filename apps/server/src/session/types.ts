@@ -14,7 +14,7 @@
 // the team sheet is keyed on and what the client certificate's `CN=channel:<id>`
 // carries.
 
-import type { SharedSkillEntry } from "@getlibero/schema";
+import type { AmbientRule, SharedSkillEntry } from "@getlibero/schema";
 import type { AgentLoopCaps, CompletionMessage, HeldCallPrompter } from "@getlibero/agent";
 import type { MemoryFile, SkillFiles } from "@getlibero/memory";
 import type { ChecklistReporter } from "../checklist/checklist.js";
@@ -304,6 +304,28 @@ export interface AmbientSettings {
    * somebody asked for, and this is work nobody did.
    */
   readonly enabled: boolean;
+  /**
+   * `[ambient] heartbeat`. Whether the evaluation turn runs at all (#461).
+   *
+   * **`enabled` is the block; this is one of the two things it turns on.** A
+   * channel wanting its rules and no noticing job writes `heartbeat = false`, and
+   * gets a clock that fires `rules` and never weighs anything. `enabled = false`
+   * remains the one total silence, so this is not a second spelling of it.
+   *
+   * Defaults `true` in the schema, which is the opposite of `enabled` and not an
+   * inconsistency: by the time this is read the channel has already opted in.
+   */
+  readonly heartbeat: boolean;
+  /**
+   * `[[ambient.rule]]`, verbatim from the sheet (#461).
+   *
+   * The one field on these settings that is **not renamed or converted** on the
+   * way through, where every duration beside it becomes milliseconds. A rule is a
+   * clock time rather than a duration, so there is no unit to normalize, and the
+   * arithmetic that turns one into an instant is `./rule-clock.ts`'s — which
+   * wants the sheet's own shape and would have to undo any translation done here.
+   */
+  readonly rules: readonly AmbientRule[];
   /**
    * `[ambient] heartbeat_every_minutes`, in milliseconds. How often anyone
    * looks.

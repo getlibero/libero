@@ -33,12 +33,18 @@ import type { CompletedTurn } from "@getlibero/agent";
 import { GatewayError, createJsonLogger, createSlackSurface } from "@getlibero/gateway";
 import {
   createAmbientHeartbeat,
+  createAmbientRuleFire,
   createAmbientTaskFire,
   createServer,
   createSharedSkillReader,
   createSharedSkillPoolOpener
 } from "./compose.js";
-import type { AmbientHeartbeat, AmbientTaskFire, ProactivePoster } from "./compose.js";
+import type {
+  AmbientHeartbeat,
+  AmbientRuleFire,
+  AmbientTaskFire,
+  ProactivePoster
+} from "./compose.js";
 import {
   channelsRootFromEnv,
   completionConfigFromEnv,
@@ -464,6 +470,40 @@ const fireTask = (post: ProactivePoster): AmbientTaskFire =>
     logger
   });
 
+/**
+ * Firing a due standing rule (#461), as a third factory over the same thing.
+ *
+ * `fireTask` above and its reasons. The one difference is what the settings carry:
+ * a rule needs no idle threshold and no ticket, so what it resolves is the same
+ * set a check does — which is the point, since the two run one turn.
+ */
+const fireRule = (post: ProactivePoster): AmbientRuleFire =>
+  createAmbientRuleFire({
+    completion,
+    sharedSkills,
+    post,
+    settings: async channel => {
+      const settings = await sheets(channel);
+      return {
+        // The operator's own text, carried to every turn that composes something
+        // (#450). The reader below is what turns it into a region.
+        standing: {
+          description: settings.description,
+          sharedSkills: settings.sharedSkills,
+          maxAlwaysSkills: settings.skills.maxAlwaysSkills,
+          maxAlwaysChars: settings.skills.maxAlwaysChars
+        },
+        enabled: settings.ambient.enabled,
+        model: settings.model,
+        maxTokens: settings.caps.maxOutputTokensPerTurn
+      };
+    },
+    reportTurn,
+    maySpend,
+    signal: tasks.signal,
+    logger
+  });
+
 const { gateway, ambient } = createServer({
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
@@ -500,6 +540,7 @@ const { gateway, ambient } = createServer({
   channels: createChannelLister({ channelsRoot, logger }),
   heartbeat,
   fireTask,
+  fireRule,
   memory: createMemoryFileOpener({ storeRoot, channelsRoot, logger }),
   skills,
   summarize,

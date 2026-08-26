@@ -1359,6 +1359,94 @@ is **awaited**, unlike them: nothing is waiting on a scan, and awaiting is what
 gives the concurrency bound teeth. One channel throwing is `ambient_failed` for
 that channel and a scan that carries on.
 
+## Standing rules: the third due source (#461)
+
+`[[ambient.rule]]` is an operator-authored recurrence — at these times, on these
+days, ask this question and post the answer. It is a **third `DueEntry.kind`**
+beside `heartbeat` and `task`, which is what that field was for: a rule wakes the
+same loop at its own instant and `earliestDue` answers over all three, so the
+third member cost this file no machinery.
+
+Two switches, and they are not one dial. `[ambient] enabled` is the block and
+stays the one total silence. `[ambient] heartbeat` turns off the evaluation and
+leaves the rules firing, which is the configuration the field exists for: a
+channel that wants Monday digests and no noticing job. A channel with the
+heartbeat off and no rules is enabled and silent, and both the schema and the
+scheduler admit that deliberately — it is what a sheet looks like *between* two
+edits that both work.
+
+### The arithmetic is stateless, and that is the design
+
+`src/session/rule-clock.ts` is one pure function: the rule's next occurrence
+strictly after an instant, in UTC. No last-fired stamp, no persistence, nothing
+to get out of step — which is `session/ambient.ts`'s in-memory schedule taken one
+step further. There the emptiness of a fresh process *is* the skip-don't-replay
+rule; here the arithmetic never needed state to begin with.
+
+The consequence is stated rather than discovered: **a restart spanning Monday
+09:00 loses that Monday's digest.** That is the right cost to pay, and it is
+where a rule differs from a check. A due check fires once *late*, because a
+person approved that particular instant and gets nothing else if it slips. A rule
+is standing, so firing Monday's digest on Tuesday would post an answer about the
+wrong day under a label saying it is Monday's — and the next occurrence is
+already coming.
+
+Two smaller consequences of the same choice:
+
+- **First sight schedules at the next occurrence**, not at a cadence from now,
+  which is where the rule schedule's rule differs from the heartbeat's. A process
+  starting at 08:59 fires a 09:00 rule a minute later; one starting at 09:05
+  waits until tomorrow.
+- **The schedule is keyed by channel and rule name**, so a renamed rule is a
+  removal and an addition. The old key is pruned and the new one is first-sighted,
+  which is what stops a rule edited at 09:05 from firing the 09:00 occurrence it
+  was not present for. That is what `name` is for, along with the meter's turn id.
+
+### What differs from a check, and what does not
+
+The turn is the same one, and `src/session/fired-turn.ts` is what makes that
+structural rather than asserted: both callers run `runScheduledCheckTurn` through
+one function, so **#348's containment claim — a fired turn induces no served tool
+calls at all — holds for rules by construction** rather than by a second file
+remembering to. What stayed in each caller is the ends, which is exactly where
+the two differ:
+
+| | A fired check | A fired rule |
+| --- | --- | --- |
+| Authorized by | a governed, approved `schedule_task` create | an edit to the team sheet |
+| Recurs | no — one firing, one terminal state | yes — the next occurrence is already coming |
+| Records | a fire stamp and an outcome on its row | nothing; there is no row |
+| Post label | `SCHEDULED CHECK` | `STANDING RULE` |
+| Says on failure | the timer is spent, act on it yourselves | the rule still stands, it will run again |
+
+The failure notice is the half worth naming. A check's says this one is done,
+because it is. A rule's says it still stands, because it does — and a team told
+otherwise would go and re-create something that was never lost. That is why
+`renderRuleFailureNotice` is its own function rather than a parameter on the
+check's.
+
+### What bounds a rule
+
+- **The sheet, and nothing else.** There is no create to govern, no approval to
+  broker and no ticket to cap, because the reviewed edit is all three. The model
+  has no write path to that file and no verb that plants a standing action.
+- **The grammar.** At most four times per rule and eight rules per sheet, so a
+  channel's rules cannot exceed 32 posts a day however they are arranged — an
+  arithmetic bound rather than an analysis, which is `packages/schema`'s argument
+  for fields over a cron string.
+- **One post per firing**, with `source: "rule"` — which does not draw on
+  `HEARTBEAT_POST_WINDOW_MS` and is not blocked by it. The line is bidden against
+  unbidden, not proactive against reactive.
+- **`maySpend`**, asked before the turn, so a capped channel spends nothing and
+  is still told once that its rule could not run.
+
+Rules fire **after due checks and before heartbeats**, which is where their claim
+sits: both a check's instant and a rule's were set by a person, so both outrank a
+cadence that is merely due, and between the two the check goes first because it is
+spent afterwards and a rule will come round again. Unlike a check they are **not**
+bounded to one per channel per scan — a check can pile up across a downtime and a
+rule cannot, so what is due is what the sheet says is due now.
+
 ## The heartbeat evaluation: what a due channel actually does
 
 `src/session/heartbeat.ts` answers #319, and it is the reader the ambient clock
@@ -2025,7 +2113,15 @@ brings it back once the environment is fixed.
 - `src/session/ambient.ts` — the ambient clock (#317): the timer, the enumerator
   over those channels, and the schedule that makes a missed window a skip rather
   than a replay. `scan(at)` is the whole of the behaviour; `start()` is a sleep
-  wrapped around it.
+  wrapped around it. Three due sources since #461.
+- `src/session/rule-clock.ts` — when a `[[ambient.rule]]` next fires. One pure
+  function over a rule and an instant, UTC, holding no state — which is the whole
+  design of recurring rules restated as a signature.
+- `src/session/rule.ts` — what a due rule does: the turn, the one post, and the
+  notice that says the rule still stands.
+- `src/session/fired-turn.ts` — the one turn a check and a rule both run. A module
+  rather than a flag, so "a rule fires the check turn's exact shape" is a fact
+  about the code rather than a claim about it.
 - `src/session/router.ts` — request in, reply out: which session, what it waits
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend

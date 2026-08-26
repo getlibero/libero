@@ -111,7 +111,13 @@ export interface LogFields {
    * heartbeat's reason and one of its own: here `check_silent` is the *good*
    * outcome of a conditional check, where `check_declined` and `check_failed`
    * both put a notice in a channel, so an operator asking "did anyone get told
-   * something they should not have" greps two words and not six. Scheduled checks
+   * something they should not have" greps two words and not six. Firing a
+   * standing rule (#461): "ambient_rule_due", "rule_posted", "rule_unposted",
+   * "rule_silent", "rule_declined", "rule_failed" — the check words with the
+   * noun changed, deliberately, because the two are the same turn governed in
+   * different places and an operator reading one already knows the other. Each
+   * carries `rule` below, since a sheet may hold eight of them and the events
+   * would otherwise be indistinguishable. Scheduled checks
    * (#323): "scheduled_task_recorded", "scheduled_task_unrecorded" — a governed
    * create left a ticket that will fire, and one that did not. Two words rather
    * than one with a field, because the second is the only direction the audit log
@@ -170,6 +176,21 @@ export interface LogFields {
    * correlated across the two processes.
    */
   ticket?: string;
+  /**
+   * Which `[[ambient.rule]]` a line is about, by its sheet name (#461).
+   *
+   * Safe to log for a stricter reason than `ticket`'s: it is not an
+   * authorization at all, and it is not model-authored — an operator wrote it
+   * into a reviewed file, bounded to lower-case words and dashes by the schema.
+   *
+   * A field rather than a word per rule in the event vocabulary, which is the
+   * choice `ticket` already made: how many rules a sheet has is the operator's
+   * business, so the event says what happened and this says which of theirs it
+   * happened to. Without it a channel with four rules produces four
+   * indistinguishable `rule_silent` lines, and "which digest has never once said
+   * anything" is exactly the question an operator brings to this log.
+   */
+  rule?: string;
   /**
    * What a human said: `approve` or `deny`. A code from a two-member closed set
    * (`ApprovalVerdict`), never prose, and the same word the proxy's own log and
