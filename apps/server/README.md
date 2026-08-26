@@ -1402,6 +1402,53 @@ Two smaller consequences of the same choice:
   which is what stops a rule edited at 09:05 from firing the 09:00 occurrence it
   was not present for. That is what `name` is for, along with the meter's turn id.
 
+### Unattended tool use, and why it is a switch (#348)
+
+By default a fired turn induces no served calls at all: it is one bounded model
+call with a single tool that writes nothing. A channel that writes
+`[ambient] tools = true` gets `runAgentTask` instead, over the allowlist its
+sheet already carries.
+
+**The switch decides who may use that list, not what is on it.** An opted-in
+firing reaches exactly what a mention reaches, resolved per call in the proxy
+from the same file — so turning it on cannot widen a channel past what its
+members can already ask for by hand. It defaults off because the alternative was
+a capability increase applied to sheets that did not change, which is the hazard
+`[skills]`' standing caps argue against one block over.
+
+Both of #348's blocking questions resolved against machinery that already
+existed, and neither needed a new surface:
+
+- **An approval card with nobody to click it.** `createProxyToolClient` takes its
+  prompter optionally, and an unattended firing is handed none — so a held call
+  comes back to the model as the refusal it already is. Because
+  `resolveApproval` holds a destructive *name* by default, the line that draws is
+  **read yes, write no**, without this side of the wire deciding what destructive
+  means.
+- **A pending cap sized against a cheaper unit of work.**
+  `SCHEDULED_TASK_MAX_PENDING` stops being the relevant bound and
+  `[budget] daily_tool_calls` becomes it — stronger rather than weaker, since the
+  proxy counts that one from calls it actually served and it therefore holds
+  against a compromised agent process.
+
+Two things `src/session/fired-tools.ts` keeps structural rather than re-argued.
+**Silence is still calling no tool**: `post_finding` sits on the list beside the
+channel's real tools and the model either calls it before stopping or does not,
+so there is no sentinel to recognize with a dozen tools any more than with one.
+**One post per firing** holds because the interceptor *records* the text and
+answers the model — the caller posts once, after the loop — so a model that calls
+it twice cannot produce two messages.
+
+And every call carries `AMBIENT_REQUESTING_USER` where a mention's carries a
+Slack id. It is reserved by an alphabet no user id can reach, which is
+`shared/<name>`'s mechanism rather than a check somebody has to remember, and it
+means the audit log says plainly that no person asked. Which clock fired is
+already in the task id beside it.
+
+The loop's final text is deliberately discarded. A mention answers in a thread
+somebody is reading; nothing is reading this one, and a turn that posted whatever
+it ended on would make every firing speak.
+
 ### What differs from a check, and what does not
 
 The turn is the same one, and `src/session/fired-turn.ts` is what makes that
@@ -2119,9 +2166,13 @@ brings it back once the environment is fixed.
   design of recurring rules restated as a signature.
 - `src/session/rule.ts` — what a due rule does: the turn, the one post, and the
   notice that says the rule still stands.
-- `src/session/fired-turn.ts` — the one turn a check and a rule both run. A module
-  rather than a flag, so "a rule fires the check turn's exact shape" is a fact
-  about the code rather than a claim about it.
+- `src/session/fired-turn.ts` — the one turn a check and a rule both run, in
+  whichever of its two shapes the sheet selected (#348). A module rather than a
+  flag, so "a rule fires the check turn's exact shape" is a fact about the code
+  rather than a claim about it — including now that there are two shapes.
+- `src/session/fired-tools.ts` — what an opted-in firing is offered and what runs
+  it: the channel's own proxy client, plus `post_finding` intercepted locally so
+  that silence stays "called no tool" and one post per firing stays structural.
 - `src/session/router.ts` — request in, reply out: which session, what it waits
   for, which sheet the task runs on.
 - `src/session/task.ts` — one agent task. One proxy tool client and one spend

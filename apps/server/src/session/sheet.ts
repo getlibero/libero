@@ -172,6 +172,7 @@ export const DEFAULT_AMBIENT_SETTINGS = {
   // gives to the same question.
   heartbeat: true,
   rules: [],
+  tools: false,
   heartbeatEveryMs: 15 * 60_000,
   answerAfterIdleMs: 60 * 60_000
 } as const;
@@ -264,6 +265,7 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
       // a rule carries clock times rather than durations, so there is no unit to
       // normalize and `./rule-clock.ts` wants the sheet's own shape.
       rules: sheet.ambient.rule,
+      tools: sheet.ambient.tools,
       heartbeatEveryMs: sheet.ambient.heartbeat_every_minutes * 60_000,
       answerAfterIdleMs: sheet.ambient.answer_after_idle_minutes * 60_000
     }

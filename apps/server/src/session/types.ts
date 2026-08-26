@@ -327,6 +327,20 @@ export interface AmbientSettings {
    */
   readonly rules: readonly AmbientRule[];
   /**
+   * `[ambient] tools`. Whether a turn this block fires may call the channel's
+   * tools (#348).
+   *
+   * **Off unless the sheet says otherwise**, which is `enabled`'s own posture and
+   * for a sharper version of its reason. This one governs work nobody asked for
+   * *reaching things* — so a default of `true` would hand every channel that
+   * already lists tools an unattended caller for them, with nothing in its own
+   * file changed.
+   *
+   * It grants nothing new when on: an opted-in turn reaches the same allowlist a
+   * mention reaches, resolved per call in the proxy from the same file.
+   */
+  readonly tools: boolean;
+  /**
    * `[ambient] heartbeat_every_minutes`, in milliseconds. How often anyone
    * looks.
    *

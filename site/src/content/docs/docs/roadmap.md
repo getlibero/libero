@@ -176,10 +176,14 @@ once pilot usage has produced its inputs.
 **v0.6.0 — scheduling.** The open milestone. Recurring turns at a clock time, operator-authored
 ([#358](https://github.com/getlibero/libero/issues/358)): `[[ambient.rule]]` in the team sheet,
 every rule an ask firing the bounded check-turn shape, and a heartbeat switch for rules-only
-channels. Beside it, [#348](https://github.com/getlibero/libero/issues/348) is decided — built with
-answers to its two questions, or declined with the reasons recorded — and the example-sheet suite
-learns to tell a documented figure from an inherited default
-([#445](https://github.com/getlibero/libero/issues/445)).
+channels. Beside it, [#348](https://github.com/getlibero/libero/issues/348) is decided, and it was **built**:
+both of its questions resolved against machinery that already existed — an unattended turn is
+handed no prompter, so a held call is refused rather than waited on, and the bound moves from the
+pending cap to `daily_tool_calls`, which the proxy counts from calls it served. What the issue did
+not ask for is the part that decided the shape: by the time it was picked up the fired turn had two
+callers, so the capability landed behind `[ambient] tools`, off by default, rather than arriving in
+every sheet that already listed a tool. The example-sheet suite also learns to tell a documented
+figure from an inherited default ([#445](https://github.com/getlibero/libero/issues/445)).
 
 **v0.7 — deployment shapes.** The LiteLLM sidecar becomes first-class beside the native adapters
 ([#428](https://github.com/getlibero/libero/issues/428)), which unblocks the cost-drift recorder
@@ -202,11 +206,11 @@ post-1.0 reason. "Done" here means no open issue is undecided, not that all of t
 
 Some things stay demand-driven, decided rather than drifted: Windows support for the CLI
 ([#249](https://github.com/getlibero/libero/issues/249)), the adapters no pilot asked for, and
-event-driven ambient — MCP subscriptions
-([#155](https://github.com/getlibero/libero/issues/155)) paired with tool access for fired checks
-(#348, if declined) — which is a post-1.0 workstream rather than a hardening item, because a
-subscription wake that can look nothing up is thin and both halves carry the same governance
-questions.
+and event-driven ambient — MCP subscriptions
+([#155](https://github.com/getlibero/libero/issues/155)), which is now a post-1.0 workstream on its
+own. It was paired here with tool access for fired checks on the argument that a subscription wake
+that can look nothing up is thin; #348 having shipped, that half is answered and what remains is the
+subscription itself.
 
 ## What success looks like
 

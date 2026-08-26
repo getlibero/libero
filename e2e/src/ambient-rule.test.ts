@@ -44,7 +44,7 @@ import { join } from "node:path";
 import { after as afterAll, before as beforeAll, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletionResponse } from "@getlibero/agent";
-import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
+import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER } from "@getlibero/schema";
 import { toSlackTs } from "@getlibero/server";
 import {
   CHANNEL,
@@ -510,6 +510,139 @@ describe("a channel that never opted in", () => {
 
       expect(model.seen).toHaveLength(0);
       expect(agent.slack.channelPosts).toHaveLength(0);
+    });
+});
+
+describe("a rule whose channel opted into tools", () => {
+  beforeAll(async () => {
+    occurrence = onTheMinute(Date.now()) + 10 * MINUTE;
+    rig = await ruleRig(
+      [
+        // The firing looks something up, then answers. Three turns, because the
+        // loop dispatches on `tool_use` and stops on `end_turn`.
+        calls("list_prs", {}),
+        calls(AMBIENT_FINDING_TOOL, { text: "Two pull requests are still open." }),
+        says("")
+      ],
+      {
+        credential: "e2e_canary",
+        tools: [{ name: "list_prs" }, { name: "delete_branch" }],
+        ambient: {
+          enabled: true,
+          heartbeatEveryMinutes: 15,
+          answerAfterIdleMinutes: 60,
+          tools: true,
+          rules: [
+            {
+              name: "standup-digest",
+              at: [clockTime(onTheMinute(Date.now()) + 10 * MINUTE)],
+              question: "What is still open?"
+            }
+          ]
+        }
+      },
+      undefined,
+      [
+        { name: "list_prs", description: "Lists pull requests.", inputSchema: { type: "object", properties: {} } },
+        { name: "delete_branch", description: "Deletes a branch.", inputSchema: { type: "object", properties: {} } }
+      ]
+    );
+  }, { timeout: SETUP_MS });
+
+  afterAll(async () => {
+    await rig?.stop();
+  });
+
+  it(
+    "serves its calls through the proxy, attributed to the clock",
+    { timeout: CASE_MS },
+    async () => {
+      const { agent, auditDb } = rigOf(rig);
+
+      expect(await rig?.rule(occurrence)).toBe(1);
+      await agent.waitForLog({ event: "rule_posted", channel: CHANNEL }, 1);
+
+      // **The call was really served**, by the other process, from this
+      // channel's own sheet — which is the half a unit test cannot claim.
+      const rows = auditRows(auditDb);
+      expect(rows.some(row => row.tool === "list_prs" && row.outcome === "ran")).toBe(true);
+
+      // **And the audit log says no person asked.** A row that named a user
+      // would be this process asserting a fact about a human who was not there.
+      const served = rows.find(row => row.tool === "list_prs");
+      expect(served?.requesting_user).toBe(AMBIENT_REQUESTING_USER);
+
+      expect(agent.slack.channelPosts).toHaveLength(1);
+      expect(agent.slack.channelPosts[0]?.text).toContain("Two pull requests are still open");
+    });
+});
+
+describe("a rule reaching for something a human would have to approve", () => {
+  beforeAll(async () => {
+    occurrence = onTheMinute(Date.now()) + 10 * MINUTE;
+    rig = await ruleRig(
+      [
+        // `delete_branch` carries a destructive name, so `resolveApproval` holds
+        // it by default and this firing has nobody to ask.
+        calls("delete_branch", { branch: "stale" }),
+        calls(AMBIENT_FINDING_TOOL, { text: "I could not clean that up." }),
+        says("")
+      ],
+      {
+        credential: "e2e_canary",
+        tools: [{ name: "list_prs" }, { name: "delete_branch" }],
+        ambient: {
+          enabled: true,
+          heartbeatEveryMinutes: 15,
+          answerAfterIdleMinutes: 60,
+          tools: true,
+          rules: [
+            {
+              name: "tidy-branches",
+              at: [clockTime(onTheMinute(Date.now()) + 10 * MINUTE)],
+              question: "Is there anything to tidy up?"
+            }
+          ]
+        }
+      },
+      undefined,
+      [
+        { name: "list_prs", description: "Lists pull requests.", inputSchema: { type: "object", properties: {} } },
+        { name: "delete_branch", description: "Deletes a branch.", inputSchema: { type: "object", properties: {} } }
+      ]
+    );
+  }, { timeout: SETUP_MS });
+
+  afterAll(async () => {
+    await rig?.stop();
+  });
+
+  it(
+    "is refused rather than held, and no card is ever posted",
+    { timeout: CASE_MS },
+    async () => {
+      const { agent, auditDb } = rigOf(rig);
+
+      // The control is the describe above: on the same shape of rig, a
+      // non-destructive call runs.
+      expect(await rig?.rule(occurrence)).toBe(1);
+      await agent.waitForLog({ event: "rule_posted", channel: CHANNEL }, 1);
+
+      // **Nobody was asked**, because there is nobody to ask. An approval card
+      // needs a requesting user and a thread, and a firing has neither — so the
+      // composition hands it no prompter and the hold comes back as a refusal.
+      expect(agent.slack.cards).toHaveLength(0);
+
+      // The proxy still decided it, and the row says so — this is a refusal that
+      // was governed, not a call that never happened.
+      const rows = auditRows(auditDb);
+      const held = rows.find(row => row.tool === "delete_branch");
+      expect(held).toBeDefined();
+      expect(held?.outcome).not.toBe("ran");
+      expect(held?.requesting_user).toBe(AMBIENT_REQUESTING_USER);
+
+      // The branch was not deleted, and the channel was told what it could not do.
+      expect(agent.slack.channelPosts).toHaveLength(1);
     });
 });
 

@@ -37,6 +37,15 @@ const SETTINGS: CheckSettings = {
   // and `standing.test.ts` is where it does.
   standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
+  // Off, which is every sheet that has not opted in (#348) — so every case in
+  // this file is about the single-call shape unless it says otherwise.
+  tools: false,
+  caps: {
+    maxToolCalls: 5,
+    maxWallTimeMs: 30_000,
+    maxTokens: 60_000,
+    maxOutputTokensPerTurn: 1024
+  },
   model: "test-model",
   maxTokens: 1024
 };

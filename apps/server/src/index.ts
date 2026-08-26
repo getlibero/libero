@@ -24,6 +24,7 @@
 import {
   createCompletionClient,
   createEmbeddingClient,
+  createProxyToolClient,
   createProxyBudgetClient,
   createProxySpendClient,
   createProxyTransport,
@@ -432,6 +433,27 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
   });
 
 /**
+ * The tool client an unattended firing calls through (#348).
+ *
+ * `runTask`'s client with **one thing left out and nothing added**: no prompter.
+ * That absence is the whole of what makes it unattended — a held call comes back
+ * to the model as the refusal it already is, because an approval card needs
+ * somebody to click it and a firing has no requesting user and no thread to put
+ * one in.
+ *
+ * Per channel, exactly as a task builds one per task: a client is pinned to a
+ * channel, and the channel the proxy enforces on comes from the client
+ * certificate rather than from anything in this call.
+ *
+ * There is no `onUnmappedCall` and no `onBudgetWarning` hook here, and both
+ * absences are deliberate. A model naming a tool the sheet never gave it is
+ * already a refusal the model sees; a budget warning is a sentence for a thread,
+ * and this firing has none — the hard limit still refuses, which is what matters
+ * when nobody is reading.
+ */
+const firedTools = (channel: string) => createProxyToolClient({ transport, channel });
+
+/**
  * Running a due scheduled check (#324), as a second factory over the same thing.
  *
  * `heartbeat` above and its reasons, with one difference worth naming: it takes
@@ -446,6 +468,7 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
 const fireTask = (post: ProactivePoster): AmbientTaskFire =>
   createAmbientTaskFire({
     completion,
+    firedTools,
     sharedSkills,
     post,
     settings: async channel => {
@@ -460,6 +483,12 @@ const fireTask = (post: ProactivePoster): AmbientTaskFire =>
         maxAlwaysChars: settings.skills.maxAlwaysChars
       },
         enabled: settings.ambient.enabled,
+        // #348. Off unless this channel's sheet says otherwise, and what it
+        // selects is the shape of the turn rather than what may be called.
+        tools: settings.ambient.tools,
+        // The channel's own caps, unmodified — a fired turn is not a cheaper
+        // kind of task and must not grow a second set of numbers.
+        caps: settings.caps,
         model: settings.model,
         maxTokens: settings.caps.maxOutputTokensPerTurn
       };
@@ -480,6 +509,7 @@ const fireTask = (post: ProactivePoster): AmbientTaskFire =>
 const fireRule = (post: ProactivePoster): AmbientRuleFire =>
   createAmbientRuleFire({
     completion,
+    firedTools,
     sharedSkills,
     post,
     settings: async channel => {
@@ -494,6 +524,12 @@ const fireRule = (post: ProactivePoster): AmbientRuleFire =>
           maxAlwaysChars: settings.skills.maxAlwaysChars
         },
         enabled: settings.ambient.enabled,
+        // #348. Off unless this channel's sheet says otherwise, and what it
+        // selects is the shape of the turn rather than what may be called.
+        tools: settings.ambient.tools,
+        // The channel's own caps, unmodified — a fired turn is not a cheaper
+        // kind of task and must not grow a second set of numbers.
+        caps: settings.caps,
         model: settings.model,
         maxTokens: settings.caps.maxOutputTokensPerTurn
       };
