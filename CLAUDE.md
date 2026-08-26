@@ -80,12 +80,12 @@ A daemon each is what lets both run at once.
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
-last one, so delivery is no longer phase-gated, and three releases have shipped
+last one, so delivery is no longer phase-gated, and four releases have shipped
 since: `v0.3.0`, the release that made releases real (#313, #377, #378);
 `v0.4.0`, code execution governed — the sandbox built-in (#368 is the tracker),
 `[egress]`'s first live caller (#219), and a third service holding the Docker
-socket and no credential at all (#393); and `v0.5.0`, shared skills (below). All
-three were August 2026, and `v0.6.0` is complete and untagged (below). There is no
+socket and no credential at all (#393); `v0.5.0`, shared skills; and `v0.6.0`,
+scheduling (both below). All four were August 2026. There is no
 phase 6, and inventing one to hold ordinary work would be the wrong move; the
 roadmap's phase list is complete rather than paused.
 
@@ -123,10 +123,9 @@ origin-blind, so a channel that has since set `[skills] enabled = false` keeps
 rows that can crowd out the shared skills its sheet names, and purging them on
 that switch would let one unparseable sheet destroy a channel's clocks.
 
-**`v0.6.0`, scheduling — every issue closed and the milestone closed 2026-08-26,
-not yet tagged.** So there is no changelog entry for it either: that page is
-written at release time by the release-cutter, which is `RELEASING.md`'s step and
-not something to accumulate here. It is the first release of the pre-1.0 arc, and
+**`v0.6.0`, scheduling, shipped 2026-08-26** — tagged, published and its
+milestone closed, with the changelog entry carrying the upgrade notes. It is the
+first release of the pre-1.0 arc, and
 the roadmap's "The road to 1.0" section is the argued record of that plan (0.6
 scheduling, 0.7 deployment shapes, 0.8 richer tools and adoption, 0.9 close-out,
 1.0 a validation release). Do not re-derive the sequencing here. **There is no
