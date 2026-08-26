@@ -430,6 +430,23 @@ export interface Rig {
    * together calls this again.
    */
   check(at: number): Promise<number>;
+  /**
+   * Fires every rule whose occurrence is `at`, and answers how many ran (#461).
+   *
+   * **Two scans, like `heartbeat` and unlike `check`** — a rule's instant is the
+   * scheduler's own arithmetic, so it cannot fire on the scan that computed it.
+   * What differs from `heartbeat` is *where the sighting scan goes*. That one
+   * sights a day early, because any instant before the cadence does. A rule's
+   * next occurrence is a clock time, so sighting a day early would schedule the
+   * rule to yesterday's occurrence and fire against that instead. This sights one
+   * minute before `at`, which is the largest gap that still leaves the very next
+   * occurrence the one the case named.
+   *
+   * **`at` must therefore be exactly an occurrence** — the instant of one of the
+   * rule's `at` times, to the minute, on a day its `days` list allows. A case
+   * that passes something else gets `0` and is right to.
+   */
+  rule(at: number): Promise<number>;
   stop(): Promise<void>;
 }
 
@@ -681,6 +698,13 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       sharedSkills,
       embeddings,
       check: (at: number): Promise<number> => agent.check(at),
+      rule: async (at: number): Promise<number> => {
+        // A minute, not a day. See `Rig.rule`: sighting further back would put
+        // the rule's schedule on an earlier occurrence than the one the case
+        // named, and the scan at `at` would fire against that one instead.
+        await agent.rule(at - 60_000);
+        return agent.rule(at);
+      },
       heartbeat: async (at: number): Promise<number> => {
         // The sighting scan, whose only job is to put every enabled channel on
         // the schedule. It fires nothing — that is the point — and its instant

@@ -235,6 +235,37 @@ export interface SheetSpec {
     readonly enabled?: boolean;
     readonly heartbeatEveryMinutes?: number;
     readonly answerAfterIdleMinutes?: number;
+    /**
+     * `[ambient] heartbeat` (#461). Absent writes no line, inheriting `true`.
+     *
+     * **Written only when a case says so**, which is the opposite of `enabled`
+     * above and for the reason that one gives in reverse. `enabled`'s accidental
+     * default would be the agent speaking to a channel nobody asked, so the rig
+     * writes it out loud whatever it is. This one's accidental default is the
+     * behaviour every case before #461 already had, so a sheet that says nothing
+     * is exactly the sheet those cases were written against — and writing it
+     * would make every existing rig's sheet differ from the sheet it was
+     * verified with.
+     */
+    readonly heartbeat?: boolean;
+    /**
+     * `[[ambient.rule]]` entries (#461).
+     *
+     * Absent writes no block, which is every channel that names no standing
+     * rules — and, since the whole point of the surface is that only a sheet can
+     * declare one, it is also the state `rule-injection` asserts a compromised
+     * model cannot leave.
+     *
+     * `days` is optional here because it is optional in the schema, and absent
+     * means daily. A case that wants a rule not to fire today says so by naming
+     * days rather than by choosing an instant, which is the readable half.
+     */
+    readonly rules?: readonly {
+      readonly name: string;
+      readonly at: readonly string[];
+      readonly days?: readonly string[];
+      readonly question: string;
+    }[];
   };
   /**
    * The `[[shared_skill]]` entries this channel's sheet names (#436).
@@ -385,12 +416,29 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           ``,
           `[ambient]`,
           `enabled = ${spec.ambient?.enabled ?? false}`,
+          ...(spec.ambient?.heartbeat !== undefined
+            ? [`heartbeat = ${spec.ambient.heartbeat}`]
+            : []),
           ...(spec.ambient?.heartbeatEveryMinutes !== undefined
             ? [`heartbeat_every_minutes = ${spec.ambient.heartbeatEveryMinutes}`]
             : []),
           ...(spec.ambient?.answerAfterIdleMinutes !== undefined
             ? [`answer_after_idle_minutes = ${spec.ambient.answerAfterIdleMinutes}`]
             : []),
+          // Nested under `[ambient]`, so these have to sit after that table's own
+          // keys and before the next `[block]`. TOML reads the placement rather
+          // than the name: written anywhere below `[[mcp_server]]` they would
+          // silently belong to something else, or fail to parse.
+          ...(spec.ambient?.rules ?? []).flatMap(rule => [
+            ``,
+            `[[ambient.rule]]`,
+            `name = "${rule.name}"`,
+            `at = [${rule.at.map(time => `"${time}"`).join(", ")}]`,
+            ...(rule.days === undefined
+              ? []
+              : [`days = [${rule.days.map(day => `"${day}"`).join(", ")}]`]),
+            `question = "${rule.question}"`
+          ]),
           ``,
           `[[mcp_server]]`,
           `name = "${server}"`,
