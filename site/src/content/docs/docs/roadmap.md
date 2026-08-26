@@ -173,19 +173,43 @@ reconciliation ([#239](https://github.com/getlibero/libero/issues/239)) wants a 
 figures. So the arc front-loads what makes deployments possible and lands the data-gated work last,
 once pilot usage has produced its inputs.
 
-**v0.6.0 — scheduling.** The open milestone. Recurring turns at a clock time, operator-authored
-([#358](https://github.com/getlibero/libero/issues/358)): `[[ambient.rule]]` in the team sheet,
-every rule an ask firing the bounded check-turn shape, and a heartbeat switch for rules-only
-channels. Beside it, [#348](https://github.com/getlibero/libero/issues/348) is decided, and it was **built**:
-both of its questions resolved against machinery that already existed — an unattended turn is
-handed no prompter, so a held call is refused rather than waited on, and the bound moves from the
-pending cap to `daily_tool_calls`, which the proxy counts from calls it served. What the issue did
-not ask for is the part that decided the shape: by the time it was picked up the fired turn had two
-callers, so the capability landed behind `[ambient] tools`, off by default, rather than arriving in
-every sheet that already listed a tool. The example-sheet suite also learns to tell a documented
+**v0.6.0 — scheduling. Shipped.** Recurring turns at a clock time, operator-authored
+([#358](https://github.com/getlibero/libero/issues/358)): `[[ambient.rule]]` in the team sheet
+(#460), a third `DueEntry.kind` on the ambient clock (#461), the attack suite reaching it (#462),
+and a heartbeat switch for rules-only channels. The example-sheet suite learned to tell a documented
 figure from an inherited default ([#445](https://github.com/getlibero/libero/issues/445)).
 
-**v0.7 — deployment shapes.** The LiteLLM sidecar becomes first-class beside the native adapters
+*Definition of done: a rule fires at its next occurrence and posts once; a rules-only channel gets
+rules and no heartbeat; injection cannot plant a rule and a rule's turn induces no served calls —
+proven by the e2e suite after positive controls; #348 is decided; and the example-sheet suite tells
+a documented figure from an inherited default.*
+
+**One clause of that landed differently, and it is the load-bearing one.** "A rule's turn induces no
+served calls" is true of every sheet that has not said otherwise, and is **no longer unconditional**:
+[#348](https://github.com/getlibero/libero/issues/348) was decided by being *built*, so a channel
+that writes `[ambient] tools = true` gets the ReAct loop over the allowlist its sheet already
+carries. Both of that issue's blocking questions resolved against machinery that already existed —
+an unattended turn is handed no prompter, so a held call is refused rather than waited on, which
+draws a read-yes-write-no line off the destructive-name default; and the bound moves from the
+pending cap to `daily_tool_calls`, which the proxy counts from calls it served and which therefore
+holds against a compromised agent process. What the issue did not ask for is the part that decided
+the shape: by the time it was picked up the fired turn had two callers, so the capability landed
+behind a switch that is off by default rather than arriving in every sheet that already listed a
+tool. What survives unconditionally is the narrower claim — *injection cannot plant a rule*, because
+the sheet is the only write path and the model has none.
+
+**Three things shipped that the definition of done did not name**, and the release was better for
+refusing to defer them. Rules gained an IANA `timezone`
+([#470](https://github.com/getlibero/libero/issues/470)), with absent meaning UTC so nothing written
+earlier changed meaning, and with the two days a year a wall clock is not a function of an instant
+decided rather than left to the arithmetic. The heartbeat evaluation joined the two fired turns
+behind the same switch ([#471](https://github.com/getlibero/libero/issues/471)) — the argument for
+excluding it turned out to rest on a frequency the pregate already prevents. And a filesystem-watch
+test that had been given a longer timeout twice was rebuilt on a seam
+([#474](https://github.com/getlibero/libero/issues/474)), which is the difference between fixing a
+flake and postponing it a third time.
+
+**v0.7 — deployment shapes.** The next milestone. The LiteLLM sidecar becomes first-class beside the native adapters
 ([#428](https://github.com/getlibero/libero/issues/428)), which unblocks the cost-drift recorder
 ([#239](https://github.com/getlibero/libero/issues/239)), and the vault and token store gain
 external secrets-manager backends ([#261](https://github.com/getlibero/libero/issues/261)). This is
