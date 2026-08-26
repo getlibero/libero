@@ -381,6 +381,18 @@ It pairs a stat with a watcher for `team-sheet-store.ts`'s reason — correcting
 digit in a price changes neither the file's size nor its inode, which is exactly
 the edit a stat cannot see.
 
+**The watcher is a seam, and that is a testing decision rather than a deployment
+one** (#474). Nothing in production passes one: `watchDirectory` is the default
+and is what every deployment runs. What the seam buys is that the property the
+pairing exists for — an edit the stat cannot see still reaches the store — is
+asserted without waiting on `fs.watch` delivery, which is at the platform's
+discretion and which coalesces on macOS. That case had been a flat 50 ms, then a
+polled second, and a full-workspace run beat the second too; a third raise would
+have been the same fix with the same expiry ahead of it, and each raise makes a
+real regression slower to surface. One case still drives a real `fs.watch` end to
+end so the seam cannot prove itself, and its bound is ten seconds because
+reaching it should be news.
+
 **`daily_usd` is enforced here, and the order is load-bearing.** `exhaustedLimit`
 answers pricing faults first, then dollars, then tokens, then tool calls. Pricing
 first because a channel whose spend cannot be priced has an unknown position

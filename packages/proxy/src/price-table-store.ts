@@ -63,10 +63,72 @@ export const NO_PRICES: PriceLookup = {
   version: ""
 };
 
+/**
+ * Watches a directory and says when a file in it changed. Answers a cancel.
+ *
+ * `AmbientTimer`'s shape in apps/server, and it exists for that seam's reason
+ * (#474): **`fs.watch` delivery is at the platform's discretion**, so a test that
+ * asserts through a real one is asserting how fast the operating system felt like
+ * telling us. On macOS a directory watch is FSEvents, which coalesces — and under
+ * a full-workspace suite it has exceeded a second, which was already the raised
+ * bound.
+ *
+ * `name` is the basename that changed, or `null` when the platform did not say
+ * which — a case the default below deliberately treats as "possibly ours",
+ * because a watcher that ignored an unnamed event would silently stop covering
+ * the one edit the stat cannot see.
+ *
+ * Injected only by tests. Nothing in production passes it, and the default is
+ * what every deployment runs.
+ */
+export type FileWatcher = (
+  directory: string,
+  onChange: (name: string | null) => void
+) => () => void;
+
+/**
+ * The real one: `fs.watch` over the directory, and never over the file.
+ *
+ * The directory rather than the file, because a watch on a file follows the
+ * inode — and write-a-temp-file-then-rename, which is what editors and
+ * deployment tooling do, leaves such a watch pointed at bytes nobody will read
+ * again.
+ *
+ * **A watcher that cannot be established is not an error.** The stat still covers
+ * every edit that changes size, inode or mtime, which is every ordinary edit, and
+ * a proxy must not refuse to start because a filesystem does not support inotify.
+ * So a throw here answers a cancel that does nothing, and the caller logs.
+ */
+export function watchDirectory(
+  directory: string,
+  onChange: (name: string | null) => void
+): () => void {
+  let watcher: FSWatcher | null = watch(directory, { persistent: false });
+  watcher.on("error", () => {
+    watcher?.close();
+    watcher = null;
+  });
+  watcher.on("change", (_event, name) => {
+    onChange(name === null || name === undefined ? null : String(name));
+  });
+  return () => {
+    watcher?.close();
+    watcher = null;
+  };
+}
+
 export interface PriceTableStoreOptions {
   /** The TOML file. Absent is legal and yields `NO_PRICES`. */
   readonly file?: string | undefined;
   readonly logger?: Logger;
+  /**
+   * How a change is noticed. Defaults to `watchDirectory`, the real `fs.watch`.
+   *
+   * **Injected only by tests** (#474), so that the one property depending on a
+   * watcher — an in-place edit the stat cannot see still reaches the store — is
+   * asserted without waiting on the platform. See `FileWatcher`.
+   */
+  readonly watch?: FileWatcher;
 }
 
 export interface PriceTableStore {
@@ -129,21 +191,15 @@ export function openPriceTableStore(options: PriceTableStoreOptions): PriceTable
   // arrive.
   let touched = false;
 
-  // The directory rather than the file, because a watch on a file follows the
-  // inode — and write-a-temp-file-then-rename, which is what editors and
-  // deployment tooling do, leaves such a watch pointed at bytes nobody will read
-  // again. A watcher that cannot be established is not an error: the stat still
-  // covers every edit that changes size or inode, and a proxy must not refuse to
-  // start because a filesystem does not support inotify.
-  let watcher: FSWatcher | null = null;
+  // See `FileWatcher`: the directory is watched rather than the file, and a
+  // watcher that cannot be established is a log line rather than a failure.
+  let stopWatching: (() => void) | null = null;
   try {
-    watcher = watch(dirname(file), { persistent: false });
-    watcher.on("error", () => {
-      watcher?.close();
-      watcher = null;
-    });
-    watcher.on("change", (_event, name) => {
-      if (name === null || name === undefined || String(name) === basename(file)) touched = true;
+    stopWatching = (options.watch ?? watchDirectory)(dirname(file), name => {
+      // An unnamed event is treated as possibly ours. A platform that does not
+      // say which file changed would otherwise stop covering the one edit the
+      // stat cannot see, silently.
+      if (name === null || name === basename(file)) touched = true;
     });
   } catch {
     logger?.log("warn", { event: "price_table_unwatched", file });
@@ -205,8 +261,8 @@ export function openPriceTableStore(options: PriceTableStoreOptions): PriceTable
     },
     close() {
       closed = true;
-      watcher?.close();
-      watcher = null;
+      stopWatching?.();
+      stopWatching = null;
     }
   };
 }
