@@ -521,6 +521,10 @@ heartbeat               = true              # false runs your rules and skips th
                                             # heartbeat evaluation entirely. Off
                                             # here means one source, not silence;
                                             # enabled = false is silence.
+tools                   = false             # whether a fired check or rule may
+                                            # call this channel's tools. Off by
+                                            # default; see the note below before
+                                            # turning it on.
 heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 
 # How long a question must sit before the heartbeat may answer it — the sibling
@@ -535,6 +539,27 @@ heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 # proactive answer is their SUM: 75 minutes as written here.
 answer_after_idle_minutes = 60              # five minutes to a week
 
+# UNATTENDED TOOL USE IS OFF UNTIL YOU TURN IT ON, and it is worth a minute
+# before you do. With tools = false a fired check or rule is one model call over
+# this channel's recent messages: it can answer "has anyone replied to Priya" and
+# cannot answer "is the release branch still red". With tools = true it runs the
+# same loop a mention runs, over the SAME tool list your team already has — this
+# switch decides who may use that list, not what is on it. It cannot reach
+# anything your members cannot already ask for by hand.
+#
+# Two things follow, and neither is a setting.
+#
+# A call that needs a human is REFUSED, not held. An approval card needs somebody
+# to click it, and nobody asked for this turn — so there is no thread to put a
+# card in and no one waiting. In practice that means read yes, write no: tools
+# with destructive-sounding names are held by default, so they simply fail here.
+# If you want an unattended turn to call one, say approval = "none" on that tool
+# above, where the decision is visible in your diff.
+#
+# What bounds the spend is [budget] daily_tool_calls, counted by the proxy from
+# calls it actually served. That is the number to look at before turning this on:
+# a rule firing every morning is a task every morning.
+#
 # How often the agent may post unbidden is NOT a field. At most one
 # heartbeat-initiated post per channel per rate window, stated in time rather
 # than in ticks, fixed in the architecture and enforced where the post is made —

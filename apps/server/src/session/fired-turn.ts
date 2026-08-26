@@ -23,19 +23,55 @@
 // "this one is done", and a rule has no row and says "the next one is still
 // coming". Folding those in would need the flag this module exists to avoid.
 //
-// ## What a fired turn cannot do
+// ## What a fired turn may do, and what it may not (#348)
 //
-// It has no `ToolExecutor` and no tool proxy client — `runScheduledCheckTurn` is
-// handed a completion client and a list of messages, and its one tool writes
-// nothing. So a fired turn induces no served calls at all, whichever caller
-// started it. Giving one the ReAct loop is [#348], and it is a design question
-// before it is an implementation one.
+// **Two shapes, and the channel's sheet picks.** Left alone, a fired turn is
+// exactly what it has always been: one bounded model call handed a completion
+// client and a list of messages, with one tool that writes nothing, inducing no
+// served calls at all. A channel that writes `[ambient] tools = true` gets the
+// ReAct loop instead, over the allowlist that sheet already carries.
+//
+// That was #348, and the decision it turned on is worth having here rather than
+// only in the issue. Both of its blocking questions resolved against machinery
+// that already existed:
+//
+//   - **An approval card with nobody to click it.** An unattended turn is handed
+//     no prompter, so a held call comes back to the model as the refusal it
+//     already is. Because `resolveApproval` holds a destructive *name* by
+//     default, the line that draws is read-yes-write-no without anything here
+//     deciding what destructive means.
+//   - **A pending cap sized against a cheaper unit of work.**
+//     `SCHEDULED_TASK_MAX_PENDING` stops being the relevant bound and
+//     `[budget] daily_tool_calls` becomes it — which is stronger rather than
+//     weaker, since the proxy counts that one from calls it actually served and
+//     it therefore holds against a compromised agent process.
+//
+// **The opt-in is the third answer, and it is the one the issue did not ask
+// for.** By the time this landed the turn had two callers, so widening it
+// silently would have given every existing channel's checks *and* its standing
+// rules a capability their sheets never mentioned. The switch is off by default
+// and grants nothing new when it is on: an opted-in turn reaches the same
+// allowlist a mention reaches, resolved per call in the proxy from the same file.
 
-import { SCHEDULED_CHECK_SYSTEM_PROMPT, runScheduledCheckTurn } from "@getlibero/agent";
+import {
+  SCHEDULED_CHECK_SYSTEM_PROMPT,
+  checkMessage,
+  runAgentTask,
+  runScheduledCheckTurn
+} from "@getlibero/agent";
+import { AMBIENT_REQUESTING_USER } from "@getlibero/schema";
+import { createFiredTools } from "./fired-tools.js";
 import { standingSkillsFor, systemPromptFor } from "./task.js";
 import type { StandingInputs } from "./task.js";
 import type { SharedSkillReader } from "./shared-skills.js";
-import type { CompletedTurn, CompletionClient, HeartbeatMessage } from "@getlibero/agent";
+import type {
+  AgentLoopCaps,
+  CompletedTurn,
+  CompletionClient,
+  HeartbeatMessage,
+  ToolExecutor,
+  ToolSource
+} from "@getlibero/agent";
 import type { MessageStore } from "@getlibero/memory";
 
 /**
@@ -81,10 +117,39 @@ export interface FiredTurnSettings {
   readonly model: string;
   /** `[llm] max_tokens_per_turn`. There is no task here to draw a per-task cap from. */
   readonly maxTokens: number;
+  /**
+   * `[ambient] tools`. Whether this turn runs the loop over the channel's tools
+   * (#348).
+   *
+   * False — the default, and every sheet that has not said otherwise — keeps the
+   * single bounded call this always was. What it selects is the *shape of the
+   * turn*, not what may be called: the allowlist is the sheet's either way, and
+   * the proxy resolves it per call regardless of which shape asked.
+   */
+  readonly tools: boolean;
+  /**
+   * The caps a tool-using firing runs under, from `[llm]`.
+   *
+   * The channel's own, unmodified. A fired turn is not a cheaper kind of task and
+   * should not get a second set of numbers to drift from the first — what makes
+   * it bounded differently is that nobody is waiting on it, which the caps do not
+   * express and the meter does.
+   */
+  readonly caps: AgentLoopCaps;
 }
 
 export interface FiredTurnDeps {
   completion: CompletionClient;
+  /**
+   * The channel's tool client, built with **no prompter** (#348).
+   *
+   * A factory rather than a client, because one is pinned to a channel and this
+   * module serves every channel — `runTask` builds one per task for the same
+   * reason. Absent, a sheet that says `tools = true` gets the single-call shape
+   * anyway and says so in the log: a deployment with no transport is not a
+   * channel's mistake to be silent about.
+   */
+  firedTools?: (channel: string) => ToolSource & ToolExecutor;
   /**
    * How this channel's `load = "always"` shared skills are read (#450).
    *
@@ -147,6 +212,13 @@ export async function runFiredTurn(
     text: row.text
   }));
 
+  // The opted-in shape (#348). Selected here rather than by two callers, so the
+  // two firings stay one turn — which is what makes "a rule fires the check's
+  // exact shape" survive this becoming two shapes.
+  if (request.settings.tools && deps.firedTools !== undefined) {
+    return runToolTurn(deps, request, messages, deps.firedTools(request.channel));
+  }
+
   let result;
   try {
     result = await runScheduledCheckTurn({
@@ -192,4 +264,81 @@ export async function runFiredTurn(
   if (result.finding === null) return { kind: "silent" };
 
   return { kind: "answer", text: result.finding.text };
+}
+
+/**
+ * The opted-in shape: the ReAct loop over the channel's own tools (#348).
+ *
+ * The same five outcomes, arrived at differently. What replaces "the model
+ * called the one tool or it did not" is `createFiredTools`' interceptor, which
+ * records a `post_finding` call rather than serving it — so silence is still
+ * calling no tool, and one post per firing is still structural.
+ *
+ * **The loop's final text is deliberately discarded.** A mention's task answers
+ * in a thread somebody is reading, so its last message is the reply. Nothing is
+ * reading this one, and a turn that posted whatever it happened to end on would
+ * make every run speak — which is the opposite of an ambient turn's rule. The
+ * only way to reach a channel from here is the tool, and not calling it is
+ * silence.
+ *
+ * **Caps end a run rather than failing it.** A firing that hit the tool-call
+ * ceiling still posts whatever it recorded before it got there; one that hit it
+ * with nothing recorded is silent, not broken. The alternative — treating a cap
+ * as a failure and telling the channel — would put a notice in front of a team
+ * every time a check was ambitious, which is noise about this process rather
+ * than news about their work.
+ */
+async function runToolTurn(
+  deps: FiredTurnDeps,
+  request: FiredTurnRequest,
+  messages: readonly HeartbeatMessage[],
+  client: ToolSource & ToolExecutor
+): Promise<FiredTurnOutcome> {
+  const tools = createFiredTools({ tools: client });
+
+  try {
+    await runAgentTask({
+      completion: deps.completion,
+      toolSource: tools.source,
+      toolExecutor: tools.executor,
+      model: request.settings.model,
+      // No person asked, and the audit log says so in one word. The task id
+      // beside it is the caller's, so a row can still be traced to the firing.
+      requestingUser: AMBIENT_REQUESTING_USER,
+      taskId: request.turnId,
+      system: systemPromptFor(
+        {
+          description: request.settings.standing.description,
+          sharedSkills: standingSkillsFor(
+            deps.sharedSkills,
+            request.channel,
+            request.settings.standing
+          )
+        },
+        SCHEDULED_CHECK_SYSTEM_PROMPT
+      ),
+      messages: [{ role: "user", content: checkMessage(request.question, messages) }],
+      caps: request.settings.caps,
+      ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+      onTurn: async completed => {
+        // Per turn, so a long firing meters as it goes rather than all at the
+        // end — `AgentTaskOptions.onTurn`'s own argument, and the reason a
+        // channel over its cap is refused starting with the next call.
+        await deps.reportTurn(request.channel, {
+          ...completed,
+          id: `${request.turnId}.${completed.turn}`
+        });
+      }
+    });
+  } catch (error) {
+    if (deps.signal?.aborted === true) return { kind: "aborted" };
+    return { kind: "failed", reason: reasonOf(error) };
+  }
+
+  if (deps.signal?.aborted === true) return { kind: "aborted" };
+
+  const outcome = tools.outcome();
+  if (outcome.unusable !== undefined) return { kind: "failed", reason: outcome.unusable };
+  if (outcome.finding === null) return { kind: "silent" };
+  return { kind: "answer", text: outcome.finding.text };
 }

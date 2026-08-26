@@ -1409,6 +1409,38 @@ export const TeamSheet = z.object({
       // field precisely because it bounds what the *machine* grows on a team's
       // behalf, which is two parties. This is one.
       rule: AmbientRuleList.default([]),
+      // Whether a turn this block fires may call the channel's tools (#348).
+      //
+      // **Off by default, and the default is the whole reason the field
+      // exists.** Without it, every channel that already lists tools would have
+      // its checks and rules gain them the day this shipped — a capability
+      // increase applied to sheets that did not change, which is exactly the
+      // hazard `[skills]`' standing caps state against themselves one block up.
+      // An operator writes one line and gets it; an operator who writes nothing
+      // gets what they had.
+      //
+      // **It grants nothing new.** A fired turn opted in here reaches the same
+      // allowlist a mention reaches — `[[mcp_server.tool]]` and `[[builtin]]`,
+      // resolved per call in the proxy from this same file. This switch decides
+      // *who may use* that list, not what is on it, so turning it on cannot
+      // widen a channel beyond what its members can already ask for by hand.
+      //
+      // **A held call is refused rather than waited on**, and that is not a
+      // field either. An approval card needs somebody to click it, and a fired
+      // turn has no requesting user and no thread to put one in — so the
+      // composition hands it no prompter, and a call the sheet holds comes back
+      // to the model as the refusal it already is. The practical line that draws
+      // is read-yes-write-no, because `resolveApproval` already holds a
+      // destructive *name* by default: an operator who wants an unattended turn
+      // to call something destructive has to say `approval = "none"` on that
+      // tool, in this file, where it is reviewable.
+      //
+      // **What bounds the spend is not here either.** `[budget] daily_tool_calls`
+      // is counted by the proxy from calls it served, so it holds against a
+      // compromised agent process — which is a stronger bound than the pending
+      // cap it displaces, and the reason `SCHEDULED_TASK_MAX_PENDING` did not
+      // have to move when this landed.
+      tools: z.boolean().default(false),
       // **The rate limit on unbidden posts is deliberately not a field**, and
       // the first implementer should not add one. At most one heartbeat-initiated
       // post per channel per rate window — stated in time rather than in ticks,

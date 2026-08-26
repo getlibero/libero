@@ -99,7 +99,28 @@ export const ModelId = z
 export type ModelId = z.infer<typeof ModelId>;
 
 /**
- * The Slack user whose mention started the task, as the agent asserts it.
+ * What a call carries in place of a person, when a clock started it (#348).
+ *
+ * **Reserved by the alphabet rather than by a check.** `identifier()` above
+ * forbids `:`, so no value that parses as a user id can ever equal this — the
+ * mechanism `shared/<name>` uses for skills, and for its reason: there is no
+ * precedence rule to write because there is no contest, and nothing has to
+ * remember to exclude it.
+ *
+ * **One sentinel and not two**, though there are two clocks. Which of them fired
+ * is already in the task id — `check-<ticket>` or `rule-<name>-<occurrence>` —
+ * so a second name here would be a second answer to a question already answered,
+ * and a member every future caller would have to choose between. What this field
+ * says is the thing the task id cannot: *no person asked for this*.
+ *
+ * That is worth saying rather than leaving blank. A null in the audit log reads
+ * as data that went missing; this reads as a fact about how the call came to be.
+ */
+export const AMBIENT_REQUESTING_USER = "ambient:clock";
+
+/**
+ * The Slack user whose mention started the task, as the agent asserts it — or
+ * the sentinel above, when no mention did.
  *
  * Bounded for the same reason a server name is: it lands in a refusal, in the
  * audit log, and in that log's CSV export (#98), so an unbounded value here is
@@ -108,9 +129,11 @@ export type ModelId = z.infer<typeof ModelId>;
  *
  * **This is attribution and can never be authorization.** The full argument is
  * on the field itself, in ./tool-call.ts, which is where someone about to write
- * an authorization rule will be looking.
+ * an authorization rule will be looking — and the sentinel makes that rule
+ * matter more rather than less: a gate that branched on this would be a gate an
+ * unattended turn could be steered into or out of.
  */
-export const RequestingUser = identifier();
+export const RequestingUser = z.union([identifier(), z.literal(AMBIENT_REQUESTING_USER)]);
 
 /**
  * The id grouping every tool call one ReAct run made.

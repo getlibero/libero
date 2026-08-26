@@ -110,6 +110,7 @@ export type {
 
 export {
   SCHEDULED_CHECK_SYSTEM_PROMPT,
+  checkMessage,
   runScheduledCheckTurn,
   scheduledCheckToolDefinition
 } from "./ambient/check.js";

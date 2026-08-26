@@ -216,8 +216,20 @@ export async function runScheduledCheckTurn(
  * A channel with nothing recent says so rather than rendering an empty block: an
  * unexplained gap invites a model to fill it, where "nothing has been said" is an
  * answer to a great many checks.
+ *
+ * **Exported since #348, and for the reason it was private before.** A fired turn
+ * now has two shapes — this single call, and the ReAct loop a channel opts into —
+ * and the two must put the *same* question to the model, or an operator's check
+ * would mean one thing with tools on and another with them off. Restating these
+ * eleven lines in `apps/server` is how that divergence starts, so the caller of
+ * the second shape imports the first shape's own assembly.
+ *
+ * The closing sentence stays exactly as it is under both. "If not, call no tool"
+ * is the silence rule, and it is *more* load-bearing with a dozen tools on the
+ * list than with one: a model that has just called three of them has more reason
+ * to think it owes the channel a summary.
  */
-function checkMessage(prompt: string, messages: readonly HeartbeatMessage[]): string {
+export function checkMessage(prompt: string, messages: readonly HeartbeatMessage[]): string {
   return [
     "The check you were asked to run, exactly as it was written when it was set up:",
     "",

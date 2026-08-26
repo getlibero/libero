@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
-import { AMBIENT_FINDING_TOOL } from "@getlibero/schema";
+import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER } from "@getlibero/schema";
 import type { AmbientRule } from "@getlibero/schema";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore, StoredMessage } from "@getlibero/memory";
@@ -35,6 +35,15 @@ const DUE_AT = 1_749_998_400_000;
 const SETTINGS: RuleSettings = {
   standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
+  // Off, which is every sheet that has not opted in (#348) — so every case in
+  // this file is about the single-call shape unless it says otherwise.
+  tools: false,
+  caps: {
+    maxToolCalls: 5,
+    maxWallTimeMs: 30_000,
+    maxTokens: 60_000,
+    maxOutputTokensPerTurn: 1024
+  },
   model: "test-model",
   maxTokens: 1024
 };
@@ -378,5 +387,171 @@ describe("a channel that is not to be spoken to", () => {
 
     expect(surface.sent).toEqual([]);
     expect(lines.some(line => line.event === "rule_failed")).toBe(true);
+  });
+});
+
+describe("a rule whose channel opted into tools", () => {
+  /** The sheet that turns the loop on. Everything else is `SETTINGS`. */
+  const WITH_TOOLS: RuleSettings = { ...SETTINGS, tools: true };
+
+  /** A stub proxy client: lists one tool, records what was executed. */
+  function client(result = "main is green") {
+    const executed: Array<{ name: string; requestingUser: string; taskId: string }> = [];
+    return {
+      executed,
+      tools: {
+        list: () =>
+          Promise.resolve([
+            { name: "ci_status", description: "CI status.", inputSchema: { type: "object" as const, properties: {} } }
+          ]),
+        execute: (call: { name: string }, attribution: { requestingUser: string; taskId: string }) => {
+          executed.push({ name: call.name, ...attribution });
+          return Promise.resolve({ content: result });
+        }
+      }
+    };
+  }
+
+  /** A model that calls `ci_status`, then posts, then stops. */
+  const looks = (finding: string | null): CompletionClient => {
+    let turn = 0;
+    return {
+      complete() {
+        turn += 1;
+        if (turn === 1) {
+          return Promise.resolve({
+            text: "",
+            toolCalls: [{ id: "t1", name: "ci_status", arguments: {} }],
+            stopReason: "tool_use" as const,
+            usage: { inputTokens: 100, outputTokens: 10 },
+            model: "served-model"
+          });
+        }
+        // The loop dispatches on `tool_use` and stops on `end_turn`, so a turn
+        // that posts has to be the first of those and the run ends on the next.
+        if (turn === 2 && finding !== null) {
+          return Promise.resolve({
+            text: "",
+            toolCalls: [{ id: "t2", name: AMBIENT_FINDING_TOOL, arguments: { text: finding } }],
+            stopReason: "tool_use" as const,
+            usage: { inputTokens: 120, outputTokens: 12 },
+            model: "served-model"
+          });
+        }
+        return Promise.resolve({
+          text: "",
+          toolCalls: [],
+          stopReason: "end_turn" as const,
+          usage: { inputTokens: 120, outputTokens: 12 },
+          model: "served-model"
+        });
+      }
+    };
+  };
+
+  it("calls the channel's tools and posts what it found", async () => {
+    const surface = poster();
+    const stub = client();
+    const { fire } = fireWith({
+      completion: looks("main is green; nothing is blocked."),
+      post: surface.post,
+      firedTools: () => stub.tools,
+      settings: () => Promise.resolve(WITH_TOOLS)
+    });
+
+    await fire(CHANNEL, store, RULE, DUE_AT);
+
+    expect(stub.executed.map(call => call.name)).toEqual(["ci_status"]);
+    expect(surface.sent).toHaveLength(1);
+    expect(surface.sent[0]?.source).toBe("rule");
+    expect(surface.sent[0]?.text).toContain("main is green");
+  });
+
+  // The audit log's "who asked" for a call no person asked for. Reserved by an
+  // alphabet no user id can reach, so it can never be mistaken for one.
+  it("attributes every call to the clock rather than to a person", async () => {
+    const stub = client();
+    const { fire } = fireWith({
+      completion: looks("something"),
+      firedTools: () => stub.tools,
+      settings: () => Promise.resolve(WITH_TOOLS)
+    });
+
+    await fire(CHANNEL, store, RULE, DUE_AT);
+
+    expect(stub.executed[0]?.requestingUser).toBe(AMBIENT_REQUESTING_USER);
+    // And the task id still says which firing it was, so a row can be traced.
+    expect(stub.executed[0]?.taskId).toBe(`rule-standup-digest-${DUE_AT}`);
+  });
+
+  // Silence survives the loop. With one tool it was structural; with two it is
+  // still structural, because saying nothing is calling `post_finding` not at all
+  // — and a model that has just used a tool has more reason to think it owes the
+  // channel a summary, which is exactly why this case exists.
+  it("says nothing when it looked and found nothing worth saying", async () => {
+    const surface = poster();
+    const stub = client();
+    const { fire } = fireWith({
+      completion: looks(null),
+      post: surface.post,
+      firedTools: () => stub.tools,
+      settings: () => Promise.resolve(WITH_TOOLS)
+    });
+
+    await fire(CHANNEL, store, RULE, DUE_AT);
+
+    expect(stub.executed).toHaveLength(1);
+    expect(surface.sent).toEqual([]);
+  });
+
+  // The switch is what selects the shape, and off is the default. A channel that
+  // never wrote the line gets the single call it always got, whatever tools its
+  // sheet lists for its members.
+  it("calls nothing when the sheet did not opt in", async () => {
+    const stub = client();
+    const { fire } = fireWith({
+      completion: model("Nothing moved.").completion,
+      firedTools: () => stub.tools,
+      settings: () => Promise.resolve(SETTINGS)
+    });
+
+    await fire(CHANNEL, store, RULE, DUE_AT);
+
+    expect(stub.executed).toEqual([]);
+  });
+
+  // A deployment with no transport is not a channel's mistake to be silent
+  // about: the sheet asked for tools and got the shape that still answers.
+  it("falls back to the single call when no client was composed", async () => {
+    const surface = poster();
+    const { fire } = fireWith({
+      completion: model("Nothing moved.").completion,
+      post: surface.post,
+      settings: () => Promise.resolve(WITH_TOOLS)
+    });
+
+    await fire(CHANNEL, store, RULE, DUE_AT);
+
+    expect(surface.sent).toHaveLength(1);
+  });
+
+  // Over budget is asked before anything, whichever shape would have run — so an
+  // opted-in channel at its cap spends nothing on tools either.
+  it("spends nothing on tools when it is over budget", async () => {
+    const surface = poster();
+    const stub = client();
+    const { fire } = fireWith({
+      completion: looks("unreachable"),
+      post: surface.post,
+      firedTools: () => stub.tools,
+      settings: () => Promise.resolve(WITH_TOOLS),
+      maySpend: () => Promise.resolve(false)
+    });
+
+    await fire(CHANNEL, store, RULE, DUE_AT);
+
+    expect(stub.executed).toEqual([]);
+    expect(surface.sent).toHaveLength(1);
+    expect(surface.sent[0]?.text).toContain("spent its daily budget");
   });
 });

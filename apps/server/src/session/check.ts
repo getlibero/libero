@@ -81,7 +81,12 @@ import { runFiredTurn } from "./fired-turn.js";
 import type { FiredTurnSettings } from "./fired-turn.js";
 import type { StandingInputs } from "./task.js";
 import type { SharedSkillReader } from "./shared-skills.js";
-import type { CompletedTurn, CompletionClient } from "@getlibero/agent";
+import type {
+  CompletedTurn,
+  CompletionClient,
+  ToolExecutor,
+  ToolSource
+} from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import { createSilentLogger } from "@getlibero/gateway";
 import type { MessageStore, ScheduledTaskOutcome, StoredScheduledTask } from "@getlibero/memory";
@@ -167,6 +172,15 @@ export interface CheckOptions {
    */
   sharedSkills?: SharedSkillReader;
   completion: CompletionClient;
+  /**
+   * The channel's tool client, built with **no prompter** (#348).
+   *
+   * Absent, a sheet that opted into tools gets the single-call shape anyway —
+   * see `FiredTurnDeps.firedTools`. Forwarded rather than used here: which shape
+   * a firing takes is `runFiredTurn`'s decision, so both callers stay identical
+   * on the half they share.
+   */
+  firedTools?: (channel: string) => ToolSource & ToolExecutor;
   /** Where an answer goes, and the only posting capability in this process. */
   post: ProactivePoster;
   /** The channel's `[ambient]` block and its model. `null` skips the channel. */
@@ -236,6 +250,7 @@ export function createAmbientTaskFire(options: CheckOptions): AmbientTaskFire {
     const outcome = await runFiredTurn(
       {
         completion: options.completion,
+        ...(options.firedTools !== undefined ? { firedTools: options.firedTools } : {}),
         ...(options.sharedSkills !== undefined ? { sharedSkills: options.sharedSkills } : {}),
         reportTurn: options.reportTurn,
         maySpend: options.maySpend,

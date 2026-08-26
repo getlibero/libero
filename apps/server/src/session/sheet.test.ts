@@ -132,6 +132,7 @@ describe("settingsFrom", () => {
       ambient: {
         enabled: false,
         heartbeat: true,
+        tools: false,
         rules: [],
         heartbeatEveryMs: 15 * 60_000,
         answerAfterIdleMs: 60 * 60_000
@@ -181,6 +182,7 @@ describe("settingsFrom", () => {
       ambient: {
         enabled: false,
         heartbeat: true,
+        tools: false,
         rules: [],
         heartbeatEveryMs: 15 * 60_000,
         answerAfterIdleMs: 60 * 60_000
@@ -334,6 +336,7 @@ describe("createSheetResolver", () => {
       ambient: {
         enabled: false,
         heartbeat: true,
+        tools: false,
         rules: [],
         heartbeatEveryMs: 15 * 60_000,
         answerAfterIdleMs: 60 * 60_000
@@ -614,6 +617,7 @@ describe("the ambient block", () => {
     expect(settings.ambient).toEqual({
       enabled: true,
       heartbeat: true,
+      tools: false,
       rules: [],
       heartbeatEveryMs: 5 * 60_000,
       answerAfterIdleMs: 45 * 60_000
@@ -637,6 +641,7 @@ describe("the ambient block", () => {
     expect((await resolve(CHANNEL)).ambient).toEqual({
       enabled: false,
       heartbeat: true,
+      tools: false,
       rules: [],
       heartbeatEveryMs: 15 * 60_000,
       answerAfterIdleMs: 60 * 60_000
@@ -653,6 +658,7 @@ describe("the ambient block", () => {
     expect((await resolve(CHANNEL)).ambient).toEqual({
       enabled: true,
       heartbeat: true,
+      tools: false,
       rules: [],
       heartbeatEveryMs: 15 * 60_000,
       answerAfterIdleMs: 60 * 60_000

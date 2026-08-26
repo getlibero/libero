@@ -237,6 +237,7 @@ describe("the example team sheet", () => {
       expect.arrayContaining([
         "enabled",
         "heartbeat",
+        "tools",
         "heartbeat_every_minutes",
         "answer_after_idle_minutes"
       ])
@@ -842,7 +843,8 @@ describe("the ambient block", () => {
       heartbeat: true,
       heartbeat_every_minutes: 15,
       answer_after_idle_minutes: 60,
-      rule: []
+      rule: [],
+      tools: false
     });
   });
 
@@ -855,7 +857,8 @@ describe("the ambient block", () => {
       heartbeat: true,
       heartbeat_every_minutes: 15,
       answer_after_idle_minutes: 60,
-      rule: []
+      rule: [],
+      tools: false
     });
   });
 
@@ -871,6 +874,17 @@ describe("the ambient block", () => {
 
   it("refuses a non-boolean heartbeat switch", () => {
     expect(paths(ambientSheet({ heartbeat: "no" }))).toEqual(["ambient.heartbeat: invalid_type"]);
+  });
+
+  // #348's switch, and its default is the whole reason it exists: a channel that
+  // already lists tools must not gain an unattended caller for them by upgrading.
+  it("gives a fired turn no tools unless the sheet asks", () => {
+    expect(TeamSheet.parse(ambientSheet({ enabled: true })).ambient.tools).toBe(false);
+    expect(TeamSheet.parse(ambientSheet({ enabled: true, tools: true })).ambient.tools).toBe(true);
+  });
+
+  it("refuses a non-boolean tools switch", () => {
+    expect(paths(ambientSheet({ tools: "yes" }))).toEqual(["ambient.tools: invalid_type"]);
   });
 
   // The other direction, which [memory]'s note relies on staying true: a channel
@@ -1169,7 +1183,8 @@ describe("defaults", () => {
       heartbeat: true,
       heartbeat_every_minutes: 15,
       answer_after_idle_minutes: 60,
-      rule: []
+      rule: [],
+      tools: false
     });
     expect(sheet.memory).toEqual({
       enabled: true,

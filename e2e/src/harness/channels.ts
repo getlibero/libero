@@ -249,6 +249,15 @@ export interface SheetSpec {
      */
     readonly heartbeat?: boolean;
     /**
+     * `[ambient] tools` (#348). Absent writes no line, inheriting `false`.
+     *
+     * Written only when a case says so, which is `heartbeat`'s rule above and
+     * for the same reason: the inherited value is what every case written before
+     * this existed was verified against, so writing it would make every rig's
+     * sheet differ from the one its assertions were checked against.
+     */
+    readonly tools?: boolean;
+    /**
      * `[[ambient.rule]]` entries (#461).
      *
      * Absent writes no block, which is every channel that names no standing
@@ -419,6 +428,7 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           ...(spec.ambient?.heartbeat !== undefined
             ? [`heartbeat = ${spec.ambient.heartbeat}`]
             : []),
+          ...(spec.ambient?.tools !== undefined ? [`tools = ${spec.ambient.tools}`] : []),
           ...(spec.ambient?.heartbeatEveryMinutes !== undefined
             ? [`heartbeat_every_minutes = ${spec.ambient.heartbeatEveryMinutes}`]
             : []),

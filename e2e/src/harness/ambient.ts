@@ -43,6 +43,7 @@
 // or the rule schedules to some earlier occurrence and fires against that.
 // `Rig.rule` scans a minute early and then at the instant. See `Rig.rule`.
 
+import { createProxyToolClient } from "@getlibero/agent";
 import type { CompletionClient, ProxyTransport } from "@getlibero/agent";
 import type { Logger } from "@getlibero/gateway";
 import {
@@ -85,6 +86,12 @@ export interface AmbientOptions {
 export function ambientDeps(options: AmbientOptions): AmbientDeps {
   const { logger, sheets, signal } = options;
   const { reportTurn, maySpend } = meteringClosures(options);
+
+  // What an opted-in firing calls through (#348) — `index.ts`'s client with one
+  // thing left out and nothing added: **no prompter**. That absence is the whole
+  // of what makes it unattended, so a rig that supplied one would be testing a
+  // composition no deployment runs.
+  const firedTools = (channel: string) => createProxyToolClient({ transport: options.transport, channel });
 
   return {
     // What the clock enumerates: the channels an operator provisioned, read out
@@ -140,6 +147,7 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
     fireTask: post =>
       createAmbientTaskFire({
         completion: options.completion,
+        firedTools,
         post,
         ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
         settings: async channel => {
@@ -154,6 +162,10 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
               maxAlwaysChars: settings.skills.maxAlwaysChars
             },
             enabled: settings.ambient.enabled,
+            // #348. Off unless the channel's sheet opted in, and what it selects
+            // is the shape of the turn rather than what may be called.
+            tools: settings.ambient.tools,
+            caps: settings.caps,
             model: settings.model,
             maxTokens: settings.caps.maxOutputTokensPerTurn
           };
@@ -178,6 +190,7 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
     fireRule: post =>
       createAmbientRuleFire({
         completion: options.completion,
+        firedTools,
         post,
         ...(options.sharedSkills === undefined ? {} : { sharedSkills: options.sharedSkills }),
         settings: async channel => {
@@ -192,6 +205,10 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
               maxAlwaysChars: settings.skills.maxAlwaysChars
             },
             enabled: settings.ambient.enabled,
+            // #348. Off unless the channel's sheet opted in, and what it selects
+            // is the shape of the turn rather than what may be called.
+            tools: settings.ambient.tools,
+            caps: settings.caps,
             model: settings.model,
             maxTokens: settings.caps.maxOutputTokensPerTurn
           };
