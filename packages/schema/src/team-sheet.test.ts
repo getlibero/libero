@@ -43,7 +43,48 @@ describe("the channel description", () => {
 });
 
 describe("the example team sheet", () => {
-  const sheet = TeamSheet.parse(parse(readFileSync(examplePath, "utf8")));
+  const source = readFileSync(examplePath, "utf8");
+  const sheet = TeamSheet.parse(parse(source));
+  const raw = parse(source) as Record<string, unknown>;
+
+  /**
+   * The keys a block actually writes out.
+   *
+   * **This suite asserts twice on purpose, and the two assertions answer
+   * different questions**: the parsed one says the value is right, this one says
+   * the operator copying the file can see it. A figure the starter *writes* and a
+   * figure it *inherits* parse to the same value, so `TeamSheet.parse` followed by
+   * `toEqual` cannot tell a documented default from a block that has quietly
+   * stopped saying anything (#445).
+   *
+   * The history is the argument. `[ambient]` shipped `schedule = "0 9 * * 1-5"`
+   * — a cron expression nothing validated and nothing read — from the initial
+   * commit until #316, straight past a suite whose whole job is that the example
+   * and the schema agree, because the block had no assertion at all. That is the
+   * strong form, and adding an assertion fixes it. The weak form *survives*
+   * adding one: delete the whole `[skills]` table and every case below still
+   * passes, because every figure the starter writes there is the schema's own
+   * default. Same for `[memory]` and `[ambient]`; `[llm]` would lose seven of its
+   * nine figures and `[budget]` three of its five, silently.
+   *
+   * **What a block promises is a judgement, not the schema's key list.** A
+   * starter may legitimately leave an optional field out — `[budget] daily_usd`
+   * has no default on purpose, and one invented here would teach a dollar cap
+   * nobody chose — so each call below names the keys that block is promising to
+   * document, and `arrayContaining` makes that a floor rather than an inventory.
+   *
+   * **Three shapes get no call at all**, for the same reason from three
+   * directions: a key whose written value is not the schema's default is already
+   * held by the parse. `[channel]`'s keys are required, and a required key cannot
+   * be inherited. `[[mcp_server]]`, `[[builtin]]` and `[[shared_skill]]` are
+   * entries rather than figures — an absent array parses to `[]`, and the
+   * optional fields the starter writes on them (`approval = "required"`) are
+   * written *against* their defaults. `[egress]` is the one block below that is
+   * held both ways, since `allow` defaults to empty; it is asserted anyway,
+   * because the promise is the same one and the coincidence is not worth making
+   * the next reader re-derive.
+   */
+  const written = (block: string): string[] => Object.keys((raw[block] ?? {}) as object);
 
   it("validates against the schema", () => {
     expect(sheet.channel.name).toBe("engineering");
@@ -59,6 +100,18 @@ describe("the example team sheet", () => {
       cache_write_weight: 1.25,
       warn_at: 0.8,
     });
+    // The five figures `[budget]` promises to document. `daily_usd` is
+    // deliberately not among them — it has no default, and the parsed assertion
+    // above is what holds it absent.
+    expect(written("budget")).toEqual(
+      expect.arrayContaining([
+        "daily_tokens",
+        "daily_tool_calls",
+        "cache_read_weight",
+        "cache_write_weight",
+        "warn_at",
+      ])
+    );
   });
 
   it("carries the four per-task caps, the three context bounds, and the follow-up window", () => {
@@ -73,6 +126,22 @@ describe("the example team sheet", () => {
       max_result_chars: 32_768,
       follow_up_window_seconds: 900,
     });
+    // All nine, because this is the block an operator tunes: every figure on it
+    // is one they hold an opinion about, so every figure is written out. Seven
+    // of the nine are the schema's own, and inherit silently without this.
+    expect(written("llm")).toEqual(
+      expect.arrayContaining([
+        "model",
+        "max_tool_calls_per_task",
+        "max_task_seconds",
+        "max_tokens_per_task",
+        "max_tokens_per_turn",
+        "max_history_messages",
+        "max_history_chars",
+        "max_result_chars",
+        "follow_up_window_seconds",
+      ])
+    );
   });
 
   it("curates memory by default, with the file cap the block documents", () => {
@@ -82,6 +151,19 @@ describe("the example team sheet", () => {
       summarize: true,
       summarize_after_idle_minutes: 60
     });
+    // Every figure on the block, and every one of them is the schema's own — so
+    // this is the whole of what stops the starter inheriting the block entire.
+    // The two switches count as documented figures here rather than as
+    // ceremony: `enabled` and `summarize` are the two an operator turns off, and
+    // a switch you cannot see is a switch you do not know you have.
+    expect(written("memory")).toEqual(
+      expect.arrayContaining([
+        "enabled",
+        "max_file_chars",
+        "summarize",
+        "summarize_after_idle_minutes",
+      ])
+    );
   });
 
   it("authors skills by default, with the figures the block documents", () => {
@@ -97,6 +179,26 @@ describe("the example team sheet", () => {
       stale_after_days: 30,
       archive_after_days: 90
     });
+    // Every figure on the block — `[memory]`'s case again, and the block that
+    // made it concrete: delete this whole table from the starter and the
+    // assertion above still passes. The two standing-skill caps were asserted
+    // here on their own from #444, because they govern what every turn of every
+    // task pays; the rest of the block joined them in #445 rather than leaving
+    // this the one block with a rule of its own.
+    expect(written("skills")).toEqual(
+      expect.arrayContaining([
+        "enabled",
+        "curate",
+        "author_after_tool_calls",
+        "top_k",
+        "max_skill_chars",
+        "max_always_skills",
+        "max_always_chars",
+        "max_skills",
+        "stale_after_days",
+        "archive_after_days",
+      ])
+    );
   });
 
   it("names a shared skill in each of the two load modes", () => {
@@ -106,33 +208,32 @@ describe("the example team sheet", () => {
     ]);
   });
 
-  // A figure the starter *writes* and a figure it *inherits* parse to the same
-  // value, so an assertion on the parsed sheet cannot tell a documented default
-  // from an absent block. That is how [ambient] kept shipping a cron string past
-  // this suite until #316 — the case above it asserted a parsed value, and the
-  // parsed value was right. These two fields govern what every turn of every task
-  // pays, so what is asserted here is that the operator copying this file can
-  // *see* them, which is a fact about the text rather than about the parse.
-  it("writes the standing-skill caps out rather than inheriting them", () => {
-    const raw = parse(readFileSync(examplePath, "utf8")) as {
-      skills: Record<string, unknown>;
-    };
-    expect(Object.keys(raw.skills)).toEqual(
-      expect.arrayContaining(["max_always_skills", "max_always_chars"])
-    );
+  // Where sandboxed code may dial, and the starter writes a list rather than
+  // leaving the block out because the two things it has to teach are only
+  // visible in a written one: `*.` covers subdomains and not the parent, and an
+  // MCP server's own url is *not* on this list — declaring it in
+  // `[[mcp_server]]` is what authorizes that. This block had no assertion here
+  // at all until #445, which is the `[ambient]` shape the case below records.
+  it("names two sandbox destinations, one exact and one wildcard", () => {
+    expect(sheet.egress).toEqual({ allow: ["api.github.com", "*.internal.example.com"] });
+    expect(written("egress")).toEqual(expect.arrayContaining(["allow"]));
   });
 
   // The starter had no assertion at all on this block until #316, which is how
   // it kept shipping `schedule = "0 9 * * 1-5"` — a cron expression nothing
   // validated and nothing read. It is off, and the two figures it documents are
   // the schema's own defaults, so the sheet an operator copies asks for nothing
-  // they did not already have.
+  // they did not already have — and that is exactly why the parsed assertion
+  // needs the written one beside it.
   it("does not post proactively, and documents the schema's own figures", () => {
     expect(sheet.ambient).toEqual({
       enabled: false,
       heartbeat_every_minutes: 15,
       answer_after_idle_minutes: 60
     });
+    expect(written("ambient")).toEqual(
+      expect.arrayContaining(["enabled", "heartbeat_every_minutes", "answer_after_idle_minutes"])
+    );
   });
 
   it("carries the documented tool allowlist, approval mode, and result bound", () => {
