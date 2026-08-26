@@ -84,8 +84,8 @@ last one, so delivery is no longer phase-gated, and three releases have shipped
 since: `v0.3.0`, the release that made releases real (#313, #377, #378);
 `v0.4.0`, code execution governed — the sandbox built-in (#368 is the tracker),
 `[egress]`'s first live caller (#219), and a third service holding the Docker
-socket and no credential at all (#393); and `v0.5.0`, shared skills (below).
-All three were August 2026. There is no
+socket and no credential at all (#393); and `v0.5.0`, shared skills (below). All
+three were August 2026, and `v0.6.0` is complete and untagged (below). There is no
 phase 6, and inventing one to hold ordinary work would be the wrong move; the
 roadmap's phase list is complete rather than paused.
 
@@ -123,12 +123,44 @@ origin-blind, so a channel that has since set `[skills] enabled = false` keeps
 rows that can crowd out the shared skills its sheet names, and purging them on
 that switch would let one unparseable sheet destroy a channel's clocks.
 
-**The open milestone is `v0.6.0` — scheduling** (#358 and its sub-issues, #348
-decided, #445). It is the first release of the pre-1.0 arc: the roadmap's "The
-road to 1.0" section records the plan — 0.6 scheduling, 0.7 deployment shapes,
-0.8 richer tools and adoption, 0.9 close-out — with 1.0 as a validation release,
-and it is the argued record; do not re-derive the sequencing here. Milestones
-after v0.6.0 are still created only when work on them starts.
+**`v0.6.0`, scheduling — every issue closed and the milestone closed 2026-08-26,
+not yet tagged.** So there is no changelog entry for it either: that page is
+written at release time by the release-cutter, which is `RELEASING.md`'s step and
+not something to accumulate here. It is the first release of the pre-1.0 arc, and
+the roadmap's "The road to 1.0" section is the argued record of that plan (0.6
+scheduling, 0.7 deployment shapes, 0.8 richer tools and adoption, 0.9 close-out,
+1.0 a validation release). Do not re-derive the sequencing here. **There is no
+open milestone**; `v0.7.0` is next and is created when work on it starts.
+
+An operator declares `[[ambient.rule]]` in a team sheet — at these times, on
+these days, ask this question — and the ambient clock fires it as a third
+`DueEntry.kind`. Every rule is an ask; the deterministic post kind was declined
+rather than deferred. `[ambient] heartbeat = false` runs rules and no evaluation,
+where `enabled = false` stays the one silence. Occurrences are computed from the
+wall clock with no last-fired stamp, so a restart cannot double-fire and a missed
+window is skipped rather than replayed — the cost being that a restart spanning
+Monday 09:00 loses that digest.
+
+**One clause of its definition of done landed differently, and it is the one to
+know.** "A fired turn induces no served calls" is still true of every sheet that
+has not said otherwise, and is **no longer unconditional**: #348 was decided by
+being built, so `[ambient] tools = true` gives a heartbeat, a fired check and a
+standing rule the ReAct loop over the allowlist that sheet already carries. The
+switch is off by default and grants nothing new — it decides *who may use* the
+list, not what is on it. An unattended turn is handed no prompter, so a held call
+is refused rather than waited on, which draws a read-yes-write-no line off the
+destructive-name default; and every such call carries `AMBIENT_REQUESTING_USER`,
+reserved by an alphabet no user id can spell, so the audit log says plainly that a
+clock asked. What survives unchanged is the narrower claim: **injection cannot
+plant a rule**, because the sheet is the only write path and the model has none.
+
+Three things shipped that the milestone's own wording did not name, and the
+release was better for not deferring them: an IANA `timezone` on a rule (#470,
+absent meaning UTC so nothing earlier changed meaning, with the DST gap and the
+repeated hour decided rather than left to the arithmetic); the heartbeat joining
+the two fired turns behind the same switch (#471, the frequency objection having
+been one the pregate already prevents); and a filesystem-watch test rebuilt on a
+seam rather than given a longer timeout for the third time (#474).
 
 `v0.4.0` closed with three of its correctness items **moved out rather than
 delivered** (#239, #283, #284), each gated on data or a deployment shape that
@@ -166,13 +198,13 @@ What exists:
 | --- | --- |
 | `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
 | `packages/test-kit` | What `node:test` does not have and the suite needs: `it.each`, a `waitFor` whose timeout is a required argument, and the reporter — which fails a run that collected nothing, or that skipped something `ALLOWED_SKIPS` does not account for. Plus the two checks on the repository itself: every `test` script is one string, and every package is run by exactly one CI job. Private, never published, no dependencies at all — which is what lets `packages/memory` import it across the leaf rule (#202) |
-| `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, the skill file and its two operations, and the sheet's shared-skill entries with the `shared/<name>` address |
+| `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, the skill file and its two operations, and the sheet's shared-skill entries with the `shared/<name>` address, and the ambient rule with its clock time, weekday and zone |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, the proactive post's verb and renderer, the app's own identity and workspace off one `auth.test`, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries and the two quiet-thread reads, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, the `proposals/` directory beside it, a read-only opener over the operator's shared skill root, `origin` on the skill index, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
-| `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, the proactive post surface and its rate window, the heartbeat evaluation and its pregate, the standing region and the five turns that compose it, the shared-skill reader and the retrieved pool beside it, approvals and checklist clients, lifecycle. Three operator entrypoints beside the process: `tasks`, `rebuild` and `skill-purge` |
+| `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, the proactive post surface and its rate window, the heartbeat evaluation and its pregate, the standing region and the five turns that compose it, the rule clock and the two shapes a fired turn takes, the shared-skill reader and the retrieved pool beside it, approvals and checklist clients, lifecycle. Three operator entrypoints beside the process: `tasks`, `rebuild` and `skill-purge` |
 | `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
 | `apps/runner` | The sandbox runner (#395) — an mTLS listener with one route, one pinned peer, and the Docker Engine API spoken over a unix socket with no client library. Builds every container spec itself, so no field of a request reaches `Image`, `Binds` or `Privileged`. Holds no credential; its only dependency is `@getlibero/schema` |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes, the ambient clock, and a real sandbox runner. One file needs a Docker daemon and says so loudly; every other file runs without one. Since #437 a rig may also mount the operator's shared skill root |
@@ -206,11 +238,11 @@ code is a paragraph the next reader will not find.
 | --- | --- |
 | What the loop does, the callback contracts, how a tool name is resolved, what a turn reports, why embeddings are a second seam, what the summarization turn assumes, what the skill-author turn sees of a task that curation deliberately does not, and why the merge turn takes no handler | `packages/agent/README.md` |
 | Enforcement, the vault, MCP client and pool, built-ins, listing bounds, budgets, why the budget read is advisory rather than a second enforcement point, approvals, the audit log's write discipline, what the hash chain catches and the four things it does not, why the unique index on `prev_hash` does more than the chain alone, why argument capture in the chain was declined rather than deferred, and the off-chain attempt store built beside that decision (#364) | `packages/proxy/README.md` |
-| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for, why the proactive post surface is minted in the composition, why its window is four hours, why its two sources are named for the wake reason, and what the heartbeat's pregate asks in what order, why its watermark makes a finding say-once, why a shut window defers rather than loses, which five turns compose the standing region and the composition-against-record line that decides, why membership is filtered before the fusion and what that still cannot un-spend, and what the skill-index purge deletes and the three things it does not | `apps/server/README.md` |
+| Sessions and the queue, follow-ups, the transcript a task starts from, the checklist, the approvals client half, the environment contract, where recall and skill retrieval enter a task and why neither is a tool, why one embedding serves both, how the two skill legs are fused and what bounds them, why the post-reply turns are one thunk, what counts toward the author threshold, what bounds the quiescence sweep, why skills are embedded on channel activity rather than at task head, what `stale` means to retrieval and why, how the lifecycle job tells a hand-set status from its own, why a merge proposal is a file rather than a message, why the ambient clock enumerates the filesystem, wakes at the next due instant, and skips the windows it was down for, why the proactive post surface is minted in the composition, why its window is four hours, why its two sources are named for the wake reason, and what the heartbeat's pregate asks in what order, why its watermark makes a finding say-once, why a shut window defers rather than loses, which five turns compose the standing region and the composition-against-record line that decides, why membership is filtered before the fusion and what that still cannot un-spend, and what the skill-index purge deletes and the three things it does not, why a rule's next occurrence is computed rather than stamped and what that costs on a restart, which two days a year the clock has to decide about and how, why a rule's schedule is keyed by name, why one turn serves a check and a rule and where the two ends differ, and what `[ambient] tools` selects and the two questions it answers | `apps/server/README.md` |
 | Slack normalization, the three subscriptions, card rendering, how the app learns its own id and its workspace from one `auth.test`, why the channel-post verb is a second exception to the `CardPoster` narrowing and a different kind of one, the three rules that package keeps | `packages/gateway/README.md` |
 | The three reads, the isolation boundary, the tokenizer, why `search` takes text, why `MEMORY.md` has no lock, what `allowExtension` does and does not open, why the vec table is created lazily, why a thread summary has a shape, why reconciliation is the skill index's only writer, why `nearest` takes a kind, why `searchSkills` ORs its terms where `search` ANDs them, why `idleThreads` is not `staleThreads` with another argument, why the lifecycle job's two stamps are two methods rather than one, why the proposals directory has no `read`, and why no trigger drops a considered pair | `packages/memory/README.md` |
 | Operator commands and the vault CLI, and what `audit verify`'s four exit codes are a contract for | `apps/proxy-server/README.md` |
-| The shapes both services agree on. No README — each file's own header is the record, `src/skill.ts` and `src/audit.ts` most of all | `packages/schema/src/*.ts` |
+| The shapes both services agree on. No README — each file's own header is the record, `src/skill.ts` and `src/audit.ts` most of all, and `src/names.ts` for why a clock's calls carry a sentinel no user id can spell | `packages/schema/src/*.ts` |
 | What the published CLI owns, why the schema is bundled rather than published, why `channel add` writes a pin, and what `doctor` refuses to check | `packages/cli/README.md` |
 | The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, the one fake embedder's shape and the rule it carries, and why exactly one file needs a Docker daemon and fails rather than skips in CI | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist, and the sandbox runner's service, networks and the one variable an operator gets wrong | `deploy/README.md` |
