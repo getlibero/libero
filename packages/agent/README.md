@@ -271,6 +271,25 @@ cache_read_weight` and `cache_write_weight` — cache reads run about a tenth of
 input price, so a meter that collapsed the tiers would be wrong by an order of
 magnitude on a cache-heavy agent, which is every agent here.
 
+**And the four are disjoint, which is a claim about the numbers rather than
+about the field names** (#480). `costMicroUsd` prices them by adding four
+independent terms, so `inputTokens` has to be input tokens that were *not* a
+cache read and *not* a cache write. Anthropic reports the tiers that way and the
+adapter copies them across. **OpenAI does not**: its `prompt_tokens` is the
+total, with `prompt_tokens_details.cached_tokens` naming how many of them were a
+hit — so `completion/openai.ts` subtracts on the way through, clamped at zero for
+a server whose details exceed its own total. An adapter that skipped that
+conversion would charge every cached token twice, once at the input rate and
+again at the cache rate, and would pass any check that only asked whether the
+fields were populated.
+
+Measured through a live LiteLLM sidecar in front of an Anthropic upstream: 11
+fresh, 7 read and 13 written arrive as `prompt_tokens: 31`. The cache-*write*
+count has no place in stock OpenAI's envelope — its caching is implicit and a
+write is not billed — and LiteLLM adds one, in three spellings at once, all of
+which the adapter reads. `packages/litellm-conformance` is where that stops being
+a fixture's claim about a third party's wire format.
+
 **And which model spent them** (#62), when the provider echoed one. The report
 carries it beside `usage`, and the proxy prices a channel's spend by it.
 

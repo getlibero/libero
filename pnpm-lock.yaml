@@ -207,6 +207,18 @@ importers:
         specifier: ^30.4.1
         version: 30.4.1
 
+  packages/litellm-conformance:
+    devDependencies:
+      '@getlibero/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@getlibero/test-kit':
+        specifier: workspace:*
+        version: link:../test-kit
+      expect:
+        specifier: ^30.4.1
+        version: 30.4.1
+
   packages/memory:
     dependencies:
       '@getlibero/atomic-write':
