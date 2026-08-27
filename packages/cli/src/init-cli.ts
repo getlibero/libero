@@ -314,14 +314,40 @@ function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
       comment: [
         "Completion keys. Only the one matching AGENT_PROVIDER is read; the other",
         "is ignored. The base URLs are optional and are what reach anything other",
-        "than the provider's own endpoint — Together, Fireworks, Groq, Ollama,",
-        "Gemini's compatibility endpoint, or the litellm sidecar."
+        "than the provider's own endpoint — Together, Fireworks, Groq, Ollama, or",
+        "Gemini's compatibility endpoint."
       ],
       vars: [
         { name: "ANTHROPIC_API_KEY", value: "" },
         { name: "ANTHROPIC_BASE_URL", value: "" },
         { name: "OPENAI_API_KEY", value: "" },
         { name: "OPENAI_BASE_URL", value: "" }
+      ]
+    },
+    {
+      comment: [
+        "Optional: the LiteLLM sidecar (#428), off unless you start it —",
+        "`docker compose --profile litellm up -d`. One of two supported shapes",
+        "rather than a fallback for a provider the adapters do not cover: direct",
+        "is one less process, one less hop and one less thing holding a provider",
+        "key, and the sidecar is one place for routing, fallbacks, rate limits and",
+        "key rotation across several providers, plus a per-call cost figure the",
+        "proxy can reconcile against.",
+        "",
+        "Choosing it means, above: AGENT_PROVIDER=openai-compatible,",
+        "OPENAI_BASE_URL=http://litellm:4000/v1, and AGENT_MODEL set to a",
+        "model_name alias from deploy/litellm/config.yaml — that alias is what",
+        "LiteLLM echoes back, so it is what the proxy's price table must be keyed",
+        "by.",
+        "",
+        "Then OPENAI_API_KEY above is the SIDECAR's key rather than a provider's,",
+        "and compose hands the same value to the sidecar as its master key. These",
+        "two are the provider keys, read by that service alone and reaching the",
+        "agent never. Set whichever the model_list names."
+      ],
+      vars: [
+        { name: "LITELLM_ANTHROPIC_API_KEY", value: "" },
+        { name: "LITELLM_OPENAI_API_KEY", value: "" }
       ]
     },
     {
