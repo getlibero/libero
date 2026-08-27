@@ -179,6 +179,63 @@ function toStopReason(reason: ChatCompletion.Choice["finish_reason"]): StopReaso
   }
 }
 
+/**
+ * Where a cache-write count hides in an OpenAI-shaped envelope (#480).
+ *
+ * Stock OpenAI has no such field: its caching is implicit and a write is not
+ * billed, so there is nothing to report. A LiteLLM sidecar in front of a
+ * provider that *does* bill writes has to put the number somewhere, and it
+ * emits it three times over — measured against `main-stable` with an Anthropic
+ * upstream reporting `cache_creation_input_tokens: 13`:
+ *
+ *   "prompt_tokens_details": { "cached_tokens": 7, "text_tokens": 11,
+ *                              "cache_write_tokens": 13, "cache_creation_tokens": 13 },
+ *   "cache_creation_input_tokens": 13,
+ *   "cache_read_input_tokens": 7
+ *
+ * All three spellings are read, first one wins, because which of them a version
+ * keeps is not ours to decide and a missing count is billed at the input rate —
+ * the expensive direction. None of them is in the SDK's `ChatCompletion` type,
+ * so they are read off a loose view rather than through it.
+ */
+const CACHE_WRITE_KEYS = ["cache_creation_tokens", "cache_write_tokens"] as const;
+
+function readNumber(source: unknown, key: string): number | undefined {
+  if (typeof source !== "object" || source === null) return undefined;
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function cacheWriteTokens(usage: NonNullable<ChatCompletion["usage"]>): number | undefined {
+  for (const key of CACHE_WRITE_KEYS) {
+    const found = readNumber(usage.prompt_tokens_details, key);
+    if (found !== undefined) return found;
+  }
+  return readNumber(usage, "cache_creation_input_tokens");
+}
+
+/**
+ * The four counts, converted from OpenAI's convention to `TokenUsage`'s.
+ *
+ * **`prompt_tokens` is inclusive and `TokenUsage.inputTokens` is exclusive**,
+ * and that difference is the whole of this function. OpenAI counts every prompt
+ * token in `prompt_tokens` and then says how many of them were a cache hit;
+ * Anthropic reports the three tiers disjointly, and `TokenUsage` follows
+ * Anthropic because `costMicroUsd` in `@getlibero/schema` prices the four counts
+ * by adding four independent terms. Handing it an inclusive input count charges
+ * every cached token twice — once at the input rate and again at the cache rate
+ * — which on a cache-heavy agent, meaning every agent here, is the order-of-
+ * magnitude error the four tiers exist to prevent. Verified against a live
+ * sidecar: an upstream reporting 11 fresh, 7 read and 13 written arrives here as
+ * `prompt_tokens: 31`.
+ *
+ * **Subtracting is clamped at zero rather than trusted.** The arithmetic assumes
+ * a relationship between fields that a compatible server states nowhere, and a
+ * server whose details exceed its own total would otherwise produce a negative
+ * count that the meter would store and the price table would multiply. Zero is
+ * the safe reading of an envelope that does not add up: the cache tiers are
+ * still billed, and only the fresh-input term is lost.
+ */
 function toUsage(usage: ChatCompletion["usage"]): TokenUsage {
   // The budget meter is authoritative for the channel, so a server that reports
   // no usage is a failure rather than a call metered as zero.
@@ -186,11 +243,14 @@ function toUsage(usage: ChatCompletion["usage"]): TokenUsage {
     throw new CompletionError("response reported no token usage", PROVIDER);
   }
 
-  const cached = usage.prompt_tokens_details?.cached_tokens;
+  const cacheRead = usage.prompt_tokens_details?.cached_tokens;
+  const cacheWrite = cacheWriteTokens(usage);
+
   return {
-    inputTokens: usage.prompt_tokens,
+    inputTokens: Math.max(0, usage.prompt_tokens - (cacheRead ?? 0) - (cacheWrite ?? 0)),
     outputTokens: usage.completion_tokens,
-    ...(typeof cached === "number" ? { cacheReadInputTokens: cached } : {})
+    ...(typeof cacheRead === "number" ? { cacheReadInputTokens: cacheRead } : {}),
+    ...(typeof cacheWrite === "number" ? { cacheCreationInputTokens: cacheWrite } : {})
   };
 }
 

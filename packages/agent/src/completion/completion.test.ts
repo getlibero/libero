@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import { expect } from "expect";
+import { each } from "@getlibero/test-kit";
 import { createAnthropicCompletionClient } from "./anthropic.js";
 import { runCompletionConformance, stubTransport } from "./conformance.js";
 import { createCompletionClient } from "./factory.js";
@@ -181,6 +182,105 @@ describe("openai-compatible failures", () => {
     });
 
     expect(transport.calls[0]?.url).toBe("https://api.groq.com/openai/v1/chat/completions");
+  });
+});
+
+/**
+ * `prompt_tokens` is inclusive, `TokenUsage.inputTokens` is exclusive, and these
+ * are the cases for the conversion (#480).
+ *
+ * The conformance suite next door proves the four counts arrive from the one
+ * envelope a live sidecar actually emits. These cover the envelopes it does not:
+ * stock OpenAI, which has cache reads and no writes; the spellings LiteLLM has
+ * used for the write; and a server whose numbers do not add up.
+ *
+ * They build a response inline rather than adding six fixture files, because
+ * what varies between them is four integers in one object and a fixture apiece
+ * would bury that.
+ */
+describe("openai-compatible token accounting", () => {
+  const usageTransport = (usage: Record<string, unknown>): typeof globalThis.fetch => {
+    const body = JSON.stringify({
+      id: "chatcmpl_test",
+      object: "chat.completion",
+      created: 0,
+      model: "test-model",
+      choices: [
+        { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }
+      ],
+      usage
+    });
+    return async () =>
+      new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const usageOf = async (usage: Record<string, unknown>) =>
+    (
+      await createOpenAICompatibleCompletionClient({
+        apiKey: PLACEHOLDER_KEY,
+        fetch: usageTransport(usage)
+      }).complete({
+        model: "test-model",
+        maxTokens: 1024,
+        messages: [{ role: "user", content: "hello" }]
+      })
+    ).usage;
+
+  // Stock OpenAI: implicit caching, a read tier, no write tier. 500 of the 600
+  // prompt tokens were a hit, so 100 are fresh and the meter must charge 100 at
+  // the input rate — not 600, which is what an unconverted count would give.
+  it("subtracts cache reads from the inclusive prompt count", async () => {
+    expect(
+      await usageOf({
+        prompt_tokens: 600,
+        completion_tokens: 12,
+        prompt_tokens_details: { cached_tokens: 500 }
+      })
+    ).toEqual({ inputTokens: 100, outputTokens: 12, cacheReadInputTokens: 500 });
+  });
+
+  // No details at all — every prompt token is fresh, and the two absent tiers
+  // stay absent rather than becoming zero. `TokenUsage` draws that distinction:
+  // a provider that reports nothing has not reported none.
+  it("leaves an envelope with no cache details untouched", async () => {
+    expect(await usageOf({ prompt_tokens: 40, completion_tokens: 5 })).toEqual({
+      inputTokens: 40,
+      outputTokens: 5
+    });
+  });
+
+  each([
+    ["prompt_tokens_details.cache_creation_tokens", { cache_creation_tokens: 20 }, {}],
+    ["prompt_tokens_details.cache_write_tokens", { cache_write_tokens: 20 }, {}],
+    ["the top-level cache_creation_input_tokens", {}, { cache_creation_input_tokens: 20 }]
+  ] as const)("reads the cache-write count from %s", async (_name, details, top) => {
+    expect(
+      await usageOf({
+        prompt_tokens: 240,
+        completion_tokens: 8,
+        prompt_tokens_details: { cached_tokens: 100, ...details },
+        ...top
+      })
+    ).toEqual({
+      inputTokens: 120,
+      outputTokens: 8,
+      cacheReadInputTokens: 100,
+      cacheCreationInputTokens: 20
+    });
+  });
+
+  // A server whose tiers exceed its own total. The subtraction would go
+  // negative, the meter would store it and the price table would multiply it, so
+  // the fresh-input term is dropped rather than inverted — the cache tiers are
+  // still billed in full.
+  it("clamps at zero rather than reporting a negative input count", async () => {
+    expect(
+      await usageOf({
+        prompt_tokens: 50,
+        completion_tokens: 4,
+        prompt_tokens_details: { cached_tokens: 90 }
+      })
+    ).toEqual({ inputTokens: 0, outputTokens: 4, cacheReadInputTokens: 90 });
   });
 });
 

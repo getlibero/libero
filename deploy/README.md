@@ -353,17 +353,31 @@ here is the one right answer rather than a convenience. Changing which upstream 
 embedding alias resolves to is a **rebuild** for the same reason changing
 `AGENT_EMBEDDING_MODEL` is: the id is stamped against a channel's stored vectors.
 
-### What this does not yet claim
+### What the meter sees through the envelope
 
-The four counts `TokenUsage` carries have to survive LiteLLM's envelope exactly
-as they must survive a native provider's, and the budget meter weights cache
-reads and writes separately — a path that collapses them is wrong by an order of
-magnitude on a cache-heavy agent, which is every agent here. LiteLLM does pass
-`prompt_tokens_details.cached_tokens` through, so cache reads arrive; the
-OpenAI chat-completions wire format has no cache-*write* field at all, so that
-count is not carried on this path today. **Proving the four counts through a live
-sidecar, for completions and for embeddings, is #480** — this section is the
-deployment, not the conformance claim.
+All four token tiers arrive, and they are proven against a live sidecar rather
+than assumed: `packages/litellm-conformance` starts this image, points the real
+adapters at it, and reads what comes back (#480).
+
+Two things are worth knowing before changing anything on this path.
+
+**LiteLLM's `prompt_tokens` is the sum, not the fresh input.** An upstream
+reporting 11 fresh input tokens, 7 read from cache and 13 written comes back as
+`prompt_tokens: 31` — the OpenAI convention counts cache hits inside the prompt
+total, while the meter prices the four tiers by adding four independent terms.
+`packages/agent/src/completion/openai.ts` converts between the two. Without that
+conversion every cached token is charged twice, once at the input rate and again
+at the cache rate, which is the order-of-magnitude error the four tiers exist to
+prevent — and it was live on this path until #480.
+
+**The cache-write count exists here and does not exist upstream of here.** Stock
+OpenAI has no such field: its caching is implicit and a write is not billed.
+LiteLLM in front of a provider that does bill writes emits one, in three
+spellings at once — `prompt_tokens_details.cache_write_tokens`,
+`prompt_tokens_details.cache_creation_tokens`, and a top-level
+`cache_creation_input_tokens`. The adapter reads all three, first one wins,
+because which spelling a version keeps is not ours to decide and a missing count
+is billed at the input rate.
 
 ## Upgrading across #62: proxy first
 

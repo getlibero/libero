@@ -103,11 +103,41 @@ export function runCompletionConformance(harness: CompletionHarness): void {
       expect(response.text).toBe("Paris is the capital of France.");
       expect(response.toolCalls).toEqual([]);
       expect(response.stopReason).toBe("end_turn");
-      expect(response.usage.inputTokens).toBe(120);
-      expect(response.usage.outputTokens).toBe(8);
-      // Cache reads bill differently from ordinary input tokens, so the meter
-      // sees them separately rather than folded into the input count.
-      expect(response.usage.cacheReadInputTokens).toBe(100);
+    });
+
+    /**
+     * The four counts, and the reason this is the strictest case in the suite.
+     *
+     * **Every `text` fixture describes the same call** — 120 fresh input tokens,
+     * 100 read from cache, 20 written to it, 8 out — in whatever dialect its
+     * provider speaks. So this asserts one object rather than three fields, and
+     * `toEqual` rather than field-by-field, because the failure being guarded
+     * against is a count going missing, and a suite that only checks the fields
+     * it names cannot see that.
+     *
+     * **The tiers are disjoint**, which is a claim about the numbers and not
+     * only about the field names: 120 is fresh input, not 240 with 100 of it
+     * also billed as a cache read. `costMicroUsd` prices the four by adding four
+     * independent terms, so an adapter that reported an inclusive input count
+     * would charge every cached token twice and still pass a per-field check.
+     * OpenAI's `prompt_tokens` *is* inclusive; `toUsage` there converts, and this
+     * is the case that says it must.
+     *
+     * Until #480 this asserted three of the four against fixtures describing two
+     * different calls — the openai one had 20 fresh input where the anthropic one
+     * had 120 — so the two adapters agreeing here meant nothing and the
+     * openai-compatible path was double-charging cache reads into a channel's
+     * `daily_usd`. A test that encodes a gap, in this repository's phrase.
+     */
+    it("reports the four token tiers disjointly, in every provider's dialect", async () => {
+      const { response } = await run("text");
+
+      expect(response.usage).toEqual({
+        inputTokens: 120,
+        outputTokens: 8,
+        cacheReadInputTokens: 100,
+        cacheCreationInputTokens: 20
+      });
     });
 
     // #62: the tool proxy service prices a channel's spend by the model that

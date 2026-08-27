@@ -1,0 +1,16 @@
+{
+  "name": "@getlibero/litellm-conformance",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
+  },
+  "devDependencies": {
+    "@getlibero/agent": "workspace:*",
+    "@getlibero/test-kit": "workspace:*",
+    "expect": "^30.4.1"
+  }
+}

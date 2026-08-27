@@ -6,14 +6,24 @@
   "choices": [
     {
       "index": 0,
-      "message": { "role": "assistant", "content": "Paris is the capital of France." },
+      "message": {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+      },
       "finish_reason": "stop"
     }
   ],
   "usage": {
-    "prompt_tokens": 120,
+    "prompt_tokens": 240,
     "completion_tokens": 8,
-    "total_tokens": 128,
-    "prompt_tokens_details": { "cached_tokens": 100 }
+    "total_tokens": 248,
+    "prompt_tokens_details": {
+      "cached_tokens": 100,
+      "text_tokens": 120,
+      "cache_write_tokens": 20,
+      "cache_creation_tokens": 20
+    },
+    "cache_creation_input_tokens": 20,
+    "cache_read_input_tokens": 100
   }
 }

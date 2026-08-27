@@ -69,13 +69,21 @@ package in exactly one job — and that a package whose suite gates on a Docker
 daemon is never run beside one that does not.
 
 Three jobs run the suite (#410). `build` runs everything that needs no daemon;
-`e2e` and `sandbox` each run one package that does, each warming the sandbox
-image and the runner image alongside its own build. They are two jobs rather
-than one because `apps/runner/src/sandbox.docker.test.ts` asserts that no
-container on the daemon descends from `python:3.13-alpine` — daemon-wide, since
-a leaked container is one whose id it never learned — while
-`e2e/src/sandbox-attack.test.ts` keeps a sink container running on that image.
-A daemon each is what lets both run at once.
+`e2e` and `sandbox` run the packages that do, each warming its images alongside
+its own build. They are two jobs rather than one because
+`apps/runner/src/sandbox.docker.test.ts` asserts that no container on the daemon
+descends from `python:3.13-alpine` — daemon-wide, since a leaked container is one
+whose id it never learned — while `e2e/src/sandbox-attack.test.ts` keeps a sink
+container running on that image. A daemon each is what lets both run at once.
+
+**That split is specific, not a rule that each daemon-gated package gets a job.**
+Since #480 `sandbox` runs two of them: `@getlibero/runner` and
+`@getlibero/litellm-conformance`, in series as two steps. Both of the runner's
+leak assertions are filtered by image and by name, and a LiteLLM container
+matches neither, so there is no collision to buy a fourth runner out of. A new
+daemon-gated package has to make the same call, and `ci-partition.test.ts` is
+what asks it the question — it names the gated packages explicitly, so a third
+one cannot be added without someone deciding where it runs.
 
 ## Current state
 
@@ -199,6 +207,7 @@ What exists:
 | --- | --- |
 | `packages/atomic-write` | The durable-replace recipe, once — write a whole temporary sibling, fsync it, rename it over the target, fsync the directory. Two exports and no dependencies at all, which is what lets both services and the published CLI import it (#272) |
 | `packages/test-kit` | What `node:test` does not have and the suite needs: `it.each`, a `waitFor` whose timeout is a required argument, and the reporter — which fails a run that collected nothing, or that skipped something `ALLOWED_SKIPS` does not account for. Plus the two checks on the repository itself: every `test` script is one string, and every package is run by exactly one CI job. Private, never published, no dependencies at all — which is what lets `packages/memory` import it across the leaf rule (#202) |
+| `packages/litellm-conformance` | One file asking whether the agent's completion and embedding path survives a *real* LiteLLM sidecar (#480) — the image `deploy/docker-compose.yml` runs, started against a fake upstream so no test needs a provider key, with the real adapters pointed at it. Private, never published, daemon-gated two-sided like the sandbox suite, and run by the `sandbox` job |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, the skill file and its two operations, and the sheet's shared-skill entries with the `shared/<name>` address, and the ambient rule with its clock time, weekday and zone |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
 | `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
@@ -248,6 +257,7 @@ code is a paragraph the next reader will not find.
 | The harness API, what is faked, why the positive control matters, which sheet blocks are off by default in a rig and why, why ambient is off twice and why `rig.heartbeat` scans twice, why each audit tamper case gets its own `VACUUM INTO` copy, the one fake embedder's shape and the rule it carries, and why exactly one file needs a Docker daemon and fails rather than skips in CI | `e2e/README.md` |
 | Images, mounts, `.dockerignore` as an allowlist, the sandbox runner's service, networks and the one variable an operator gets wrong, and the LiteLLM sidecar — why it is a chosen shape rather than a fallback, why the provider keys are prefixed and the agent holds none, why the master key is wired to the agent's own required variable rather than a compose guard, and why a `model_name` alias is what the price table must be keyed by | `deploy/README.md` |
 | The runner's own modules: why the Docker Engine API is spoken with no client library, what builds a container spec and what may not reach it, and the two-sided gate on the tests that need a daemon | `apps/runner/src/*.ts` headers |
+| Why a live-sidecar suite is a package rather than a file in `packages/agent`, what is faked and why the fake being on the far side of the sidecar keeps the claim sharp, and why it shares the `sandbox` job | `packages/litellm-conformance/README.md` |
 | Why the test helpers are a package rather than a copied file, what is deliberately not re-exported from it, why `waitFor`'s timeout has no default, what the reporter fails a run for, the two things `node:test` does that it has to work around, and why the two checks that are not helpers live there | `packages/test-kit/README.md` |
 | Vendored third-party source: a copy, not a fork | `packages/proxy/src/vendor/README.md` |
 | Tokens, components, voice | `design/README.md` |

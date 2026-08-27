@@ -149,20 +149,32 @@ describe("the CI jobs that run the suite", () => {
     // job silently gives that job a dependency nothing states, which is where
     // this started.
     //
-    // One per command, not merely grouped away from `build`. Two of these
-    // suites on one job have to run in series, because
-    // `apps/runner/src/sandbox.docker.test.ts` asserts that nothing on the
+    // **What this does not say is that each gated package gets its own job.**
+    // `e2e` and `sandbox` are apart for a specific reason rather than a general
+    // one: `apps/runner/src/sandbox.docker.test.ts` asserts that nothing on the
     // daemon descends from `python:3.13-alpine` — daemon-wide on purpose, since
     // a leaked container is one whose id it never learned — while
     // `e2e/src/sandbox-attack.test.ts` keeps a sink container running on that
     // image. Measured: concurrently they collide, in series the job becomes the
-    // critical path. A daemon each is what makes both go away, and this fails
-    // rather than letting the next person rediscover it.
+    // critical path. A daemon each is what makes both go away.
+    //
+    // `@getlibero/litellm-conformance` (#480) shares the `sandbox` job on the
+    // strength of that being specific. Both of the runner's leak assertions are
+    // filtered — `ancestor=python:3.13-alpine` and `name=libero-hop-` — and a
+    // LiteLLM container matches neither, so there is no collision to buy a
+    // fourth runner out of. It runs as its own step, after the runner's, so the
+    // two are in series on the one daemon.
     const all = workspacePackages().map(p => p.name);
     const gated = new Set(workspacePackages().filter(gatesOnDocker).map(p => p.name));
 
-    // Non-vacuous: the two files this is about are still there and still gate.
-    expect([...gated].sort()).toEqual(["@getlibero/e2e", "@getlibero/runner"]);
+    // Non-vacuous: the three files this is about are still there and still
+    // gate. A fourth is fine and has to make the same decision this comment
+    // records — which job, and whether anything on it collides.
+    expect([...gated].sort()).toEqual([
+      "@getlibero/e2e",
+      "@getlibero/litellm-conformance",
+      "@getlibero/runner"
+    ]);
 
     const alongside = Object.fromEntries(
       testCommands()

@@ -38,6 +38,7 @@ COPY packages/gateway/package.json      packages/gateway/
 COPY packages/memory/package.json       packages/memory/
 COPY packages/cli/package.json          packages/cli/
 COPY packages/test-kit/package.json     packages/test-kit/
+COPY packages/litellm-conformance/package.json packages/litellm-conformance/
 COPY apps/server/package.json           apps/server/
 COPY apps/proxy-server/package.json     apps/proxy-server/
 COPY apps/runner/package.json           apps/runner/

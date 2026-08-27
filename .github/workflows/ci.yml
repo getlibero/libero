@@ -112,11 +112,11 @@ jobs:
         # #107-successor hazard that guard exists to catch, moved somewhere
         # nothing checks it.
         #
-        # This line and the two below have to partition the workspace between
+        # This line and the three below have to partition the workspace between
         # them, and `packages/test-kit/src/ci-partition.test.ts` asserts that
-        # they do: drop a name from any of the three and that suite stops
+        # they do: drop a name from any of the four and that suite stops
         # running with nothing failing.
-        run: pnpm -r --filter '!@getlibero/e2e' --filter '!@getlibero/runner' test
+        run: pnpm -r --filter '!@getlibero/e2e' --filter '!@getlibero/runner' --filter '!@getlibero/litellm-conformance' test
 
   e2e:
     # The security suite, alone on a runner with a Docker daemon.
@@ -238,14 +238,21 @@ jobs:
         # `sandbox.docker.test.ts` still inspects and fetches what is absent.
         # Here the build it overlaps is the short one, so most of the step is
         # the fixtures.
+        #
+        # The LiteLLM image joins the same warm for #480. It is pulled rather
+        # than built, and `sidecar.docker.test.ts` pulls it too if it is absent,
+        # so this only moves the wait off the test step's clock.
         run: |
           docker pull --quiet python:3.13-alpine > "$RUNNER_TEMP/sandbox-pull.log" 2>&1 &
           pull=$!
+          docker pull --quiet ghcr.io/berriai/litellm:main-stable > "$RUNNER_TEMP/litellm-pull.log" 2>&1 &
+          sidecar=$!
           docker build --quiet -f apps/runner/Dockerfile -t ghcr.io/getlibero/runner:latest . \
             > "$RUNNER_TEMP/runner-image.log" 2>&1 &
           image=$!
-          pnpm --filter @getlibero/runner... build
+          pnpm --filter @getlibero/runner... --filter @getlibero/litellm-conformance... build
           wait "$pull" || { cat "$RUNNER_TEMP/sandbox-pull.log"; exit 1; }
+          wait "$sidecar" || { cat "$RUNNER_TEMP/litellm-pull.log"; exit 1; }
           wait "$image" || { cat "$RUNNER_TEMP/runner-image.log"; exit 1; }
       - name: Sandbox acceptance cases
         # This job needs a Docker daemon for the same reason the `e2e` job does
@@ -256,6 +263,19 @@ jobs:
         # `ci-partition.test.ts` fails, because nothing would then run
         # `@getlibero/runner`.
         run: pnpm --filter @getlibero/runner test
+      - name: Live LiteLLM sidecar conformance
+        # #480's acceptance, and the second daemon-gated package on this job —
+        # the first time two share one. `ci-partition.test.ts` permits it and
+        # says why: it forbids a daemon-gated suite running beside one that is
+        # not, and the reason `e2e` and `sandbox` are apart is a specific image
+        # collision rather than a general rule. A LiteLLM container matches
+        # neither of the runner's leak filters.
+        #
+        # A separate step rather than a second `--filter` on the one above, so
+        # the two suites run in series on this runner. They do not collide, but
+        # `docker pull` and two sets of containers on four vCPUs is contention
+        # with nothing to gain — the job is not the critical path.
+        run: pnpm --filter @getlibero/litellm-conformance test
 
   lint-and-license:
     # Lint and the license gate read the source tree and node_modules, never
