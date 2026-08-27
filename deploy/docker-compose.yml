@@ -81,8 +81,14 @@ services:
       # Each provider's own conventional variable: the one matching
       # AGENT_PROVIDER is required, the other is ignored. The base URLs are
       # optional and are what reach anything other than the provider's own
-      # endpoint — Together, Fireworks, Groq, Ollama, Gemini's compatibility
-      # endpoint, or the litellm sidecar below are all one base URL apart.
+      # endpoint — Together, Fireworks, Groq, Ollama and Gemini's compatibility
+      # endpoint are all one base URL apart.
+      #
+      # So is the litellm sidecar below, and that one is a DEPLOYMENT SHAPE
+      # rather than another vendor (#428). Choosing it means
+      # AGENT_PROVIDER=openai-compatible and OPENAI_BASE_URL=http://litellm:4000/v1,
+      # and then OPENAI_API_KEY is the sidecar's key rather than a provider's —
+      # the provider keys move to that service and this one holds none.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -328,8 +334,6 @@ services:
     # No published ports: the proxy listens only on the private network.
     restart: unless-stopped
 
-  # Optional sidecar for exotic LLM providers behind an OpenAI-compatible endpoint.
-  # Enable with: docker compose --profile litellm up
   # The sandbox runner (#368, #393, #395).
   #
   # The one service that can reach the container runtime, and the one that holds
@@ -465,13 +469,78 @@ services:
     networks: [runner-control, sandbox-egress]
     restart: unless-stopped
 
+  # The LiteLLM sidecar (#428, #479).
+  #
+  # ONE OF TWO SUPPORTED SHAPES, not a fallback. The agent completes either
+  # directly against a provider or through this service, and an operator has
+  # real grounds for each: direct is one less process, one less hop and one less
+  # thing holding a provider key; the sidecar is one place for routing,
+  # fallbacks, rate limits and key rotation across several providers, and a
+  # per-call cost figure the proxy can reconcile against (#239). `deploy/README.md`,
+  # "The LiteLLM sidecar", is the argument; ./litellm/config.yaml is what you edit.
+  #
+  # BEHIND A PROFILE, for the runner's reason: opt-in, and still a real service
+  # that compose validates rather than a commented-out block that rots.
+  #
+  #   docker compose --profile litellm up -d
+  #
+  # Turning it on is that, plus four variables in .env: the two provider keys
+  # below, and — on the server above — AGENT_PROVIDER=openai-compatible with
+  # OPENAI_BASE_URL=http://litellm:4000/v1.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     profiles: [litellm]
+    environment:
+      # THE PROVIDER KEYS LIVE HERE AND ONLY HERE, and the prefix is what makes
+      # that checkable. In this shape the agent service holds no provider key at
+      # all — its OPENAI_API_KEY is this sidecar's master key, which is a
+      # different secret to a different party. Reading the unprefixed
+      # ANTHROPIC_API_KEY/OPENAI_API_KEY here, the way a stock LiteLLM config
+      # does, would collapse those two meanings onto one name and send the
+      # sidecar's own key upstream to OpenAI as a provider credential. So the
+      # sidecar's upstream keys are named for the sidecar.
+      #
+      # Empty is fine for an entry you have deleted from config.yaml. A key that
+      # a live `model_list` entry names and .env leaves empty fails at the first
+      # call to that model, not at boot.
+      LITELLM_ANTHROPIC_API_KEY: ${LITELLM_ANTHROPIC_API_KEY:-}
+      LITELLM_OPENAI_API_KEY: ${LITELLM_OPENAI_API_KEY:-}
+      # THE AGENT'S KEY, HANDED TO THE SERVICE IT AUTHENTICATES AGAINST. One
+      # secret under one name, on purpose: unset, LiteLLM starts and serves
+      # every request unauthenticated without saying so, which would leave the
+      # two keys above behind no check for anything on the `libero` network. It
+      # cannot be a `:?` guard — compose interpolates the whole file before it
+      # decides which profiles are active, so a required variable in a
+      # profile-gated service breaks `docker compose up` for every deployment
+      # that does not run it. Wiring it to OPENAI_API_KEY instead means the
+      # server's own `requiredEnv` is the guard: in this shape the agent reads
+      # that variable as its provider key and refuses to start without it, so
+      # there is no configuration where the agent runs and this is empty.
+      LITELLM_MASTER_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml"]
+    # No published ports, for the proxy's reason: the agent reaches it at
+    # `litellm:4000` on the private network, and publishing it would put the
+    # provider keys behind one HTTP header on the host's interface.
     networks: [libero]
+    # The image ships no curl and no wget; python3 is its own runtime and is on
+    # PATH. `/health/liveliness` answers as soon as the config is loaded, which
+    # is about a second — it says the process is up and its `model_list` parsed,
+    # not that any upstream is reachable.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
 
 networks:
   libero:

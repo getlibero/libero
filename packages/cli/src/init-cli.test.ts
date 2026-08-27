@@ -33,6 +33,13 @@ const VARIABLES = [
   "ANTHROPIC_BASE_URL",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
+  // The LiteLLM sidecar (#428, #479). Blank for the runner's first reason: the
+  // sidecar shape needs a provider key and nobody can guess which. In that
+  // shape OPENAI_API_KEY above stops being a provider key and becomes the
+  // sidecar's, so these two are where the provider keys go — on a service the
+  // agent's own variables never reach.
+  "LITELLM_ANTHROPIC_API_KEY",
+  "LITELLM_OPENAI_API_KEY",
   "AGENT_EMBEDDING_PROVIDER",
   "AGENT_EMBEDDING_MODEL",
   "AGENT_EMBEDDING_API_KEY",

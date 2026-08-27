@@ -265,6 +265,106 @@ networks rests on Docker's default iptables rules. A deployment running the daem
 with `--iptables=false` has removed a wall this design leans on, and nothing here
 would report it.
 
+## The LiteLLM sidecar (#428)
+
+**Two supported deployment shapes, not a default and an escape hatch.** The
+agent completes either directly against a provider or through this sidecar, and
+which one you run is a choice with grounds on both sides:
+
+| | Direct | Sidecar |
+| --- | --- | --- |
+| Processes holding a provider key | The agent | The sidecar, and the agent holds none |
+| Hops on the call path | One | Two |
+| Routing, fallbacks, rate limits, key rotation across several vendors | Each is the provider's own, or nothing | One place, one config file |
+| A cost figure to reconcile the proxy's computed one against | None | Per call (#239) |
+| Token counts | Arrive in the provider's own envelope | Arrive in LiteLLM's, and must survive it (#480) |
+
+Neither is the fallback. This is not what you run because `packages/agent` has
+no adapter for your provider — the `openai-compatible` arm already reaches
+Together, Fireworks, Groq, Baseten, Ollama and Gemini's compatibility endpoint by
+base URL alone.
+
+**Behind a `litellm` profile**, for the runner's reason: opt-in, and still a real
+service that compose validates rather than a commented-out block that rots.
+
+```
+# edit deploy/litellm/config.yaml — the model_list is what you change
+# in .env: LITELLM_ANTHROPIC_API_KEY / LITELLM_OPENAI_API_KEY, whichever the list names
+# in .env: AGENT_PROVIDER=openai-compatible
+#          OPENAI_BASE_URL=http://litellm:4000/v1
+#          OPENAI_API_KEY=<any value — it is the sidecar's key, see below>
+#          AGENT_MODEL=<a model_name alias from config.yaml>
+docker compose --profile litellm up -d
+```
+
+### The keys split, and that is the whole custody story
+
+The agent service in this shape **holds no provider key at all**. `OPENAI_API_KEY`
+on it is the key for whatever `OPENAI_BASE_URL` names, which is the sidecar — so
+it is the sidecar's master key, a different secret to a different party. The
+provider keys are `LITELLM_ANTHROPIC_API_KEY` and `LITELLM_OPENAI_API_KEY`, set on
+the sidecar alone.
+
+The prefix is not decoration. A stock LiteLLM config reads the unprefixed
+`ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, and this compose file already declares
+both of those on the *server*, meaning something else. Collapsing the two meanings
+onto one name would send the sidecar's own key upstream to OpenAI as a provider
+credential — a secret crossing to the wrong party, silently, on a working
+deployment.
+
+**The master key is not optional, and LiteLLM will not tell you.** Unset, it
+starts anyway and serves every request unauthenticated; that puts the provider
+keys behind no check for anything that can reach port 4000. It cannot be a
+compose `:?` guard, because compose interpolates the whole file before it decides
+which profiles are active — a required variable in a profile-gated service breaks
+`docker compose up` for every deployment that does not run that service, this
+one's `images` CI job included. So the guard is structural instead: compose sets
+`LITELLM_MASTER_KEY: ${OPENAI_API_KEY:-}`, one secret under one name, and the
+server's own `requiredEnv` refuses to start without it. There is no configuration
+in which the agent runs and the sidecar is unauthenticated.
+
+The service publishes no ports, for the same reason the proxy does not: the agent
+reaches it at `litellm:4000` on the private network, and publishing it would put
+the provider keys behind one HTTP header on the host's interface.
+
+### The alias is a deployment fact
+
+A `model_name` in the `model_list` is read by three things that have to agree:
+
+- **`AGENT_MODEL`, or a channel's `[llm] model`,** names it. It is what a sheet
+  asks for.
+- **LiteLLM echoes it back** as the response's `model` — the alias, not the
+  upstream id it resolved to. Verified against `main-stable`: `claude-sonnet-4-6`
+  backed by `anthropic/claude-sonnet-4-6` comes back `claude-sonnet-4-6`.
+- **So it is what lands in the spend report** (#62, `servedModel`), and therefore
+  what the proxy's price table must be keyed by. An alias with no row there is an
+  unpriced model, and `daily_usd` fails closed on it.
+
+Naming the alias after the upstream model id keeps all three the same string
+without anyone having to think about it. An alias must also satisfy `ModelId` —
+letters, digits, dot, dash, colon, slash — because the spend report is a strict
+schema and an id that does not parse costs the turn its token counts, which is
+the limit that catches a runaway loop.
+
+Embeddings go through the same service and the same key: `AGENT_EMBEDDING_PROVIDER=openai-compatible`
+with `AGENT_EMBEDDING_BASE_URL=http://litellm:4000/v1`, and
+`AGENT_EMBEDDING_API_KEY` left unset so it falls back to `OPENAI_API_KEY`, which
+here is the one right answer rather than a convenience. Changing which upstream an
+embedding alias resolves to is a **rebuild** for the same reason changing
+`AGENT_EMBEDDING_MODEL` is: the id is stamped against a channel's stored vectors.
+
+### What this does not yet claim
+
+The four counts `TokenUsage` carries have to survive LiteLLM's envelope exactly
+as they must survive a native provider's, and the budget meter weights cache
+reads and writes separately — a path that collapses them is wrong by an order of
+magnitude on a cache-heavy agent, which is every agent here. LiteLLM does pass
+`prompt_tokens_details.cached_tokens` through, so cache reads arrive; the
+OpenAI chat-completions wire format has no cache-*write* field at all, so that
+count is not carried on this path today. **Proving the four counts through a live
+sidecar, for completions and for embeddings, is #480** — this section is the
+deployment, not the conformance claim.
+
 ## Upgrading across #62: proxy first
 
 **Upgrade the proxy before the agent.** The spend report gained a `model` field,

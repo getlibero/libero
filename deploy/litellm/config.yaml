@@ -1,3 +1,79 @@
-# Opt-in LiteLLM sidecar for providers not covered by the AI SDK natively.
-# Enable with: docker compose --profile litellm up
-model_list: []
+# The LiteLLM sidecar's model list (#479).
+#
+# Direct provider APIs and this sidecar are TWO SUPPORTED DEPLOYMENT SHAPES, and
+# which one you run is your choice rather than a gap. Direct is one less
+# process, one less hop, and one less thing holding a provider key. The sidecar
+# is one place to put routing, fallbacks, rate limits and key rotation across
+# several providers — and a per-call cost figure the proxy can reconcile its own
+# computed cost against (#239), which direct calling has no equivalent of.
+# Neither is the fallback for the other, and nothing here is an escape hatch for
+# a provider `packages/agent` has not got an adapter for.
+#
+# Start it:
+#
+#   docker compose --profile litellm up -d
+#
+# and point the agent at it — AGENT_PROVIDER=openai-compatible,
+# OPENAI_BASE_URL=http://litellm:4000/v1, AGENT_MODEL set to one of the
+# `model_name` aliases below. deploy/README.md, "The LiteLLM sidecar", has the
+# rest and the key-custody argument.
+#
+# WHAT YOU CHANGE: the `model_list` entries. Everything under them is worked
+# rather than illustrative — the two below start and serve as written, given the
+# two keys — but they name models and a vendor pair that are ours to guess and
+# yours to decide. Replace them; the shape is what this file is for.
+#
+# THE `model_name` ALIAS IS A DEPLOYMENT FACT, not a label. Three things read it
+# and they must agree:
+#
+#   - AGENT_MODEL (or a channel's `[llm] model`) names it. It is what a sheet
+#     asks for.
+#   - LiteLLM ECHOES IT BACK as the response's `model`, not the upstream id it
+#     resolved to. Verified against main-stable: a request for `claude-sonnet-4-6`
+#     backed by `anthropic/claude-sonnet-4-6` comes back `claude-sonnet-4-6`.
+#   - So it is what lands in the turn's spend report (#62), and therefore what
+#     the proxy's price table must be keyed by. An alias with no row there is an
+#     unpriced model, and `daily_usd` fails closed on it.
+#
+# Naming an alias after the upstream model id is the way to keep those three the
+# same string without thinking about it. An alias must also satisfy `ModelId` —
+# letters, digits, dot, dash, colon, slash — because the spend report is a strict
+# schema and an id that does not parse costs the turn its token counts.
+
+model_list:
+  # Completion. The agent's ordinary shape completes against one vendor and
+  # embeds against another, and that is what these two entries are.
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/LITELLM_ANTHROPIC_API_KEY
+
+  # Embeddings. `AGENT_EMBEDDING_PROVIDER=openai-compatible` with
+  # AGENT_EMBEDDING_BASE_URL pointed here reaches this entry. The model id is
+  # stamped against a channel's stored vectors, so changing which upstream this
+  # alias resolves to is a rebuild rather than a swap — see
+  # `node dist/rebuild.js` in deploy/README.md.
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/LITELLM_OPENAI_API_KEY
+
+general_settings:
+  # THE ONE THING THAT AUTHENTICATES A CALLER. Unset, LiteLLM starts anyway and
+  # serves every request unauthenticated — verified, and it says nothing about
+  # it. That would put the provider keys above behind no check at all for
+  # anything that can reach port 4000.
+  #
+  # It cannot be a compose `:?` guard: compose interpolates the whole file
+  # before it decides which profiles are active, so a required variable here
+  # would break `docker compose up` for every deployment that does not run this
+  # service. The guard is instead that compose hands this service the agent's
+  # own OPENAI_API_KEY — one secret under one name, so the two cannot drift —
+  # and the agent refuses to start without it. See deploy/docker-compose.yml.
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  # The agent sends the OpenAI chat-completions request its adapter builds. A
+  # provider that does not implement one of its parameters should answer the
+  # call without it rather than 400 the turn.
+  drop_params: true
