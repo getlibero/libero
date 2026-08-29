@@ -58,6 +58,23 @@ export function withUsage(response: CompletionResponse, usage: TokenUsage): Comp
 }
 
 /**
+ * The same turn, with a gateway's own cost figure on it (#239).
+ *
+ * `withUsage`'s shape and its argument. Only a router reports one — a direct
+ * provider call carries none — so every turn in this suite is the ordinary
+ * shape until a case says otherwise, and the cases that say otherwise are about
+ * the price-drift record.
+ *
+ * Nano-USD, as `CompletionResponse.costNanoUsd` carries it.
+ */
+export function withReportedCost(
+  response: CompletionResponse,
+  costNanoUsd: number
+): CompletionResponse {
+  return { ...response, costNanoUsd };
+}
+
+/**
  * The model the scripted provider says it served (#62).
  *
  * Every turn carries it, because a real provider echoes one on every response

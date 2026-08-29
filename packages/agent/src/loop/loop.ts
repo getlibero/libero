@@ -138,7 +138,11 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
       // Absent when the provider echoed nothing, and absent it stays: the loop
       // knows `request.model` and deliberately does not substitute it. See
       // `CompletedTurn.model`.
-      ...(response.model === undefined ? {} : { model: response.model })
+      ...(response.model === undefined ? {} : { model: response.model }),
+      // Absent unless a router priced the call (#239). Passed through for the
+      // same reason and with the same silence: the loop has no figure of its
+      // own to fall back to, and inventing one would be inventing a comparison.
+      ...(response.costNanoUsd === undefined ? {} : { costNanoUsd: response.costNanoUsd })
     });
     if (response.text !== "") text = response.text;
 

@@ -10,6 +10,7 @@ import {
   type ToolCall,
   type TokenUsage
 } from "./types.js";
+import { reportedCost } from "./reported-cost.js";
 import { servedModel } from "./served-model.js";
 
 const PROVIDER = "openai-compatible";
@@ -59,8 +60,13 @@ export function createOpenAICompatibleCompletionClient(
   return {
     async complete(request: CompletionRequest): Promise<CompletionResponse> {
       let completion: ChatCompletion;
+      // The headers, not just the body: a router reports what the call cost in
+      // one (#239), and `create()` alone resolves to the parsed body with no way
+      // back to the response it came out of. `withResponse()` is the SDK's own
+      // seam for that and costs nothing when nothing sends the header.
+      let headers: Headers | undefined;
       try {
-        completion = await openai().chat.completions.create(
+        const received = await openai().chat.completions.create(
           {
             model: request.model,
             // max_tokens, not max_completion_tokens: the compatible endpoints
@@ -81,13 +87,15 @@ export function createOpenAICompatibleCompletionClient(
               : {})
           },
           request.signal !== undefined ? { signal: request.signal } : {}
-        );
+        ).withResponse();
+        completion = received.data;
+        headers = received.response.headers;
       } catch (cause) {
         if (cause instanceof CompletionError) throw cause;
         throw new CompletionError("completion request failed", PROVIDER, { cause });
       }
 
-      return fromOpenAICompletion(completion);
+      return fromOpenAICompletion(completion, headers);
     }
   };
 }
@@ -134,7 +142,10 @@ function toOpenAIMessages(
   return converted;
 }
 
-function fromOpenAICompletion(completion: ChatCompletion): CompletionResponse {
+function fromOpenAICompletion(
+  completion: ChatCompletion,
+  headers: Headers | undefined
+): CompletionResponse {
   const choice = completion.choices[0];
   if (choice === undefined) {
     throw new CompletionError("response contained no choices", PROVIDER);
@@ -159,7 +170,11 @@ function fromOpenAICompletion(completion: ChatCompletion): CompletionResponse {
     // The adapter this matters most for: a LiteLLM sidecar echoes the model it
     // *resolved* here, which is the number a dollar cap has to be priced by and
     // the one the team sheet cannot know.
-    ...servedModel(completion.model)
+    ...servedModel(completion.model),
+    // And what that router says the call cost, when it says anything (#239).
+    // Read off the headers rather than the body: LiteLLM puts it there and
+    // nowhere else over this wire format.
+    ...reportedCost(headers)
   };
 }
 

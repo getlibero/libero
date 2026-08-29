@@ -48,7 +48,8 @@ try {
         await createProxySpendClient({ transport, channel }).report(
           turn.id,
           turn.usage,
-          turn.model
+          turn.model,
+          turn.costNanoUsd
         );
       } catch (error) {
         // A rebuild whose meter is unreachable still rebuilds. The alternative

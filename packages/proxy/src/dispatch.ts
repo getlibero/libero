@@ -97,8 +97,19 @@ export interface TokenRecorder {
 /**
  * Whether a report moved the meter. `duplicate` is the right answer to a retry
  * and is not a failure — nothing was denied, because reporting is not asking.
+ *
+ * `day` is the UTC day the meter filed the counts under, read from the meter's
+ * own clock at the moment it filed them. It is on the answer rather than
+ * recomputed by the caller so that anything recorded beside these counts — the
+ * price-drift observation in ./drift-db.ts is the one caller (#239) — cannot
+ * land in a different day than the counts it is a comparison against. A report
+ * arriving in the last millisecond of a day is exactly where two clocks would
+ * disagree.
  */
-export type SpendRecord = { readonly outcome: "recorded" | "duplicate" };
+export type SpendRecord = {
+  readonly outcome: "recorded" | "duplicate";
+  readonly day: string;
+};
 
 /**
  * Takes a channel's one soft-limit warning for a limit, for today (#99).

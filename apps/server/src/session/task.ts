@@ -953,12 +953,12 @@ async function reportSpend(
   request: TaskRequest,
   logger: Logger
 ): Promise<void> {
-  const { usage, turn, model } = completed;
+  const { usage, turn, model, costNanoUsd } = completed;
   const spent = totalTokens(usage);
   if (spent === 0) return;
 
   try {
-    const outcome = await spend.report(`${taskId}.${turn}`, usage, model);
+    const outcome = await spend.report(`${taskId}.${turn}`, usage, model, costNanoUsd);
     logger.log("info", {
       event: "spend_reported",
       channel: request.key.channel,
@@ -970,7 +970,11 @@ async function reportSpend(
       // The model that *served* the turn, which is not the `model` on this
       // task's own log line — that one is what the sheet asked for. Under a
       // router they differ, and it is this one a price table is keyed by.
-      ...(model === undefined ? {} : { servedModel: model })
+      ...(model === undefined ? {} : { servedModel: model }),
+      // What the gateway that served the turn charged for it, when one said
+      // anything (#239). Absent for a direct provider call, which is most of
+      // them, and absent rather than zero for the reason the field itself is.
+      ...(costNanoUsd === undefined ? {} : { reportedCostNanoUsd: costNanoUsd })
     });
   } catch (error) {
     // Everything, including what is not a `ProxyClientError`. A bug in the

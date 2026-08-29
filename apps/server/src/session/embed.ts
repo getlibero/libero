@@ -86,7 +86,12 @@ export function createQueryEmbedder(options: QueryEmbedderOptions): QueryEmbedde
           usage: { inputTokens: response.usage.inputTokens, outputTokens: 0 },
           turn: 0,
           id: request.turnId,
-          ...(response.model === undefined ? {} : { model: response.model })
+          ...(response.model === undefined ? {} : { model: response.model }),
+          // What the gateway said this embedding cost, when one said
+          // anything (#239). An embedding call is where the unit shows: nine
+          // tokens through LiteLLM is 1.8e-07 USD, which is 180 nano-USD and
+          // nothing at all at micro.
+          ...(response.costNanoUsd === undefined ? {} : { costNanoUsd: response.costNanoUsd })
         });
       }
 

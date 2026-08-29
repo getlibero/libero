@@ -460,15 +460,23 @@ spellings at once — `prompt_tokens_details.cache_write_tokens`,
 because which spelling a version keeps is not ours to decide and a missing count
 is billed at the input rate.
 
-## Upgrading across #62: proxy first
+## Upgrading across #62 and #239: proxy first
 
-**Upgrade the proxy before the agent.** The spend report gained a `model` field,
-`SpendReport` is a strict schema, and an *old* proxy answers 400 to a body
-carrying a field it does not know. So a new agent against an old proxy fails
-every spend report: `daily_tokens` runs blind while `daily_tool_calls` keeps
-working — the meter failing open, quietly, for as long as the pair is mismatched.
+**Upgrade the proxy before the agent, for the same reason twice.** `SpendReport`
+is a strict schema, and an *old* proxy answers 400 to a body carrying a field it
+does not know. #62 added `model` to that body and #239 added `costNanoUsd`, so a
+new agent against an old proxy fails every spend report either way:
+`daily_tokens` runs blind while `daily_tool_calls` keeps working — the meter
+failing open, quietly, for as long as the pair is mismatched.
 
-The other order is fine. A new proxy accepts an old agent's reports exactly as
+#239's field makes this no worse and no better. It rides on a report that was
+already going to be sent, and it is only present at all in a deployment behind a
+gateway that reports costs — so a direct deployment upgraded in the wrong order
+has exactly #62's window, and a sidecar deployment has the same window for one
+more reason.
+
+The other order is fine, and the rest of #62's account holds unchanged. A new
+proxy accepts an old agent's reports exactly as
 before; they arrive without a model, land in the `(unreported)` bucket, and
 change nothing for a channel that has not set `budget.daily_usd`.
 

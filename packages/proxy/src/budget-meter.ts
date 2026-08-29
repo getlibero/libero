@@ -97,7 +97,7 @@ export function createSqliteSpendMeter(options: SpendMeterOptions): SpendMeter {
         cacheWriteTokens: usage.cacheCreationInputTokens
       });
       prune(today);
-      return { outcome: recorded ? "recorded" : "duplicate" };
+      return { outcome: recorded ? "recorded" : "duplicate", day: today };
     }
   };
 }

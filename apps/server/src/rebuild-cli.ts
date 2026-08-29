@@ -219,7 +219,10 @@ async function embedBatch(
       usage: { inputTokens: response.usage.inputTokens, outputTokens: 0 },
       turn: 0,
       id: turnIdFor(batch),
-      ...(response.model === undefined ? {} : { model: response.model })
+      ...(response.model === undefined ? {} : { model: response.model }),
+      // What the gateway said this embedding cost, when one said anything
+      // (#239). Absent for every direct provider call, which is most of them.
+      ...(response.costNanoUsd === undefined ? {} : { costNanoUsd: response.costNanoUsd })
     });
   }
 

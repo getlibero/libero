@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { CreateEmbeddingResponse } from "openai/resources/embeddings";
+import { reportedCost } from "../completion/reported-cost.js";
 import { servedModel } from "../completion/served-model.js";
 import {
   EmbeddingError,
@@ -79,8 +80,12 @@ export function createOpenAICompatibleEmbeddingClient(
       if (request.texts.length === 0) return { vectors: [] };
 
       let response: CreateEmbeddingResponse;
+      // The headers as well as the body, for ../completion/openai.ts's reason:
+      // a router reports what the call cost in one (#239), and the parsed body
+      // has no way back to the response it came from.
+      let headers: Headers | undefined;
       try {
-        response = await openai().embeddings.create(
+        const received = await openai().embeddings.create(
           {
             model: request.model,
             input: request.texts,
@@ -90,7 +95,9 @@ export function createOpenAICompatibleEmbeddingClient(
             encoding_format: "float"
           },
           request.signal !== undefined ? { signal: request.signal } : {}
-        );
+        ).withResponse();
+        response = received.data;
+        headers = received.response.headers;
       } catch (cause) {
         if (cause instanceof EmbeddingError) throw cause;
         // The message says nothing about what was being embedded. See
@@ -98,14 +105,15 @@ export function createOpenAICompatibleEmbeddingClient(
         throw new EmbeddingError("embedding request failed", PROVIDER, { cause });
       }
 
-      return fromOpenAIEmbeddings(response, request.texts.length);
+      return fromOpenAIEmbeddings(response, request.texts.length, headers);
     }
   };
 }
 
 function fromOpenAIEmbeddings(
   response: CreateEmbeddingResponse,
-  asked: number
+  asked: number,
+  headers: Headers | undefined
 ): EmbeddingResponse {
   // **Sorted by index rather than trusted in arrival order.** The API documents
   // an `index` on every item precisely because the order is not guaranteed, and
@@ -137,7 +145,8 @@ function fromOpenAIEmbeddings(
       return Float32Array.from(item.embedding);
     }),
     ...servedModel(response.model),
-    ...toUsage(response)
+    ...toUsage(response),
+    ...reportedCost(headers)
   };
 }
 

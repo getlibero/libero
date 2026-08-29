@@ -56,6 +56,7 @@ export {
   says,
   scriptedModel,
   servedBy,
+  withReportedCost,
   withUsage
 } from "./model.js";
 export type { ModelTurnHook, ScriptTurn, ScriptedModel } from "./model.js";
@@ -65,6 +66,9 @@ export type { AuditCliResult } from "./audit-cli.js";
 
 export { runBudgetCli } from "./budget-cli.js";
 export type { BudgetCliResult } from "./budget-cli.js";
+
+export { runDriftCli } from "./drift-cli.js";
+export type { DriftCliResult } from "./drift-cli.js";
 
 export { spawnProxy } from "./proxy-process.js";
 export type { ProxyEnv, ProxyProcess } from "./proxy-process.js";

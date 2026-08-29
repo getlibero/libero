@@ -245,13 +245,15 @@ describe("the deadline this client carries", () => {
   // to honour. Refusing the parameter is what keeps it from being added back.
   //
   // The number is the whole parameter list, so it moves when the list
-  // legitimately does — it went from two to three when #62 added the served
-  // model. What it pins is that every parameter is accounted for here, so a
-  // fourth arriving as a signal fails this case rather than sliding in.
+  // legitimately does — two to three when #62 added the served model, three to
+  // four when #239 added the cost a gateway reported. Both are facts about the
+  // turn that was already spent. What it pins is that every parameter is
+  // accounted for here, so a fifth arriving as a signal fails this case rather
+  // than sliding in.
   it("takes no signal from its caller", () => {
     const { client } = clientWith();
 
-    expect(client.report.length).toBe(3);
+    expect(client.report.length).toBe(4);
   });
 });
 

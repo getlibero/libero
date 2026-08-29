@@ -150,7 +150,7 @@ export function meteringClosures(options: MeteringOptions): Metering {
       const outcome = await createProxySpendClient({
         transport: options.transport,
         channel
-      }).report(turn.id, turn.usage, turn.model);
+      }).report(turn.id, turn.usage, turn.model, turn.costNanoUsd);
       logger.log("info", {
         event: "spend_reported",
         channel,

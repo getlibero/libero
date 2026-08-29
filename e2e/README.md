@@ -149,8 +149,8 @@ real cause and looking nothing like it.
 
 `startRig` is the whole API; `src/smoke.test.ts` is the worked example. Everything
 it returns — `agent`, `proxy`, `upstream`, `model`, `channelsRoot`, `auditDb`,
-`budgetDb`, `storeRoot` — is there so a case can assert without reaching into
-rig internals.
+`budgetDb`, `driftDb`, `storeRoot` — is there so a case can assert without
+reaching into rig internals.
 If you find yourself needing one, add it to the rig rather than rebuilding a
 piece of it.
 
@@ -274,7 +274,10 @@ decorators; `wrapTransport` on `startAgent` takes any of your own.
 turn reports a fixed usage, and `daily_tokens: 2 * TURN_TOKENS` says "the third
 call is over the line" in a way that survives someone changing what a turn
 reports. `withUsage(turn, usage)` overrides it for the one case that needs a
-turn to report cache tokens and nothing else. Both are in `harness/model.ts`.
+turn to report cache tokens and nothing else, and `withReportedCost(turn, nano)`
+puts a gateway's own cost figure on a turn — the shape only a router produces,
+which is why every other turn in the suite carries none. All three are in
+`harness/model.ts`.
 
 **The operator's reset is spawned, not called.** `runBudgetCli(budgetDb,
 ["reset", CHANNEL])` runs the built `dist/budget.js` — the documented
@@ -285,6 +288,13 @@ and skip the entrypoint, the env contract, and the exit code. What the case is
 really asserting is a claim about processes: the proxy has no admin route, so
 a reset is a second process against the same file, and WAL plus an uncached
 meter is what makes it land on the running proxy's next call.
+
+**So is the drift command** (#239). `runDriftCli(driftDb, priceTable, ["show"])`
+runs the built `dist/drift.js` the same way and for the same reason, with one
+addition of its own: the exit code is part of what `cost-drift.test.ts` claims.
+There is deliberately no failing status for a large difference between what a
+gateway charged and what the price table says, and a case that called the command
+in-process could assert the arithmetic but not that.
 
 **Driving a human's click needs three things, and the rig has all of them.**
 `agent.slack.deliverMention` does not resolve while a call is held, so a case

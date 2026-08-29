@@ -182,6 +182,30 @@ export default tseslint.config(
     }
   },
   {
+    // The third boundary, and the narrowest (#239). The price-drift record is
+    // an observation: a router's own cost figure, kept beside the counts so an
+    // operator can see a stale price table. It must never reach a decision, and
+    // "never" is a property of what the deciding module can import rather than
+    // of what today's code happens to read. `enforce.ts` is where every budget
+    // refusal is made, and a figure a gateway computed reaching it would move
+    // enforcement out of the proxy — the invariant the whole design hangs on.
+    files: ["packages/proxy/src/enforce.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/drift-db*"],
+              message:
+                "Enforcement never reads the price-drift record. It is a router's own cost figure, recorded for an operator to compare against the price table; metering or refusing on it would move enforcement onto a number the proxy did not compute. See drift-db.ts."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     // The same mechanism, for the route that reaches an upstream. `GET
     // /v1/tools` asks each server the sheet named what its tools take, and the
     // claim worth enforcing is the shape of what it holds: **it can ask an

@@ -15,6 +15,7 @@ import {
   createToolDispatcher,
   loadTlsOptions,
   openAttemptStore,
+  openDriftDb,
   openAuditWriter,
   openBudgetDb,
   openPriceTableStore,
@@ -23,6 +24,7 @@ import {
 } from "@getlibero/proxy";
 import {
   attemptsDbFromEnv,
+  driftDbFromEnv,
   auditDbFromEnv,
   budgetDbFromEnv,
   channelsRootFromEnv,
@@ -106,6 +108,18 @@ const attemptsFile = attemptsDbFromEnv(process.env);
 const attempts = attemptsFile === undefined ? undefined : openAttemptStore({ file: attemptsFile, logger });
 if (attempts === undefined) {
   logger.log("warn", { event: "attempt_capture_off", reason: "PROXY_ATTEMPTS_DB is not set" });
+}
+
+// The price-drift record (#239), opened here on the same argument: a file whose
+// directory is missing or whose schema is from the future is a startup failure
+// rather than a surprise on the first spend report. Absent variable is the
+// record off, said once so a mistyped name is a line in the log — and quieter
+// than the attempt store's, because what is lost is an observation nobody is
+// waiting on rather than evidence somebody will want.
+const driftFile = driftDbFromEnv(process.env);
+const drift = driftFile === undefined ? undefined : openDriftDb({ file: driftFile, logger });
+if (drift === undefined) {
+  logger.log("warn", { event: "price_drift_off", reason: "PROXY_DRIFT_DB is not set" });
 }
 
 // Hoisted out of the composition below because shutdown needs a handle on it.
@@ -207,6 +221,10 @@ const server = createProxyServer({
   // the file it is being audited into. `auditDb` stays here, where shutdown is.
   audit,
   ...(attempts !== undefined ? { attempts } : {}),
+  // Narrowed by the option's own type to `DriftRecorder`, so the route that
+  // gets it can write an observation and read nothing back. The handle stays
+  // here, where shutdown is.
+  ...(drift !== undefined ? { drift } : {}),
   logger
 });
 
@@ -262,6 +280,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
         budget.close();
         auditDb.close();
         attempts?.close();
+        drift?.close();
         prices.close();
         // Last, after the pool's sessions are gone: nothing can need a token
         // any more, and this is the line that zeroes the master key.

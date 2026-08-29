@@ -1372,7 +1372,7 @@ describe("composing the proxy", () => {
             byModel: []
           }),
           recordToolCall: () => {},
-          recordTokens: () => ({ outcome: "recorded" as const }),
+          recordTokens: () => ({ outcome: "recorded" as const, day: "2026-08-29" }),
           claimWarning: () => false
         }),
         catalog: createUnavailableCatalog(),
@@ -2823,7 +2823,7 @@ describe("a permitted call with no upstream", () => {
         recordToolCall: () => {
           throw new Error("disk full");
         },
-        recordTokens: () => ({ outcome: "recorded" }),
+        recordTokens: () => ({ outcome: "recorded", day: "2026-08-29" }),
         claimWarning: () => false
       },
       dispatcher,

@@ -78,7 +78,10 @@ describe("resetting a channel", () => {
 
     // The retry is now a fresh report — which is correct, because the reset
     // said this channel starts from zero — and it spends only what it carries.
-    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({ outcome: "recorded" });
+    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({
+      outcome: "recorded",
+      day: "2026-08-04"
+    });
     expect((await meter.read(CHANNEL)).inputTokens).toBe(120);
   });
 
