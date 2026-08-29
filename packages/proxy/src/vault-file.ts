@@ -13,8 +13,8 @@ import { readFileSync } from "node:fs";
 import { CredentialName } from "@getlibero/schema";
 import { replaceFileAtomically } from "@getlibero/atomic-write";
 import { sealEnvelope } from "./envelope.js";
+import { MAX_SECRET_BYTES } from "./custody.js";
 import {
-  MAX_SECRET_BYTES,
   MAX_VAULT_BYTES,
   VAULT_SPEC,
   VaultError,
@@ -26,8 +26,8 @@ import type { VaultKey } from "./vault.js";
 
 export type VaultEntries = ReadonlyMap<string, string>;
 
-// The cap on one value lives in ./vault.ts now — the token store's writer
-// holds it too — and is re-exported here so `set`'s callers keep their import.
+// The cap on one value is the contract's (./custody.ts) — every writer holds
+// it — and is re-exported here so `set`'s callers keep their import.
 export { MAX_SECRET_BYTES };
 
 /** Why an entry was rejected. Names and sizes, never a value. */

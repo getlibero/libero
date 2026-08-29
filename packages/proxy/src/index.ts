@@ -196,6 +196,24 @@ export type { SheetState, TeamSheetSource, TeamSheetStoreOptions } from "./team-
 export { createJsonLogger, createSilentLogger } from "./log.js";
 export type { LogFields, Logger, LogLevel } from "./log.js";
 
+// The custody contract (#482): what a credential store is, and which backend
+// this deployment got. `openCustody` is what a composition root holds;
+// `openVaultAdmin` is the operator's, banned from the serving process by the
+// ESLint block below the vault's own exports. The two encrypted files are the
+// default backend and export their own surface underneath, unchanged.
+// Only what is new here. `Secret`, `Vault`, `TokenStore`, `MAX_SECRET_BYTES`
+// and the grant shapes keep the exports they have always had, below, which
+// now resolve through the backends' re-exports — the seam is a place to read,
+// not a migration for every importer. ./custody-conformance.ts is deliberately
+// *not* exported: it imports `node:test` and `expect`, and the barrel is loaded
+// by the serving process.
+export { CustodyError, makeSecret } from "./custody.js";
+export type { Awaitable, Custody, CustodyFailure } from "./custody.js";
+export { openCustody } from "./custody-backend.js";
+export type { CustodyConfig, CustodyDeps } from "./custody-backend.js";
+export { openVaultAdmin } from "./custody-admin.js";
+export type { VaultAdmin } from "./custody-admin.js";
+
 export {
   MAX_VAULT_BYTES,
   VAULT_KEY_BYTES,

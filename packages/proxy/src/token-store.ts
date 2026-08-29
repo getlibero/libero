@@ -37,9 +37,15 @@ import { dirname, join } from "node:path";
 import { CredentialName } from "@getlibero/schema";
 import { replaceFileAtomically } from "@getlibero/atomic-write";
 import { EnvelopeError, type EnvelopeSpec, openEnvelope, sealEnvelope } from "./envelope.js";
+import { CustodyError, MAX_SECRET_BYTES, makeSecret } from "./custody.js";
+import type { CustodyFailure, GrantBinding, GrantRead, GrantRecord, TokenStore } from "./custody.js";
 import type { Logger } from "./log.js";
-import { MAX_SECRET_BYTES, MAX_VAULT_BYTES, isAbsence, makeSecret } from "./vault.js";
-import type { Secret, VaultKey } from "./vault.js";
+import { MAX_VAULT_BYTES, isAbsence } from "./vault.js";
+import type { VaultKey } from "./vault.js";
+
+// The contract this file implements, re-exported for ./vault.ts's reason: an
+// importer that has always taken a grant's shape from here keeps doing so.
+export type { GrantBinding, GrantRead, GrantRecord, TokenStore } from "./custody.js";
 
 /**
  * The two constants that make a file a token store rather than a vault. The
@@ -67,37 +73,6 @@ export function tokenStorePathFor(vaultFile: string): string {
 }
 
 /**
- * One grant, as stored. The refresh token is the only secret in it; issuer
- * and scopes are the record's teeth (checked in `read`, below), and the
- * client identity is the Client ID Metadata Document URL the grant was made
- * under, which the exchange presents as `client_id`.
- */
-export interface GrantRecord {
-  readonly issuer: string;
-  readonly clientId: string;
-  readonly refreshToken: string;
-  readonly scopes: readonly string[];
-  readonly obtainedAt: number;
-  readonly rotatedAt?: number;
-}
-
-/** What a sheet asks with: the auth block's declarations, never a value. */
-export interface GrantBinding {
-  readonly issuer: string;
-  readonly scopes: readonly string[];
-}
-
-/**
- * Why a grant was not returned. `issuer_mismatch` and `scopes_exceeded` are
- * deliberately distinguishable from `absent`: all three fail closed the same
- * way, but the operator's remedy differs — re-run the grant flow against the
- * new issuer or the wider scopes, versus run it for the first time.
- */
-export type GrantRead =
-  | { readonly status: "found"; readonly refreshToken: Secret; readonly clientId: string }
-  | { readonly status: "missing"; readonly reason: "absent" | "issuer_mismatch" | "scopes_exceeded" };
-
-/**
  * Why a token store that exists could not be used. The envelope reasons are
  * the vault's, translated; `not_a_token_store` is this store's word for a file
  * whose magic says it is something else — a vault, most likely.
@@ -111,12 +86,23 @@ export type TokenStoreFailure =
   | "bad_key_or_tampered"
   | "malformed_plaintext";
 
+/** The vault's map, with this store's word for a file that is not one. */
+const CUSTODY_FAILURE: Record<TokenStoreFailure, CustodyFailure> = {
+  unreadable: "unreachable",
+  too_large: "too_large",
+  not_a_token_store: "malformed",
+  truncated: "malformed",
+  unsupported_version: "malformed",
+  bad_key_or_tampered: "bad_key_or_tampered",
+  malformed_plaintext: "malformed"
+};
+
 /** No `cause`, for VaultError's reason: nothing from OpenSSL is kept. */
-export class TokenStoreError extends Error {
+export class TokenStoreError extends CustodyError {
   readonly reason: TokenStoreFailure;
 
   constructor(reason: TokenStoreFailure) {
-    super(`proxy token store: ${reason}`);
+    super(`proxy token store: ${reason}`, CUSTODY_FAILURE[reason]);
     this.name = "TokenStoreError";
     this.reason = reason;
   }
@@ -135,47 +121,30 @@ export class GrantEntryError extends Error {
   }
 }
 
-export interface TokenStore {
-  /**
-   * The grant under a name, bound to what the sheet declares.
-   *
-   * The bindings are enforced here rather than by the caller so no caller can
-   * skip them: a refresh token is only ever handed out against the issuer its
-   * record names, byte for byte, and against scopes the grant covers. A sheet
-   * asking otherwise finds no grant — fail closed, re-grant.
-   *
-   * Re-reads the file per call. The engine is what keeps this off the serving
-   * path: it calls only at mint and refresh, never while a live access token
-   * is in memory.
-   */
+/**
+ * The file backend's `TokenStore`, narrowing `read` back to a synchronous
+ * answer.
+ *
+ * ./custody.ts declares `read` as `Awaitable<GrantRead>` because a managed
+ * backend reaches a network on that path. This one reads a file, so it can and
+ * does answer synchronously — and saying so here rather than in the contract is
+ * what lets every caller that opens *this* store keep its synchronous shape. A
+ * caller holding the interface still has to await.
+ *
+ * What each method does beyond the contract's account, all of it filesystem:
+ *
+ * - `read` re-reads the file per call. The engine is what keeps that off the
+ *   serving path: it calls only at mint and refresh, never while a live access
+ *   token is in memory. The bindings are enforced inside rather than by the
+ *   caller so no caller can skip them.
+ * - `rotate` and `putGrant` are read-merge-write under the store's one mutex,
+ *   `replaceFileAtomically`'s recipe, fsynced before they resolve. A rotation
+ *   whose record was replaced or re-bound mid-flight is dropped rather than
+ *   merged — the race the README prices at one loud re-grant.
+ * - `close` zeroes the retained master key.
+ */
+export interface FileTokenStore extends TokenStore {
   read(name: string, binding: GrantBinding): GrantRead;
-
-  /**
-   * Persist a rotated refresh token, replacing the named record's.
-   *
-   * Read-merge-write under the store's one mutex, `replaceFileAtomically`'s
-   * recipe, fsynced before this resolves — which is what lets the exchange
-   * hold the access token back until the successor that arrived with it is
-   * durable. If the record was replaced or re-bound while the exchange was in
-   * flight (a grant run racing a rotation), the rotation is dropped rather
-   * than merged: the successor belongs to the old grant's lineage, and
-   * overwriting a fresh grant with it would lose the newer one. That is the
-   * race the README prices at one loud re-grant.
-   */
-  rotate(name: string, binding: GrantBinding, rotatedRefreshToken: string): Promise<void>;
-
-  /**
-   * Store a whole grant, replacing any predecessor under the name.
-   *
-   * The seam the grant entrypoint (#257) composes, and what the tests seed
-   * with. Same mutex, same recipe. Replace-not-stack: one name is one grant.
-   */
-  putGrant(name: string, record: GrantRecord): Promise<void>;
-
-  /** Zero the retained master key. Reads and writes fail after this. */
-  close(): void;
-
-  readonly size: number;
 }
 
 export interface TokenStoreOptions {
@@ -196,7 +165,7 @@ export interface TokenStoreOptions {
  * Absent is not a failure: a deployment with no OAuth upstream has no store,
  * and nothing here creates the file until the first write.
  */
-export function openTokenStore(options: TokenStoreOptions): TokenStore {
+export function openTokenStore(options: TokenStoreOptions): FileTokenStore {
   const { vaultFile, key, logger } = options;
   const now = options.now ?? Date.now;
   const file = tokenStorePathFor(vaultFile);

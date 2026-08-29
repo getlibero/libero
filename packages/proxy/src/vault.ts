@@ -14,6 +14,14 @@
 // method that returns a value by name, or an endpoint that does, is the failure
 // this file exists to prevent.
 //
+// Since #482 this file is the *default backend* rather than the whole story:
+// the contract both rules belong to is ./custody.ts, and each is proved three
+// ways at three levels. "It never writes" is an import list here, the serving
+// `Vault` having no write member at the seam, and IAM in a managed backend;
+// "there is no `get`" is this file's surface here, and a structural walk over
+// the interface in ./custody-conformance.ts. The first proof is the one this
+// file owns.
+//
 // What this is not: heap-dump resistance. Node strings are immutable and the
 // garbage collector copies them, so a decrypted credential cannot be scrubbed
 // from memory once it is a `string`. The derived key and the decrypted
@@ -40,6 +48,8 @@ import {
   openEnvelope
 } from "./envelope.js";
 import type { VaultKey } from "./envelope.js";
+import { CustodyError, makeSecret } from "./custody.js";
+import type { CredentialLookup, CustodyFailure, Vault } from "./custody.js";
 import type { Logger } from "./log.js";
 
 // The master key is the envelope's, shared with the token store — one key for
@@ -48,6 +58,13 @@ import type { Logger } from "./log.js";
 // tree learns what a key is.
 export { VAULT_KEY_BYTES, parseVaultKey } from "./envelope.js";
 export type { VaultKey, VaultKeyParse } from "./envelope.js";
+
+// The contract this file implements, re-exported for the same reason: an
+// importer that has always taken `Secret` and `Vault` from here keeps doing so,
+// and the seam is a place to read rather than a migration. ./custody.ts is
+// where they are argued.
+export { MAX_SECRET_BYTES, makeSecret } from "./custody.js";
+export type { CredentialLookup, Secret, Vault } from "./custody.js";
 
 /**
  * The vault's two envelope constants. The byte layout, the AAD binding, and
@@ -69,81 +86,6 @@ export const VAULT_HEADER_BYTES = ENVELOPE_HEADER_BYTES;
 
 /** A hostile or corrupt file should not be able to make this process allocate. */
 export const MAX_VAULT_BYTES = 262_144;
-
-/**
- * A cap on one credential value.
- *
- * Generous enough for a PEM private key, and far short of anything that belongs
- * in a file rather than a vault. A value this size is an operator mistake — a
- * whole keyring pasted into one entry — and saying so at `set` time is better
- * than finding out when the proxy will not start.
- *
- * Here rather than in ./vault-file.ts because both writers hold it: the vault's
- * write path validates an operator's value against it, and the token store
- * validates a refresh token against it — one cap on what a stored credential
- * may weigh, wherever it is stored.
- */
-export const MAX_SECRET_BYTES = 8_192;
-
-/**
- * A credential value, wrapped so it has nowhere to leak to.
- *
- * The value is held in a closure — there is no data property on the object at
- * all — and every way JavaScript has of turning an object into text is
- * overridden to say `[redacted]`: `JSON.stringify`, string coercion, template
- * interpolation, `console.log`, and `util.inspect` even with `showHidden`. So a
- * credential that reaches a log line, an error message, or a response body by
- * accident arrives as `[redacted]` rather than as itself.
- *
- * `reveal()` is the deliberate act. It is the only way out, and it is called
- * in exactly one file — ./outbound.ts, at its two sites: spending a credential
- * on an upstream call, and spending a refresh token at its issuer. The grep
- * contract in outbound.test.ts is what keeps that count from drifting.
- */
-export interface Secret {
-  reveal(): string;
-}
-
-const REDACTED = "[redacted]";
-
-/**
- * Exported for the token store, which hands refresh tokens out the same way
- * this file hands credentials out — wrapping is the safe direction, and
- * `reveal()` remains the guarded act the grep contract counts.
- */
-export function makeSecret(value: string): Secret {
-  const secret = {
-    reveal: () => value,
-    toJSON: () => REDACTED,
-    toString: () => REDACTED,
-    [Symbol.toPrimitive]: () => REDACTED,
-    // The registered symbol rather than `util.inspect.custom`, so this file
-    // does not import node:util for one property.
-    [Symbol.for("nodejs.util.inspect.custom")]: () => REDACTED
-  };
-  // Non-enumerable throughout: `Object.keys` is empty, `{...secret}` is empty,
-  // and `structuredClone` yields nothing. Only `reveal` is reachable by name.
-  for (const key of Reflect.ownKeys(secret)) {
-    Object.defineProperty(secret, key, { enumerable: false });
-  }
-  return Object.freeze(secret) as Secret;
-}
-
-export type CredentialLookup =
-  | { readonly status: "found"; readonly secret: Secret }
-  | { readonly status: "missing" };
-
-/**
- * What the proxy process holds.
- *
- * No iteration, no listing, no export — `size` is a count, which is what a
- * startup log line needs and the most an outside caller ever gets. A name in,
- * at most one secret out.
- */
-export interface Vault {
-  lookup(name: string): CredentialLookup;
-  readonly size: number;
-}
 
 /**
  * Why a vault that exists could not be opened.
@@ -168,17 +110,36 @@ export type VaultFailure =
   | "malformed_plaintext";
 
 /**
+ * The backend's word for each of the above, in the contract's vocabulary.
+ *
+ * Total on purpose: a new `VaultFailure` does not compile until someone has
+ * decided what a caller who does not know this is a file should be told. The
+ * four envelope facts all land on `malformed` — an operator reading the log
+ * still gets the precise word, and only a caller branching across backends sees
+ * the coarse one.
+ */
+const CUSTODY_FAILURE: Record<VaultFailure, CustodyFailure> = {
+  unreadable: "unreachable",
+  too_large: "too_large",
+  not_a_vault: "malformed",
+  truncated: "malformed",
+  unsupported_version: "malformed",
+  bad_key_or_tampered: "bad_key_or_tampered",
+  malformed_plaintext: "malformed"
+};
+
+/**
  * An error carrying a reason from the closed set above and nothing else.
  *
  * No `cause`. `util.inspect` prints the cause chain, and an error thrown out of
  * OpenSSL can carry buffer contents in it — so the original is read for its
  * reason and then discarded.
  */
-export class VaultError extends Error {
+export class VaultError extends CustodyError {
   readonly reason: VaultFailure;
 
   constructor(reason: VaultFailure) {
-    super(`proxy vault: ${reason}`);
+    super(`proxy vault: ${reason}`, CUSTODY_FAILURE[reason]);
     this.name = "VaultError";
     this.reason = reason;
   }

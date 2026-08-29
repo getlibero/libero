@@ -28,8 +28,8 @@ import {
   destinationHost,
   exchangeRefreshToken
 } from "./outbound.js";
-import type { TokenStore } from "./token-store.js";
-import type { Secret } from "./vault.js";
+import type { TokenStore } from "./custody.js";
+import type { Secret } from "./custody.js";
 
 /**
  * How long before its stated expiry a token is treated as dead.
@@ -137,7 +137,12 @@ export function createTokenEngine(options: TokenEngineOptions): TokenEngine {
 
     const destination = destinationHost(binding.issuer) ?? undefined;
     const started = (async (): Promise<TokenEntry> => {
-      const grant = store.read(name, { issuer: binding.issuer, scopes: binding.scopes });
+      // Awaited because the contract's `read` is `Awaitable` — a managed
+      // backend reaches a network here where the file backend reads a file.
+      // Inside the flight rather than before it: `minting.set` below runs
+      // synchronously against this IIFE, so the extra microtask cannot let a
+      // second caller past the single flight.
+      const grant = await store.read(name, { issuer: binding.issuer, scopes: binding.scopes });
       if (grant.status === "missing") {
         logger.log("error", {
           event: "grant_missing",
