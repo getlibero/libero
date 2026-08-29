@@ -39,6 +39,8 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_VAULT_KEY` | — | its master key: base64, 32 bytes. Required by the `files` backend, unread by `gcp` |
 | `PROXY_GCP_PROJECT` | — | the project holding the secrets. Required by the `gcp` backend |
 | `PROXY_GCP_SECRET_PREFIX` | `libero` | this deployment's slice of that project, and half of every secret id |
+| `PROXY_AWS_REGION` | — | the region holding the secrets. Required by the `aws` backend |
+| `PROXY_AWS_SECRET_PREFIX` | `libero` | this deployment's slice of that account, and the lead of every secret name |
 | `PROXY_BUDGET_DB` | — | the daily budget meter |
 | `PROXY_AUDIT_DB` | — | the append-only audit log |
 | `PROXY_STORE_ROOT` | — | the agent's per-channel message stores, read read-only for `search_channel_history` |
@@ -148,13 +150,17 @@ Slack thread.
 
 **Which backend holds it is `PROXY_CUSTODY_BACKEND`** (#482). Absent means
 `files`, the two encrypted files described above; `gcp` is Google Secret Manager
-(#483). The variable is validated rather than ignored, so a name this build does
+(#483) and `aws` is AWS Secrets Manager (#484). The variable is validated rather
+than ignored, so a name this build does
 not have is a container that will not start rather than a silent fall back to
 files while an operator believes their secrets manager is in use.
 
-The two variables above are required *by the `files` branch* — the `gcp` branch
-reads neither, because Secret Manager holds the plaintext and encrypts at rest,
-so there is no master key for that shape to acquire. `vaultKeyFromEnv` stays the
+The two variables above are required *by the `files` branch* — neither managed
+branch reads them, because both providers hold the plaintext and encrypt at rest,
+so there is no master key for those shapes to acquire. Neither reads the
+providers' own credential variables either (`GOOGLE_APPLICATION_CREDENTIALS`,
+`AWS_ACCESS_KEY_ID` and friends): each takes the machine's attached identity and
+nothing else. `vaultKeyFromEnv` stays the
 single place one is acquired on the branch that needs one, which is what makes
 moving it to KMS a change in one function. **No environment variable sets an API
 endpoint**, on any branch: an operator-settable endpoint inside the process that

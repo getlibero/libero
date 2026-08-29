@@ -568,6 +568,117 @@ names are metadata, visible to anyone holding `secretmanager.secrets.list`. What
 buys it back is that the accessor role can be granted per secret, which the file
 backend cannot express at all.
 
+## Credentials in AWS Secrets Manager (#484)
+
+The GCP shape above, with an AWS spelling. `PROXY_CUSTODY_BACKEND=aws` moves
+both credential stores into Secrets Manager; nothing else about the deployment
+changes.
+
+> **Not yet run against a live AWS account.** It *has* been run against
+> LocalStack — `packages/aws-conformance` puts the whole contract suite through a
+> real, independent implementation of the API, which is more than the GCP backend
+> got, and which found two real defects before this shipped. What LocalStack does
+> not check is the request signature, IAM, quotas, KMS and the deletion recovery
+> window. The commands below are what AWS's reference says to run. If a first
+> live deployment disagrees, the docs are what is wrong; please report it.
+
+**Where it runs.** On EC2 (including ECS on EC2), using the instance role over
+IMDSv2. There is no other credential source: no `AWS_ACCESS_KEY_ID`, no shared
+credentials file, no profile. A long-lived key pair in the environment of the
+container that holds every tool credential is the thing this design spends its
+budget avoiding. If the proxy is not running on EC2, use the file backend.
+
+**What the proxy reads:**
+
+```yaml
+PROXY_CUSTODY_BACKEND: aws
+PROXY_AWS_REGION: eu-west-2
+PROXY_AWS_SECRET_PREFIX: libero      # optional; the lead of every secret name
+```
+
+`PROXY_VAULT_KEY` and `PROXY_VAULT_FILE` are not read on this branch and should
+be removed, and the `vault-data` volume is unused.
+
+**IMDSv2 must be reachable from the container.** Docker adds a hop, so the
+instance's metadata options need a hop limit of at least 2:
+
+```bash
+aws ec2 modify-instance-metadata-options \
+  --instance-id i-0123456789abcdef0 \
+  --http-tokens required --http-put-response-hop-limit 2
+```
+
+**One secret per credential**, `libero/vault/<name>` and `libero/grant/<name>`,
+tagged `libero-kind` and `libero-deployment`. Unlike the GCP backend there is no
+character to avoid: a `CredentialName` containing a dot is a legal secret name
+here.
+
+**The IAM policy, as two roles.** The serving proxy reads both kinds and writes
+grants; the operator holds everything that creates, replaces or deletes. Note
+`secretsmanager:UpdateSecretVersionStage` on the grants: this backend strips
+`AWSPREVIOUS` after every write so a superseded refresh token stops being
+retrievable, which AWS does not do by default.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadEveryCredential",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+      "Resource": "arn:aws:secretsmanager:eu-west-2:111122223333:secret:libero/*"
+    },
+    {
+      "Sid": "FindThem",
+      "Effect": "Allow",
+      "Action": "secretsmanager:ListSecrets",
+      "Resource": "*"
+    },
+    {
+      "Sid": "WriteGrantsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecretVersionStage"
+      ],
+      "Resource": "arn:aws:secretsmanager:eu-west-2:111122223333:secret:libero/grant/*"
+    }
+  ]
+}
+```
+
+That is the *serving* role. It can read every credential and write only grants —
+`libero/vault/*` is readable and not writable, which is "the process serving tool
+calls never writes the vault" enforced by the platform. `ListSecrets` takes no
+resource condition because AWS does not scope it; the name filter narrows the
+result, not the permission.
+
+The operator's own principal holds `secretsmanager:CreateSecret`,
+`PutSecretValue`, `DeleteSecret` and `TagResource` on `libero/vault/*`, which the
+serving role does not.
+
+**Creating a credential by hand**, if you would rather not use `vault set`:
+
+```bash
+aws secretsmanager create-secret \
+  --name libero/vault/github_service_account \
+  --secret-string file://token.txt \
+  --tags Key=libero-kind,Value=vault Key=libero-deployment,Value=libero
+```
+
+**The operator entrypoints work unchanged.** `node dist/vault.js set|list|remove`
+and `node dist/grant.js add` go through the same seam on every backend.
+
+**Two things to know before choosing this over the files.** Secret *names* are
+metadata, as on GCP: the credential inventory the file backend hides behind
+whole-set encryption is visible to anyone holding `secretsmanager:ListSecrets`,
+bought back by a resource-scoped policy the files cannot express. And `vault
+remove` is irreversible here — this backend passes `ForceDeleteWithoutRecovery`
+so the name is immediately reusable, which costs the recovery window AWS would
+otherwise give you.
+
 ## Upgrading across #62 and #239: proxy first
 
 **Upgrade the proxy before the agent, for the same reason twice.** `SpendReport`
