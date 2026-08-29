@@ -116,7 +116,7 @@ jobs:
         # them, and `packages/test-kit/src/ci-partition.test.ts` asserts that
         # they do: drop a name from any of the four and that suite stops
         # running with nothing failing.
-        run: pnpm -r --filter '!@getlibero/e2e' --filter '!@getlibero/runner' --filter '!@getlibero/litellm-conformance' test
+        run: pnpm -r --filter '!@getlibero/e2e' --filter '!@getlibero/runner' --filter '!@getlibero/litellm-conformance' --filter '!@getlibero/aws-conformance' test
 
   e2e:
     # The security suite, alone on a runner with a Docker daemon.
@@ -250,7 +250,8 @@ jobs:
           docker build --quiet -f apps/runner/Dockerfile -t ghcr.io/getlibero/runner:latest . \
             > "$RUNNER_TEMP/runner-image.log" 2>&1 &
           image=$!
-          pnpm --filter @getlibero/runner... --filter @getlibero/litellm-conformance... build
+          pnpm --filter @getlibero/runner... --filter @getlibero/litellm-conformance... \
+            --filter @getlibero/aws-conformance... build
           wait "$pull" || { cat "$RUNNER_TEMP/sandbox-pull.log"; exit 1; }
           wait "$sidecar" || { cat "$RUNNER_TEMP/litellm-pull.log"; exit 1; }
           wait "$image" || { cat "$RUNNER_TEMP/runner-image.log"; exit 1; }
@@ -276,6 +277,19 @@ jobs:
         # `docker pull` and two sets of containers on four vCPUs is contention
         # with nothing to gain — the job is not the critical path.
         run: pnpm --filter @getlibero/litellm-conformance test
+      - name: Live LocalStack custody conformance
+        # #484's acceptance, and the third daemon-gated package on this job.
+        # Same question #480 answered and the same answer: LocalStack's
+        # containers are named `libero-localstack-*` and descend from
+        # `localstack/localstack`, matching neither of the runner's leak
+        # filters, so a job of its own would buy a fourth runner to avoid a
+        # collision that does not exist.
+        #
+        # It pulls its own image rather than joining the warm-up above: the pull
+        # is a single layer set the runner caches between jobs, and the suite
+        # waits on LocalStack's health endpoint anyway, so a background pull
+        # would save nothing this job is short of.
+        run: pnpm --filter @getlibero/aws-conformance test
 
   lint-and-license:
     # Lint and the license gate read the source tree and node_modules, never

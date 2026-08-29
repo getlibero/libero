@@ -164,6 +164,12 @@ describe("the CI jobs that run the suite", () => {
     // LiteLLM container matches neither, so there is no collision to buy a
     // fourth runner out of. It runs as its own step, after the runner's, so the
     // two are in series on the one daemon.
+    //
+    // #484 made it three on that job. `@getlibero/aws-conformance` starts
+    // LocalStack, whose containers are named `libero-localstack-*` and descend
+    // from `localstack/localstack` — matching neither of the runner's two leak
+    // filters, which is the same question #480 had to answer and the same
+    // answer. A third step, in series, on the one daemon.
     const all = workspacePackages().map(p => p.name);
     const gated = new Set(workspacePackages().filter(gatesOnDocker).map(p => p.name));
 
@@ -171,6 +177,7 @@ describe("the CI jobs that run the suite", () => {
     // gate. A fourth is fine and has to make the same decision this comment
     // records — which job, and whether anything on it collides.
     expect([...gated].sort()).toEqual([
+      "@getlibero/aws-conformance",
       "@getlibero/e2e",
       "@getlibero/litellm-conformance",
       "@getlibero/runner"
