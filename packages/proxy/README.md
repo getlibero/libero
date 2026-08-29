@@ -220,7 +220,16 @@ reveals a credential and the one that scrubs the reply.
   knobs the leak assertions need: both framings, an upstream that echoes its
   auth header plainly or JSON-escaped, and one that advertises versions we do
   not speak.
-- `vault.ts` — the credential vault, read side. One AES-256-GCM blob over the
+- `custody.ts` — what a credential store *is*: `Secret`, `Vault`, `TokenStore`,
+  `Custody`, `MAX_SECRET_BYTES`, `CustodyError`. No `node:fs`, no `node:crypto`,
+  no `envelope.ts` — the import list is the claim that the two encrypted files
+  are the built form rather than the invariant (#482). `custody-backend.ts` is
+  the whole backend switch and `custody-admin.ts` the operator's writer, apart
+  from it for the reason `vault-file.ts` is apart from `vault.ts`.
+  `custody-conformance.ts` holds the assertions every backend inherits; the
+  section "Two credential stores" below is the argument.
+- `vault.ts` — the credential vault, read side, and the default backend's half
+  of it. One AES-256-GCM blob over the
   whole entry set, so the names are encrypted along with the values; a per-write
   HKDF subkey; the header authenticated as AAD. Opened once at startup. A value
   leaves only through `Secret.reveal()`, and a `Secret` renders as `[redacted]`
@@ -511,18 +520,22 @@ edge case. So this section is the custody decision the OAuth workstream (#157)
 builds against — the sheet field is #255, the engine that makes it true is
 #256, the grant flow #257.
 
-**A second store, not a writable vault.** Grant material lives in `tokens.enc`
-beside `vault.enc` — the path is fixed as the vault's sibling, because a second
-path variable would be a second way to point the two writers at different
-files. Same envelope byte for byte, two constants apart: magic `LBTOKEN`, HKDF
-info `libero.tokens.v1` — the separation `vault.ts`'s info string was written
-to anticipate. A token store opened as a vault fails `not_a_vault` before any
-key is used, and even a forged header cannot decrypt one file under the
-other's subkey. Whole-set encryption and the size caps carry over: a list of
-grant names is an inventory of what the deployment reaches, the vault's own
-argument. The alternative — the serving process writing the vault itself —
-dies on `vault.ts`'s first rule: "it never writes" is proved by an import
-list, and one file with two writers deletes that proof for both.
+**A second store, not a writable vault.** Grant material lives in a store the
+operator never writes, under its own subkey, keyed by the same `credential`
+names. The alternative — the serving process writing the vault itself — dies on
+`vault.ts`'s first rule: "it never writes" is proved by an import list, and one
+store with two writers deletes that proof for both.
+
+*How the default backend realizes that:* `tokens.enc` beside `vault.enc`, the
+path fixed as the vault's sibling, because a second path variable would be a
+second way to point the two writers at different files. Same envelope byte for
+byte, two constants apart: magic `LBTOKEN`, HKDF info `libero.tokens.v1` — the
+separation `vault.ts`'s info string was written to anticipate. A token store
+opened as a vault fails `not_a_vault` before any key is used, and even a forged
+header cannot decrypt one file under the other's subkey. Whole-set encryption
+and the size caps carry over: a list of grant names is an inventory of what the
+deployment reaches, the vault's own argument. None of that paragraph is the
+contract — a managed backend keeps the separation and none of the file facts.
 
 **What a record is.** Keyed by the sheet's `credential` name, one grant per
 name, so `upstreamKey`'s "one name is one vault entry" generalizes to "one
@@ -627,8 +640,10 @@ make a stolen token unusable rather than merely loud — parked as #260.
 **The invariant, re-worded.** Tool credentials at rest live in two stores: the
 vault, which the operator writes and the serving process only reads, and the
 token store, which the serving process writes — because an authorization
-server rotates a refresh token by handing back its successor. Today both are
-encrypted files on the proxy's volume, under one master key and one envelope.
+server rotates a refresh token by handing back its successor. The default
+backend puts both in encrypted files on the proxy's volume, under one master
+key and one envelope; every sentence in this paragraph survives a backend that
+does neither.
 The process serving tool calls still never writes the vault; what it writes is
 the token store, and the only values that can reach it are values an
 authorization server just issued for an upstream a team sheet already names.
@@ -639,15 +654,62 @@ minted it, whose reply is never returned to any caller. And neither store is
 the authorization source, so a stale read can refuse a call and can never
 widen one.
 
-**The store is the contract; the files are the built form.** What #255–#257
-build against is the paragraph above plus the write discipline — disjoint
-writers, provenance, persist-before-use, replace-not-stack — none of which
-names a filesystem. A managed backend (GCP Secret Manager, AWS Secrets
-Manager; parked as #261) would re-implement the mechanism with stronger
+**The store is the contract; the files are the built form — and since #482 that
+is a seam in code rather than a claim in prose.** What #255–#257 build against
+is the paragraph above plus the write discipline — disjoint writers,
+provenance, persist-before-use, replace-not-stack — none of which names a
+filesystem. `custody.ts` is where that is declared: `Vault`, `TokenStore`,
+`Custody`, `VaultAdmin` (in `custody-admin.ts`), `Secret`, `MAX_SECRET_BYTES`
+and `CustodyError`, in a module whose import list holds no `node:fs`, no
+`node:crypto` and no `./envelope.js` — the absence is the argument, in
+`vault.ts`'s own style. `custody-conformance.ts` is where it is asserted, and
+`custody-file.test.ts` runs it against these files. `vault.ts`,
+`vault-file.ts` and `token-store.ts` are the default backend, unchanged and
+still the whole of what a deployment runs; `custody-backend.ts` is the entire
+switch, and `PROXY_CUSTODY_BACKEND` (absent, or `files`) is what selects it.
+
+A managed backend (GCP Secret Manager as #483, AWS Secrets Manager as #484,
+tracked by #261 in v0.7.0) re-implements the mechanism with stronger
 enforcement — writer separation as IAM roles, replace-not-stack as
 add-version/destroy-old, the master key from KMS through `vaultKeyFromEnv`,
-the one acquisition seam both stores already share — and change nothing above
-this sentence.
+the one acquisition seam both stores share — and changes nothing above this
+sentence. What makes that checkable rather than hoped for is that it inherits
+`custody-conformance.ts` whole: the assertions are what say what the contract
+*is*, which is why they were written against one backend rather than derived
+from what the first two happened to agree on.
+
+**What the contract says about time.** The vault answers every lookup from
+state it acquired at open, with no I/O on the serving path — its synchronous
+`lookup` and its read-once-at-startup freshness rule are one clause, not two,
+and a backend does not get to relax either. That is not a burden on a managed
+store; it is what a managed store wants, since Secret Manager charges per
+access and `lookup` runs per tool call. The cheapest correct shape for a
+managed vault backend is therefore one secret holding the whole entry set,
+fetched once at `openCustody` — reach for that before inventing a cache. The
+token store is the inverse: re-read per use, so a grant completed while the
+proxy runs takes effect at the next mint with no restart, which is why
+`TokenStore.read` is `Awaitable<GrantRead>` where `Vault.lookup` is not. What
+keeps that off the serving path is `token-engine.ts`, which calls it at mint
+and refresh and never while a live access token is in memory. The file backend
+declares `FileTokenStore`, narrowing `read` back to a synchronous answer,
+which is what lets every caller that opens *that* store keep its shape.
+
+**The failure vocabulary is two levels, and neither has free text.**
+`CustodyFailure` — `unreachable`, `unauthorized`, `bad_key_or_tampered`,
+`malformed`, `too_large` — is what a caller who does not know which backend
+this is may branch on. Inside it each backend keeps its own closed set, because
+an operator who pointed the proxy at the wrong file deserves `not_a_vault`
+rather than a hint that their key is wrong, and each maps onto the contract's
+through a total `Record`, so a new backend word does not compile until someone
+has decided what the coarse answer is. `unauthorized` exists with no producer
+today on purpose: #483's first real failure is a service account missing
+`secretmanager.versions.access`, and without the word it lands on `unreachable`
+— telling an operator to check the network when the answer is IAM. Adding a
+member later means widening a set the conformance suite pins, which is the
+thing the seam exists to prevent. The one place free text could enter is
+`CustodyError.reason`, typed `string` on the base and narrowed by every
+subclass; the conformance suite closes it by taking each harness's
+`failureWords` up front and refusing any error carrying something else.
 
 ## Built-in tools
 
