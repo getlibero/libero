@@ -10,7 +10,7 @@ import type { Logger } from "./log.js";
 import { TOKEN_EXPIRY_MARGIN_MS, createTokenEngine } from "./token-engine.js";
 import type { OAuthBinding, TokenEngine } from "./token-engine.js";
 import { openTokenStore } from "./token-store.js";
-import type { TokenStore } from "./token-store.js";
+import type { FileTokenStore } from "./token-store.js";
 import { parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
 
@@ -47,7 +47,7 @@ function recordingLogger(): { logger: Logger; events: string[]; text: () => stri
 let dir: string;
 let vaultFile: string;
 let issuer: FakeTokenIssuer | undefined;
-let store: TokenStore | undefined;
+let store: FileTokenStore | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "libero-token-engine-"));

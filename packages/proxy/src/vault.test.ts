@@ -205,39 +205,10 @@ describe("a file that has been edited", () => {
   });
 });
 
-describe("a secret has nowhere to go", () => {
-  function secretOf(): { reveal(): string } {
-    const k = key();
-    writeVaultEntries(file, k, new Map([[NAME, VALUE]]));
-    const found = openVault({ file, key: k }).lookup(NAME);
-    if (found.status !== "found") throw new Error("unreachable");
-    return found.secret;
-  }
-
-  it("survives the one path that is meant to work", () => {
-    expect(secretOf().reveal()).toBe(VALUE);
-  });
-
-  each([
-    ["JSON.stringify", (s: object) => JSON.stringify(s)],
-    ["JSON.stringify of a wrapper", (s: object) => JSON.stringify({ credential: s })],
-    ["JSON.stringify of an array", (s: object) => JSON.stringify([s])],
-    ["String()", (s: object) => String(s)],
-    ["template interpolation", (s: object) => `${s}`],
-    ["concatenation", (s: object) => (s as unknown as string) + ""],
-    ["an error message", (s: object) => new Error(`${s}`).message],
-    ["util.inspect", (s: object) => inspect(s, { depth: null, showHidden: true })],
-    ["spreading", (s: object) => JSON.stringify({ ...s })],
-    ["Object.keys", (s: object) => JSON.stringify(Object.keys(s))]
-  ])("does not leak through %s", (_label, render) => {
-    expect(render(secretOf())).not.toContain("ghp_");
-  });
-
-  it("is frozen, so reveal cannot be swapped for something that logs", () => {
-    const secret = secretOf();
-    expect(Object.isFrozen(secret)).toBe(true);
-  });
-});
+// What a `Secret` is — the ten renderings, the freeze, and the one path that
+// is meant to work — is the contract's rather than this backend's, and lives in
+// ./custody-conformance.ts, which ./custody-file.test.ts runs against these
+// files. A managed backend inherits it instead of re-deriving it.
 
 describe("the log and the error", () => {
   it("names the file and the count when it opens, and nothing else", () => {
@@ -360,37 +331,9 @@ describe("looking a credential up", () => {
     return openVault({ file, key: k });
   }
 
-  it("misses a name the vault does not hold", () => {
-    expect(vaultWith(new Map([[NAME, VALUE]])).lookup("not_loaded")).toEqual({ status: "missing" });
-  });
-
-  // What justifies the Map. On an object literal these return a function where
-  // a credential belongs.
-  each(["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"])(
-    "misses %j rather than reaching the prototype",
-    name => {
-      expect(vaultWith(new Map([[NAME, VALUE]])).lookup(name)).toEqual({ status: "missing" });
-    }
-  );
-
-  // Rejected before the map is consulted, so a caller that skipped its own
-  // validation cannot reach the store with a path segment.
-  each([
-    ["empty", ""],
-    ["too long", "a".repeat(65)],
-    ["a traversal", "../etc/passwd"],
-    ["a separator", "a/b"],
-    ["a leading dot", ".hidden"],
-    ["a NUL", "name\0"]
-  ])("misses %s, which is not a credential name", (_label, name) => {
-    expect(vaultWith(new Map([[NAME, VALUE]])).lookup(name)).toEqual({ status: "missing" });
-  });
-
-  it("is case-sensitive, as the team sheet's names are", () => {
-    const vault = vaultWith(new Map([["github_token", VALUE]]));
-    expect(vault.lookup("GITHUB_TOKEN")).toEqual({ status: "missing" });
-    expect(vault.lookup("github_token").status).toBe("found");
-  });
+  // Which names miss — an absent one, the five prototype names, and the six
+  // shapes that are not credential names — is the contract's, in
+  // ./custody-conformance.ts. What is left here is what only a file can say.
 
   it("holds an empty vault apart from an absent one", () => {
     const k = key();

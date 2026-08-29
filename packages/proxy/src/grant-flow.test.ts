@@ -10,7 +10,7 @@ import { GRANT_REDIRECT_URI, performAuthorizationGrant } from "./grant-flow.js";
 import type { GrantFlowIo, GrantFlowRequest } from "./grant-flow.js";
 import { createTokenEngine } from "./token-engine.js";
 import { openTokenStore } from "./token-store.js";
-import type { TokenStore } from "./token-store.js";
+import type { FileTokenStore } from "./token-store.js";
 import { parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
 
@@ -31,7 +31,7 @@ function key(): VaultKey {
 let dir: string;
 let vaultFile: string;
 let issuer: FakeTokenIssuer | undefined;
-let store: TokenStore | undefined;
+let store: FileTokenStore | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "libero-grant-flow-"));
