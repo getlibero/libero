@@ -701,15 +701,70 @@ this is may branch on. Inside it each backend keeps its own closed set, because
 an operator who pointed the proxy at the wrong file deserves `not_a_vault`
 rather than a hint that their key is wrong, and each maps onto the contract's
 through a total `Record`, so a new backend word does not compile until someone
-has decided what the coarse answer is. `unauthorized` exists with no producer
-today on purpose: #483's first real failure is a service account missing
-`secretmanager.versions.access`, and without the word it lands on `unreachable`
-— telling an operator to check the network when the answer is IAM. Adding a
-member later means widening a set the conformance suite pins, which is the
-thing the seam exists to prevent. The one place free text could enter is
+has decided what the coarse answer is. `unauthorized` was reserved with no producer
+on the argument that a service account missing `secretmanager.versions.access`
+would otherwise land on `unreachable` — telling an operator to check the network
+when the answer is IAM. #483 gave it one: a 401 or 403 from Secret Manager is
+`denied`, which maps to it. Adding a member later would mean widening a set the
+conformance suite pins, which is the thing the seam exists to prevent, and this
+is what reserving one instead looks like when it pays off. The one place free text could enter is
 `CustodyError.reason`, typed `string` on the base and narrowed by every
 subclass; the conformance suite closes it by taking each harness's
 `failureWords` up front and refusing any error carrying something else.
+
+### The Secret Manager backend (#483)
+
+`PROXY_CUSTODY_BACKEND=gcp` runs both stores on Google Secret Manager.
+`custody-gcp.ts` is the backend, `custody-gcp-client.ts` is the wire, and
+`custody-gcp.test.ts` is a harness and one call — the same sixty-seven cases the
+files pass, against a store that shares no code with them below `custody.ts`.
+
+**Writer separation becomes IAM, which is the stronger form of the same claim.**
+One secret per credential name, `<prefix>-vault-<name>` and
+`<prefix>-grant-<name>`, labelled so one project can hold several deployments.
+The serving service account holds `secretAccessor` on both and
+`secretVersionAdder` on the grants; the operator's principal holds the create,
+add-version and delete roles the proxy does not. Where the file backend proves
+"the serving process never writes the vault" with an import list, this proves it
+with a policy the backend enforces — and the import list is still there.
+Replace-not-stack becomes add-version then destroy-old, so a superseded value
+stops being *retrievable* rather than merely stopping being latest, which is
+something the file backend cannot claim.
+
+**No client library, and the reason is which process rather than which vendor.**
+`packages/agent` takes `@anthropic-ai/sdk` and `openai` directly — an operator
+calling a provider already trusts it, and that process holds no tool
+credentials. This one holds all of them, and `@google-cloud/secret-manager`
+would bring google-gax, gRPC and protobufjs into its image, with every bump
+landing as a security review. What is needed is five calls: a token from the
+metadata server, then list, access, add-version and destroy. Auth is one GET
+because the backend supports VM-attached service accounts and nothing else — a
+service-account JSON key mounted into this container is a long-lived private key
+on disk, worse than the master key it would replace. **The condition for
+revisiting is stated in the module header rather than left as a taboo:** if the
+scope grows past those calls — CMEK, rotation schedules, IAM managed from inside
+the proxy, or a second credential source — take the SDK and argue it the way
+#185 argued the MCP SDK.
+
+**Two costs of one secret per name, and both are real.** Secret Manager names
+are metadata, so the credential inventory the file backend hides behind
+whole-set encryption is visible to anyone with `secretmanager.secrets.list` —
+bought back by an accessor role that can be granted per secret, which the file
+backend cannot express at all. And a `CredentialName` may hold a dot where a
+secret id may not: refused as `invalid_name` at `vault set` and `grant add`,
+which is the one place it can be fixed. Encoding it would either collide (`a.b`
+and `a_b` reaching one id) or make every id unreadable to the operator who has
+to create it, and a collision between two credentials is the worse failure.
+
+**What has not been run.** #483 shipped without access to a live GCP project.
+The conformance suite passes against `fake-secret-manager.ts`, a real
+`node:http` server written from Google's published REST reference — so the
+contract holds over real sockets, real JSON and real version semantics as that
+reference describes them. It says nothing about IAM, quotas, replication, CMEK
+or eventual consistency, and a misreading of the reference would show up as a
+passing suite. `deploy/README.md` carries the operator walkthrough with the same
+warning attached. Treat the first live deployment as the real test, and fix the
+fake where it disagrees.
 
 ## Built-in tools
 
