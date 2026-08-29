@@ -214,6 +214,15 @@ export type { CustodyConfig, CustodyDeps } from "./custody-backend.js";
 export { openVaultAdmin } from "./custody-admin.js";
 export type { VaultAdmin } from "./custody-admin.js";
 
+// The GCP backend (#483). `openGcpCustody` and `openGcpVaultAdmin` are reached
+// through `openCustody`/`openVaultAdmin` rather than directly — a composition
+// root that named a backend would be a second place the switch lives — so what
+// leaves here is the error and its words, which an operator entrypoint prints.
+// ./fake-secret-manager.ts is deliberately *not* exported: unlike the fake MCP
+// server and the fake issuer, nothing outside this package needs it.
+export { DEFAULT_GCP_ENDPOINTS, GcpCustodyError } from "./custody-gcp-client.js";
+export type { GcpEndpoints, GcpFailure } from "./custody-gcp-client.js";
+
 export {
   MAX_VAULT_BYTES,
   VAULT_KEY_BYTES,

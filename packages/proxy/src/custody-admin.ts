@@ -19,6 +19,7 @@
 // entry holds. Adding a command that prints a value back is the failure this
 // file and ./vault.ts exist to prevent.
 
+import { openGcpVaultAdmin } from "./custody-gcp.js";
 import { readVaultEntries, removeEntry, setEntry, writeVaultEntries } from "./vault-file.js";
 import type { Awaitable } from "./custody.js";
 import type { CustodyConfig } from "./custody-backend.js";
@@ -72,6 +73,10 @@ export interface VaultAdmin {
  * needs one adds it in the commit that needs it.
  */
 export function openVaultAdmin(config: CustodyConfig): Promise<VaultAdmin> {
+  if (config.backend === "gcp-secret-manager") {
+    return openGcpVaultAdmin(config);
+  }
+
   const { vaultFile, key } = config;
   let closed = false;
 

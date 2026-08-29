@@ -247,8 +247,9 @@ describe("custodyFromEnv", () => {
 
   it("takes the encrypted files when nothing names a backend", () => {
     const config = custodyFromEnv(files());
-    expect(config.backend).toBe("encrypted-files");
-    expect(config.vaultFile).toBe("/data/vault/vault.enc");
+    expect(config).toEqual(
+      expect.objectContaining({ backend: "encrypted-files", vaultFile: "/data/vault/vault.enc" })
+    );
   });
 
   each([
@@ -261,13 +262,59 @@ describe("custodyFromEnv", () => {
   // Validated rather than ignored: falling back to files while an operator
   // believes their secrets manager is in use is the failure worth refusing to
   // start over.
+  it("takes Secret Manager when the backend names it, defaulting the prefix", () => {
+    const config = custodyFromEnv({
+      PROXY_CUSTODY_BACKEND: "gcp",
+      PROXY_GCP_PROJECT: "libero-prod"
+    });
+    expect(config).toEqual({
+      backend: "gcp-secret-manager",
+      project: "libero-prod",
+      prefix: "libero"
+    });
+  });
+
+  it("takes a prefix, so one project can hold several deployments", () => {
+    const config = custodyFromEnv({
+      PROXY_CUSTODY_BACKEND: "gcp",
+      PROXY_GCP_PROJECT: "libero-prod",
+      PROXY_GCP_SECRET_PREFIX: "staging"
+    });
+    expect(config).toMatchObject({ prefix: "staging" });
+  });
+
+  // The key is demanded by the branch: this one never reaches
+  // `vaultKeyFromEnv`, so a Secret Manager deployment sets no master key at
+  // all rather than setting an unused one.
+  it("demands no master key on the branch that has no use for one", () => {
+    expect(() =>
+      custodyFromEnv({ PROXY_CUSTODY_BACKEND: "gcp", PROXY_GCP_PROJECT: "libero-prod" })
+    ).not.toThrow();
+    expect(() => custodyFromEnv({ PROXY_CUSTODY_BACKEND: "gcp" })).toThrow(/PROXY_GCP_PROJECT/);
+  });
+
+  // **No environment variable reaches the API endpoint**, and this is the
+  // assertion that says so. An operator-settable endpoint inside the process
+  // that holds every credential is a switch for sending them somewhere else;
+  // the override exists for the tests and is passed in code.
+  it("builds no endpoint override from the environment, whatever is set", () => {
+    const config = custodyFromEnv({
+      PROXY_CUSTODY_BACKEND: "gcp",
+      PROXY_GCP_PROJECT: "libero-prod",
+      PROXY_GCP_ENDPOINT: "https://attacker.example",
+      PROXY_GCP_SECRET_MANAGER_ENDPOINT: "https://attacker.example",
+      PROXY_GCP_METADATA_ENDPOINT: "https://attacker.example"
+    });
+    expect(Object.keys(config).sort()).toEqual(["backend", "prefix", "project"]);
+  });
+
   each([
     ["a typo", "file"],
-    ["a backend this build does not have", "gcp"],
+    ["a backend this build does not have", "aws"],
     ["the internal spelling", "encrypted-files"]
   ])("refuses to start on %s", (_label, named) => {
     expect(() => custodyFromEnv(files({ PROXY_CUSTODY_BACKEND: named }))).toThrow(
-      /PROXY_CUSTODY_BACKEND must be one of: files/
+      /PROXY_CUSTODY_BACKEND must be one of: files, gcp/
     );
   });
 

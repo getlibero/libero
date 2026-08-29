@@ -18,9 +18,11 @@
 // regardless is what keeps the composition root's shape the same across
 // backends, and it costs the default deployment one microtask at startup.
 
+import { openGcpCustody } from "./custody-gcp.js";
 import { openTokenStore } from "./token-store.js";
 import { openVault } from "./vault.js";
 import type { Custody } from "./custody.js";
+import type { GcpEndpoints } from "./custody-gcp-client.js";
 import type { VaultKey } from "./envelope.js";
 import type { Logger } from "./log.js";
 
@@ -37,12 +39,27 @@ import type { Logger } from "./log.js";
  * `PROXY_CUSTODY_BACKEND=files`, and the two are deliberately not the same
  * string, so the env vocabulary can stay short while this one stays exact.
  */
-export type CustodyConfig = {
-  readonly backend: "encrypted-files";
-  /** The vault's path. The token store is its sibling — `tokenStorePathFor`. */
-  readonly vaultFile: string;
-  readonly key: VaultKey;
-};
+export type CustodyConfig =
+  | {
+      readonly backend: "encrypted-files";
+      /** The vault's path. The token store is its sibling — `tokenStorePathFor`. */
+      readonly vaultFile: string;
+      readonly key: VaultKey;
+    }
+  | {
+      readonly backend: "gcp-secret-manager";
+      readonly project: string;
+      /** This deployment's slice of the project. Half of every secret id. */
+      readonly prefix: string;
+      /**
+       * Test-only, and there is no environment variable that reaches it.
+       * `env.test.ts` asserts the config `custodyFromEnv` builds carries
+       * neither of these: an operator-settable API endpoint inside the process
+       * that holds every credential is a switch for sending them elsewhere.
+       */
+      readonly endpoints?: GcpEndpoints;
+      readonly fetch?: typeof globalThis.fetch;
+    };
 
 /** What every backend takes and no backend's identity depends on. */
 export interface CustodyDeps {
@@ -66,6 +83,11 @@ export interface CustodyDeps {
  */
 export function openCustody(config: CustodyConfig, deps: CustodyDeps = {}): Promise<Custody> {
   const { logger } = deps;
+
+  if (config.backend === "gcp-secret-manager") {
+    return openGcpCustody(config, deps);
+  }
+
   const { vaultFile, key } = config;
 
   // The same key buffer reaches both, as it always has: one master key, two
