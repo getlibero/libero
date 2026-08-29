@@ -26,3 +26,19 @@ export const VAULT_KEY_BYTES = 32;
 export function generateVaultKey(): string {
   return randomBytes(VAULT_KEY_BYTES).toString("base64");
 }
+
+/**
+ * Where `--key-file` puts the key when the operator has no other place for it,
+ * and where `libero doctor` looks (#495).
+ *
+ * Host-relative, resolved from the working directory like every other path this
+ * package takes — the #98 line: the CLI owns what the operator authors on the
+ * host, and the container path is the compose file's business. It is the source
+ * path of the commented `secrets:` block in `deploy/docker-compose.yml`, which
+ * mounts it at `/run/secrets/proxy_vault_key`, and the two have to agree: this
+ * constant is the spelling both the usage text and doctor's default print.
+ *
+ * `deploy/` rather than the repository root, because that is Compose's project
+ * directory and a `secrets: file:` is resolved against it.
+ */
+export const DEFAULT_KEY_FILE = "deploy/secrets/vault.key";

@@ -458,9 +458,10 @@ export default tseslint.config(
                 // where the two could otherwise meet.
                 "openVaultAdmin",
                 // And the key, so `vaultKeyFromEnv` in ./env.ts stays the
-                // deployment's single acquisition seam: a second reader of
-                // PROXY_VAULT_KEY is what would make moving it to KMS a change
-                // in more than one place.
+                // deployment's single acquisition seam. #495 is what that
+                // bought: a second source — PROXY_VAULT_KEY_FILE — is a change
+                // to one function's body, and a second *reader* of the variable
+                // would have made it a change in more than one place.
                 "parseVaultKey",
                 "VAULT_KEY_BYTES"
               ],
@@ -491,7 +492,7 @@ export default tseslint.config(
               name: "@getlibero/proxy",
               importNames: ["parseVaultKey", "VAULT_KEY_BYTES"],
               message:
-                "A master key comes from vaultKeyFromEnv in ./env.ts and nowhere else — the one acquisition seam a KMS source replaces the body of."
+                "A master key comes from vaultKeyFromEnv in ./env.ts and nowhere else — the one acquisition seam, which is why PROXY_VAULT_KEY_FILE was a change to its body alone."
             }
           ]
         }

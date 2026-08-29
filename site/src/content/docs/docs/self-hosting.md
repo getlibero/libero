@@ -91,6 +91,17 @@ on the box and a shell writes them to history. There is no command that prints a
 The proxy reads the vault at startup, so a change takes effect on restart — and losing the master
 key means losing the vault: there is no recovery path and no escrow.
 
+**The master key can come from a file instead of the environment.** `libero init --key-file
+deploy/secrets/vault.key` writes it at mode 0600 and leaves `PROXY_VAULT_KEY` out of `deploy/.env`
+altogether; the proxy then reads `PROXY_VAULT_KEY_FILE`, which the compose file's commented
+`secrets:` block mounts at `/run/secrets/proxy_vault_key`. Exactly one of the two may be set — the
+proxy refuses to start on both, because two keys means one of them opens the vault and nothing says
+which. It is not protection from a host root, who reads a mounted file as easily as a container's
+environment; it keeps the key out of `docker inspect`, crash dumps, process listings, CI logs and
+anything that scrapes container environments, and it lets the key arrive by whatever mechanism you
+already run — a compose secret, a Kubernetes secret volume, a systemd credential. `libero doctor`
+checks whichever source you use, including the file's mode, and prints neither.
+
 [Connecting GitHub](/docs/github/) walks that credential the rest of the way: into a team sheet, out
 to GitHub's hosted MCP server, and onto an audit row.
 

@@ -1,6 +1,7 @@
 // Environment parsing for the proxy process, apart from index.ts so the
 // rules — and their failure modes — can be tested without starting a listener.
 
+import { readFileSync } from "node:fs";
 import {
   DEFAULT_UPSTREAM_CONCURRENCY,
   DEFAULT_SANDBOX_CONCURRENCY,
@@ -222,32 +223,117 @@ export function storeRootFromEnv(env: Env): string {
 }
 
 /**
- * The vault master key: `PROXY_VAULT_KEY`, base64, 32 bytes.
+ * The vault master key: `PROXY_VAULT_KEY`, base64, 32 bytes — or
+ * `PROXY_VAULT_KEY_FILE`, naming a file that holds the same thing.
  *
- * One name, prefixed like everything else this process reads. It replaces the
- * `LIBERO_VAULT_KEY`/`VAULT_KEY` pair that `deploy/docker-compose.yml` and
- * `.env.example` used to disagree about and that no code ever read.
+ * One seam, two sources, prefixed like everything else this process reads. It
+ * replaces the `LIBERO_VAULT_KEY`/`VAULT_KEY` pair that
+ * `deploy/docker-compose.yml` and `.env.example` used to disagree about and
+ * that no code ever read.
+ *
+ * **Exactly one of the two may be set.** Both is a startup failure rather than
+ * a precedence rule, because a precedence rule is a thing an operator has to
+ * remember at the one moment they cannot check their work: two keys means one
+ * of them opens the vault and the other does not, and the symptom of guessing
+ * wrong is a vault that will not open with a correct key sitting right there in
+ * the environment. Neither is the failure it already was.
+ *
+ * **What the file form buys, and what it does not.** It is not a defence
+ * against host root: Docker socket access is root-equivalent, and root reads a
+ * mounted file as easily as a variable. What it removes is the
+ * accidental-disclosure class — `docker inspect` output pasted into an issue,
+ * crash dumps, process listings, CI logs, and observability agents that scrape
+ * container environments — and it lets an operator deliver the key with the
+ * mechanism they already have: a compose `secrets:` block, a Kubernetes secret
+ * volume, a systemd credential, instead of a variable in a `.env` file that is
+ * one `cp` from a git repository. `deploy/README.md` says which to prefer.
+ *
+ * **A cloud KMS source is not owed and is not missing** (#495). A deployment
+ * with a KMS has an attached machine identity and should set
+ * `PROXY_CUSTODY_BACKEND=gcp` or `=aws` instead — #483 and #484 — which removes
+ * the master key from the problem rather than protecting it: nothing to rotate,
+ * escrow, or lose. "Decrypt the key with KMS at startup" would be a weaker
+ * version of a thing that exists, for the same audience. The file source is not
+ * superseded by those, because it serves the deployments that will never have a
+ * managed backend — on-prem, bare metal, a VM at a host with no KMS — which are
+ * also where the exposure is least mediated by a cloud IAM boundary.
  *
  * The failure messages name the variable and the shape expected, and carry
- * nothing of what was actually set. An error message is the one place a
- * rejected key would be printed, logged, and pasted into an issue.
- *
- * Passing the key by environment variable is the phase-1 form. It is readable
- * by anyone who can `docker inspect` the container — as `SLACK_APP_TOKEN` and
- * `ANTHROPIC_API_KEY` already are in the same compose file — and a file or KMS
- * source is the hardened path, documented in the proxy's README and not built.
+ * nothing of what was actually read. An error message is the one place a
+ * rejected key would be printed, logged, and pasted into an issue — and for the
+ * file form that discipline extends to the read itself: a missing, unreadable
+ * or empty file is reported as the path and an errno, which is what an operator
+ * needs and is not what the file held.
  */
+const VAULT_KEY_VAR = "PROXY_VAULT_KEY";
+const VAULT_KEY_FILE_VAR = "PROXY_VAULT_KEY_FILE";
+
+/** Said the same way wherever a key is rejected, so one sentence is learned once. */
+const GENERATE_A_KEY = "generate with: openssl rand -base64 32";
+
 export function vaultKeyFromEnv(env: Env): VaultKey {
-  const raw = requiredEnv(env, "PROXY_VAULT_KEY");
+  const inline = env[VAULT_KEY_VAR];
+  const file = env[VAULT_KEY_FILE_VAR];
+  // "" alongside undefined, per `hostFromEnv`: a blanked-out line in an env file
+  // is a setting removed rather than a key of no bytes — and here it also
+  // decides the both-set check, so that commenting one out by emptying it is
+  // the same act as deleting the line.
+  const hasInline = inline !== undefined && inline !== "";
+  const hasFile = file !== undefined && file !== "";
+
+  if (hasInline && hasFile) {
+    throw new Error(
+      `proxy: ${VAULT_KEY_VAR} and ${VAULT_KEY_FILE_VAR} are both set, and exactly one may be. Unset the one this deployment does not deliver the key with`
+    );
+  }
+  if (!hasInline && !hasFile) {
+    // Loud, and at startup, on `requiredEnv`'s argument — worded here rather
+    // than delegated, because the operator has two ways to answer it and a
+    // message naming one of them would hide the other.
+    throw new Error(
+      `proxy: ${VAULT_KEY_VAR} is required and was not set, and neither was ${VAULT_KEY_FILE_VAR} (${GENERATE_A_KEY})`
+    );
+  }
+
+  const source = hasFile ? VAULT_KEY_FILE_VAR : VAULT_KEY_VAR;
+  const raw = hasFile ? readVaultKeyFile(file as string) : (inline as string);
   const parsed = parseVaultKey(raw);
   if (!parsed.ok) {
     throw new Error(
       parsed.reason === "not_base64"
-        ? "proxy: PROXY_VAULT_KEY is not base64 (generate with: openssl rand -base64 32)"
-        : `proxy: PROXY_VAULT_KEY must decode to ${VAULT_KEY_BYTES} bytes (generate with: openssl rand -base64 32)`
+        ? `proxy: ${source} is not base64 (${GENERATE_A_KEY})`
+        : `proxy: ${source} must decode to ${VAULT_KEY_BYTES} bytes (${GENERATE_A_KEY})`
     );
   }
   return parsed.key;
+}
+
+/**
+ * The file's contents, or a failure that names the path and nothing else.
+ *
+ * The errno is reworded rather than passed through: `readFileSync`'s own
+ * message is built from the same two facts, but what it contains is the
+ * runtime's to change, and this is a message that gets pasted into issues. No
+ * trim here — `parseVaultKey` already trims, which is what makes a file written
+ * by an editor, a `printf`, or a compose `secrets:` mount work without the
+ * operator having to know whether it ends in a newline.
+ *
+ * An empty file gets its own sentence rather than "must decode to 32 bytes",
+ * because it is a different mistake: a secret that did not arrive, rather than
+ * a key of the wrong shape.
+ */
+function readVaultKeyFile(path: string): string {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+    throw new Error(`proxy: ${VAULT_KEY_FILE_VAR} could not be read (${code}): ${path}`);
+  }
+  if (text.trim() === "") {
+    throw new Error(`proxy: ${VAULT_KEY_FILE_VAR} names an empty file: ${path}`);
+  }
+  return text;
 }
 
 /**

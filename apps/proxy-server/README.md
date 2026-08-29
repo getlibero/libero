@@ -139,10 +139,33 @@ The proxy reads the vault once, at startup, so a change takes effect on
 restart. Losing `PROXY_VAULT_KEY` means losing the vault: there is no recovery
 path and no escrow.
 
-Passing the key by environment variable is the phase-1 form, and it is readable
-by anyone who can `docker inspect` the container — as `SLACK_APP_TOKEN` and
-`ANTHROPIC_API_KEY` already are. A file-backed or KMS-backed key source is the
-hardened path and is not built.
+**Where the key comes from is `PROXY_VAULT_KEY` or `PROXY_VAULT_KEY_FILE`, and
+exactly one of them** (#495). The variable is readable by anyone who can `docker
+inspect` the container — as `SLACK_APP_TOKEN` and `ANTHROPIC_API_KEY` already
+are; the file is the way out of that, and `libero init --key-file PATH` writes
+one at 0600 with `libero doctor` checking its mode and shape without printing
+it. Setting both is a startup failure rather than a precedence rule: two keys
+means one of them opens the vault, and the symptom of guessing wrong is a vault
+that will not open with a correct key right there in the environment.
+
+State the benefit narrowly. It is **not** a defence against host root — Docker
+socket access is root-equivalent, and root reads a mounted file as easily as a
+variable. What it removes is the accidental-disclosure class: `docker inspect`
+output pasted into an issue, crash dumps, process listings, CI logs, and
+observability agents that scrape container environments. And it lets the key
+arrive by whatever mechanism the deployment already has tooling for — a compose
+`secrets:` block, a Kubernetes secret volume, a systemd credential — rather than
+sitting in a `.env` file that is one `cp` from a git repository.
+
+**A KMS-backed key source is not owed and is not missing.** A deployment with a
+cloud KMS has an attached machine identity and should set
+`PROXY_CUSTODY_BACKEND=gcp` or `=aws` instead (#483, #484), which removes the
+master key from the problem rather than protecting it: nothing to rotate, escrow
+or lose. "Decrypt the key with KMS at startup" would be a weaker version of a
+thing that exists, for the same audience. The file source is not superseded by
+those, because it serves the deployments that will never have a managed backend
+— on-prem, bare metal, a VM at a host with no KMS — which are also where the
+exposure is least mediated by a cloud IAM boundary.
 
 The vault is opened at startup, before anything binds, so a wrong key or an
 unreadable file is a startup failure rather than a surprise at the far end of a
@@ -161,8 +184,8 @@ so there is no master key for those shapes to acquire. Neither reads the
 providers' own credential variables either (`GOOGLE_APPLICATION_CREDENTIALS`,
 `AWS_ACCESS_KEY_ID` and friends): each takes the machine's attached identity and
 nothing else. `vaultKeyFromEnv` stays the
-single place one is acquired on the branch that needs one, which is what makes
-moving it to KMS a change in one function. **No environment variable sets an API
+single place one is acquired on the branch that needs one, which is what made
+adding `PROXY_VAULT_KEY_FILE` a change to one function's body and to no caller. **No environment variable sets an API
 endpoint**, on any branch: an operator-settable endpoint inside the process that
 holds every credential is a switch for sending them somewhere else, and
 `env.test.ts` asserts the config carries none. `deploy/README.md` has the GCP
