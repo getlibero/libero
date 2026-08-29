@@ -44,5 +44,5 @@ export const SITE = {
    * the wrong word now — a numbered tag with images and a changelog is a
    * release; what it is not yet is stable. Move this on when a tag is cut.
    */
-  status: 'v0.5.0 · pre-1.0',
+  status: 'v0.7.0 · pre-1.0',
 } as const;
