@@ -18,10 +18,12 @@
 // regardless is what keeps the composition root's shape the same across
 // backends, and it costs the default deployment one microtask at startup.
 
+import { openAwsCustody } from "./custody-aws.js";
 import { openGcpCustody } from "./custody-gcp.js";
 import { openTokenStore } from "./token-store.js";
 import { openVault } from "./vault.js";
 import type { Custody } from "./custody.js";
+import type { AwsEndpoints } from "./custody-aws-client.js";
 import type { GcpEndpoints } from "./custody-gcp-client.js";
 import type { VaultKey } from "./envelope.js";
 import type { Logger } from "./log.js";
@@ -59,6 +61,15 @@ export type CustodyConfig =
        */
       readonly endpoints?: GcpEndpoints;
       readonly fetch?: typeof globalThis.fetch;
+    }
+  | {
+      readonly backend: "aws-secrets-manager";
+      readonly region: string;
+      /** This deployment's slice of the account. The lead of every name. */
+      readonly prefix: string;
+      /** Test-only, on the GCP member's argument. */
+      readonly endpoints?: AwsEndpoints;
+      readonly fetch?: typeof globalThis.fetch;
     };
 
 /** What every backend takes and no backend's identity depends on. */
@@ -86,6 +97,9 @@ export function openCustody(config: CustodyConfig, deps: CustodyDeps = {}): Prom
 
   if (config.backend === "gcp-secret-manager") {
     return openGcpCustody(config, deps);
+  }
+  if (config.backend === "aws-secrets-manager") {
+    return openAwsCustody(config, deps);
   }
 
   const { vaultFile, key } = config;
