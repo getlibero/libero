@@ -42,6 +42,7 @@ export interface ProxyEnv {
    * that left it off would be testing a deployment nobody ships.
    */
   readonly attemptsDb: string;
+  readonly driftDb: string;
   /**
    * The per-channel message stores (#64). The same directory the in-process
    * agent writes under, so a message the stub Slack delivered is one this
@@ -170,6 +171,7 @@ export async function spawnProxy(
       PROXY_BUDGET_DB: env.budgetDb,
       PROXY_AUDIT_DB: env.auditDb,
       PROXY_ATTEMPTS_DB: env.attemptsDb,
+      PROXY_DRIFT_DB: env.driftDb,
       PROXY_STORE_ROOT: env.storeRoot,
       // Absent rather than empty when the rig has no table, so the case that
       // exercises "this deployment has no prices" reaches the real code path

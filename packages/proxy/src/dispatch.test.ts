@@ -41,7 +41,7 @@ const noSpend = {
 const realMeter: SpendMeter = {
   read: () => ({ ...noSpend, toolCalls: 3, inputTokens: 12 }),
   recordToolCall: () => {},
-  recordTokens: () => ({ outcome: "recorded" }),
+  recordTokens: () => ({ outcome: "recorded", day: "2026-08-29" }),
   claimWarning: () => false
 };
 
@@ -62,7 +62,7 @@ const provisionalMeter = (): SpendMeter =>
   markProvisional({
     read: () => noSpend,
     recordToolCall: () => {},
-    recordTokens: () => ({ outcome: "recorded" as const }),
+    recordTokens: () => ({ outcome: "recorded" as const, day: "2026-08-29" }),
     claimWarning: () => false
   });
 

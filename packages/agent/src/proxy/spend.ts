@@ -82,8 +82,18 @@ export interface ProxySpendClient {
    * for the same reason it does not validate the counts. Omitted when the
    * provider echoed none, which is a report the proxy accepts and meters under
    * a bucket it cannot price.
+   *
+   * `costNanoUsd` is what a router said the same call cost (#239), already
+   * bounded by the adapter that read the header. Omitted when nothing reported
+   * one, which is every direct provider call — the proxy records a comparison
+   * for the calls that carry one and meters every call the same either way.
    */
-  report(turn: string, usage: TokenUsage, model?: string): Promise<SpendOutcome>;
+  report(
+    turn: string,
+    usage: TokenUsage,
+    model?: string,
+    costNanoUsd?: number
+  ): Promise<SpendOutcome>;
 }
 
 export function createProxySpendClient(options: ProxySpendClientOptions): ProxySpendClient {
@@ -91,7 +101,12 @@ export function createProxySpendClient(options: ProxySpendClientOptions): ProxyS
   const timeoutMs = options.timeoutMs ?? DEFAULT_SPEND_TIMEOUT_MS;
 
   return {
-    async report(turn: string, usage: TokenUsage, model?: string): Promise<SpendOutcome> {
+    async report(
+      turn: string,
+      usage: TokenUsage,
+      model?: string,
+      costNanoUsd?: number
+    ): Promise<SpendOutcome> {
       // Typed as the wire shape on purpose: after the schema's defaults, all
       // four counts are required, so a usage object missing one does not
       // compile rather than arriving as a silent zero the meter cannot tell
@@ -112,7 +127,12 @@ export function createProxySpendClient(options: ProxySpendClientOptions): ProxyS
           // cannot hold the difference and does not need to.
           cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
           cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0
-        }
+        },
+        // Omitted rather than sent as null, for the reason `model` is — and
+        // with more at stake, because this field is the newer of the two: an
+        // explicit null is a 400 on a strict schema, and a 400 costs the turn
+        // its counts over a second opinion nothing enforces on.
+        ...(costNanoUsd === undefined ? {} : { costNanoUsd })
       };
 
       // Not parsed here before sending. The proxy's parse at its own edge is

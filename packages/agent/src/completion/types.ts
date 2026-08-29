@@ -107,6 +107,22 @@ export interface CompletionResponse {
    * has to be "unreported", never "lost".
    */
   model?: string;
+  /**
+   * What the gateway that served this call says it cost, in nano-USD (#239).
+   *
+   * Only a router reports one — `x-litellm-response-cost`, read by
+   * ./reported-cost.ts — so a direct provider call leaves this absent, and
+   * absent is the ordinary case rather than a degradation. The tool proxy
+   * service records it beside its own computed figure so a stale price table is
+   * visible before the invoice is; it is never metered on and never enforced
+   * against, because a number a gateway computed is not a number the proxy can
+   * make a decision from.
+   *
+   * **Absent is not zero.** A gateway that cannot price a model sends no header
+   * at all, and one that prices a call at nothing sends `0` — the same
+   * distinction `PriceTable` draws between a missing row and a row of zeros.
+   */
+  costNanoUsd?: number;
   /** Echo back on the assistant message built from this response. */
   providerState?: unknown;
 }

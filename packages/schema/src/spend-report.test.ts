@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import { expect } from "expect";
 import {
+  MAX_REPORTED_COST_NANO_USD,
   MAX_REPORTED_TOKENS,
   SpendReport,
   SpendReportResponse,
@@ -143,5 +144,51 @@ describe("the meter's answer to a report", () => {
     for (const extra of [{ remaining: 900 }, { tokens: 248 }, { exhausted: false }]) {
       expect(SpendReportResponse.safeParse({ outcome: "recorded", ...extra }).success).toBe(false);
     }
+  });
+});
+
+describe("the cost a gateway reported (#239)", () => {
+  it("carries a figure through when the gateway priced the call", () => {
+    // 0.00011385 USD, which is what LiteLLM main-stable answers for these
+    // counts on claude-sonnet-4-6. Nano-USD, so it survives as an integer.
+    const report = SpendReport.parse({ ...wire, costNanoUsd: 113_850 });
+    expect(report.costNanoUsd).toBe(113_850);
+  });
+
+  // The whole signal. A gateway that cannot price a model omits the header
+  // rather than sending zero, so absent has to stay absent — a default of 0
+  // here would record every direct provider call as a call priced at nothing
+  // and show the deployment a drift it does not have.
+  it("leaves absent absent rather than defaulting it to zero", () => {
+    const report = SpendReport.parse(wire);
+    expect("costNanoUsd" in report).toBe(false);
+  });
+
+  // The other half of that distinction: a gateway that priced a call at zero
+  // said something, and it is not the same thing as saying nothing.
+  it("accepts a reported zero, which means priced and free", () => {
+    expect(SpendReport.parse({ ...wire, costNanoUsd: 0 }).costNanoUsd).toBe(0);
+  });
+
+  // Nano rather than micro because a nine-token embedding through LiteLLM
+  // costs 1.8e-07 USD. At micro that is zero; at nano it is 180.
+  it("holds a cost below one micro-dollar", () => {
+    expect(SpendReport.parse({ ...wire, costNanoUsd: 180 }).costNanoUsd).toBe(180);
+  });
+
+  it("rejects a fractional, negative, or out-of-bounds figure", () => {
+    expect(SpendReport.safeParse({ ...wire, costNanoUsd: 1.5 }).success).toBe(false);
+    expect(SpendReport.safeParse({ ...wire, costNanoUsd: -1 }).success).toBe(false);
+    expect(SpendReport.safeParse({ ...wire, costNanoUsd: MAX_REPORTED_COST_NANO_USD + 1 }).success).toBe(
+      false
+    );
+    expect(SpendReport.safeParse({ ...wire, costNanoUsd: MAX_REPORTED_COST_NANO_USD }).success).toBe(true);
+  });
+
+  // An explicit null is a 400 for the reason the model field's is: the schema
+  // is strict, and losing a turn's token counts over a field that was only ever
+  // going to be absent is the expensive failure.
+  it("rejects an explicit null rather than reading it as absent", () => {
+    expect(SpendReport.safeParse({ ...wire, costNanoUsd: null }).success).toBe(false);
   });
 });

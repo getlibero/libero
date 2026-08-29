@@ -302,6 +302,25 @@ adapters read it off the response envelope beside the counts, and **neither fall
 back to the requested id**: substituting it would price a router's `smart` as
 `smart`, silently wrong in exactly the deployment a dollar cap exists for.
 
+**And what a router charged for them** (#239), when a router served the call.
+`completion/reported-cost.ts` reads `x-litellm-response-cost` off the response
+headers — the one header of its kind, so it is named for what sends it rather
+than dressed up as a standard — and the figure rides the spend report to be
+recorded beside what the proxy computed from its own price table. Nothing meters
+on it and nothing is enforced against it; it is how an operator sees a stale
+price table before the invoice.
+
+The header is read and its siblings are not, which is the whole of the rule. A
+model LiteLLM can price answers `x-litellm-response-cost: 0.00011385`; a model it
+cannot omits that header while still sending `-input` and `-output` reading
+`0.0`. Summing those would turn "nobody priced this" into "priced at nothing" —
+and since the adapter has no way to tell those apart afterwards, the mistake
+would show every deployment a permanent disagreement with its own table. It is
+counted in **nano-USD** rather than the price table's micro because a nine-token
+embedding costs `1.8e-07` dollars, which micro-USD rounds to a zero that means
+something else. `packages/litellm-conformance` proves all three of those against
+a live sidecar rather than a fixture.
+
 `completion/served-model.ts` is the one rule both adapters read it through, and
 it validates there rather than at the wire. `SpendReport` is strict, so a
 malformed id would fail the whole report — and the report is what carries the

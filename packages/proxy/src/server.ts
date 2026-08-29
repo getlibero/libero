@@ -96,6 +96,7 @@ import { matchesPin, resolveChannel } from "./identity.js";
 import { createListingRoute } from "./listing-route.js";
 import { createJsonLogger, type Logger } from "./log.js";
 import { createBudgetRoute } from "./budget-route.js";
+import type { DriftRecorder } from "./drift-db.js";
 import { createSpendRoute } from "./spend-route.js";
 import { NO_PRICES } from "./price-table-store.js";
 import type { PriceTableStore } from "./price-table-store.js";
@@ -133,6 +134,20 @@ export interface ProxyServerOptions {
    * as permissive, are the two ways an option with a default goes wrong here.
    */
   spend: SpendMeter;
+  /**
+   * Where a router's own per-call cost figure is recorded (#239).
+   *
+   * **Optional, unlike the meter above, and for a reason that is the opposite
+   * of theirs.** A missing meter reads as unmetered and a missing dispatcher
+   * reads as permissive, so both are required. A missing drift store reads as
+   * exactly what it is: a deployment not keeping a record it never asked for.
+   * Nothing is enforced on it, so absent widens nothing — it only means an
+   * operator's `drift` command has nothing to show.
+   *
+   * Narrowed to `DriftRecorder` here rather than taking the database, so what
+   * the spend route can reach is one method that writes. See ./drift-db.ts.
+   */
+  drift?: DriftRecorder;
   dispatcher: ToolDispatcher;
   /**
    * Asks each upstream what its tools take, so a listing carries real
@@ -931,7 +946,11 @@ export function createProxyServer(options: ProxyServerOptions): Server {
 
   // Built from `options.spend` narrowed to `TokenRecorder`, so the handler's
   // closure holds the write path and not the read one. See ./spend-route.ts.
-  const recordSpend = createSpendRoute({ meter: options.spend, logger });
+  const recordSpend = createSpendRoute({
+    meter: options.spend,
+    ...(options.drift !== undefined ? { drift: options.drift } : {}),
+    logger
+  });
 
   // Narrowed to `SpendReader` — the same move as the line above and the exact
   // mirror of it: that handler can write a counter and cannot read one, this

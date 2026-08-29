@@ -158,7 +158,8 @@ const reportTurn = async (
     const outcome = await createProxySpendClient({ transport, channel }).report(
       turn.id,
       turn.usage,
-      turn.model
+      turn.model,
+      turn.costNanoUsd
     );
     logger.log("info", {
       event: "spend_reported",

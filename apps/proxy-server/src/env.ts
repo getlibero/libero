@@ -132,6 +132,31 @@ export function attemptsDbFromEnv(env: Env): string | undefined {
 }
 
 /**
+ * The price-drift record: `PROXY_DRIFT_DB`. **Optional**, on the attempt
+ * store's argument and one of its own (#239).
+ *
+ * Not having one is a legitimate deployment twice over. A deployment that calls
+ * providers directly has nothing to record — no gateway reports a cost — so the
+ * file would stay empty however carefully it was configured. And a deployment
+ * that caps nothing in dollars has no price table to check against, which is the
+ * only question this record answers.
+ *
+ * The hazard optionality carries is the attempt store's, quieter still: an
+ * operator who mistyped the name loses an observation rather than a record they
+ * will want at an incident. What answers it is the same pair — the composition
+ * says once at startup that the record is off, and the compose file ships the
+ * variable set, which makes "on" the deployment default and "off" an explicit
+ * edit.
+ *
+ * SQLite writes `-wal` and `-shm` beside this path, so the directory has to be
+ * writable and not just the file.
+ */
+export function driftDbFromEnv(env: Env): string | undefined {
+  const value = env["PROXY_DRIFT_DB"];
+  return value === undefined || value === "" ? undefined : value;
+}
+
+/**
  * The price table: `PROXY_PRICE_TABLE`. **Optional**, and the only optional path
  * this file reads (#62).
  *

@@ -190,6 +190,14 @@ beforeAll(async () => {
       "      model: anthropic/claude-sonnet-4-6",
       "      api_key: not-a-credential",
       `      api_base: http://host.docker.internal:${started.port}`,
+      // A model LiteLLM has no price for, so the cost header is absent rather
+      // than zero (#239). The upstream is the same fake: what differs is only
+      // whether LiteLLM's own price map has heard of what it dialled.
+      "  - model_name: conformance-unpriced",
+      "    litellm_params:",
+      "      model: anthropic/not-a-real-model-xyz",
+      "      api_key: not-a-credential",
+      `      api_base: http://host.docker.internal:${started.port}`,
       "  - model_name: conformance-embedding",
       "    litellm_params:",
       "      model: openai/text-embedding-3-small",
@@ -335,6 +343,72 @@ describe("a live LiteLLM sidecar, through the agent's own adapters", { skip: !so
     // and no output tokens, so `prompt_tokens` is already exclusive.
     expect(response.usage).toEqual({ inputTokens: 9 });
     expect(response.model).toBe("conformance-embedding");
+  });
+
+  // #239's input, against the thing that produces it. The proxy compares its own
+  // computed cost against this figure to show an operator a stale price table,
+  // and every part of that rests on the header being there and meaning what the
+  // adapter takes it to mean.
+  it("reports what LiteLLM charged for the call", { timeout: 60_000 }, async () => {
+    const response = await createCompletionClient({
+      provider: "openai-compatible",
+      apiKey: MASTER_KEY,
+      baseUrl
+    }).complete({
+      model: "conformance-completion",
+      maxTokens: 64,
+      messages: [{ role: "user", content: "ping" }]
+    });
+
+    // A figure, not a fixed one. Measured against `main-stable` these counts
+    // came back `x-litellm-response-cost: 0.00011385`, which is 113,850
+    // nano-USD — but that number is LiteLLM's price map for a model whose real
+    // price its vendor sets, so pinning it would make this case fail on the day
+    // Anthropic changed a price and prove nothing about the agent. What is ours
+    // to assert is that a cost arrives, as a whole number of nano-USD.
+    expect(response.costNanoUsd).toBeGreaterThan(0);
+    expect(Number.isInteger(response.costNanoUsd)).toBe(true);
+  });
+
+  // The distinction the whole record is built on, and the one a reasonable
+  // implementation gets wrong: LiteLLM omits `x-litellm-response-cost` for a
+  // model it cannot price, while still sending `-input` and `-output` reading
+  // `0.0`. An adapter that summed those siblings would report this call as
+  // priced at nothing, and every deployment running a model the gateway has
+  // never heard of would show a permanent 100% drift against its own table.
+  it("reports no cost at all for a model LiteLLM cannot price", { timeout: 60_000 }, async () => {
+    const response = await createCompletionClient({
+      provider: "openai-compatible",
+      apiKey: MASTER_KEY,
+      baseUrl
+    }).complete({
+      model: "conformance-unpriced",
+      maxTokens: 64,
+      messages: [{ role: "user", content: "ping" }]
+    });
+
+    // Absent, not zero. The counts still arrive, because a model nobody can
+    // price is still metered.
+    expect(response.costNanoUsd).toBeUndefined();
+    expect(response.usage.inputTokens).toBe(UPSTREAM.input);
+  });
+
+  // Why the reported cost is counted in nano-USD rather than the price table's
+  // micro. Nine tokens came back at `1.8e-07` USD against `main-stable` — 180
+  // nano-USD, and nothing at all once rounded to micro. A deployment embedding
+  // all day would then compare a real charge against a recorded zero.
+  it("reports an embedding cost too small to survive the price table's unit", { timeout: 60_000 }, async () => {
+    const response = await createEmbeddingClient({
+      provider: "openai-compatible",
+      apiKey: MASTER_KEY,
+      baseUrl
+    }).embed({ model: "conformance-embedding", texts: ["the vault ships friday"] });
+
+    expect(response.costNanoUsd).toBeGreaterThan(0);
+    // A bound rather than the measurement, per the completion case: what is
+    // ours to claim is that one call's cost lands far below the resolution the
+    // price table's own unit has.
+    expect(response.costNanoUsd).toBeLessThan(1_000_000);
   });
 
   // The master key is the only thing standing between the sidecar's provider

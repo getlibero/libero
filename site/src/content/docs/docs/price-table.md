@@ -97,6 +97,50 @@ it fails closed.
 There is **no shipped default table**. A price list baked into a released image goes stale on the
 provider's schedule and is then trusted, which is the failure this whole feature exists to fix.
 
+## Telling when it has gone stale
+
+A price table goes out of date on the provider's schedule, not yours, and the ordinary way to find
+out is the invoice. If your deployment reaches models through a **LiteLLM** — one you already run or
+the sidecar in the compose file — there is an earlier signal: the gateway prices every call from its
+own table and reports what it charged, and the proxy keeps that figure beside the one it computed
+from this file.
+
+```bash
+docker compose run --rm proxy node dist/drift.js show
+```
+
+```
+days        2026-08-24 to 2026-08-29 (UTC)
+price table a3f1c02e5b7d9e14
+
+claude-sonnet-4-6           1284 turns  computed $4.1230  reported $4.6010  +11.6%
+  your table prices this model below the gateway. A channel's daily_usd is allowing more real
+  spend than it reads.
+```
+
+The direction is the part to act on. **Below** the gateway means a channel's `daily_usd` is letting
+more real spend through than the number in its sheet suggests; **above** means it is cutting the
+channel off earlier than the operator intended. `drift days <model>` splits the same comparison by
+day, which is where you see *when* one of the two tables changed.
+
+The comparison is drawn at the moment you ask, from the table as it stands — so correcting a price
+and running it again shows the difference gone, over spend that was already recorded. That is the
+same property [editing it while the proxy runs](#editing-it-while-the-proxy-runs) describes.
+
+**None of this enforces anything.** No call was refused or allowed because of a figure in that
+record, there is no exit code for a large difference, and what a channel may spend is decided from
+this file alone. A gateway's price map is a second opinion worth having and is not a thing the proxy
+meters on — that would move enforcement out of the proxy and onto a number it did not compute.
+
+Two things do not appear there, deliberately. A call **nobody priced** — every direct provider call,
+and any model the gateway has never heard of — is not a disagreement, so it is not recorded at all; a
+gateway that priced a call at *zero* is recorded, because that is a statement. And a model with no
+row in this file shows as `no price for this model`, which is [the fault that already refuses
+channels](#a-model-with-no-price-refuses) and has a different remedy.
+
+Set `PROXY_DRIFT_DB` to keep the record; the compose file ships it set. A deployment calling
+providers directly can leave it off — nothing reports a cost for it to hold.
+
 ## Versions
 
 The version recorded against a decision is the **digest of the file's bytes**, not a line in it. A

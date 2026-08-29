@@ -171,6 +171,16 @@ export interface CompletedTurn {
    * for the whole argument.
    */
   model?: string;
+  /**
+   * What the gateway that served it says it cost, in nano-USD (#239).
+   *
+   * `CompletionResponse.costNanoUsd` passed through without interpretation, the
+   * way `model` is: only a router reports one, absent is the ordinary case, and
+   * the loop neither computes nor substitutes a figure of its own. It reaches
+   * the proxy on the spend report and is recorded beside the proxy's own
+   * computed cost, which is the only thing it is ever used for.
+   */
+  costNanoUsd?: number;
 }
 
 export interface AgentTaskOptions {

@@ -112,8 +112,14 @@ describe("counting", () => {
 
 describe("retrying a report", () => {
   it("records a turn once and calls the repeat a duplicate", async () => {
-    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({ outcome: "recorded" });
-    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({ outcome: "duplicate" });
+    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({
+      outcome: "recorded",
+      day: "2026-08-04"
+    });
+    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({
+      outcome: "duplicate",
+      day: "2026-08-04"
+    });
     expect((await meter.read(CHANNEL)).inputTokens).toBe(120);
   });
 
@@ -142,8 +148,14 @@ describe("two channels metered at once", () => {
   // Turn ids are generated per agent process and two channels can plausibly
   // produce the same one. Deduping across channels would silently drop spend.
   it("does not let one channel's turn id shadow another's", async () => {
-    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({ outcome: "recorded" });
-    expect(await meter.recordTokens(OTHER, "t1", usage)).toEqual({ outcome: "recorded" });
+    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({
+      outcome: "recorded",
+      day: "2026-08-04"
+    });
+    expect(await meter.recordTokens(OTHER, "t1", usage)).toEqual({
+      outcome: "recorded",
+      day: "2026-08-04"
+    });
     expect((await meter.read(OTHER)).inputTokens).toBe(120);
   });
 });
@@ -239,7 +251,10 @@ describe("surviving a restart", () => {
 
     db = openBudgetDb({ file });
     meter = createSqliteSpendMeter({ db, now: () => clock });
-    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({ outcome: "duplicate" });
+    expect(await meter.recordTokens(CHANNEL, "t1", usage)).toEqual({
+      outcome: "duplicate",
+      day: "2026-08-04"
+    });
   });
 });
 
@@ -267,8 +282,13 @@ describe("pruning reported turns", () => {
     clock = NOON + TURN_RETENTION_MS + 1;
     await meter.recordTokens(CHANNEL, "new", usage);
 
-    // "old" is no longer deduped — that is the trade the window buys.
-    expect(await meter.recordTokens(CHANNEL, "old", usage)).toEqual({ outcome: "recorded" });
+    // "old" is no longer deduped — that is the trade the window buys. The day
+    // on the answer is the day the clock was advanced to, not the day the first
+    // report landed in: the meter says where it filed *this* one.
+    expect(await meter.recordTokens(CHANNEL, "old", usage)).toEqual({
+      outcome: "recorded",
+      day: "2026-08-06"
+    });
   });
 
   it("keeps a turn id that is still inside the window", async () => {
@@ -276,7 +296,10 @@ describe("pruning reported turns", () => {
     clock = NEXT_DAY;
     await meter.recordTokens(CHANNEL, "next", usage);
 
-    expect(await meter.recordTokens(CHANNEL, "recent", usage)).toEqual({ outcome: "duplicate" });
+    expect(await meter.recordTokens(CHANNEL, "recent", usage)).toEqual({
+      outcome: "duplicate",
+      day: "2026-08-05"
+    });
   });
 
   // Counters are not pruned. They are the deployment's only spend history.

@@ -704,6 +704,19 @@ for the same reason the vault commands are: it runs where the data is. It takes 
 running proxy's next call, so nothing needs restarting. It clears today; earlier days stay as
 history.
 
+If you reach models through a LiteLLM, one more command reads a record the reset does not touch —
+what the gateway said your calls cost, beside what your own [price table](/docs/price-table/) says
+they cost:
+
+```bash
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/drift.js show   # every model
+docker compose -f deploy/docker-compose.yml run --rm proxy node dist/drift.js days claude-sonnet-4-6
+```
+
+It is how a stale price table shows up before the provider's invoice does, and it decides nothing:
+no call was refused or allowed because of a figure in it. [Telling when it has gone
+stale](/docs/price-table/#telling-when-it-has-gone-stale) has the reading.
+
 `PROXY_BUDGET_DB` is required and has no default — a budget file invented under a path nobody meant
 is a channel whose hard limits never bite, which is the one misconfiguration here that fails open.
 

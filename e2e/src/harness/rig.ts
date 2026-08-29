@@ -363,6 +363,16 @@ export interface Rig {
   readonly auditDb: string;
   /** `PROXY_ATTEMPTS_DB` — read it as the operator does, through `runAuditCli` (#364). */
   readonly attemptsDb: string;
+  /** `PROXY_DRIFT_DB` — read it as the operator does, through `runDriftCli` (#239). */
+  readonly driftDb: string;
+  /**
+   * `PROXY_PRICE_TABLE`, when this rig wrote one — absent is the deployment
+   * that caps nothing in dollars.
+   *
+   * Exposed so a case can hand the operator's drift command the same table the
+   * proxy priced with. Two tables would make a comparison of a comparison.
+   */
+  readonly priceTable?: string;
   /** `PROXY_BUDGET_DB` — read it with `spendFor`. */
   readonly budgetDb: string;
   /**
@@ -558,6 +568,11 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     cleanup.add("databases", () => rmSync(dbDir, { recursive: true, force: true }));
     const auditDb = join(dbDir, "audit.db");
     const attemptsDb = join(dbDir, "attempts.db");
+    // Beside the meter's file rather than in it (#239). A price-drift record is
+    // an observation an operator keeps across a `budget reset`, and the rig
+    // ships it set for the reason the compose file does: on is the deployment
+    // default, so a case that wants it off says so.
+    const driftDb = join(dbDir, "drift.db");
     const budgetDb = join(dbDir, "budget.db");
 
     // Its own root, not a subdirectory of the sheets, because that is the
@@ -585,6 +600,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       budgetDb,
       auditDb,
       attemptsDb,
+      driftDb,
       // The same directory `startAgent` gets below. One process writes it and
       // the other reads it, which is the production shape and is what makes a
       // `search_channel_history` case a real two-process claim rather than a
@@ -693,6 +709,8 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       certs,
       auditDb,
       attemptsDb,
+      driftDb,
+      ...(priceTable === undefined ? {} : { priceTable }),
       budgetDb,
       storeRoot,
       sharedSkills,

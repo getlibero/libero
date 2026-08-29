@@ -92,6 +92,16 @@ export interface EmbeddingResponse {
    */
   model?: string;
   usage?: EmbeddingUsage;
+  /**
+   * What the gateway that served this call says it cost, in nano-USD (#239).
+   *
+   * `CompletionResponse.costNanoUsd`'s rule exactly, read by the same function,
+   * and it matters here for a reason of its own: an embedding call is where the
+   * unit shows. Nine tokens through LiteLLM cost `1.8e-07` USD — a figure with
+   * nothing left of it at the price table's micro-USD, which is why the reported
+   * cost is counted in nano.
+   */
+  costNanoUsd?: number;
 }
 
 export interface EmbeddingClient {

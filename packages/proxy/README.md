@@ -439,6 +439,64 @@ the dispatch switch and not beside `recordToolCall`: a call that came back
 would burn the channel's one warning of the day on an answer that cannot carry
 it.
 
+### The price-drift record: a second opinion nothing acts on (#239)
+
+Two figures price the same call. The proxy computes one from the counts a spend
+report carries and the operator's price table, and that is the figure the section
+above enforces. A router — a LiteLLM the operator runs, or the sidecar the
+compose file starts — computes the other from its own price map and reports it on
+the response, and the agent passes it along on the spend report as
+`costNanoUsd`. `drift-db.ts` keeps them side by side so that a table which has
+gone stale is visible **before** the provider's invoice arrives, which is the
+whole of what this is for.
+
+**It never enforces, and that is structural rather than promised.** The route
+that records it holds a `DriftRecorder`, whose one method writes; there is no
+read on it to make a decision from. `enforce.ts` is forbidden by an ESLint rule
+from importing the module at all. And the operator's command has no exit code for
+a difference of any size, so nothing downstream can come to depend on one either.
+Metering on a number a gateway computed would move enforcement out of the proxy,
+which is the invariant the whole design hangs on.
+
+**Absent is not zero, and the record only holds what somebody priced.** Measured
+against LiteLLM `main-stable`: a model it can price answers
+`x-litellm-response-cost: 0.00011385`, and a model it cannot omits that header
+entirely while still sending `-input` and `-output` reading `0.0`. So a call
+nobody priced — every direct provider call, and every model the gateway has never
+heard of — is not a disagreement and is not recorded; a reported zero means
+priced and free, exactly as a `0` row in the price table does. A report naming no
+model records nothing either: there is no table row to compare it against, and
+the meter is already saying the useful thing about it under `(unreported)`.
+
+**One row per `(day, channel, model)`, and the aggregation is exact.** Cost is
+linear in the counts at a fixed price, so pricing a day's summed counts is the
+sum of pricing each turn — it even removes a rounding step, since a per-turn
+figure would truncate to micro-USD once per turn and a nine-token embedding costs
+less than that. What it buys is a file bounded by days times channels times
+models rather than one that grows with traffic and needs a retention policy this
+package does not have.
+
+**The computed side is never stored.** It is derived when the operator asks, from
+the table as it stands then — `PriceTable`'s own rule, that cost is computed
+fresh rather than accumulated. That is what makes the command a feedback loop:
+correct a price, run it again, and the difference is gone, over spend already
+recorded. A stamped figure would keep showing an operator a drift they had
+already fixed.
+
+**Nano-USD, where the price table is micro-USD per million tokens.** A
+per-million price needs no resolution below a millionth of a dollar; one call's
+cost does. Nine tokens through LiteLLM cost `1.8e-07` USD — 180 nano-USD, and
+nothing at all at micro, which would have recorded a real charge as a zero that
+means something else.
+
+**Its own file, beside the meter rather than in it.** `budget reset` discards
+counters, and this outlives them: staleness is a property of a table over weeks,
+not of today's spend. Keeping it in `budget.db` would make its survival depend on
+what a reset happens to delete. `PROXY_DRIFT_DB` is optional on the attempt
+store's argument, and off is a legitimate deployment twice over — a deployment
+calling providers directly records nothing anyway, and one that caps nothing in
+dollars has no table to check.
+
 ## Two credential stores, and which process writes which
 
 Everything in the vault shares one lifecycle: the operator wrote it, the

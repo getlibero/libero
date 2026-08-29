@@ -84,6 +84,62 @@ export const TokenUsageReport = z
   .strict();
 
 /**
+ * The ceiling on a reported cost: a thousand dollars for one turn.
+ *
+ * `MAX_REPORTED_TOKENS`'s argument exactly — a bound rather than a plausibility
+ * check, so a wrong or hostile figure cannot overflow the arithmetic that sums
+ * it. Unlike the counts, this one fails **open** rather than closed, because
+ * nothing is enforced on it: a report over the ceiling is a 400, which costs the
+ * turn its token counts, so the ceiling is set far above any turn a provider
+ * bills for.
+ */
+export const MAX_REPORTED_COST_NANO_USD = 1_000_000_000_000;
+
+/** One US dollar, as the unit this field is counted in. */
+export const NANO_USD_PER_USD = 1_000_000_000;
+
+/**
+ * What the gateway that served this turn says it cost, in nano-USD (#239).
+ *
+ * **A second opinion, and never an input to a decision.** The proxy prices a
+ * channel's spend from the counts above and the operator's price table, and that
+ * figure is the one `daily_usd` enforces on. This one is what a router — a
+ * LiteLLM the operator runs, or the sidecar the compose file starts — computed
+ * for the same call from its own price map. The two are recorded and compared so
+ * a stale price table is visible before the provider's invoice arrives, which is
+ * all this field is for. Metering on a number a gateway computed would move
+ * enforcement out of the proxy, which is the invariant the whole design hangs
+ * on.
+ *
+ * **Absent is not zero, and the difference is the whole signal.** Measured
+ * against LiteLLM `main-stable`: a model it can price answers with
+ * `x-litellm-response-cost: 0.00011385`, and a model it cannot price omits the
+ * header entirely while its `-input` and `-output` siblings still read `0.0`. So
+ * absent means "nobody priced this" — a direct provider call, a gateway that
+ * does not report, a model the gateway has never heard of — and a present zero
+ * means "priced, and free", exactly the distinction `PriceTable` already draws
+ * between a missing row and a row of zeros.
+ *
+ * **Nano-USD, where the price table is micro-USD per million tokens.** The two
+ * units differ because the two figures do: a per-million-token price has no need
+ * of resolution below a millionth of a dollar, and a single call's cost does —
+ * a nine-token embedding through LiteLLM costs `1.8e-07` USD, which is 180
+ * nano-USD and rounds to nothing at micro. Recording it as zero would invent a
+ * drift the deployment does not have. An integer for the reason the price table
+ * gives: money is not a float.
+ *
+ * **It covers exactly the calls whose counts are in this report.** One
+ * `CompletedTurn` is one call to the model today, so a turn's counts and a
+ * gateway's per-call figure are the same unit of accounting. If a turn ever
+ * aggregates several calls, the rule is that the field is omitted unless *every*
+ * one of them reported a cost — a partial sum against a full set of counts is
+ * not a comparison, and reporting one would show as drift that is really
+ * coverage.
+ */
+const reportedCost = (): z.ZodNumber =>
+  z.number().int().nonnegative().max(MAX_REPORTED_COST_NANO_USD);
+
+/**
  * Which model spent them, as the provider echoed it back — a sibling of `usage`
  * rather than a field inside it.
  *
@@ -120,7 +176,8 @@ export const SpendReport = z
   .object({
     turn: TurnId,
     model: ModelId.optional(),
-    usage: TokenUsageReport
+    usage: TokenUsageReport,
+    costNanoUsd: reportedCost().optional()
   })
   .strict();
 

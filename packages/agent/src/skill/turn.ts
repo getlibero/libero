@@ -363,7 +363,8 @@ export async function runSkillAuthorTurn(
   await options.onTurn?.({
     usage: response.usage,
     turn: options.turn,
-    ...(response.model === undefined ? {} : { model: response.model })
+    ...(response.model === undefined ? {} : { model: response.model }),
+    ...(response.costNanoUsd === undefined ? {} : { costNanoUsd: response.costNanoUsd })
   });
 
   const ops: SkillOpOutcome[] = [];

@@ -167,6 +167,19 @@ services:
       # Reset a channel without restarting anything with
       # `docker compose run --rm proxy node dist/budget.js reset <channel>`.
       PROXY_BUDGET_DB: /data/budget/budget.db
+      # The price-drift record (#239), beside the meter's file and deliberately
+      # not in it. What a gateway said a call cost, kept next to the counts the
+      # proxy priced itself, so a stale price table is visible before the
+      # provider's invoice is — read it with
+      # `docker compose run --rm proxy node dist/drift.js show`.
+      #
+      # A second file rather than a table in budget.db because `budget reset`
+      # discards counters and this outlives them: staleness is a property of the
+      # table over weeks. Nothing is ever enforced on what is in here, and only a
+      # deployment behind a gateway that reports costs writes to it at all — a
+      # direct provider call reports none. Unsetting this variable is the off
+      # switch; the proxy says so once at startup rather than failing.
+      PROXY_DRIFT_DB: /data/budget/drift.db
       # Read, and required. The audit log: one row per decided tool call —
       # served, held, refused, permitted with no upstream, or decided and then
       # never answered. SQLite writes -wal and -shm beside this file, so the

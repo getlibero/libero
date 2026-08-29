@@ -243,6 +243,40 @@ not a line in it — a declared version is a claim about the bytes that nothing
 checks. It is logged at load, so an operator can tie a running proxy's prices to
 a commit in whatever repository they keep the file in.
 
+## The price-drift record
+
+`PROXY_DRIFT_DB` keeps what a gateway said a call cost beside the counts the
+proxy priced itself, so a stale price table is visible before the provider's
+invoice is (#239). Only a deployment behind a router writes to it — a direct
+provider call reports no cost — and only a deployment with a price table can read
+anything out of it, since half the comparison is that table.
+
+```bash
+docker compose run --rm proxy node dist/drift.js show            # every model
+docker compose run --rm proxy node dist/drift.js show C024BE91L  # one channel's traffic
+docker compose run --rm proxy node dist/drift.js days claude-sonnet-4-6
+```
+
+`show` puts the two figures side by side per model and says, in words, which way
+a disagreement runs: a table below the gateway's means a channel's `daily_usd` is
+allowing more real spend than it reads, and above means it is cutting spend off
+earlier. `days` is the same comparison split by day, which is how an operator
+finds *when* one of the two tables changed.
+
+**The computed side is worked out when you ask**, from the table as it stands
+then, so correcting a price and running the command again shows the difference
+gone — over spend already recorded. Nothing is stamped at the time a report
+arrives except the counts and what the gateway charged for them.
+
+**Nothing here enforces, and there is no exit code for a large difference.** A
+threshold that failed a command would be a policy nobody set, and a script gating
+on one would be enforcing on a figure the proxy did not compute. What a channel
+may spend is decided from the price table alone, on that channel's next call.
+
+Absent variable is the record off, said once at startup. It is optional for the
+attempt store's reason and one of its own: a deployment that calls providers
+directly would keep an empty file however carefully it was configured.
+
 ## The channel message stores
 
 `PROXY_STORE_ROOT` is the agent's `AGENT_STORE_ROOT` — the same directory, named

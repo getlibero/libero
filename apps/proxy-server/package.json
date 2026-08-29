@@ -17,6 +17,7 @@
     "grant": "node dist/grant.js",
     "vault": "node dist/vault.js",
     "budget": "node dist/budget.js",
+    "drift": "node dist/drift.js",
     "audit": "node dist/audit.js",
     "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
