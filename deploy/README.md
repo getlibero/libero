@@ -1,7 +1,7 @@
 # deploy/
 
 `docker compose up` for both services, the certificates they authenticate with,
-and the LiteLLM sidecar's configuration.
+and the configuration for the LiteLLM sidecar it can optionally start.
 
 Operator instructions live at
 [getlibero.com/docs/self-hosting](https://getlibero.com/docs/self-hosting). This
@@ -265,24 +265,97 @@ networks rests on Docker's default iptables rules. A deployment running the daem
 with `--iptables=false` has removed a wall this design leans on, and nothing here
 would report it.
 
-## The LiteLLM sidecar (#428)
+## Three ways to reach a model (#428)
 
-**Two supported deployment shapes, not a default and an escape hatch.** The
-agent completes either directly against a provider or through this sidecar, and
-which one you run is a choice with grounds on both sides:
+**Three supported deployment shapes, and none of them is a default the other two
+are exceptions to.** The agent completes either directly against a provider,
+through a LiteLLM you already run, or through the sidecar this compose file can
+start. Which one you run is an operations decision with grounds on all three
+sides:
 
-| | Direct | Sidecar |
-| --- | --- | --- |
-| Processes holding a provider key | The agent | The sidecar, and the agent holds none |
-| Hops on the call path | One | Two |
-| Routing, fallbacks, rate limits, key rotation across several vendors | Each is the provider's own, or nothing | One place, one config file |
-| A cost figure to reconcile the proxy's computed one against | None | Per call (#239) |
-| Token counts | Arrive in the provider's own envelope | Arrive in LiteLLM's, and must survive it (#480) |
+| | Direct | A LiteLLM you already run | The sidecar here |
+| --- | --- | --- | --- |
+| What holds a provider key | The agent | Your gateway — nothing in this deployment | The sidecar, and the agent holds none |
+| Who operates the hop | Nobody: there is not one | Your platform team, already | You, with `docker compose` |
+| Where the call goes first | The provider | Off this host, to your gateway | `litellm:4000`, on the private network |
+| Routing, fallbacks, rate limits, key rotation across vendors | Each is the provider's own, or nothing | Whatever you already run, shared with everything else using it | One config file, this deployment's alone |
+| A cost figure to reconcile the proxy's computed one against (#239) | None | Per call | Per call |
+| Token counts | Arrive in the provider's own envelope | Arrive in LiteLLM's, and must survive it (#480) | The same envelope, and the same proof |
+| What `OPENAI_API_KEY` is | A provider's key | A virtual key your gateway issued | The sidecar's master key |
 
-Neither is the fallback. This is not what you run because `packages/agent` has
-no adapter for your provider — the `openai-compatible` arm already reaches
+**What you already run decides most of it.** An organization with a LiteLLM in
+front of its model spend has the second shape whether or not this deployment
+exists, and pointing the agent at it is a base URL and a key — that is the
+likeliest production shape here rather than a variation on the third. A
+deployment with one vendor and no gateway has the first, and there is nothing
+thin about it. The third is for a deployment that wants what a router gives
+without standing one up first.
+
+None of the three is about adapter coverage. The `openai-compatible` arm reaches
 Together, Fireworks, Groq, Baseten, Ollama and Gemini's compatibility endpoint by
-base URL alone.
+base URL alone, with no router in the path — so a router is never what you run
+because `packages/agent` has no adapter for your provider.
+
+Two of the three are the same call path, and this repository proves it once:
+`packages/litellm-conformance` starts a real LiteLLM, points the real adapters at
+it, and reads what comes back (#480). Which process started that LiteLLM is not
+something the agent can tell.
+
+### Direct
+
+`AGENT_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`, or
+`AGENT_PROVIDER=openai-compatible` with `OPENAI_API_KEY` and — for anything that
+is not OpenAI itself — `OPENAI_BASE_URL`. The key on the agent service is a
+provider's own, `docker compose up -d` starts nothing extra, and nothing under
+`deploy/litellm/` is read.
+
+### A LiteLLM you already run
+
+```
+# in .env: AGENT_PROVIDER=openai-compatible
+#          OPENAI_BASE_URL=https://llm.internal.example/v1
+#          OPENAI_API_KEY=<a virtual key your gateway issued>
+#          AGENT_MODEL=<a model your gateway serves, spelled as it serves it>
+docker compose up -d          # no profile: this file starts no sidecar
+```
+
+Four things differ from the shape below, and they are the whole of it.
+
+**The custody story is the same one with a different party.** The agent holds no
+provider key here either: `OPENAI_API_KEY` is a virtual key, issued and revoked
+by whoever runs the gateway, and scoping it to the models this deployment names
+is worth doing at issue time. The agent refuses to start without one even where
+the gateway would serve without it, so there is no configuration in which it
+calls your gateway anonymously.
+
+**The hop leaves the machine.** The sidecar's hop is a private bridge network
+with no published port; this one is your network, so it wants `https` and
+whatever the gateway's own front door requires. `libero` is an ordinary bridge
+network with a route out, so nothing here has to change for the agent to reach a
+gateway elsewhere — but a gateway on *this* host is not `localhost` from inside
+the container: it is `host.docker.internal` where the daemon provides that name,
+and an `extra_hosts: ["host.docker.internal:host-gateway"]` line on the server
+service where it does not.
+
+**`deploy/litellm/config.yaml` is not read, and neither is the master-key
+argument below.** Both are about the service this file starts, which you are not
+starting; the `litellm` profile stays down.
+
+**The alias is still a deployment fact, and now it is not yours.** Everything
+under "The alias is a deployment fact" holds with your gateway's `model_name` in
+place of the one in `config.yaml` — so the proxy's price table has to be keyed by
+what that gateway echoes back, which may be a spelling you do not control. Read
+it off the proxy's `spend_reported` log line rather than assuming it. An alias
+`ModelId` cannot spell is a conversation with whoever operates the gateway before
+it is a deployment.
+
+Embeddings need not follow completion through it. `AGENT_EMBEDDING_PROVIDER` and
+its three variables are a separate provider configuration on purpose, so
+completing through your gateway and embedding against something else is a
+supported deployment rather than a workaround — which is the answer when the
+gateway serves no embedding model.
+
+### The sidecar this file can start
 
 **Behind a `litellm` profile**, for the runner's reason: opt-in, and still a real
 service that compose validates rather than a commented-out block that rots.
@@ -297,13 +370,12 @@ service that compose validates rather than a commented-out block that rots.
 docker compose --profile litellm up -d
 ```
 
-### The keys split, and that is the whole custody story
-
-The agent service in this shape **holds no provider key at all**. `OPENAI_API_KEY`
-on it is the key for whatever `OPENAI_BASE_URL` names, which is the sidecar — so
-it is the sidecar's master key, a different secret to a different party. The
-provider keys are `LITELLM_ANTHROPIC_API_KEY` and `LITELLM_OPENAI_API_KEY`, set on
-the sidecar alone.
+**The keys split, and that is the whole custody story.** The agent service in
+this shape **holds no provider key at all**. `OPENAI_API_KEY` on it is the key
+for whatever `OPENAI_BASE_URL` names, which is the sidecar — so it is the
+sidecar's master key, a different secret to a different party. The provider keys
+are `LITELLM_ANTHROPIC_API_KEY` and `LITELLM_OPENAI_API_KEY`, set on the sidecar
+alone.
 
 The prefix is not decoration. A stock LiteLLM config reads the unprefixed
 `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, and this compose file already declares
@@ -329,7 +401,9 @@ the provider keys behind one HTTP header on the host's interface.
 
 ### The alias is a deployment fact
 
-A `model_name` in the `model_list` is read by three things that have to agree:
+**Both LiteLLM shapes.** A `model_name` — in this file's `model_list`, or in the
+`model_list` of the gateway you already run — is read by three things that have
+to agree:
 
 - **`AGENT_MODEL`, or a channel's `[llm] model`,** names it. It is what a sheet
   asks for.
@@ -346,20 +420,27 @@ letters, digits, dot, dash, colon, slash — because the spend report is a stric
 schema and an id that does not parse costs the turn its token counts, which is
 the limit that catches a runaway loop.
 
-Embeddings go through the same service and the same key: `AGENT_EMBEDDING_PROVIDER=openai-compatible`
-with `AGENT_EMBEDDING_BASE_URL=http://litellm:4000/v1`, and
-`AGENT_EMBEDDING_API_KEY` left unset so it falls back to `OPENAI_API_KEY`, which
-here is the one right answer rather than a convenience. Changing which upstream an
-embedding alias resolves to is a **rebuild** for the same reason changing
+Embeddings can go through the same service and the same key:
+`AGENT_EMBEDDING_PROVIDER=openai-compatible` with `AGENT_EMBEDDING_BASE_URL` set
+to the same base URL completion uses — `http://litellm:4000/v1` for the sidecar —
+and `AGENT_EMBEDDING_API_KEY` left unset so it falls back to `OPENAI_API_KEY`,
+which there is the one right answer rather than a convenience. They need not: the
+four `AGENT_EMBEDDING_*` variables are a provider configuration of their own, and
+a gateway that serves no embedding model is a reason to point them somewhere else
+rather than a reason not to use it. Changing which upstream an embedding alias
+resolves to is a **rebuild** either way, for the same reason changing
 `AGENT_EMBEDDING_MODEL` is: the id is stamped against a channel's stored vectors.
 
 ### What the meter sees through the envelope
 
-All four token tiers arrive, and they are proven against a live sidecar rather
+All four token tiers arrive, and they are proven against a live LiteLLM rather
 than assumed: `packages/litellm-conformance` starts this image, points the real
-adapters at it, and reads what comes back (#480).
+adapters at it, and reads what comes back (#480). What it proves is a wire
+format, not a service this file happens to start, so it covers a gateway you
+already run at the same version — a much older or newer one is LiteLLM's release
+notes to check, not ours to promise.
 
-Two things are worth knowing before changing anything on this path.
+Two things are worth knowing before changing anything on either LiteLLM path.
 
 **LiteLLM's `prompt_tokens` is the sum, not the fresh input.** An upstream
 reporting 11 fresh input tokens, 7 read from cache and 13 written comes back as

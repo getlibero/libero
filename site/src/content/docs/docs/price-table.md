@@ -45,8 +45,9 @@ Leaving a model out is the *different* statement that its spend cannot be priced
 ## Key it by the model that served, not the model you asked for
 
 The `id` must be the one the **provider echoes back**. Usually that is the one your team sheet's
-`[llm] model` asked for, and under a router it is not: a LiteLLM sidecar resolves an alias, and
-Bedrock and Vertex carry their own prefixes. That difference is the whole reason `daily_usd` exists
+`[llm] model` asked for, and under a router it is not: a LiteLLM resolves an alias — yours or the
+included sidecar's, the difference being whose spelling it is — and Bedrock and Vertex carry their
+own prefixes. That difference is the whole reason `daily_usd` exists
 — a cap in tokens is only a cap on spend if the model is fixed.
 
 The proxy logs the served id on every spend report, which is where to read the spelling this file

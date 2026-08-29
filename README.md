@@ -77,7 +77,7 @@ apps/server        composes gateway + agent + the channel router (service 1)
 apps/proxy-server  composes proxy (service 2)
 apps/runner        sandbox runner (optional service 3) — holds the Docker socket and no credential
 e2e/               the security suite's rig — both halves over real mTLS, a scripted model
-deploy/            docker-compose + optional LiteLLM sidecar
+deploy/            docker-compose + the LiteLLM sidecar it can start
 channels/example/  documented starter team sheet
 design/            design system — tokens, component CSS, brand SVGs, reference page
 site/              getlibero.com — Astro + Starlight; outside the pnpm workspace

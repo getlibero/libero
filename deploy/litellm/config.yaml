@@ -1,13 +1,20 @@
 # The LiteLLM sidecar's model list (#479).
 #
-# Direct provider APIs and this sidecar are TWO SUPPORTED DEPLOYMENT SHAPES, and
-# which one you run is your choice rather than a gap. Direct is one less
-# process, one less hop, and one less thing holding a provider key. The sidecar
-# is one place to put routing, fallbacks, rate limits and key rotation across
-# several providers — and a per-call cost figure the proxy can reconcile its own
-# computed cost against (#239), which direct calling has no equivalent of.
-# Neither is the fallback for the other, and nothing here is an escape hatch for
-# a provider `packages/agent` has not got an adapter for.
+# THIS FILE IS READ BY ONE OF THREE SUPPORTED DEPLOYMENT SHAPES, and which one
+# you run is your choice rather than a gap (#428). Direct is one less process,
+# one less hop, and one less thing holding a provider key. A LiteLLM is one
+# place to put routing, fallbacks, rate limits and key rotation across several
+# providers — and a per-call cost figure the proxy can reconcile its own
+# computed cost against (#239), which direct calling has no equivalent of. That
+# LiteLLM is either one you already run, pointed at by OPENAI_BASE_URL and
+# configured wherever you configure it, or this sidecar, configured here. None
+# of the three is the fallback for the others, and none is an escape hatch for a
+# provider `packages/agent` has not got an adapter for.
+#
+# If you already run a LiteLLM, this file is not yours to edit: leave the
+# `litellm` profile down and point OPENAI_BASE_URL at your gateway. Everything
+# below about the alias still applies, to your `model_list` rather than to this
+# one.
 #
 # Start it:
 #
@@ -15,8 +22,8 @@
 #
 # and point the agent at it — AGENT_PROVIDER=openai-compatible,
 # OPENAI_BASE_URL=http://litellm:4000/v1, AGENT_MODEL set to one of the
-# `model_name` aliases below. deploy/README.md, "The LiteLLM sidecar", has the
-# rest and the key-custody argument.
+# `model_name` aliases below. deploy/README.md, "Three ways to reach a model",
+# has the rest and the key-custody argument.
 #
 # WHAT YOU CHANGE: the `model_list` entries. Everything under them is worked
 # rather than illustrative — the two below start and serve as written, given the

@@ -84,11 +84,14 @@ services:
       # endpoint — Together, Fireworks, Groq, Ollama and Gemini's compatibility
       # endpoint are all one base URL apart.
       #
-      # So is the litellm sidecar below, and that one is a DEPLOYMENT SHAPE
-      # rather than another vendor (#428). Choosing it means
-      # AGENT_PROVIDER=openai-compatible and OPENAI_BASE_URL=http://litellm:4000/v1,
-      # and then OPENAI_API_KEY is the sidecar's key rather than a provider's —
-      # the provider keys move to that service and this one holds none.
+      # A LiteLLM is reached the same way, and that is a DEPLOYMENT SHAPE rather
+      # than another vendor (#428). There are three shapes and no default among
+      # them: direct, a LiteLLM YOU ALREADY RUN at its own https URL, or the
+      # sidecar below at http://litellm:4000/v1. The last two are one base URL
+      # apart, and in both of them OPENAI_API_KEY stops being a provider's key
+      # and becomes the gateway's — a virtual key yours issued, or this
+      # sidecar's master key — so this service holds no provider key at all.
+      # deploy/README.md, "Three ways to reach a model", is the argument.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -471,13 +474,18 @@ services:
 
   # The LiteLLM sidecar (#428, #479).
   #
-  # ONE OF TWO SUPPORTED SHAPES, not a fallback. The agent completes either
-  # directly against a provider or through this service, and an operator has
+  # ONE OF THREE SUPPORTED SHAPES, not a fallback and not the only way to reach
+  # a LiteLLM. The agent completes directly against a provider, through a
+  # LiteLLM an operator already runs, or through this service, and there are
   # real grounds for each: direct is one less process, one less hop and one less
-  # thing holding a provider key; the sidecar is one place for routing,
-  # fallbacks, rate limits and key rotation across several providers, and a
-  # per-call cost figure the proxy can reconcile against (#239). `deploy/README.md`,
-  # "The LiteLLM sidecar", is the argument; ./litellm/config.yaml is what you edit.
+  # thing holding a provider key; a LiteLLM is one place for routing, fallbacks,
+  # rate limits and key rotation across several providers, and a per-call cost
+  # figure the proxy can reconcile against (#239). An operator who already runs
+  # one wants that shape and not this service — they set OPENAI_BASE_URL to
+  # their own gateway and never start this profile. This service is for the
+  # deployment that wants a router without standing one up first.
+  # `deploy/README.md`, "Three ways to reach a model", is the argument;
+  # ./litellm/config.yaml is what you edit.
   #
   # BEHIND A PROFILE, for the runner's reason: opt-in, and still a real service
   # that compose validates rather than a commented-out block that rots.

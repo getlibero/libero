@@ -98,7 +98,7 @@ Built over Slack Socket Mode (no inbound ports — good self-host ergonomics). S
 
 ## Agent loop
 
-A ReAct-style loop over a provider-agnostic completion layer (Anthropic, OpenAI, Google, Groq, Ollama out of the box; the optional LiteLLM sidecar covers the long tail behind an OpenAI-compatible endpoint). Per-channel model override comes from the team sheet. Tool definitions are fetched from the proxy at session start — the agent never constructs tool clients itself. Hard caps per task: max tool calls, max wall time, max tokens, all read from the team sheet and enforced in the loop *and* independently in the proxy (defense in depth; the proxy's meter is authoritative).
+A ReAct-style loop over a provider-agnostic completion layer (Anthropic natively; OpenAI, Google, Groq and Ollama through their OpenAI-compatible endpoints; and either of those behind a LiteLLM — one the operator already runs, or the sidecar the compose file can start. The three are supported deployment shapes rather than a default and two fallbacks, and the agent cannot tell which process started a gateway it is pointed at). Per-channel model override comes from the team sheet. Tool definitions are fetched from the proxy at session start — the agent never constructs tool clients itself. Hard caps per task: max tool calls, max wall time, max tokens, all read from the team sheet and enforced in the loop *and* independently in the proxy (defense in depth; the proxy's meter is authoritative).
 
 ## Tool proxy
 

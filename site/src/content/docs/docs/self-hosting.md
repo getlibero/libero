@@ -49,8 +49,10 @@ docker compose -f deploy/docker-compose.yml up   # starts gateway+agent and prox
 
 All of these run from the root of a checkout. `channel add` mints the local CA and the proxy's server
 certificate on its first run as well as the channel's own, so `sh scripts/dev-certs.sh` is the same
-step done by hand — see [pinning a channel's certificate](#pinning-a-channels-certificate). An
-optional LiteLLM sidecar is included for models without first-class support.
+step done by hand — see [pinning a channel's certificate](#pinning-a-channels-certificate). The agent
+reaches a model in one of [three shapes](#reaching-a-model) — directly, through a LiteLLM you
+already run, or through a sidecar this compose file can start — and the choice changes two
+variables, not the deployment.
 
 This page is the stack itself. [Deploying on a VM](/docs/deploying-on-a-vm/) puts it on a machine
 that is not a laptop — a Compute Engine or EC2 instance, one disk for every piece of durable state,
@@ -114,8 +116,11 @@ or code ever printed. Running the flow again for the same name replaces the gran
 **A Slack app** with Socket Mode enabled, in a workspace you administer. One app serves every
 channel — see [the Slack app](#the-slack-app) for the scopes and events it needs.
 
-**A model provider.** Anthropic natively; OpenAI, Groq, Ollama, and Gemini through their
-OpenAI-compatible endpoints — set globally and overridable per channel in the team sheet.
+**A model provider, reached one of three ways.** Anthropic natively; OpenAI, Groq, Ollama, and
+Gemini through their OpenAI-compatible endpoints; or either of those behind a LiteLLM — one you
+already run, or the sidecar included here. All three are supported shapes rather than a default
+and two workarounds; [reaching a model](#reaching-a-model) is the choice and what each costs. The
+model is set globally and overridable per channel in the team sheet.
 
 **Service credentials for the tools you want the agent to reach** — a GitHub service account, for
 example. These go into the vault by name. They are provisioned by an admin and belong to the
@@ -139,12 +144,88 @@ the [team sheet reference](/docs/team-sheet).
 
 The two credential rows are the whole distinction. Slack tokens and the model provider key are in
 the agent process because the gateway holds the socket and the loop calls the provider; everything
-a team sheet governs is in the proxy's vault and the agent never sees it. The
+a team sheet governs is in the proxy's vault and the agent never sees it. Behind a LiteLLM the
+agent holds a key for the gateway rather than for a provider, and the provider keys sit with
+whoever runs that gateway — the row stays true, and what it names is a different secret. The
 [security model](/docs/security#which-secrets-are-where) states what a leak of each gets an
 attacker.
 
 The proxy listens only on localhost or a private network, with mutual TLS between the two
 services. Put nothing else on that interface.
+
+## Reaching a model
+
+There are three shapes here, and none of them is the default the other two are exceptions to.
+Which one you run is an operations decision, and the deployment is the same in every other
+respect.
+
+| | Direct | A LiteLLM you already run | The bundled sidecar |
+| --- | --- | --- | --- |
+| What holds a provider key | The agent | Your gateway — nothing in this deployment | The sidecar; the agent holds none |
+| Who operates it | Nobody: there is no extra hop | Your platform team, already | You, with `docker compose` |
+| Routing, fallbacks, rate limits, key rotation across vendors | The provider's own, or nothing | Whatever you already run | One config file, this deployment's alone |
+| A per-call cost figure to check the meter against | None | Yes | Yes |
+| Extra process to run | None | None here | One |
+
+**What you already run decides most of it.** An organization with a LiteLLM in front of its model
+spend has the second shape whether or not this deployment exists, and pointing the agent at it is
+a base URL and a key. A deployment with one vendor and no gateway has the first. The third is for
+one that wants what a router gives without standing a gateway up first.
+
+None of this is about model coverage. `AGENT_PROVIDER=openai-compatible` reaches Together,
+Fireworks, Groq, Baseten, Ollama and Gemini's compatibility endpoint by base URL alone, with no
+router in the path — a router is never what you run because a model is otherwise unsupported.
+
+**Direct.** Anthropic natively, or anything with an OpenAI-compatible endpoint:
+
+```bash
+AGENT_PROVIDER=anthropic                 # or: openai-compatible
+ANTHROPIC_API_KEY=sk-ant-…               # or: OPENAI_API_KEY, plus OPENAI_BASE_URL
+AGENT_MODEL=claude-sonnet-4-6            # for anything that is not OpenAI itself
+```
+
+**A LiteLLM you already run.** Start nothing extra; point the agent at your gateway with a virtual
+key it issued:
+
+```bash
+AGENT_PROVIDER=openai-compatible
+OPENAI_BASE_URL=https://llm.internal.example/v1
+OPENAI_API_KEY=sk-…                      # a virtual key your gateway issued, not a provider's
+AGENT_MODEL=claude-sonnet-4-6            # a model your gateway serves, spelled as it serves it
+```
+
+The agent refuses to start without a key even where your gateway would serve without one. The hop
+leaves the machine in this shape, so it wants `https` and whatever your gateway's front door
+requires — and a gateway on the same host is not `localhost` from inside a container, but
+`host.docker.internal` where the daemon provides that name and an
+`extra_hosts: ["host.docker.internal:host-gateway"]` line on the server service where it does not.
+Nothing under `deploy/litellm/` is read.
+
+**The bundled sidecar.** One extra service, behind a profile, configured in
+`deploy/litellm/config.yaml`:
+
+```bash
+AGENT_PROVIDER=openai-compatible
+OPENAI_BASE_URL=http://litellm:4000/v1
+OPENAI_API_KEY=…                         # the sidecar's master key, and compose hands it the same value
+AGENT_MODEL=claude-sonnet-4-6            # a model_name alias from config.yaml
+LITELLM_ANTHROPIC_API_KEY=sk-ant-…       # the provider keys, read by that service alone
+LITELLM_OPENAI_API_KEY=sk-…
+docker compose -f deploy/docker-compose.yml --profile litellm up -d
+```
+
+The provider keys move to the sidecar and the agent holds none. They are prefixed because a stock
+LiteLLM config reads the unprefixed names, which already mean something else on the agent — one
+name for both would send the sidecar's own key upstream as a provider credential. The sidecar
+publishes no ports: it is reachable at `litellm:4000` on the private network and nowhere else.
+
+**Both LiteLLM shapes: the model name your gateway echoes back is the one that gets priced.** A
+router resolves an alias, and what comes back in the response — the alias, not the upstream id —
+is what lands in the spend report and what the [price table](/docs/price-table) must be keyed by.
+An unpriced model fails `budget.daily_usd` closed. The proxy's `spend_reported` log line is where
+to read the spelling. Embeddings need not follow completion through the gateway: the
+`AGENT_EMBEDDING_*` variables are a provider configuration of their own, so completing through
+your gateway and embedding elsewhere is a supported deployment rather than a workaround.
 
 ## The Slack app
 
