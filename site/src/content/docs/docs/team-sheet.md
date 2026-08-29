@@ -623,8 +623,9 @@ A follow-up is an ordinary task. It runs on this channel's model, these caps, an
 daily budget, and every tool call it makes is enforced by the proxy exactly as a mention's is.
 
 Libero is model-agnostic — Anthropic is supported natively; OpenAI, Groq, Ollama, and Gemini
-work through their OpenAI-compatible endpoints, and the optional LiteLLM sidecar covers everything
-else behind one.
+work through their OpenAI-compatible endpoints; and a LiteLLM in front of any of them is a third
+supported shape, whether the operator already runs one or starts the included sidecar. Under a
+router this names the gateway's alias, which is also what gets priced.
 
 ### `[budget]`
 

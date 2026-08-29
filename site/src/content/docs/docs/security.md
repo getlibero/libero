@@ -63,8 +63,10 @@ material — refresh tokens the authorization server rotates — in a token stor
 writes. The agent never sees one from either: the proxy injects it into the outbound call and
 scrubs it out of the result. This is mitigation 1 and it is the claim the design hangs on.
 
-**Gateway and model credentials** — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, and the model provider
-key. These are in the agent process, necessarily. The gateway holds the socket, so it must hold the
+**Gateway and model credentials** — `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, and the key for whatever
+serves the model: a provider's own when the agent calls one directly, and a gateway's when it calls
+through a LiteLLM, in which case the provider keys are held by whoever runs that gateway and the
+agent has none. These are in the agent process, necessarily. The gateway holds the socket, so it must hold the
 token that opens it; brokering that through the proxy would make the proxy the gateway. Compromise
 of the agent process yields the ability to speak as the app and read history in every channel the
 app is installed in, and to spend against the model provider. It does not yield a tool credential,

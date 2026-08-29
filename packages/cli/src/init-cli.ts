@@ -315,7 +315,13 @@ function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
         "Completion keys. Only the one matching AGENT_PROVIDER is read; the other",
         "is ignored. The base URLs are optional and are what reach anything other",
         "than the provider's own endpoint — Together, Fireworks, Groq, Ollama, or",
-        "Gemini's compatibility endpoint."
+        "Gemini's compatibility endpoint.",
+        "",
+        "OPENAI_BASE_URL is also how you reach a LiteLLM YOU ALREADY RUN, which is",
+        "one of the three supported deployment shapes and the likeliest one for a",
+        "deployment that already has a gateway (#428). Set it to that gateway,",
+        "AGENT_PROVIDER=openai-compatible, and OPENAI_API_KEY to a virtual key it",
+        "issued — the two below stay empty and the litellm profile stays down."
       ],
       vars: [
         { name: "ANTHROPIC_API_KEY", value: "" },
@@ -327,12 +333,14 @@ function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
     {
       comment: [
         "Optional: the LiteLLM sidecar (#428), off unless you start it —",
-        "`docker compose --profile litellm up -d`. One of two supported shapes",
-        "rather than a fallback for a provider the adapters do not cover: direct",
-        "is one less process, one less hop and one less thing holding a provider",
-        "key, and the sidecar is one place for routing, fallbacks, rate limits and",
-        "key rotation across several providers, plus a per-call cost figure the",
-        "proxy can reconcile against.",
+        "`docker compose --profile litellm up -d`. The third of three supported",
+        "shapes, none of them a fallback for a provider the adapters do not cover:",
+        "direct is one less process, one less hop and one less thing holding a",
+        "provider key; a LiteLLM is one place for routing, fallbacks, rate limits",
+        "and key rotation across several providers, plus a per-call cost figure the",
+        "proxy can reconcile against. This one is for the deployment that wants",
+        "that without standing a gateway up first — if you already run one, use",
+        "OPENAI_BASE_URL above and leave this block empty.",
         "",
         "Choosing it means, above: AGENT_PROVIDER=openai-compatible,",
         "OPENAI_BASE_URL=http://litellm:4000/v1, and AGENT_MODEL set to a",
