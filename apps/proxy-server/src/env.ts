@@ -8,7 +8,7 @@ import {
   VAULT_KEY_BYTES,
   parseVaultKey
 } from "@getlibero/proxy";
-import type { VaultKey } from "@getlibero/proxy";
+import type { CustodyConfig, VaultKey } from "@getlibero/proxy";
 
 /**
  * Localhost by default.
@@ -248,6 +248,37 @@ export function vaultKeyFromEnv(env: Env): VaultKey {
     );
   }
   return parsed.key;
+}
+
+/**
+ * Which custody backend this deployment runs: `PROXY_CUSTODY_BACKEND`.
+ *
+ * Absent means `files`, which is the whole deployment today, so nothing an
+ * operator already runs gains a variable. What the check buys is the other
+ * direction: a typo — or a name from a version that has one this build does
+ * not — is a container that will not start, rather than a silent fall back to
+ * files while the operator believes their secrets manager is in use. That is
+ * `portFromEnv`'s posture of validating rather than ignoring, applied where
+ * being wrong is a credential question.
+ *
+ * **This is where `PROXY_VAULT_KEY` is demanded, and it is demanded by a
+ * branch.** `vaultKeyFromEnv` stays the deployment's single key-acquisition
+ * seam — moving it to KMS is a change to that function's body and to nothing
+ * else — and a managed backend that needs no master key simply never reaches
+ * the call. So the variable stays required for the default shape without ever
+ * becoming optional for it, which is the trap an options bag would have set.
+ */
+const CUSTODY_BACKENDS = ["files"] as const;
+
+export function custodyFromEnv(env: Env): CustodyConfig {
+  const named = env.PROXY_CUSTODY_BACKEND;
+  const backend = named === undefined || named === "" ? "files" : named;
+  if (!(CUSTODY_BACKENDS as readonly string[]).includes(backend)) {
+    throw new Error(
+      `proxy: PROXY_CUSTODY_BACKEND must be one of: ${CUSTODY_BACKENDS.join(", ")}`
+    );
+  }
+  return { backend: "encrypted-files", vaultFile: vaultFileFromEnv(env), key: vaultKeyFromEnv(env) };
 }
 
 export function hostFromEnv(env: Env): string {

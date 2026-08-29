@@ -14,6 +14,7 @@ import {
   storeRootFromEnv,
   budgetDbFromEnv,
   channelsRootFromEnv,
+  custodyFromEnv,
   hostFromEnv,
   maxResponseBytesFromEnv,
   maxUpstreamConcurrencyFromEnv,
@@ -234,6 +235,63 @@ describe("auditDbFromEnv", () => {
   // compose file unread until #97 and is not a name anything answers to.
   it("does not answer to the unprefixed name compose used to carry", () => {
     expect(() => auditDbFromEnv({ AUDIT_DB: "/data/audit/audit.db" })).toThrow(/PROXY_AUDIT_DB/);
+  });
+});
+
+describe("custodyFromEnv", () => {
+  const files = (extra: Record<string, string> = {}) => ({
+    PROXY_VAULT_FILE: "/data/vault/vault.enc",
+    PROXY_VAULT_KEY: randomBytes(32).toString("base64"),
+    ...extra
+  });
+
+  it("takes the encrypted files when nothing names a backend", () => {
+    const config = custodyFromEnv(files());
+    expect(config.backend).toBe("encrypted-files");
+    expect(config.vaultFile).toBe("/data/vault/vault.enc");
+  });
+
+  each([
+    ["named explicitly", "files"],
+    ["blanked out in an env file", ""]
+  ])("takes the encrypted files when %s", (_label, named) => {
+    expect(custodyFromEnv(files({ PROXY_CUSTODY_BACKEND: named })).backend).toBe("encrypted-files");
+  });
+
+  // Validated rather than ignored: falling back to files while an operator
+  // believes their secrets manager is in use is the failure worth refusing to
+  // start over.
+  each([
+    ["a typo", "file"],
+    ["a backend this build does not have", "gcp"],
+    ["the internal spelling", "encrypted-files"]
+  ])("refuses to start on %s", (_label, named) => {
+    expect(() => custodyFromEnv(files({ PROXY_CUSTODY_BACKEND: named }))).toThrow(
+      /PROXY_CUSTODY_BACKEND must be one of: files/
+    );
+  });
+
+  // The key is demanded by the branch, not by the process — which is what lets
+  // a managed backend need none of it without making the variable optional for
+  // the shape that does.
+  it("demands the file backend's own variables", () => {
+    expect(() => custodyFromEnv({ PROXY_VAULT_KEY: randomBytes(32).toString("base64") })).toThrow(
+      /PROXY_VAULT_FILE/
+    );
+    expect(() => custodyFromEnv({ PROXY_VAULT_FILE: "/data/vault/vault.enc" })).toThrow(
+      /PROXY_VAULT_KEY/
+    );
+  });
+
+  it("keeps the key out of a rejected backend name", () => {
+    const key = randomBytes(32).toString("base64");
+    let thrown: unknown;
+    try {
+      custodyFromEnv(files({ PROXY_CUSTODY_BACKEND: "gcp", PROXY_VAULT_KEY: key }));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(`${String(thrown)}${(thrown as Error).stack}`).not.toContain(key);
   });
 });
 
