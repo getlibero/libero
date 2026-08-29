@@ -1,10 +1,13 @@
 import { randomBytes } from "node:crypto";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_SANDBOX_CONCURRENCY,
   DEFAULT_UPSTREAM_CONCURRENCY,
   DEFAULT_UPSTREAM_RESPONSE_BYTES
 } from "@getlibero/proxy";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import {
@@ -394,9 +397,11 @@ describe("vaultKeyFromEnv", () => {
     expect(vaultKeyFromEnv({ PROXY_VAULT_KEY: raw }).toString("base64")).toBe(raw);
   });
 
-  it("refuses to start without one", () => {
-    expect(() => vaultKeyFromEnv({})).toThrow(/PROXY_VAULT_KEY/);
-    expect(() => vaultKeyFromEnv({ PROXY_VAULT_KEY: "" })).toThrow(/PROXY_VAULT_KEY/);
+  it("refuses to start without one, naming both ways to answer", () => {
+    for (const env of [{}, { PROXY_VAULT_KEY: "" }, { PROXY_VAULT_KEY: "", PROXY_VAULT_KEY_FILE: "" }]) {
+      expect(() => vaultKeyFromEnv(env)).toThrow(/PROXY_VAULT_KEY/);
+      expect(() => vaultKeyFromEnv(env)).toThrow(/PROXY_VAULT_KEY_FILE/);
+    }
   });
 
   it("tells a non-base64 key apart from one of the wrong length", () => {
@@ -418,6 +423,134 @@ describe("vaultKeyFromEnv", () => {
       }
       expect(`${String(thrown)}${(thrown as Error).stack}`).not.toContain(raw);
     }
+  });
+});
+
+/**
+ * The key from a file rather than the environment (#495).
+ *
+ * The same function, which is the point of the seam: every caller reaches a
+ * master key through `vaultKeyFromEnv`, so a second source is a second branch
+ * here and no change anywhere else.
+ */
+describe("vaultKeyFromEnv, from a file", () => {
+  let dir: string;
+  let file: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "libero-vault-key-"));
+    file = join(dir, "vault.key");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads the key the file holds", () => {
+    const raw = randomBytes(32).toString("base64");
+    writeFileSync(file, raw, { mode: 0o600 });
+
+    expect(vaultKeyFromEnv({ PROXY_VAULT_KEY_FILE: file }).toString("base64")).toBe(raw);
+  });
+
+  // A compose `secrets:` mount, a `printf`, an editor and
+  // `openssl rand -base64 32 > file` disagree about the trailing newline, and
+  // an operator should not have to know which one they used.
+  it("tolerates the trailing newline every way of writing one adds", () => {
+    const raw = randomBytes(32).toString("base64");
+    writeFileSync(file, `${raw}\n`, { mode: 0o600 });
+
+    expect(vaultKeyFromEnv({ PROXY_VAULT_KEY_FILE: file }).toString("base64")).toBe(raw);
+  });
+
+  // The trap a precedence rule would set: two keys, one of which opens the
+  // vault, and nothing in the deployment saying which.
+  it("refuses both sources rather than preferring one", () => {
+    const raw = randomBytes(32).toString("base64");
+    writeFileSync(file, raw, { mode: 0o600 });
+
+    expect(() =>
+      vaultKeyFromEnv({ PROXY_VAULT_KEY: raw, PROXY_VAULT_KEY_FILE: file })
+    ).toThrow(/both/);
+  });
+
+  // "" is a setting removed, per `hostFromEnv` — and here that also decides the
+  // both-set check, so blanking a line is the same act as deleting it.
+  it("reads the file when the variable is present and empty", () => {
+    const raw = randomBytes(32).toString("base64");
+    writeFileSync(file, raw, { mode: 0o600 });
+
+    expect(
+      vaultKeyFromEnv({ PROXY_VAULT_KEY: "", PROXY_VAULT_KEY_FILE: file }).toString("base64")
+    ).toBe(raw);
+  });
+
+  each([
+    ["missing", (path: string): void => void rmSync(path, { force: true }), /ENOENT/],
+    [
+      "unreadable",
+      (path: string): void => {
+        writeFileSync(path, randomBytes(32).toString("base64"));
+        chmodSync(path, 0o000);
+      },
+      /EACCES/
+    ],
+    ["empty", (path: string): void => writeFileSync(path, "\n"), /empty file/],
+    ["not base64", (path: string): void => writeFileSync(path, "hunter2!!!!hunter2!!!!"), /base64/],
+    [
+      "the wrong length",
+      (path: string): void => writeFileSync(path, randomBytes(16).toString("base64")),
+      /32 bytes/
+    ]
+  ])("fails on a file that is %s", (_label, prepare, expected) => {
+    (prepare as (path: string) => void)(file);
+
+    // Running as root defeats the mode, and CI does. The case is worth keeping
+    // for the machines where it means something rather than skipped for the
+    // ones where it does not, so the assertion is on the message either way:
+    // a root-readable 0000 file parses, and a non-root one is EACCES.
+    let thrown: unknown;
+    try {
+      vaultKeyFromEnv({ PROXY_VAULT_KEY_FILE: file });
+    } catch (error) {
+      thrown = error;
+    }
+    if (thrown === undefined) {
+      expect(process.getuid?.()).toBe(0);
+      return;
+    }
+    expect(String(thrown)).toMatch(expected as RegExp);
+    expect(String(thrown)).toContain("PROXY_VAULT_KEY_FILE");
+  });
+
+  // The discipline the variable already had, extended to the file: the path and
+  // an errno are what an operator needs, and are not what the file held.
+  it("keeps the file's contents out of the failure", () => {
+    const raw = "hunter2!!!!hunter2!!!!";
+    writeFileSync(file, raw, { mode: 0o600 });
+
+    let thrown: unknown;
+    try {
+      vaultKeyFromEnv({ PROXY_VAULT_KEY_FILE: file });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(`${String(thrown)}${(thrown as Error).stack}`).not.toContain(raw);
+  });
+
+  // The seam, asserted where it is claimed: `custodyFromEnv` composes this and
+  // learns nothing about which source answered.
+  it("serves the files custody branch", () => {
+    const raw = randomBytes(32).toString("base64");
+    writeFileSync(file, raw, { mode: 0o600 });
+
+    const config = custodyFromEnv({
+      PROXY_VAULT_FILE: "/data/vault/vault.enc",
+      PROXY_VAULT_KEY_FILE: file
+    });
+
+    expect(config.backend).toBe("encrypted-files");
+    expect(config.backend === "encrypted-files" && config.key.toString("base64")).toBe(raw);
   });
 });
 

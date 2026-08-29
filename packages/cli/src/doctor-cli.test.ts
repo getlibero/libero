@@ -1,5 +1,14 @@
 import { X509Certificate } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -156,6 +165,134 @@ describe("a deployment with nothing wrong with it", () => {
     expect(result.text).not.toContain(HEALTHY["PROXY_VAULT_KEY"] as string);
     expect(result.text).not.toContain(HEALTHY["ANTHROPIC_API_KEY"] as string);
     expect(result.text).not.toContain(HEALTHY["SLACK_BOT_TOKEN"] as string);
+  });
+});
+
+/**
+ * The master key from a file rather than from the environment (#495).
+ *
+ * `--key-file` names the **host** path — what `init --key-file` writes and what
+ * the compose file's `secrets:` block mounts — not the container path
+ * `PROXY_VAULT_KEY_FILE` carries, which is unreadable from here.
+ */
+describe("the master key in a file", () => {
+  const KEY_FILE = join("deploy", "secrets", "vault.key");
+  const KEY = Buffer.alloc(32, 9).toString("base64");
+
+  /** As `init --key-file` leaves it: trailing newline, owner-only. */
+  function writeKeyFile(contents = `${KEY}\n`, mode = 0o600): void {
+    mkdirSync(join(dir, "deploy", "secrets"), { recursive: true });
+    writeFileSync(join(dir, KEY_FILE), contents, { mode });
+    chmodSync(join(dir, KEY_FILE), mode);
+  }
+
+  /** The env file a --key-file deployment has: no PROXY_VAULT_KEY line. */
+  function envWithoutKey(): void {
+    writeEnv(
+      Object.fromEntries(Object.entries(HEALTHY).filter(([name]) => name !== "PROXY_VAULT_KEY"))
+    );
+  }
+
+  it("passes on a key file and no variable", async () => {
+    envWithoutKey();
+    writeKeyFile();
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(check(result, "vault key").status).toBe("ok");
+    expect(check(result, "vault key").detail).toContain("32 bytes, base64");
+  });
+
+  it("prints no part of the key", async () => {
+    envWithoutKey();
+    writeKeyFile();
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(result.text).not.toContain(KEY);
+  });
+
+  // The trap a precedence rule would set, and the one the proxy refuses to
+  // start on: two keys, one of which opens the vault.
+  it("fails on both a variable and a file", async () => {
+    writeKeyFile();
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "vault key").status).toBe("fail");
+    expect(check(result, "vault key").detail).toContain("Exactly one");
+  });
+
+  it("fails when neither is there, naming both answers", async () => {
+    envWithoutKey();
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(check(result, "vault key").status).toBe("fail");
+    expect(check(result, "vault key").detail).toContain("PROXY_VAULT_KEY is empty");
+    expect(check(result, "vault key").detail).toContain(KEY_FILE);
+  });
+
+  // A `fail` and not a `warn`: the file form buys the key out of `docker
+  // inspect` and a mode every account on the host can read gives that back,
+  // leaving a deployment worse off than one that never moved the key.
+  it("fails on a key file readable beyond its owner", async () => {
+    envWithoutKey();
+    writeKeyFile(`${KEY}\n`, 0o644);
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "vault key").status).toBe("fail");
+    expect(check(result, "vault key").detail).toContain("chmod 600");
+  });
+
+  each([
+    ["empty", "\n", "is empty"],
+    ["not base64", "hunter2!!!!hunter2!!!!\n", "not base64"],
+    ["the wrong length", `${Buffer.alloc(16).toString("base64")}\n`, "decodes to 16 bytes"]
+  ])("fails on a key file that is %s", async (_label, contents, expected) => {
+    envWithoutKey();
+    writeKeyFile(contents as string);
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(check(result, "vault key").status).toBe("fail");
+    expect(check(result, "vault key").detail).toContain(expected as string);
+  });
+
+  // What `docker run -v` against a path that did not exist leaves behind.
+  it("fails on a directory where the key should be", async () => {
+    envWithoutKey();
+    mkdirSync(join(dir, KEY_FILE), { recursive: true });
+
+    const result = await doctor(["--key-file", KEY_FILE]);
+
+    expect(check(result, "vault key").status).toBe("fail");
+    expect(check(result, "vault key").detail).toContain("not a regular file");
+  });
+
+  // The default is the path init writes and the compose file names, so a
+  // deployment that took the documented layout needs no flag.
+  it("looks under deploy/secrets/vault.key with no flag", async () => {
+    envWithoutKey();
+    writeKeyFile();
+
+    const result = await doctor();
+
+    expect(check(result, "vault key").status).toBe("ok");
+  });
+
+  it("still writes nothing", async () => {
+    envWithoutKey();
+    writeKeyFile();
+    const before = tree(dir);
+
+    await doctor(["--key-file", KEY_FILE]);
+
+    expect(tree(dir)).toEqual(before);
   });
 });
 

@@ -350,6 +350,96 @@ describe("re-running", () => {
   });
 });
 
+/**
+ * `--key-file`: the master key one directory over instead of in the env file
+ * (#495).
+ *
+ * The property under test is that there is never more than one master key. The
+ * proxy refuses to start on two sources, and every case here is about this
+ * command not being the thing that creates the second one.
+ */
+describe("--key-file", () => {
+  const KEY_FILE = "deploy/secrets/vault.key";
+
+  beforeEach(() => {
+    compose("deploy");
+  });
+
+  it("writes the key to the file and no PROXY_VAULT_KEY line at all", async () => {
+    const result = await run(["init", "--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_OK);
+    const env = readFileSync(join(dir, "deploy", ".env"), "utf8");
+    expect(assignedNames(env).has("PROXY_VAULT_KEY")).toBe(false);
+    const key = readFileSync(join(dir, KEY_FILE), "utf8").trim();
+    expect(Buffer.from(key, "base64")).toHaveLength(32);
+    expect(Buffer.from(key, "base64").toString("base64")).toBe(key);
+  });
+
+  it("writes it owner-only", async () => {
+    await run(["init", "--key-file", KEY_FILE]);
+
+    expect(statSync(join(dir, KEY_FILE)).mode & 0o777).toBe(0o600);
+  });
+
+  it("says where the key went and what compose still needs", async () => {
+    const result = await run(["init", "--key-file", KEY_FILE]);
+
+    expect(result.out).toContain(`libero: generated PROXY_VAULT_KEY in ${KEY_FILE}, mode 0600`);
+    expect(result.out.join("\n")).toContain("PROXY_VAULT_KEY_FILE");
+    expect(result.out.join("\n")).toContain("comment out PROXY_VAULT_KEY");
+  });
+
+  it("never prints the key", async () => {
+    const result = await run(["init", "--key-file", KEY_FILE]);
+
+    expect(result.text).not.toContain(readFileSync(join(dir, KEY_FILE), "utf8").trim());
+  });
+
+  // The same rule the env file has, for the same reason: there is no escrow, so
+  // a second key at a path that already holds one discards a vault.
+  it("refuses a path that already holds a key, and leaves it alone", async () => {
+    await run(["init", "--key-file", KEY_FILE]);
+    const first = readFileSync(join(dir, KEY_FILE), "utf8");
+
+    const result = await run(["init", "--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(result.err.join("\n")).toContain("already exists");
+    expect(readFileSync(join(dir, KEY_FILE), "utf8")).toBe(first);
+  });
+
+  // The two-sources case, refused here rather than left for the proxy to refuse
+  // at `docker compose up` with two keys already on disk.
+  it("refuses when the env file already assigns PROXY_VAULT_KEY", async () => {
+    await run(["init"]);
+
+    const result = await run(["init", "--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(result.err.join("\n")).toContain("already assigns PROXY_VAULT_KEY");
+    expect(existsSync(join(dir, KEY_FILE))).toBe(false);
+  });
+
+  // An empty assignment is a deployment that has not chosen yet, which is what
+  // `.env.example` ships and what a half-filled file looks like.
+  it("allows an env file whose PROXY_VAULT_KEY line is empty", async () => {
+    writeFileSync(join(dir, "deploy", ".env"), "PROXY_VAULT_KEY=\n");
+
+    const result = await run(["init", "--key-file", KEY_FILE]);
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(existsSync(join(dir, KEY_FILE))).toBe(true);
+    expect(valueOf(readFileSync(join(dir, "deploy", ".env"), "utf8"), "PROXY_VAULT_KEY")).toBe("");
+  });
+
+  it("creates the directory it was pointed at", async () => {
+    await run(["init", "--key-file", "somewhere/deeper/vault.key"]);
+
+    expect(existsSync(join(dir, "somewhere/deeper/vault.key"))).toBe(true);
+  });
+});
+
 describe("bad arguments", () => {
   beforeEach(() => {
     compose("deploy");

@@ -71,7 +71,14 @@ logger.log("info", { event: "vault_opened", count: vault.size });
 // key out of anything that later dumps `process.env`, and out of the
 // environment of any child process this one comes to spawn — #154's stdio
 // transport is the first that would. It does *not* change /proc/<pid>/environ
-// on Linux, which still reflects the environment the process started with.
+// on Linux, which still reflects the environment the process started with, and
+// it never touched `docker inspect`.
+//
+// The way out of both of those is `PROXY_VAULT_KEY_FILE` (#495), which is why
+// this line is unconditional rather than guarded: on a deployment that took it,
+// the variable is absent and the delete is a no-op. The path is not deleted —
+// a path is not a secret, and an operator reading the environment of a running
+// proxy should be able to see where its key came from.
 delete process.env.PROXY_VAULT_KEY;
 
 // Also before anything binds, and for the same reason as the vault: a budget

@@ -28,22 +28,32 @@
 // encrypted under are both correct only for as long as nothing regenerates
 // them.
 //
+// **`--key-file` writes the key to a file instead of into this one** (#495).
+// The same key, the same 0600 exclusive create, one directory over — and the
+// env file then carries no PROXY_VAULT_KEY line at all, because a deployment
+// that delivers the key by file and also names it in the environment is one the
+// proxy refuses to start: exactly one source, checked in `vaultKeyFromEnv`. It
+// is not a defence against host root, and the compose secret it feeds is not
+// either; what it removes is the accidental-disclosure class — `docker inspect`
+// pasted into an issue, crash dumps, observability agents scraping container
+// environments — and an env file that is one `cp` from a git repository.
+//
 // **This command writes no tool credential and has no flag that takes one.**
 // Service credentials go into the vault from inside the proxy container, over
 // stdin, so the master key and the secrets it encrypts never sit on this host
 // together.
 
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ModelId } from "@getlibero/schema";
 import { createFileExclusively, replaceFileAtomically } from "@getlibero/atomic-write";
 import { NO_COMPOSE_FILE, findCompose } from "./compose.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
-import { mergeEnvFile, renderEnvFile } from "./env-file.js";
+import { assignedValues, mergeEnvFile, renderEnvFile } from "./env-file.js";
 import type { EnvBlock } from "./env-file.js";
-import { generateVaultKey } from "./vault-key.js";
+import { DEFAULT_KEY_FILE, generateVaultKey } from "./vault-key.js";
 
 /** The two providers `AGENT_PROVIDER` takes, as apps/server/src/env.ts parses it. */
 const PROVIDERS = ["anthropic", "openai-compatible"] as const;
@@ -58,6 +68,7 @@ const VAULT_KEY = "PROXY_VAULT_KEY";
 
 export const USAGE = [
   "usage: libero init [--file PATH] [--provider NAME] [--model ID]",
+  "                   [--key-file PATH]",
   "",
   "  --file PATH      the environment file to write. Defaults to the .env",
   "                   beside the compose file: deploy/.env when this directory",
@@ -65,6 +76,10 @@ export const USAGE = [
   "                   file is this directory's own",
   "  --provider NAME  anthropic (the default) or openai-compatible",
   "  --model ID       the model the agent completes against",
+  "  --key-file PATH  write PROXY_VAULT_KEY to this file instead of into the",
+  `                   environment file. ${DEFAULT_KEY_FILE} is the path`,
+  "                   the compose file's secrets: block names, and the one",
+  "                   libero doctor checks",
   "",
   "Writes the operator's half of a deployment's configuration and generates",
   "PROXY_VAULT_KEY, the 32 random bytes that encrypt the credential vault.",
@@ -87,6 +102,14 @@ export const USAGE = [
   "PROXY_VAULT_KEY, which the vault is encrypted under. There is no escrow and",
   "no recovery, so a flag that regenerates it discards every credential loaded",
   "so far. Delete the line by hand if you mean it.",
+  "",
+  "--key-file puts that key one directory over instead, at 0600, and writes no",
+  "PROXY_VAULT_KEY line at all: exactly one of the variable and",
+  "PROXY_VAULT_KEY_FILE may be set, and the proxy refuses to start on both. It",
+  "is not a defence against host root — a root that can reach the docker socket",
+  "reads a mounted file as easily as a variable — it is what keeps the key out",
+  "of docker inspect, crash dumps, and an env file one cp from a git",
+  "repository. Uncomment the secrets: block in the compose file to use it.",
   "",
   "No tool credential belongs in this file and no flag here takes one. Service",
   "credentials go into the vault from inside the proxy container, over stdin.",
@@ -126,6 +149,8 @@ interface InitOptions {
   readonly file?: string;
   readonly provider: Provider;
   readonly model: string;
+  /** Absent is the key in the env file, which is the default deployment. */
+  readonly keyFile?: string;
 }
 
 function parseInit(argv: readonly string[]): InitOptions {
@@ -139,7 +164,8 @@ function parseInit(argv: readonly string[]): InitOptions {
       options: {
         file: { type: "string" },
         provider: { type: "string" },
-        model: { type: "string" }
+        model: { type: "string" },
+        "key-file": { type: "string" }
       }
     });
     values = parsed.values;
@@ -171,6 +197,7 @@ function parseInit(argv: readonly string[]): InitOptions {
 
   return {
     ...(values["file"] !== undefined ? { file: values["file"] } : {}),
+    ...(values["key-file"] !== undefined ? { keyFile: values["key-file"] } : {}),
     provider: provider as Provider,
     model
   };
@@ -185,8 +212,40 @@ function beside(cwd: string): string {
 
 function write(io: CliIo, file: string, options: InitOptions): number {
   const shown = display(io.cwd, file);
+  const keyFile = options.keyFile === undefined ? undefined : resolve(io.cwd, options.keyFile);
+
+  // Refused before anything is written, and this is the check that keeps
+  // "exactly one source" from being a rule the proxy states and this command
+  // walks into. An env file that already carries a key plus a key file is two
+  // master keys, one of which opens the vault; `vaultKeyFromEnv` refuses to
+  // start on both being set, and generating the second one here would be this
+  // command manufacturing that failure. Empty is not "carries" — an .env
+  // scaffolded with a blank PROXY_VAULT_KEY line is a deployment that has not
+  // chosen yet.
+  if (keyFile !== undefined && existsSync(file)) {
+    const already = assignedValues(readFileSync(file, "utf8")).get(VAULT_KEY) ?? "";
+    if (already !== "") {
+      io.err(
+        `libero: ${shown} already assigns ${VAULT_KEY}, and --key-file would be a second master key. ` +
+          "Delete that line if you mean to move the key to a file — the vault is encrypted under whichever one it was loaded with"
+      );
+      return EXIT_ERROR;
+    }
+  }
+
+  // The key file first, because it is the artifact with no second copy: if it
+  // cannot be written, nothing else has happened yet. The reverse ordering
+  // would leave an env file that names a key that does not exist.
+  let keyFileWritten: string | undefined;
+  if (keyFile !== undefined) {
+    keyFileWritten = writeKeyFile(io, keyFile);
+  }
+
   let key: string | undefined;
   const blocks = (): readonly EnvBlock[] => {
+    // Not generated at all on the --key-file path: the block is absent from the
+    // template, so there is no line for a key to go into.
+    if (keyFile !== undefined) return template(options, undefined);
     key ??= generateVaultKey();
     return template(options, key);
   };
@@ -203,8 +262,8 @@ function write(io: CliIo, file: string, options: InitOptions): number {
     // failure surfaces four steps later as a vault that will not open.
     createFileExclusively(file, Buffer.from(text, "utf8"));
     io.out(`libero: wrote ${shown}`);
-    io.out(`libero: generated ${VAULT_KEY}`);
-    report(io, shown, options);
+    if (keyFileWritten === undefined) io.out(`libero: generated ${VAULT_KEY}`);
+    report(io, shown, options, keyFileWritten);
     return EXIT_OK;
   }
 
@@ -212,7 +271,11 @@ function write(io: CliIo, file: string, options: InitOptions): number {
   const merged = mergeEnvFile(existing, blocks());
   if (merged.appended.length === 0 && merged.filled.length === 0) {
     io.out(`libero: ${shown} already assigns every variable compose reads`);
-    io.out("libero: nothing written");
+    if (keyFileWritten === undefined) {
+      io.out("libero: nothing written");
+      return EXIT_OK;
+    }
+    report(io, shown, options, keyFileWritten);
     return EXIT_OK;
   }
 
@@ -234,14 +297,60 @@ function write(io: CliIo, file: string, options: InitOptions): number {
   if (merged.appended.includes(VAULT_KEY) || merged.filled.includes(VAULT_KEY)) {
     io.out(`libero: generated ${VAULT_KEY}`);
   }
-  report(io, shown, options);
+  report(io, shown, options, keyFileWritten);
   return EXIT_OK;
 }
 
+/**
+ * The master key, on its own, at 0600 (#495).
+ *
+ * `createFileExclusively` for the reason the env file takes it: two runs racing
+ * on one path end with one of them saying the file already exists, never with a
+ * key written over a key. Here that also does the work a --force flag would
+ * otherwise have to refuse — there is no escrow and no recovery, so a second
+ * key at a path that already holds one discards a vault.
+ *
+ * The parent directory is created if it is not there, at 0700. The mode on the
+ * directory is hygiene rather than the guarantee: the file's own 0600 is what
+ * keeps the key owner-only, and a directory an operator already had keeps
+ * whatever mode they gave it.
+ *
+ * A trailing newline, because that is what `openssl rand -base64 32 > file`
+ * writes and what an editor will add back; `parseVaultKey` trims, so both the
+ * proxy and doctor read the same 32 bytes either way.
+ */
+function writeKeyFile(io: CliIo, path: string): string {
+  const shown = display(io.cwd, path);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  try {
+    createFileExclusively(path, Buffer.from(`${generateVaultKey()}\n`, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(
+        `${shown} already exists. Deleting it discards the vault it encrypts — there is no escrow and no recovery`
+      );
+    }
+    throw error;
+  }
+  io.out(`libero: generated ${VAULT_KEY} in ${shown}, mode 0600`);
+  return shown;
+}
+
 /** What is left for the operator to do, in the order they have to do it. */
-function report(io: CliIo, shown: string, options: InitOptions): void {
+function report(io: CliIo, shown: string, options: InitOptions, keyFile?: string): void {
   const key = options.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
   io.out("");
+  // Said before the fill, because it is the step nothing else will remind them
+  // of: the compose file ships the variable form, and a key file the compose
+  // file does not read is a container that will not start with a perfectly good
+  // key on disk.
+  if (keyFile !== undefined) {
+    io.out(`The key is in ${keyFile}, and nothing reads it yet. In deploy/docker-compose.yml,`);
+    io.out(`comment out PROXY_VAULT_KEY and uncomment PROXY_VAULT_KEY_FILE, the proxy's`);
+    io.out("secrets: entry, and the secrets: block at the foot of the file. Setting both the");
+    io.out("variable and the file is a startup failure rather than a precedence rule.");
+    io.out("");
+  }
   io.out(`Fill SLACK_APP_TOKEN, SLACK_BOT_TOKEN and ${key} in ${shown}, then:`);
   io.out("  libero channel add <CHANNEL_ID>");
   io.out("  docker compose -f deploy/docker-compose.yml up");
@@ -284,8 +393,14 @@ const HEADER = [
  * The set is asserted against the compose file in ./init-cli.test.ts, so a
  * variable added there and not here fails a test rather than an operator's
  * first `docker compose up`.
+ *
+ * `vaultKey` is `undefined` on the --key-file path, and the block is then
+ * **absent** rather than empty. An empty `PROXY_VAULT_KEY=` line would be a
+ * second place the operator has to know not to fill, and compose's `:?` form
+ * treats empty and unset the same way regardless — so the honest scaffold for a
+ * deployment whose key is in a file is a file that does not mention it.
  */
-function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
+function template(options: InitOptions, vaultKey: string | undefined): readonly EnvBlock[] {
   return [
     {
       comment: [
@@ -376,16 +491,25 @@ function template(options: InitOptions, vaultKey: string): readonly EnvBlock[] {
         { name: "AGENT_EMBEDDING_BASE_URL", value: "" }
       ]
     },
-    {
-      comment: [
-        "The vault master key: 32 random bytes, base64, generated by `libero",
-        "init`. It encrypts every tool credential at rest. Lose it and the vault",
-        "is unreadable — there is no recovery path and no escrow — so this is the",
-        "one line in this file worth backing up, and the one line init will never",
-        "overwrite."
-      ],
-      vars: [{ name: "PROXY_VAULT_KEY", value: vaultKey }]
-    },
+    ...(vaultKey === undefined
+      ? []
+      : [
+          {
+            comment: [
+              "The vault master key: 32 random bytes, base64, generated by `libero",
+              "init`. It encrypts every tool credential at rest. Lose it and the vault",
+              "is unreadable — there is no recovery path and no escrow — so this is the",
+              "one line in this file worth backing up, and the one line init will never",
+              "overwrite.",
+              "",
+              "`libero init --key-file PATH` puts it in a file of its own instead, which",
+              "is what keeps it out of `docker inspect`, crash dumps and observability",
+              "agents that scrape container environments. Exactly one of this variable",
+              "and PROXY_VAULT_KEY_FILE may be set; the proxy refuses to start on both."
+            ],
+            vars: [{ name: "PROXY_VAULT_KEY", value: vaultKey }]
+          }
+        ]),
     {
       comment: [
         "Optional: what a model's tokens cost, so a channel's [budget] daily_usd",

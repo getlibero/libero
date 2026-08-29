@@ -49,6 +49,18 @@ from where it came from except `PROXY_VAULT_KEY`, which the vault is encrypted u
 no escrow and no recovery, so a flag that regenerated it would discard every credential an
 operator has loaded. Delete the line by hand if you mean it.
 
+**`--key-file PATH` puts the key in a file instead of in that line** (#495). The env file then
+carries no `PROXY_VAULT_KEY` at all, because the proxy reads exactly one of `PROXY_VAULT_KEY`
+and `PROXY_VAULT_KEY_FILE` and refuses to start on both — two keys means one of them opens the
+vault and nothing says which. `deploy/secrets/vault.key` is the path the compose file's
+commented `secrets:` block names and the one `doctor` checks. Same 0600 exclusive create, so a
+second run over a path that already holds a key is an error rather than a discarded vault; and
+`init` refuses outright when the env file already assigns `PROXY_VAULT_KEY`, since generating
+the second key is the failure, not the compose file's report of it. What the file form buys is
+narrow and worth stating: not protection from a host root, who reads a mounted file as easily
+as a variable, but the key out of `docker inspect`, crash dumps, process listings and anything
+that scrapes a container's environment.
+
 **The file is written durably, for the same reason.** Both paths — creating the file and
 rewriting it — go through `@getlibero/atomic-write`, the recipe the credential vault uses:
 the bytes are fsynced before the name is claimed and the directory is fsynced after, so a
@@ -59,7 +71,9 @@ the failure would surface four steps later as a vault that will not open.
 **No command here writes, reads back, or prints a tool credential**, and none has a flag that
 takes one. Service credentials go into the vault from inside the proxy container, over stdin,
 so the master key and the secrets it encrypts never sit on the host together. The master key
-itself is written to a `0600` file and never to stdout.
+itself is written to a `0600` file and never to stdout — the env file under the default, the
+key file under `--key-file`, and `doctor` prints the shape of whichever one this deployment
+has rather than its bytes.
 
 ### `channel add`
 
@@ -120,7 +134,18 @@ fail  stray certs      no sheet pins client-C0OLD.pem. Key material nothing will
 **It reads and never writes.** The two things most worth checking here are a master key and the
 fingerprints a team sheet pins, and a command that repaired either could destroy a vault or widen a
 channel's authorization while claiming to diagnose it. It opens no vault — it cannot; the vault is
-in a container volume and the key is in the proxy's environment — and prints no credential.
+in a container volume — and prints no credential.
+
+**The master key is checked wherever this deployment keeps it** (#495): `PROXY_VAULT_KEY` in the
+environment file, or the file `--key-file` names — `deploy/secrets/vault.key` by default, the host
+path the compose file's `secrets:` block mounts and not the container path `PROXY_VAULT_KEY_FILE`
+carries. Having **both** is a `fail` rather than a preference, because that is what the proxy does
+with it: exactly one source, and two keys means one of them opens the vault and nothing says which.
+For a key file the check is presence, mode and shape — and a mode readable beyond its owner is a
+`fail` too, because what the file form buys is undone by a key every account on the host can read,
+and a deployment in that state is worse off than one that left the key in the environment because it
+believes otherwise. It reads the file, which is the one credential this command opens; what it
+prints of it is a byte count.
 
 **A check that cannot run says `skip`, and `skip` is not a pass.** On a compose deployment the two
 channels roots, the store root and the three database paths are set in the compose file to paths

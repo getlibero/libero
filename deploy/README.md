@@ -460,6 +460,89 @@ spellings at once — `prompt_tokens_details.cache_write_tokens`,
 because which spelling a version keeps is not ours to decide and a missing count
 is billed at the input rate.
 
+## The master key: a variable, or a file (#495)
+
+The `files` custody backend — the default, and what this compose file runs —
+encrypts both credential stores under one 32-byte master key. It reaches the
+proxy in one of two ways, and **exactly one of them may be set**:
+
+```yaml
+PROXY_VAULT_KEY: "${PROXY_VAULT_KEY:?…}"        # from deploy/.env
+PROXY_VAULT_KEY_FILE: /run/secrets/proxy_vault_key   # from a file
+```
+
+Both set is a startup failure rather than a precedence rule. Two keys means one
+of them opens the vault and nothing in the deployment says which, and the
+symptom of guessing wrong is a vault that will not open with a correct key
+sitting right there in the environment.
+
+**Prefer the file where you have somewhere to put it.** State what that buys
+narrowly: it is **not** a defence against host root. Docker socket access is
+root-equivalent, and root reads a mounted file as easily as it reads a
+container's environment. What it removes is the accidental-disclosure class —
+`docker inspect` output pasted into an issue, crash dumps, process listings, CI
+logs, and observability agents that scrape container environments — and it lets
+the key arrive by the mechanism you already have tooling for, rather than as a
+line in a `.env` file that is one `cp` from a git repository.
+
+**Prefer the variable when you do not.** A key file nobody rotates, nobody backs
+up and nobody has a story for is not better than a key in an env file that at
+least sits beside the Slack tokens the operator already treats as secret. The
+variable is the shipped default for that reason, not as a deprecated form.
+
+**On a cloud, prefer neither.** A deployment with a managed KMS has an attached
+machine identity, and `PROXY_CUSTODY_BACKEND=gcp` or `=aws` — the two sections
+below — removes the master key from the problem rather than protecting it:
+nothing to rotate, escrow or lose. There is deliberately no "decrypt the key
+with cloud KMS at startup" source, because it would be a weaker version of that
+for the same audience. The file form serves the deployments those two cannot:
+on-prem, bare metal, a VM at a host with no KMS.
+
+### Writing one
+
+```bash
+libero init --key-file deploy/secrets/vault.key
+```
+
+`init` generates the key, writes it at mode 0600 with an exclusive create — a
+second run over a path that already holds one is an error, because there is no
+escrow and overwriting discards the vault — and writes **no** `PROXY_VAULT_KEY`
+line into `deploy/.env` at all. It refuses outright if that file already assigns
+one, since generating a second master key beside the first is exactly the
+failure the proxy refuses to start on.
+
+Then in `deploy/docker-compose.yml`, comment out `PROXY_VAULT_KEY` and uncomment
+three things: `PROXY_VAULT_KEY_FILE` in the proxy's environment, the `secrets:`
+entry on the proxy service, and the `secrets:` block at the foot of the file.
+That block is commented out whole because a `secrets:` entry whose `file:` does
+not exist fails `docker compose up`, so a deployment that has not written a key
+file must not carry the declaration.
+
+`libero doctor` checks whichever source this deployment uses — the variable's
+shape, or the file's presence, mode and shape — and prints neither. A key file
+readable beyond its owner is a **failure** there rather than a warning: what the
+file form buys is undone by a mode every account on the host can read, and a
+deployment in that state is worse off than one that left the key in the
+environment, because it believes otherwise.
+
+### Outside compose
+
+`PROXY_VAULT_KEY_FILE` is a path and nothing more, so a Kubernetes secret
+volume, a systemd `LoadCredential=`, or a plain read-only bind mount all work:
+land the file wherever that mechanism lands it and set the variable to that
+path. The proxy reads it once at startup and trims it, so a trailing newline is
+fine.
+
+One wrinkle is specific to compose and worth knowing before it costs an hour.
+**Outside swarm, Compose bind-mounts the source file and preserves its ownership
+and mode** — the `uid`, `gid` and `mode` fields on a secret are swarm-only and
+are ignored. The proxy image runs as `node`, uid 1000, so a 0600 file owned by
+uid 1000 on the host is readable and one owned by root is not. On a Linux host
+where the operator is the first non-root user that is already true; where it is
+not, the proxy says `PROXY_VAULT_KEY_FILE could not be read (EACCES)` at
+startup, and the fix is `chown 1000:1000` on the host file rather than widening
+its mode.
+
 ## Credentials in Google Secret Manager (#483)
 
 The default deployment keeps both credential stores in two encrypted files on
@@ -490,8 +573,8 @@ PROXY_GCP_PROJECT: my-project
 PROXY_GCP_SECRET_PREFIX: libero      # optional; half of every secret id
 ```
 
-`PROXY_VAULT_KEY` and `PROXY_VAULT_FILE` are not read on this branch and should
-be removed — Secret Manager holds the plaintext and encrypts at rest, so there
+`PROXY_VAULT_KEY`, `PROXY_VAULT_KEY_FILE` and `PROXY_VAULT_FILE` are not read on
+this branch and should be removed — Secret Manager holds the plaintext and encrypts at rest, so there
 is no master key for this shape to lose. The `vault-data` volume is unused too.
 
 **One secret per credential.** A vault entry named `github_service_account`
@@ -596,8 +679,8 @@ PROXY_AWS_REGION: eu-west-2
 PROXY_AWS_SECRET_PREFIX: libero      # optional; the lead of every secret name
 ```
 
-`PROXY_VAULT_KEY` and `PROXY_VAULT_FILE` are not read on this branch and should
-be removed, and the `vault-data` volume is unused.
+`PROXY_VAULT_KEY`, `PROXY_VAULT_KEY_FILE` and `PROXY_VAULT_FILE` are not read on
+this branch and should be removed, and the `vault-data` volume is unused.
 
 **IMDSv2 must be reachable from the container.** Docker adds a hop, so the
 instance's metadata options need a hop limit of at least 2:

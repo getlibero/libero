@@ -5,9 +5,11 @@
 // worth checking here are a master key and the fingerprints a team sheet pins,
 // and a command that repaired either would be a command that could destroy a
 // vault or widen a channel's authorization while claiming to diagnose it. It
-// opens no vault — it cannot, the vault is in a container volume and the key is
-// in the proxy's environment — prints no credential, and its only writes are
-// the ones `accessSync` does not do.
+// opens no vault — it cannot, the vault is in a container volume — prints no
+// credential, and its only writes are the ones `accessSync` does not do. It
+// does read the master key when the key is in a file rather than in the
+// environment (#495), because a key it cannot read is a key it cannot say the
+// shape of; what it prints of it is the number of bytes.
 //
 // **What it can see is bounded by where it runs, and it says so rather than
 // guessing.** On a compose deployment the two channels roots, the store root
@@ -28,7 +30,7 @@
 // nothing else in the system would ever tell an operator about.
 
 import { X509Certificate } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, readdirSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { connect } from "node:tls";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -37,7 +39,7 @@ import { NO_COMPOSE_FILE, findCompose } from "./compose.js";
 import { assignedValues } from "./env-file.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
-import { VAULT_KEY_BYTES } from "./vault-key.js";
+import { DEFAULT_KEY_FILE, VAULT_KEY_BYTES } from "./vault-key.js";
 
 const DEFAULT_CHANNELS_ROOT = "channels";
 const DEFAULT_SHARED_SKILLS_ROOT = "shared-skills";
@@ -54,10 +56,13 @@ const PROBE_TIMEOUT_MS = 5000;
 
 export const USAGE = [
   "usage: libero doctor [--file PATH] [--channels-root DIR]",
-  "                     [--shared-skills-root DIR] [--out DIR] [--offline]",
+  "                     [--shared-skills-root DIR] [--out DIR]",
+  "                     [--key-file PATH] [--offline]",
   "",
   "  --file PATH          the environment file to read. Defaults to the .env",
   "                       beside the compose file, as init writes it",
+  "  --key-file PATH      where the master key lives when it is not in the",
+  `                       environment file (default: ${DEFAULT_KEY_FILE})`,
   "  --channels-root DIR  where team sheets live (default: channels)",
   "  --shared-skills-root DIR",
   "                       where the operator's shared skills live",
@@ -67,8 +72,10 @@ export const USAGE = [
   "  --offline            skip the one check that needs the deployment running",
   "",
   "Reads a deployment's host-side configuration back and reports what is wrong",
-  "with it: the environment file, the vault master key's shape, and whether",
-  "every team sheet parses and pins a certificate that is actually on disk —",
+  "with it: the environment file, the vault master key's shape — wherever it",
+  "is kept, PROXY_VAULT_KEY or a file, and having both is a failure rather than",
+  "a preference — and whether every team sheet parses and pins a certificate",
+  "that is actually on disk —",
   "in both directions, because a certificate no sheet pins is key material",
   "nothing else would ever mention. Also whether every shared skill a sheet",
   "names has actually been published into the shared root, which is quiet when",
@@ -137,6 +144,14 @@ interface DoctorOptions {
   readonly channelsRoot: string;
   readonly sharedSkillsRoot: string;
   readonly out: string;
+  /**
+   * The host path `init --key-file` writes and the compose `secrets:` block
+   * mounts (#495) — not the container path `PROXY_VAULT_KEY_FILE` names, which
+   * is the compose file's business and unreadable from here. Defaulted like
+   * `--out`, because a deployment that took the file form took the layout the
+   * docs and the compose file name; one that put the key elsewhere says where.
+   */
+  readonly keyFile: string;
   readonly offline: boolean;
 }
 
@@ -153,6 +168,7 @@ function parseDoctor(argv: readonly string[]): DoctorOptions {
         "channels-root": { type: "string" },
         "shared-skills-root": { type: "string" },
         out: { type: "string" },
+        "key-file": { type: "string" },
         offline: { type: "boolean" }
       }
     });
@@ -175,6 +191,7 @@ function parseDoctor(argv: readonly string[]): DoctorOptions {
         ? values["shared-skills-root"]
         : DEFAULT_SHARED_SKILLS_ROOT,
     out: typeof values["out"] === "string" ? values["out"] : DEFAULT_CERTS_OUT,
+    keyFile: typeof values["key-file"] === "string" ? values["key-file"] : DEFAULT_KEY_FILE,
     offline: values["offline"] === true
   };
 }
@@ -190,7 +207,7 @@ async function inspect(cwd: string, options: DoctorOptions): Promise<Check[]> {
   checkModel(env, checks);
   checkProvider(env, checks);
   checkSlack(env, checks);
-  checkVaultKey(env, checks);
+  checkVaultKey(env, resolve(cwd, options.keyFile), checks);
   checkRoots(env, checks, cwd);
 
   const certs = resolve(cwd, options.out);
@@ -277,33 +294,127 @@ function checkSlack(env: Map<string, string>, checks: Check[]): void {
   }
 }
 
-function checkVaultKey(env: Map<string, string>, checks: Check[]): void {
+/**
+ * The master key, from whichever of its two places this deployment keeps it
+ * (#495): `PROXY_VAULT_KEY` in the environment file, or the file `--key-file`
+ * names.
+ *
+ * **Both is a failure and not a preference**, because that is what
+ * `vaultKeyFromEnv` does with it: exactly one source, and a proxy that finds
+ * two refuses to start. Saying so here is the point of saying it at all — the
+ * alternative is an operator who moved the key to a file, left the old line in
+ * place, and learns at `docker compose up` that they now have two keys and no
+ * way to tell which one the vault was loaded under.
+ *
+ * Neither is the failure it already was, worded to name both answers.
+ */
+function checkVaultKey(env: Map<string, string>, keyFile: string, checks: Check[]): void {
   const value = env.get("PROXY_VAULT_KEY") ?? "";
-  if (value === "") {
+  const onDisk = existsSync(keyFile);
+
+  if (value !== "" && onDisk) {
     checks.push({
       status: "fail",
       name: "vault key",
-      detail: "PROXY_VAULT_KEY is empty. Compose refuses to start without it"
+      detail:
+        `PROXY_VAULT_KEY is set and ${keyFile} exists. Exactly one may be, and the proxy ` +
+        "refuses to start on both — the vault opens under whichever one it was loaded with"
     });
     return;
   }
-  // The proxy's own rule, applied here so the failure lands on an operator's
-  // screen instead of in a container's first two seconds. Never the value —
-  // this is the one thing in the file that cannot be retyped from anywhere.
+
+  if (value === "") {
+    if (!onDisk) {
+      checks.push({
+        status: "fail",
+        name: "vault key",
+        detail: `PROXY_VAULT_KEY is empty and there is no key at ${keyFile}. Write one with: libero init`
+      });
+      return;
+    }
+    checkKeyFile(keyFile, checks);
+    return;
+  }
+
+  checks.push(shapeOf("PROXY_VAULT_KEY", value));
+}
+
+/**
+ * A key file's presence, mode and shape — and none of its content.
+ *
+ * The mode is a `fail` rather than a `warn`, and that is the whole reason the
+ * file form exists: it buys nothing against a host root, and what it does buy —
+ * the key out of `docker inspect`, crash dumps and anything that scrapes a
+ * container's environment — is undone by a file every account on the host can
+ * read. A deployment with a group- or world-readable master key is worse off
+ * than one that left it in the environment, because it believes otherwise.
+ *
+ * A directory at the path is its own sentence: it is what a `docker run -v`
+ * against a path that did not exist leaves behind, and "not base64" would be a
+ * true and useless thing to say about it.
+ */
+function checkKeyFile(keyFile: string, checks: Check[]): void {
+  const stats = statSync(keyFile);
+  if (!stats.isFile()) {
+    checks.push({
+      status: "fail",
+      name: "vault key",
+      detail: `${keyFile} is not a regular file. A bind mount against a path that did not exist leaves a directory`
+    });
+    return;
+  }
+  const open = stats.mode & 0o077;
+  if (open !== 0) {
+    checks.push({
+      status: "fail",
+      name: "vault key",
+      detail: `${keyFile} is mode ${(stats.mode & 0o777).toString(8).padStart(3, "0")}, readable beyond its owner. chmod 600 it`
+    });
+    return;
+  }
+
+  let text: string;
+  try {
+    text = readFileSync(keyFile, "utf8");
+  } catch (error) {
+    checks.push({ status: "fail", name: "vault key", detail: `${keyFile}: ${messageOf(error)}` });
+    return;
+  }
+  if (text.trim() === "") {
+    checks.push({ status: "fail", name: "vault key", detail: `${keyFile} is empty` });
+    return;
+  }
+
+  const shape = shapeOf(keyFile, text.trim());
+  checks.push(
+    shape.status === "ok"
+      ? { status: "ok", name: "vault key", detail: `${keyFile}, ${shape.detail}, mode 600` }
+      : shape
+  );
+}
+
+/**
+ * The proxy's own rule, applied here so the failure lands on an operator's
+ * screen instead of in a container's first two seconds.
+ *
+ * `source` is the variable's name or the file's path, never the value — a
+ * master key is the one thing in a deployment that cannot be retyped from
+ * anywhere, so it is also the one that must not reach a terminal, a scrollback
+ * or an issue.
+ */
+function shapeOf(source: string, value: string): Check {
   const decoded = Buffer.from(value, "base64");
   if (decoded.toString("base64") !== value) {
-    checks.push({ status: "fail", name: "vault key", detail: "PROXY_VAULT_KEY is not base64" });
-    return;
+    return { status: "fail", name: "vault key", detail: `${source} is not base64` };
   }
   if (decoded.length !== VAULT_KEY_BYTES) {
-    checks.push({
+    return {
       status: "fail",
       name: "vault key",
-      detail: `PROXY_VAULT_KEY decodes to ${decoded.length} bytes, not ${VAULT_KEY_BYTES}`
-    });
-    return;
+      detail: `${source} decodes to ${decoded.length} bytes, not ${VAULT_KEY_BYTES}`
+    };
   }
-  checks.push({ status: "ok", name: "vault key", detail: `${VAULT_KEY_BYTES} bytes, base64` });
+  return { status: "ok", name: "vault key", detail: `${VAULT_KEY_BYTES} bytes, base64` };
 }
 
 /**

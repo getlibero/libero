@@ -149,6 +149,25 @@ services:
       # Quoted because the message contains ": ", which YAML would otherwise
       # read as a nested mapping — the whole file fails to parse without it.
       PROXY_VAULT_KEY: "${PROXY_VAULT_KEY:?set PROXY_VAULT_KEY in .env — generate with: openssl rand -base64 32}"
+      # Or the same key from a FILE rather than from this environment (#495).
+      # Comment out the line above, uncomment this one and the `secrets:` entry
+      # below, and uncomment the `secrets:` block at the foot of this file.
+      # `libero init --key-file deploy/secrets/vault.key` writes the source
+      # file; `libero doctor` checks its mode and shape without printing it.
+      #
+      # Setting both is a startup failure rather than a precedence rule: two
+      # keys means one of them opens the vault, and the symptom of guessing
+      # wrong is a vault that will not open with a correct key right there.
+      #
+      # What this buys is NOT protection from host root — the docker socket is
+      # root-equivalent and root reads a mounted file as easily as a variable.
+      # It is the accidental-disclosure class: `docker inspect` output pasted
+      # into an issue, crash dumps, process listings, CI logs, and
+      # observability agents that scrape container environments. And it lets
+      # the key arrive by whatever mechanism you already have tooling for — a
+      # compose secret, a Kubernetes secret volume, a systemd credential —
+      # rather than sitting in a .env file one `cp` from a git repository.
+      # PROXY_VAULT_KEY_FILE: /run/secrets/proxy_vault_key
       # Read, and required. Secrets are loaded into it by an admin running
       # `docker compose run --rm proxy node dist/vault.js set <name>`, which
       # keeps the master key inside this container rather than on the host.
@@ -359,6 +378,21 @@ services:
       #
       # This line does not change when it does. Nothing gives the proxy the
       # socket.
+    # The master key as a compose secret rather than an environment variable
+    # (#495), arriving at /run/secrets/proxy_vault_key. Uncomment this together
+    # with PROXY_VAULT_KEY_FILE above and the block at the foot of this file,
+    # and comment out PROXY_VAULT_KEY.
+    #
+    # OUTSIDE SWARM, COMPOSE BIND-MOUNTS THE HOST FILE AND PRESERVES ITS
+    # OWNERSHIP AND MODE — the `uid`, `gid` and `mode` fields are swarm-only and
+    # are ignored here. This image runs as `node`, uid 1000, so a 0600 key file
+    # owned by uid 1000 on the host is readable and one owned by root is not.
+    # That is the usual case on a Linux host where the operator is the first
+    # non-root user, and it is the thing to check first if the proxy starts and
+    # says PROXY_VAULT_KEY_FILE could not be read (EACCES). `chown 1000:1000`
+    # on the host file is the fix; widening the mode is not.
+    # secrets:
+    #   - proxy_vault_key
     # Two networks. `libero` is where the agent reaches it; `runner-control` is
     # where it reaches the runner, and the agent has no route onto that one.
     networks: [libero, runner-control]
@@ -612,3 +646,21 @@ volumes:
   # proxy opens each file readOnly.
   store-data:
   vault-data:
+
+# The master key, delivered as a file (#495). Commented out whole, because a
+# `secrets:` entry whose `file:` does not exist fails `docker compose up` — so
+# a deployment that has not written one must not carry the declaration.
+#
+# The path is relative to this file's directory, which is Compose's project
+# directory; `libero init --key-file deploy/secrets/vault.key` writes it at
+# 0600 from the repository root, and `libero doctor` checks that mode without
+# printing the key. Uncomment this, the `secrets:` entry on the proxy service,
+# and PROXY_VAULT_KEY_FILE, and comment out PROXY_VAULT_KEY — setting both the
+# variable and the file is a startup failure rather than a precedence rule.
+#
+# This is one of three ways to deliver it and the one this file can demonstrate.
+# A Kubernetes secret volume or a systemd credential lands the same file at
+# whatever path they mount it, and PROXY_VAULT_KEY_FILE is then that path.
+# secrets:
+#   proxy_vault_key:
+#     file: ./secrets/vault.key

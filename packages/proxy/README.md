@@ -676,9 +676,12 @@ switch, and `PROXY_CUSTODY_BACKEND` (absent, or `files`) is what selects it.
 A managed backend (GCP Secret Manager as #483, AWS Secrets Manager as #484,
 tracked by #261 in v0.7.0) re-implements the mechanism with stronger
 enforcement — writer separation as IAM roles, replace-not-stack as
-add-version/destroy-old, the master key from KMS through `vaultKeyFromEnv`,
-the one acquisition seam both stores share — and changes nothing above this
-sentence. What makes that checkable rather than hoped for is that it inherits
+add-version/destroy-old, and no master key at all — and changes nothing above
+this sentence. The seam both stores share is `vaultKeyFromEnv`, which a managed
+branch simply never reaches; what it bought instead was #495, where a second
+*source* for the key on the branch that does need one — `PROXY_VAULT_KEY_FILE`
+beside `PROXY_VAULT_KEY`, exactly one of them — was a change to that function's
+body and to no caller. What makes that checkable rather than hoped for is that it inherits
 `custody-conformance.ts` whole: the assertions are what say what the contract
 *is*, which is why they were written against one backend rather than derived
 from what the first two happened to agree on.
