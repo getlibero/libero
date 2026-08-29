@@ -45,20 +45,53 @@
 // it — `certs.ts` states that the documented path runs on every CI run rather
 // than rotting beside the code it describes, and a cache keyed only on
 // arguments would quietly make that untrue.
+//
+// ## Why the key also carries a generation (#490)
+//
+// Material is not reused forever, and **where that bound lives is the whole of
+// this module's one shipped bug.** It used to live in a check: `reusable`
+// refused an entry whose marker had aged past a week. But `publish` only ever
+// clears a *claim* — a directory with no marker — and treats a directory that
+// has one as owned by another worker with the same request. So an entry that
+// aged out could never be replaced: every call minted, no call could publish,
+// and two calls in one test got different material. The cache wedged itself
+// permanently, and only in a working tree older than the bound, which is why CI
+// never saw it.
+//
+// So the bound is in the key instead. An entry name is `<digest>-<generation>`,
+// where the generation is the week the material was minted in, and an aged-out
+// entry is simply a key nothing looks up any more: the new generation's
+// directory does not exist, `mkdirSync` succeeds, and the exclusive-`mkdir`
+// mutex still does its job for whoever gets there first. `reusable` is left
+// asking only whether an entry is *finished*, which is a question `publish`
+// already answers correctly.
+//
+// **Nothing sweeps the superseded generations, deliberately.** Deleting a
+// directory another worker may be copying *from* is the one thing this module
+// does not do, and buying tidiness with that race would be the wrong trade for
+// what it costs: an entry is about fifteen small files, the suite uses a handful
+// of distinct keys, and a `pnpm install` drops the cache root entirely. A
+// checkout left untouched for a year holds a few megabytes of certificates for
+// requests nobody will make again.
 
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * How long an entry may outlive the run that wrote it.
+ * How long one generation of material is reused for.
  *
  * Not a renewal policy: `dev-certs.sh` mints client certificates for 365 days
  * (`CLIENT_DAYS`), so a week is nowhere near expiry. It is a bound on how stale
  * a reused fixture may be, cheap enough that the answer to "could this have come
  * from a tree I no longer have" is always no.
+ *
+ * It is part of the entry's *name* rather than a check against its age, for the
+ * reason the header gives: a bound that only a reader enforced left the writer
+ * unable to act on it. Exported so the case that pins that behaviour can cross
+ * the boundary rather than restate the number.
  */
-const MAX_ENTRY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const GENERATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * How long a claimed but unfinished entry is believed.
@@ -76,13 +109,19 @@ function cacheRoot(repoRoot: string): string {
   return join(repoRoot, "node_modules", ".cache", "libero-e2e-certs");
 }
 
-function entryKey(scriptPath: string, args: readonly string[]): string {
-  return createHash("sha256")
+function entryKey(scriptPath: string, args: readonly string[], nowMs: number): string {
+  const digest = createHash("sha256")
     .update(readFileSync(scriptPath))
     .update(" ")
     .update(args.join(" "))
     .digest("hex")
     .slice(0, 32);
+  // Floor division rather than an mtime comparison, so two callers a
+  // millisecond apart agree on which entry they are talking about — an entry
+  // whose identity depended on when it was *read* is one no writer could
+  // replace. A run straddling a boundary mints once more than it had to, which
+  // is the entire cost.
+  return `${digest}-${Math.floor(nowMs / GENERATION_MS)}`;
 }
 
 /**
@@ -96,12 +135,18 @@ function marker(entry: string): string {
   return `${entry}.complete`;
 }
 
+/**
+ * Finished, and that is now the only question.
+ *
+ * It used to also ask whether the entry had aged out, which is the bug #490
+ * records: `publish` cannot replace a finished entry, so a reader refusing one
+ * on age left a key that minted forever and published never. Age is the key's
+ * business now, and what is left here is a question with an answer the writer
+ * can act on — an entry this rejects is absent or unfinished, and `publish`
+ * handles both.
+ */
 function reusable(entry: string): boolean {
-  try {
-    return Date.now() - statSync(marker(entry)).mtimeMs < MAX_ENTRY_AGE_MS;
-  } catch {
-    return false;
-  }
+  return existsSync(marker(entry));
 }
 
 /**
@@ -161,16 +206,23 @@ function publish(root: string, entry: string, dir: string): void {
  * `mint` is the real `dev-certs.sh` call and must write into `dir`. `args` is
  * that call without `--out`, because the destination is exactly what differs
  * between two requests that are otherwise for the same material.
+ *
+ * `nowMs` picks the generation and defaults to the wall clock. Only the case
+ * that crosses a generation boundary passes it: waiting a week for that
+ * assertion is not an option, and the alternative — reaching in and backdating
+ * a marker — would pin the mechanism this bug was caused by rather than the
+ * behaviour.
  */
 export function mintCached(
   repoRoot: string,
   scriptPath: string,
   args: readonly string[],
   dir: string,
-  mint: () => void
+  mint: () => void,
+  nowMs: number = Date.now()
 ): void {
   const root = cacheRoot(repoRoot);
-  const entry = join(root, entryKey(scriptPath, args));
+  const entry = join(root, entryKey(scriptPath, args, nowMs));
 
   if (reusable(entry)) {
     try {

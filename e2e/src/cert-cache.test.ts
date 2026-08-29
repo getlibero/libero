@@ -15,11 +15,19 @@
 
 import { describe, it } from "node:test";
 import { expect } from "expect";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCleanup, mintCerts } from "./harness/index.js";
-import { mintCached } from "./harness/cert-cache.js";
+import { GENERATION_MS, mintCached } from "./harness/cert-cache.js";
 
 /** A repository root and a stand-in for `dev-certs.sh`, both disposable. */
 function scratch(): { repoRoot: string; script: string; dispose: () => void } {
@@ -60,6 +68,50 @@ describe("the mint cache", () => {
 
       rmSync(first, { recursive: true, force: true });
       rmSync(second, { recursive: true, force: true });
+    } finally {
+      dispose();
+    }
+  });
+
+  // #490. The bug this replaced was not "material was reused too long" but
+  // "material could never be replaced": the age bound lived in the reader,
+  // `publish` cannot overwrite a finished entry, and the two together left a key
+  // that minted on every call and published on none. A working tree older than
+  // a week failed one case forever, and CI never saw it because a fresh checkout
+  // has no cache.
+  //
+  // So the assertion is the third call, not the second. Re-minting after a week
+  // is the intended behaviour and was never broken; re-*publishing* is what was.
+  it("republishes when a generation ages out, rather than minting forever", () => {
+    const { repoRoot, script, dispose } = scratch();
+    try {
+      const calls: string[] = [];
+      const args = ["--channels", "C0AAA0001"];
+      const monday = Date.UTC(2026, 7, 3, 9, 0, 0);
+      const nextWeek = monday + GENERATION_MS + 1;
+
+      const first = mkdtempSync(join(tmpdir(), "libero-cc-j-"));
+      mintCached(repoRoot, script, args, first, stubMint(first, "week-1", calls), monday);
+
+      // A week on, the entry is a key nothing looks up any more, so this mints.
+      const second = mkdtempSync(join(tmpdir(), "libero-cc-k-"));
+      mintCached(repoRoot, script, args, second, stubMint(second, "week-2", calls), nextWeek);
+
+      // And this is the one that used to fail: what the call above minted has to
+      // have been published, or the cache is wedged for that request forever.
+      const third = mkdtempSync(join(tmpdir(), "libero-cc-l-"));
+      mintCached(repoRoot, script, args, third, stubMint(third, "should-not-run", calls), nextWeek);
+
+      expect(calls).toEqual(["week-1", "week-2"]);
+      expect(readFileSync(join(third, "agent", "client.pem"), "utf8")).toBe("week-2");
+
+      // The superseded generation is left where it is. Nothing sweeps it, because
+      // deleting a directory another worker may be copying from is the one thing
+      // this module does not do — see its header.
+      const superseded = readdirSync(join(repoRoot, "node_modules", ".cache", "libero-e2e-certs"));
+      expect(superseded.filter(name => !name.endsWith(".complete"))).toHaveLength(2);
+
+      for (const dir of [first, second, third]) rmSync(dir, { recursive: true, force: true });
     } finally {
       dispose();
     }
