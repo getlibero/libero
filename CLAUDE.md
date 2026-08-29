@@ -90,12 +90,13 @@ it runs.
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
-last one, so delivery is no longer phase-gated, and four releases have shipped
+last one, so delivery is no longer phase-gated, and five releases have shipped
 since: `v0.3.0`, the release that made releases real (#313, #377, #378);
 `v0.4.0`, code execution governed — the sandbox built-in (#368 is the tracker),
 `[egress]`'s first live caller (#219), and a third service holding the Docker
-socket and no credential at all (#393); `v0.5.0`, shared skills; and `v0.6.0`,
-scheduling (both below). All four were August 2026. There is no
+socket and no credential at all (#393); `v0.5.0`, shared skills; `v0.6.0`,
+scheduling; and `v0.7.0`, deployment shapes (all three below). All five were
+August 2026. There is no
 phase 6, and inventing one to hold ordinary work would be the wrong move; the
 roadmap's phase list is complete rather than paused.
 
@@ -138,10 +139,9 @@ milestone closed, with the changelog entry carrying the upgrade notes. It is the
 first release of the pre-1.0 arc, and
 the roadmap's "The road to 1.0" section is the argued record of that plan (0.6
 scheduling, 0.7 deployment shapes, 0.8 richer tools and adoption, 0.9 close-out,
-1.0 a validation release). Do not re-derive the sequencing here. **`v0.7.0`,
-deployment shapes, is the open milestone** — #428 and #261 are its two
-trackers, #239 stands beside them blocked by the first, and the sub-issues
-carry the plan.
+1.0 a validation release). Do not re-derive the sequencing here. **There is no
+open milestone**: `v0.8.0`, richer tools and wider adoption, is next per the arc
+(#160, #270, #260), and its milestone is created when work on it starts.
 
 An operator declares `[[ambient.rule]]` in a team sheet — at these times, on
 these days, ask this question — and the ambient clock fires it as a third
@@ -173,10 +173,36 @@ the two fired turns behind the same switch (#471, the frequency objection having
 been one the pregate already prevents); and a filesystem-watch test rebuilt on a
 seam rather than given a longer timeout for the third time (#474).
 
+**`v0.7.0`, deployment shapes, shipped 2026-08-29** — tagged, published and its
+milestone closed, with the changelog entry carrying the upgrade notes. It is the
+release pilot deployments run from. Reaching a model is three chosen shapes
+with no default among them (#428) — direct, a LiteLLM the operator already
+runs, or the sidecar `deploy/docker-compose.yml` starts behind a `litellm`
+profile — and the vault and token store run on a custody contract behind a
+backend seam (#261): the two encrypted files stay the default,
+`PROXY_CUSTODY_BACKEND=gcp|aws` selects a managed backend, and the master key
+arrives as `PROXY_VAULT_KEY` or `PROXY_VAULT_KEY_FILE`, exactly one of the two
+(#495). What a gateway charged is recorded beside what the price table computes
+(#239, `node dist/drift.js show`) and never enforced on.
+
+Three of its landings are the ones the next person would otherwise re-derive.
+The conformance proofs are packages, not fixtures — `packages/litellm-conformance`
+and `packages/aws-conformance` exist because a recorded fixture is a claim about
+a third party's wire format — and they found live bugs rather than confirming
+working paths: the LiteLLM adapter double-charged every cached token
+(`prompt_tokens` is a sum; the adapter added the cache tiers back on top), and
+LocalStack found two AWS-client defects the repository's own fake had mirrored.
+And the managed custody backends are **built but not yet proven against live
+clouds** — the GCP backend against this repository's fake, the AWS one against
+LocalStack, with SigV4 checked only against a verifier written from the same
+specification by the same hand. That is #496, parked and scheduled in the
+roadmap's 0.9 lane, and stated in `deploy/README.md` where an operator reads it.
+
 `v0.4.0` closed with three of its correctness items **moved out rather than
 delivered** (#239, #283, #284), each gated on data or a deployment shape that
-does not exist yet. The roadmap records that rather than ticking a box against
-it; what matters here is that they are parked and pickable rather than lost.
+did not exist yet. #239 has since shipped in `v0.7.0`; #283 and #284 stay
+parked for the 0.9 close-out, pickable rather than lost, with the roadmap as
+the record.
 
 Phase 5 was two workstreams and both are closed. #352 hash-chained the audit
 log (#354), gave an operator a walk over it (#355), and attacked it in the suite
@@ -213,12 +239,12 @@ What exists:
 | `packages/litellm-conformance` | One file asking whether the agent's completion and embedding path survives a *real* LiteLLM sidecar (#480) — the image `deploy/docker-compose.yml` runs, started against a fake upstream so no test needs a provider key, with the real adapters pointed at it. Private, never published, daemon-gated two-sided like the sandbox suite, and run by the `sandbox` job |
 | `packages/schema` | The single source of truth for shapes both services use: the zod team sheet, name primitives, egress patterns, tool call and response, tool listing, refusals, spend report, proxy error, approval ticket and decision, the audit record, the memory ops, the skill file and its two operations, and the sheet's shared-skill entries with the `shared/<name>` address, and the ambient rule with its clock time, weekday and zone |
 | `packages/agent` | The model half — provider-agnostic completion and embedding layers, ReAct loop with per-task caps, the post-reply curation and skill-author turns, the thread-summarization and ambient-heartbeat turns, and the mTLS client that reaches tools through the proxy and nowhere else |
-| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault, the OAuth token store and its mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
+| `packages/proxy` | The security boundary — mTLS listener, per-channel identity, team-sheet enforcement on both gates, the credential vault and the OAuth token store on one custody seam — encrypted files by default, GCP Secret Manager and AWS Secrets Manager as managed backends — the token mint/refresh engine, injection and redaction, the MCP client over the official SDK and its pool, `search_channel_history` and `schedule_task` as built-ins, the budget meter in calls and in dollars, the append-only and hash-chained audit log, and the approval ticket store |
 | `packages/gateway` | The Slack Socket Mode adapter — mentions, ordinary messages, approval-card rendering and click decoding, the live-checklist renderer, the proactive post's verb and renderer, the app's own identity and workspace off one `auth.test`, and a reconnect ladder it owns rather than the SDK |
 | `packages/memory` | The per-channel store — one SQLite file per channel, an FTS5 index, the delete and edit paths, the curated `MEMORY.md`, thread summaries and the two quiet-thread reads, a sqlite-vec embeddings table, the `skills/` directory and the index that follows it, the `proposals/` directory beside it, a read-only opener over the operator's shared skill root, `origin` on the skill index, and a read-only opener the proxy uses |
 | `packages/cli` | The operator's host-side commands — `init`, `channel`, `doctor`. The only npm-published package: one bundled file, plus a build-time copy of `scripts/dev-certs.sh` |
 | `apps/server` | The gateway + agent process — env parsing, mention and message handling, the channel router, the one query embedding a task pays for, semantic recall and skill retrieval over it, the quiescence sweep, the skill-embedding pass, the skill lifecycle job and the merge curator, the ambient clock and its channel enumerator, the proactive post surface and its rate window, the heartbeat evaluation and its pregate, the standing region and the five turns that compose it, the rule clock and the two shapes a fired turn takes, the shared-skill reader and the retrieved pool beside it, approvals and checklist clients, lifecycle. Three operator entrypoints beside the process: `tasks`, `rebuild` and `skill-purge` |
-| `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget` and `audit` entrypoints for the operator |
+| `apps/proxy-server` | The process composing the proxy, plus `vault`, `grant`, `budget`, `audit` and `drift` entrypoints for the operator |
 | `apps/runner` | The sandbox runner (#395) — an mTLS listener with one route, one pinned peer, and the Docker Engine API spoken over a unix socket with no client library. Builds every container spec itself, so no field of a request reaches `Image`, `Binds` or `Privileged`. Holds no credential; its only dependency is `@getlibero/schema` |
 | `e2e/` | The security suite's rig: the proxy spawned as its built entrypoint, the agent side composed in-process, attacked by a scripted model and — on request — running the four background passes, the ambient clock, and a real sandbox runner. One file needs a Docker daemon and says so loudly; every other file runs without one. Since #437 a rig may also mount the operator's shared skill root |
 | `design/` | The design system — plain CSS, no TypeScript, outside the workspace |

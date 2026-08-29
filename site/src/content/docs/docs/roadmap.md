@@ -209,12 +209,54 @@ test that had been given a longer timeout twice was rebuilt on a seam
 ([#474](https://github.com/getlibero/libero/issues/474)), which is the difference between fixing a
 flake and postponing it a third time.
 
-**v0.7 — deployment shapes.** The open milestone. Reaching a model becomes three chosen shapes with no default
-among them — directly against a provider, through a LiteLLM the operator already runs, or through the sidecar this
-deployment can start ([#428](https://github.com/getlibero/libero/issues/428)) — which unblocks the cost-drift recorder
-([#239](https://github.com/getlibero/libero/issues/239)), and the vault and token store gain
-external secrets-manager backends ([#261](https://github.com/getlibero/libero/issues/261)). This is
-the release pilot deployments run from.
+**v0.7.0 — deployment shapes. Shipped.** The release pilot deployments run from. Reaching a model
+is three chosen shapes with no default among them
+([#428](https://github.com/getlibero/libero/issues/428) is the tracker) — directly against a
+provider, through a LiteLLM the operator already runs, or through the sidecar
+`deploy/docker-compose.yml` starts behind a `litellm` profile, with a worked `model_list`
+([#479](https://github.com/getlibero/libero/issues/479)), the four `TokenUsage` counts proven
+through LiteLLM's envelope ([#480](https://github.com/getlibero/libero/issues/480)), and a section
+of the docs an operator can stand any of the three up from
+([#481](https://github.com/getlibero/libero/issues/481)). That gave
+[#239](https://github.com/getlibero/libero/issues/239) its input: what a gateway charged is
+recorded beside what the price table computes, queryable per model, and never enforced on —
+enforcement stays deterministic and stays in the proxy. And the vault and token store run on a
+custody contract behind a backend seam ([#261](https://github.com/getlibero/libero/issues/261) is
+the tracker; [#482](https://github.com/getlibero/libero/issues/482) the seam, with the two
+encrypted files as the default backend), with Google Secret Manager
+([#483](https://github.com/getlibero/libero/issues/483)) and AWS Secrets Manager
+([#484](https://github.com/getlibero/libero/issues/484)) as managed alternatives an operator
+selects with one variable, and the master key arriving from the environment or from a file,
+exactly one of the two ([#495](https://github.com/getlibero/libero/issues/495)).
+
+**Three things landed differently from the milestone's own wording**, recorded in the trackers'
+closing comments and summarized here. **Two shapes are three** — a LiteLLM the operator already
+runs is a distinct shape from the sidecar this deployment starts, and the likelier one in
+production: it starts no service here, the provider keys sit with whoever runs the gateway, the
+hop leaves the machine, and the price-table alias is a spelling the operator may not control.
+**The conformance proofs each needed a package rather than the files the plan named** — a recorded
+fixture is a claim about a third party's wire format, and the third party is the one who changes
+it — so `packages/litellm-conformance` runs the real adapters against the real image and
+`packages/aws-conformance` runs the custody contract against LocalStack, both daemon-gated in the
+`sandbox` CI job. **And the proof found live bugs rather than confirming working paths**:
+LiteLLM's `prompt_tokens` is a sum the adapter was adding the cache tiers back on top of, so every
+cached token was charged twice — the order-of-magnitude metering error on a cache-heavy agent that
+the four tiers exist to prevent — and LocalStack found two defects in the AWS client that the
+repository's own fake had mirrored.
+
+One clause of the definition of done landed narrower than it reads, and the difference is recorded
+here rather than the box being ticked as though it had not. "Both stores run on a managed backend
+under an IAM policy the docs state" is true of what was built and not yet of what was proven: the
+GCP backend was verified against this repository's own fake — real sockets and real version
+semantics, but the published REST reference *as this repository read it* — and the AWS backend
+against LocalStack, an independent implementation that still cannot check the signature, IAM,
+quotas, or KMS. The single largest unverified claim across both is therefore AWS SigV4, checked
+only against a verifier written from the same specification by the same hand, and
+`deploy/README.md` says exactly that where an operator will read it. Standing both backends up
+against a live project and a live account is
+[#496](https://github.com/getlibero/libero/issues/496) — parked rather than milestoned because it
+is gated on cloud accounts nobody has yet, which is the same gated-on-deployments shape as the
+data-gated items, and it is scheduled below rather than left to the disposition pass.
 
 **v0.8 — richer tools, wider adoption.** Tool results stop being a string — image, audio and
 resource content relayed to the model ([#160](https://github.com/getlibero/libero/issues/160)) — a
@@ -223,7 +265,13 @@ channel gets a name, an icon and a persona
 sender-constrained tokens ([#260](https://github.com/getlibero/libero/issues/260)).
 
 **v0.9 — close-out.** The data-gated items, now buildable against pilot data (#283, and #284 if the
-numbers say so); `libero skill vendor` ([#439](https://github.com/getlibero/libero/issues/439));
+numbers say so); the managed custody backends proven against a live GCP project and AWS account
+([#496](https://github.com/getlibero/libero/issues/496)), buildable once a pilot has the accounts —
+SigV4 being the one claim no emulator checks; the pass over every hard-coded limit
+([#465](https://github.com/getlibero/libero/issues/465)), whose own text parks it for this
+close-out and which cannot slip past it, because loosening a cap later is a release while
+tightening one breaks sheets that already parse, and 1.0 hardens every one of those one-way doors;
+`libero skill vendor` ([#439](https://github.com/getlibero/libero/issues/439));
 the native adapters pilot demand actually named, from
 [#56](https://github.com/getlibero/libero/issues/56)–[#58](https://github.com/getlibero/libero/issues/58);
 and a disposition pass over whatever remains, so each surviving parked issue carries an explicit
@@ -231,7 +279,7 @@ post-1.0 reason. "Done" here means no open issue is undecided, not that all of t
 
 Some things stay demand-driven, decided rather than drifted: Windows support for the CLI
 ([#249](https://github.com/getlibero/libero/issues/249)), the adapters no pilot asked for, and
-and event-driven ambient — MCP subscriptions
+event-driven ambient — MCP subscriptions
 ([#155](https://github.com/getlibero/libero/issues/155)), which is now a post-1.0 workstream on its
 own. It was paired here with tool access for fired checks on the argument that a subscription wake
 that can look nothing up is thin; #348 having shipped, that half is answered and what remains is the
