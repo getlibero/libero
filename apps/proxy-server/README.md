@@ -34,8 +34,9 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_TLS_KEY` | — | its private key |
 | `PROXY_TLS_CA` | — | the CA every client certificate is checked against |
 | `PROXY_CHANNELS_ROOT` | — | team sheets, at `<root>/<channel id>/channel.toml` |
-| `PROXY_VAULT_FILE` | — | the encrypted credential vault |
-| `PROXY_VAULT_KEY` | — | its master key: base64, 32 bytes |
+| `PROXY_CUSTODY_BACKEND` | `files` | where credentials live. `files` is the only value this build accepts; anything else refuses to start |
+| `PROXY_VAULT_FILE` | — | the encrypted credential vault. Required by the `files` backend |
+| `PROXY_VAULT_KEY` | — | its master key: base64, 32 bytes. Required by the `files` backend |
 | `PROXY_BUDGET_DB` | — | the daily budget meter |
 | `PROXY_AUDIT_DB` | — | the append-only audit log |
 | `PROXY_STORE_ROOT` | — | the agent's per-channel message stores, read read-only for `search_channel_history` |
@@ -143,11 +144,21 @@ The vault is opened at startup, before anything binds, so a wrong key or an
 unreadable file is a startup failure rather than a surprise at the far end of a
 Slack thread.
 
+**Which backend holds it is `PROXY_CUSTODY_BACKEND`** (#482). Absent means
+`files`, the two encrypted files described above, which is the whole deployment
+today; the variable is validated rather than ignored, so a name this build does
+not have is a container that will not start rather than a silent fall back to
+files while an operator believes their secrets manager is in use. The two
+variables above are required *by that branch* — a managed backend (#483, #484)
+needs neither, and `vaultKeyFromEnv` stays the single place a master key is
+acquired, which is what makes moving it to KMS a change in one function.
+`packages/proxy/README.md` has the contract those backends implement.
+
 ## The OAuth grant flow
 
 An upstream declaring `[mcp_server.auth]` is authorized by a grant in the token
-store — `tokens.enc`, the vault's sibling in the same volume, under the same
-master key — rather than by a vault entry. Completing one is a fourth
+store — under the `files` backend, `tokens.enc`, the vault's sibling in the
+same volume, under the same master key — rather than by a vault entry. Completing one is a fourth
 entrypoint, in the container for the vault CLI's reason:
 
 ```bash

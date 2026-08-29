@@ -22,7 +22,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { discoverAuthorizationServer, exchangeAuthorizationCode } from "./outbound.js";
-import type { TokenStore } from "./token-store.js";
+import type { TokenStore } from "./custody.js";
 
 export const GRANT_REDIRECT_URI = "http://127.0.0.1/callback";
 
@@ -180,7 +180,7 @@ export async function performAuthorizationGrant(request: GrantFlowRequest): Prom
   // make the subset check vacuous, so any record under the name answers —
   // `issuer_mismatch` included, because a predecessor under another issuer is
   // still a predecessor this write replaces.
-  const before = request.store.read(request.credential, { issuer: request.issuer, scopes: [] });
+  const before = await request.store.read(request.credential, { issuer: request.issuer, scopes: [] });
   const replaced = !(before.status === "missing" && before.reason === "absent");
 
   await request.store.putGrant(request.credential, {

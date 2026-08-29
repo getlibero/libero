@@ -12,7 +12,7 @@ import { startFakeTokenIssuer } from "./fake-token-issuer.js";
 import type { FakeTokenIssuer } from "./fake-token-issuer.js";
 import { createHttpDispatcher } from "./http-dispatcher.js";
 import { openTokenStore } from "./token-store.js";
-import type { TokenStore } from "./token-store.js";
+import type { FileTokenStore } from "./token-store.js";
 import type { CallLimits } from "./enforce.js";
 
 /**
@@ -268,7 +268,7 @@ describe("an oauth upstream", () => {
   const GRANT = "notion_grant";
   let issuer: FakeTokenIssuer | undefined;
   let tokenDir: string | undefined;
-  let tokens: TokenStore | undefined;
+  let tokens: FileTokenStore | undefined;
 
   afterEach(async () => {
     await issuer?.close();
@@ -279,7 +279,7 @@ describe("an oauth upstream", () => {
     tokenDir = undefined;
   });
 
-  async function grantSeededTokens(issuerUrl: string, refreshToken: string): Promise<TokenStore> {
+  async function grantSeededTokens(issuerUrl: string, refreshToken: string): Promise<FileTokenStore> {
     tokenDir = mkdtempSync(join(tmpdir(), "libero-dispatcher-oauth-"));
     const parsed = parseVaultKey(randomBytes(32).toString("base64"));
     if (!parsed.ok) throw new Error("fixture key failed to parse");
@@ -366,7 +366,7 @@ describe("an oauth upstream", () => {
   it("never consults the token store for a bearer upstream", async () => {
     fake = await startFakeMcpServer();
     let reads = 0;
-    const counting: TokenStore = {
+    const counting: FileTokenStore = {
       read: () => {
         reads += 1;
         return { status: "missing", reason: "absent" };

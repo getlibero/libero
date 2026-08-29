@@ -44,8 +44,8 @@ import { type McpPool, createMcpPool } from "./mcp-pool.js";
 import { type CredentialSource, UpstreamError, constantCredential, destinationHost } from "./outbound.js";
 import { RedactionError } from "./redact.js";
 import { type TokenEngine, createTokenEngine } from "./token-engine.js";
-import type { TokenStore } from "./token-store.js";
-import type { Vault } from "./vault.js";
+import type { TokenStore } from "./custody.js";
+import type { Vault } from "./custody.js";
 
 // The scheme travels on the CredentialSource now — the vault's is a constant
 // bearer source built at the two resolution sites below — so there is no

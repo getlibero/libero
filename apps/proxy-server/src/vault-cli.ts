@@ -22,16 +22,9 @@
 // testable without a process. src/vault.ts is the six lines that supply the
 // real ones.
 
-import {
-  MAX_SECRET_BYTES,
-  VaultEntryError,
-  VaultError,
-  readVaultEntries,
-  removeEntry,
-  setEntry,
-  writeVaultEntries
-} from "@getlibero/proxy";
-import { vaultFileFromEnv, vaultKeyFromEnv } from "./env.js";
+import { CustodyError, MAX_SECRET_BYTES, VaultEntryError, openVaultAdmin } from "@getlibero/proxy";
+import type { CustodyConfig, VaultAdmin } from "@getlibero/proxy";
+import { custodyFromEnv } from "./env.js";
 import type { Env } from "./env.js";
 
 export interface VaultCliIo {
@@ -77,11 +70,9 @@ export async function runVaultCommand(io: VaultCliIo): Promise<number> {
     return EXIT_USAGE;
   }
 
-  let file: string;
-  let key: ReturnType<typeof vaultKeyFromEnv>;
+  let config: CustodyConfig;
   try {
-    file = vaultFileFromEnv(io.env);
-    key = vaultKeyFromEnv(io.env);
+    config = custodyFromEnv(io.env);
   } catch (error) {
     // These messages name the variable and the shape expected, and carry
     // nothing of what was set. See `vaultKeyFromEnv`.
@@ -89,17 +80,23 @@ export async function runVaultCommand(io: VaultCliIo): Promise<number> {
     return EXIT_ERROR;
   }
 
+  // The operator's handle on whichever backend this deployment runs (#482).
+  // `openVaultAdmin` is the only writer, and the serving process is banned from
+  // importing it — the disjoint writer sets, as an import list on both sides.
+  const admin = await openVaultAdmin(config);
   try {
     switch (command) {
       case "set":
-        return await runSet(io, file, key, rest);
+        return await runSet(io, admin, rest);
       case "list":
-        return runList(io, file, key);
+        return await runList(io, admin);
       case "remove":
-        return runRemove(io, file, key, rest);
+        return await runRemove(io, admin, rest);
     }
   } catch (error) {
-    if (error instanceof VaultError || error instanceof VaultEntryError) {
+    // `CustodyError` rather than `VaultError`, so a managed backend's own
+    // closed word prints here without this block gaining a case.
+    if (error instanceof CustodyError || error instanceof VaultEntryError) {
       io.err(`vault: ${error.reason}`);
       return EXIT_ERROR;
     }
@@ -108,13 +105,14 @@ export async function runVaultCommand(io: VaultCliIo): Promise<number> {
     // interpolated into anything on this path.
     io.err(`vault: ${messageOf(error)}`);
     return EXIT_ERROR;
+  } finally {
+    admin.close();
   }
 }
 
 async function runSet(
   io: VaultCliIo,
-  file: string,
-  key: ReturnType<typeof vaultKeyFromEnv>,
+  admin: VaultAdmin,
   rest: readonly string[]
 ): Promise<number> {
   const name = rest[0];
@@ -135,40 +133,35 @@ async function runSet(
     return EXIT_ERROR;
   }
 
-  const value = trimOneNewline(stdin.toString("utf8"));
-  const entries = setEntry(readVaultEntries(file, key), name, value);
-  writeVaultEntries(file, key, entries);
+  await admin.set(name, trimOneNewline(stdin.toString("utf8")));
   io.out(`vault: set ${name}`);
   return EXIT_OK;
 }
 
-function runList(io: VaultCliIo, file: string, key: ReturnType<typeof vaultKeyFromEnv>): number {
+async function runList(io: VaultCliIo, admin: VaultAdmin): Promise<number> {
   // Names only, sorted. No count and no lengths: a length narrows what kind of
-  // token an entry holds.
-  for (const name of [...readVaultEntries(file, key).keys()].sort()) {
+  // token an entry holds — and `VaultAdmin` has no other read.
+  for (const name of await admin.names()) {
     io.out(name);
   }
   return EXIT_OK;
 }
 
-function runRemove(
+async function runRemove(
   io: VaultCliIo,
-  file: string,
-  key: ReturnType<typeof vaultKeyFromEnv>,
+  admin: VaultAdmin,
   rest: readonly string[]
-): number {
+): Promise<number> {
   const name = rest[0];
   if (name === undefined || rest.length > 1) {
     io.err("vault: remove takes one name");
     return EXIT_USAGE;
   }
 
-  const next = removeEntry(readVaultEntries(file, key), name);
-  if (next === null) {
+  if (!(await admin.remove(name))) {
     io.err(`vault: no credential named ${name}`);
     return EXIT_ERROR;
   }
-  writeVaultEntries(file, key, next);
   io.out(`vault: removed ${name}`);
   return EXIT_OK;
 }

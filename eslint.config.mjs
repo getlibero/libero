@@ -230,6 +230,7 @@ export default tseslint.config(
             {
               group: [
                 "**/vault*",
+                "**/custody*",
                 "**/token-store*",
                 "**/token-engine*",
                 "**/grant-flow*",
@@ -280,6 +281,7 @@ export default tseslint.config(
             {
               group: [
                 "**/vault*",
+                "**/custody*",
                 "**/token-store*",
                 "**/token-engine*",
                 "**/grant-flow*",
@@ -310,6 +312,7 @@ export default tseslint.config(
             {
               group: [
                 "**/vault*",
+                "**/custody*",
                 "**/token-store*",
                 "**/token-engine*",
                 "**/grant-flow*",
@@ -357,6 +360,7 @@ export default tseslint.config(
             {
               group: [
                 "**/vault*",
+                "**/custody*",
                 "**/token-store*",
                 "**/token-engine*",
                 "**/grant-flow*",
@@ -395,6 +399,7 @@ export default tseslint.config(
             {
               group: [
                 "**/vault*",
+                "**/custody*",
                 "**/token-store*",
                 "**/token-engine*",
                 "**/grant-flow*",
@@ -444,10 +449,49 @@ export default tseslint.config(
                 "pruneTurnReports",
                 "openAuditReader",
                 "performAuthorizationGrant",
-                "GrantFlowError"
+                "GrantFlowError",
+                // #482's addition, and the load-bearing one: `openVaultAdmin`
+                // is the vault's writer. "The process serving tool calls never
+                // writes the vault" is an import list in packages/proxy's
+                // vault.ts, again in custody-backend.ts not importing
+                // custody-admin.ts, and here — the same claim at the one level
+                // where the two could otherwise meet.
+                "openVaultAdmin",
+                // And the key, so `vaultKeyFromEnv` in ./env.ts stays the
+                // deployment's single acquisition seam: a second reader of
+                // PROXY_VAULT_KEY is what would make moving it to KMS a change
+                // in more than one place.
+                "parseVaultKey",
+                "VAULT_KEY_BYTES"
               ],
               message:
-                "Operator paths stay off the serving process. Meter resets and aggregate reads belong to the budget CLI, reading the audit log belongs to the audit CLI, and running a grant belongs to the grant CLI — each reached as its own entrypoint."
+                "Operator paths stay off the serving process. Meter resets and aggregate reads belong to the budget CLI, reading the audit log belongs to the audit CLI, running a grant belongs to the grant CLI, and writing the vault belongs to the vault CLI — each reached as its own entrypoint. A master key comes from vaultKeyFromEnv and nowhere else."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    // The same key rule for the two operator entrypoints. They open a store —
+    // that is what they are for — and they still must not parse a key
+    // themselves: `custodyFromEnv` composes `vaultKeyFromEnv`, and a branch
+    // that acquires material some other way is how a backend ends up with two
+    // key sources to keep in step. The operator-function bans above do not
+    // apply here, which is why this is its own block rather than a wider
+    // `files` list: `no-restricted-imports` is replaced by the last block that
+    // matches a file, and grant-cli.ts must import `performAuthorizationGrant`.
+    files: ["apps/proxy-server/src/vault-cli.ts", "apps/proxy-server/src/grant-cli.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@getlibero/proxy",
+              importNames: ["parseVaultKey", "VAULT_KEY_BYTES"],
+              message:
+                "A master key comes from vaultKeyFromEnv in ./env.ts and nowhere else — the one acquisition seam a KMS source replaces the body of."
             }
           ]
         }
@@ -483,6 +527,7 @@ export default tseslint.config(
                 "**/enforce*",
                 "**/dispatch*",
                 "**/vault*",
+                "**/custody*",
                 "**/token-store*",
                 "**/token-engine*",
                 "**/grant-flow*",

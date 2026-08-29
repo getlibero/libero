@@ -55,8 +55,8 @@
 // destination nothing declared — a redirect target — and it refuses to follow.
 
 import { type RedactionPass, StreamingRedactor, applyPasses, redactionPasses } from "./redact.js";
-import { makeSecret } from "./vault.js";
-import type { Secret } from "./vault.js";
+import { makeSecret } from "./custody.js";
+import type { Secret } from "./custody.js";
 
 /**
  * How the credential is attached.

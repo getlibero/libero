@@ -31,16 +31,17 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  CustodyError,
   GRANT_REDIRECT_URI,
   GrantEntryError,
   GrantFlowError,
   TokenExchangeError,
-  TokenStoreError,
-  openTokenStore,
+  openCustody,
   performAuthorizationGrant
 } from "@getlibero/proxy";
+import type { Custody, CustodyConfig } from "@getlibero/proxy";
 import { parseTeamSheet } from "@getlibero/schema";
-import { channelsRootFromEnv, vaultFileFromEnv, vaultKeyFromEnv } from "./env.js";
+import { channelsRootFromEnv, custodyFromEnv } from "./env.js";
 import type { Env } from "./env.js";
 
 export interface GrantCliIo {
@@ -108,12 +109,10 @@ export async function runGrantCommand(io: GrantCliIo): Promise<number> {
   }
 
   let channelsRoot: string;
-  let vaultFile: string;
-  let key: ReturnType<typeof vaultKeyFromEnv>;
+  let config: CustodyConfig;
   try {
     channelsRoot = channelsRootFromEnv(io.env);
-    vaultFile = vaultFileFromEnv(io.env);
-    key = vaultKeyFromEnv(io.env);
+    config = custodyFromEnv(io.env);
   } catch (error) {
     // These messages name the variable and the shape expected, and carry
     // nothing of what was set. See `vaultKeyFromEnv`.
@@ -126,11 +125,13 @@ export async function runGrantCommand(io: GrantCliIo): Promise<number> {
 
   // Opened before any URL is shown, so a wrong key fails here — not after the
   // operator has signed in and approved. Closing zeroes the retained key.
-  let store: ReturnType<typeof openTokenStore>;
+  // `CustodyError` rather than `TokenStoreError`, so a managed backend's own
+  // closed word prints here without this block gaining a case (#482).
+  let custody: Custody;
   try {
-    store = openTokenStore({ vaultFile, key });
+    custody = await openCustody(config);
   } catch (error) {
-    io.err(error instanceof TokenStoreError ? `grant: ${error.reason}` : `grant: ${messageOf(error)}`);
+    io.err(error instanceof CustodyError ? `grant: ${error.reason}` : `grant: ${messageOf(error)}`);
     return EXIT_ERROR;
   }
 
@@ -140,7 +141,7 @@ export async function runGrantCommand(io: GrantCliIo): Promise<number> {
       issuer: binding.issuer,
       scopes: binding.scopes,
       clientId,
-      store,
+      store: custody.tokens,
       io: {
         showAuthorizationUrl: url => {
           io.out(
@@ -164,7 +165,7 @@ export async function runGrantCommand(io: GrantCliIo): Promise<number> {
     printFailure(io, error);
     return EXIT_ERROR;
   } finally {
-    store.close();
+    custody.close();
   }
 }
 
@@ -298,7 +299,7 @@ function printFailure(io: GrantCliIo, error: unknown): void {
     io.err(`grant: ${error.failure}`);
     return;
   }
-  if (error instanceof TokenStoreError || error instanceof GrantEntryError) {
+  if (error instanceof CustodyError || error instanceof GrantEntryError) {
     io.err(`grant: ${error.reason}`);
     return;
   }

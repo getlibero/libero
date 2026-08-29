@@ -87,19 +87,12 @@ describe("editing an entry set", () => {
     );
   });
 
-  each([
-    ["an empty value", "", "empty_value"],
-    ["a value with a NUL", "abc\0def", "value_has_nul"],
-    ["a value over the cap", "a".repeat(MAX_SECRET_BYTES + 1), "value_too_large"]
-  ])("refuses %s", (_label, value, reason) => {
-    expect(() => setEntry(new Map(), NAME, value)).toThrow(
-      expect.objectContaining({ reason })
-    );
-  });
-
-  it("accepts a value at exactly the cap", () => {
-    expect(setEntry(new Map(), NAME, "a".repeat(MAX_SECRET_BYTES)).size).toBe(1);
-  });
+  // What a value may weigh — empty, NUL-carrying, over the cap, and exactly at
+  // it — is the contract's rather than this function's, and is asserted against
+  // `VaultAdmin.set` in ./custody-conformance.ts alongside the token store's
+  // two write paths, since one cap covers every writer. The name table above
+  // stays: it is `setEntry`'s own, and the contract's version of it runs
+  // through the admin seam.
 
   // A PEM key is the realistic large credential, and it is multi-line.
   it("accepts a multi-line value", () => {

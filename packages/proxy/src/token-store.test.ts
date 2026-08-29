@@ -5,13 +5,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { Logger } from "./log.js";
-import {
-  GrantEntryError,
-  TokenStoreError,
-  openTokenStore,
-  tokenStorePathFor
-} from "./token-store.js";
-import type { GrantRecord, TokenStore } from "./token-store.js";
+import { openTokenStore, tokenStorePathFor } from "./token-store.js";
+import type { FileTokenStore, GrantRecord } from "./token-store.js";
 import { parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
 import { writeVaultEntries } from "./vault-file.js";
@@ -48,7 +43,7 @@ function recordingLogger(): { logger: Logger; lines: object[]; text: () => strin
 
 let dir: string;
 let vaultFile: string;
-let store: TokenStore | undefined;
+let store: FileTokenStore | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "libero-token-store-"));
@@ -165,77 +160,14 @@ describe("absence and freshness", () => {
       { level: "info", fields: { event: "token_store_absent", file: tokenStorePathFor(vaultFile) } }
     ]);
   });
-
-  // The freshness rule: a grant completed while the proxy runs takes effect at
-  // the next read, no restart — the grant entrypoint is another process.
-  it("sees a grant another writer stored after open", async () => {
-    const k = key();
-    store = openTokenStore({ vaultFile, key: k });
-    expect(store.read(NAME, BINDING).status).toBe("missing");
-
-    const granting = openTokenStore({ vaultFile, key: k });
-    await granting.putGrant(NAME, record());
-
-    expect(store.read(NAME, BINDING).status).toBe("found");
-  });
 });
 
-// The record's teeth. All three miss the same way — fail closed, re-grant —
-// but the reasons stay distinguishable because the operator's remedy differs.
-describe("the bindings", () => {
-  it("finds no grant under a different issuer", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await store.putGrant(NAME, record());
-
-    expect(store.read(NAME, { ...BINDING, issuer: "https://other.example" })).toEqual({
-      status: "missing",
-      reason: "issuer_mismatch"
-    });
-  });
-
-  // Byte-for-byte, never normalized: a trailing slash is a different issuer.
-  it("compares the issuer byte for byte", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await store.putGrant(NAME, record());
-
-    expect(store.read(NAME, { ...BINDING, issuer: `${ISSUER}/` }).status).toBe("missing");
-  });
-
-  it("finds no grant for scopes wider than the grant holds", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await store.putGrant(NAME, record());
-
-    expect(store.read(NAME, { issuer: ISSUER, scopes: ["mcp.read", "mcp.write"] })).toEqual({
-      status: "missing",
-      reason: "scopes_exceeded"
-    });
-  });
-
-  it("serves scopes narrower than the grant", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await store.putGrant(NAME, record({ scopes: ["mcp.read", "mcp.write"] }));
-
-    expect(store.read(NAME, { issuer: ISSUER, scopes: [] }).status).toBe("found");
-    expect(store.read(NAME, { issuer: ISSUER, scopes: ["mcp.write"] }).status).toBe("found");
-  });
-});
+// The record's teeth — issuer byte for byte, scopes as grant-time facts, and
+// all three misses distinguishable — are the contract's, in
+// ./custody-conformance.ts. So is the freshness rule this store is the far side
+// of: a grant another writer stored after open is visible without a restart.
 
 describe("rotation", () => {
-  it("replaces the refresh token and stamps rotatedAt", async () => {
-    let clock = 1_700_000_100_000;
-    const k = key();
-    store = openTokenStore({ vaultFile, key: k, now: () => clock });
-    await store.putGrant(NAME, record());
-
-    clock = 1_700_000_200_000;
-    await store.rotate(NAME, BINDING, "rt_successor");
-
-    const again = openTokenStore({ vaultFile, key: k });
-    const read = again.read(NAME, BINDING);
-    expect(read.status === "found" && read.refreshToken.reveal()).toBe("rt_successor");
-    again.close();
-  });
-
   // The residual race the README prices: a grant run racing a rotation. The
   // rotation belongs to the old grant's lineage, so it is dropped rather than
   // merged over the fresh grant — one loud line, never a lost fresh grant.
@@ -261,98 +193,14 @@ describe("rotation", () => {
     ).toBe(true);
   });
 
-  it("drops a rotation for a grant that vanished", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await expect(store.rotate(NAME, BINDING, "rt_orphan")).resolves.toBeUndefined();
-    expect(store.read(NAME, BINDING).status).toBe("missing");
-  });
 });
 
-describe("two writers, one mutex", () => {
-  it("keeps both records when a rotate and a putGrant interleave", async () => {
-    const k = key();
-    store = openTokenStore({ vaultFile, key: k });
-    await store.putGrant(NAME, record());
-
-    await Promise.all([
-      store.rotate(NAME, BINDING, "rt_rotated"),
-      store.putGrant("other_grant", record({ refreshToken: "rt_other" }))
-    ]);
-
-    const again = openTokenStore({ vaultFile, key: k });
-    expect(again.read(NAME, BINDING).status).toBe("found");
-    expect(again.read("other_grant", BINDING).status).toBe("found");
-    const rotated = again.read(NAME, BINDING);
-    expect(rotated.status === "found" && rotated.refreshToken.reveal()).toBe("rt_rotated");
-    again.close();
-  });
-
-  it("replaces a grant rather than stacking beside it", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await store.putGrant(NAME, record());
-    await store.putGrant(NAME, record({ refreshToken: "rt_second" }));
-
-    expect(store.size).toBe(1);
-    const read = store.read(NAME, BINDING);
-    expect(read.status === "found" && read.refreshToken.reveal()).toBe("rt_second");
-  });
-
-  it("survives a failed write without wedging the chain", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await expect(store.putGrant("bad name!", record())).rejects.toThrow(GrantEntryError);
-    await store.putGrant(NAME, record());
-    expect(store.read(NAME, BINDING).status).toBe("found");
-  });
-});
-
-describe("what a grant may weigh", () => {
-  it("refuses an empty, oversized, or NUL-carrying refresh token", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await expect(store.putGrant(NAME, record({ refreshToken: "" }))).rejects.toThrow(
-      expect.objectContaining({ reason: "empty_value" })
-    );
-    await expect(store.putGrant(NAME, record({ refreshToken: "x".repeat(8_193) }))).rejects.toThrow(
-      expect.objectContaining({ reason: "value_too_large" })
-    );
-    await expect(store.putGrant(NAME, record({ refreshToken: "rt\0x" }))).rejects.toThrow(
-      expect.objectContaining({ reason: "value_has_nul" })
-    );
-    await expect(store.rotate(NAME, BINDING, "")).rejects.toThrow(
-      expect.objectContaining({ reason: "empty_value" })
-    );
-  });
-
-  it("refuses a name that is not a credential name", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await expect(store.putGrant("../escape", record())).rejects.toThrow(
-      expect.objectContaining({ reason: "invalid_name" })
-    );
-  });
-});
+// Replace-not-stack, the interleaved writers, a refused write not wedging the
+// next, what a value may weigh, and the ten renderings of a `Secret` are the
+// contract's, in ./custody-conformance.ts. What stays here is the failure only
+// a filesystem has.
 
 describe("a secret has nowhere to go", () => {
-  it("hands the refresh token out only through reveal()", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    await store.putGrant(NAME, record());
-
-    const read = store.read(NAME, BINDING);
-    if (read.status !== "found") throw new Error("grant lost");
-    expect(JSON.stringify(read)).not.toContain("rt_live");
-    expect(String(read.refreshToken)).toBe("[redacted]");
-    expect(Object.keys(read.refreshToken)).toEqual([]);
-  });
-
-  it("keeps the value out of every log line", async () => {
-    const { logger, text } = recordingLogger();
-    store = openTokenStore({ vaultFile, key: key(), logger });
-    await store.putGrant(NAME, record());
-    store.read(NAME, BINDING);
-    await store.rotate(NAME, BINDING, "rt_successor_value");
-
-    expect(text()).not.toContain("rt_live");
-    expect(text()).not.toContain("rt_successor_value");
-  });
-
   it("keeps the value out of a write failure", async () => {
     store = openTokenStore({ vaultFile: join(dir, "missing", "vault.enc"), key: key() });
     let thrown: unknown;
@@ -379,11 +227,7 @@ describe("close", () => {
     expect(k.equals(copy)).toBe(false);
   });
 
-  it("refuses reads and writes after", async () => {
-    store = openTokenStore({ vaultFile, key: key() });
-    store.close();
-
-    expect(() => store?.read(NAME, BINDING)).toThrow(TokenStoreError);
-    await expect(store.putGrant(NAME, record())).rejects.toThrow(TokenStoreError);
-  });
+  // That a closed store refuses reads and writes is the contract's, in
+  // ./custody-conformance.ts. What only this backend can say is what `close`
+  // is *for*: the master key it was handed goes to zeros.
 });
