@@ -48,7 +48,7 @@ import {
   openEnvelope
 } from "./envelope.js";
 import type { VaultKey } from "./envelope.js";
-import { CustodyError, makeSecret } from "./custody.js";
+import { CustodyError, credentialNameRejection, makeSecret } from "./custody.js";
 import type { CredentialLookup, CustodyFailure, Vault } from "./custody.js";
 import type { Logger } from "./log.js";
 
@@ -196,7 +196,7 @@ function lookupIn(entries: ReadonlyMap<string, string>, name: string): Credentia
   // Validated before the map is touched. A name that could not have come from
   // a team sheet is not looked up at all, so a caller that skipped its own
   // validation cannot reach the store with a path segment or an empty string.
-  if (!CredentialName.safeParse(name).success) {
+  if (credentialNameRejection(name) !== null) {
     return { status: "missing" };
   }
   const value = entries.get(name);

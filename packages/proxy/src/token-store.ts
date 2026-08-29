@@ -37,7 +37,15 @@ import { dirname, join } from "node:path";
 import { CredentialName } from "@getlibero/schema";
 import { replaceFileAtomically } from "@getlibero/atomic-write";
 import { EnvelopeError, type EnvelopeSpec, openEnvelope, sealEnvelope } from "./envelope.js";
-import { CustodyError, MAX_SECRET_BYTES, makeSecret } from "./custody.js";
+import {
+  CustodyError,
+  credentialNameRejection,
+  credentialValueRejection,
+  GrantEntryError,
+  grantBindingHolds,
+  parseGrantRecord,
+  readGrant
+} from "./custody.js";
 import type { CustodyFailure, GrantBinding, GrantRead, GrantRecord, TokenStore } from "./custody.js";
 import type { Logger } from "./log.js";
 import { MAX_VAULT_BYTES, isAbsence } from "./vault.js";
@@ -108,18 +116,10 @@ export class TokenStoreError extends CustodyError {
   }
 }
 
-/** Why a grant was rejected on the way in. Names and sizes, never a value. */
-export type GrantRejection = "invalid_name" | "empty_value" | "value_too_large" | "value_has_nul";
-
-export class GrantEntryError extends Error {
-  readonly reason: GrantRejection;
-
-  constructor(reason: GrantRejection) {
-    super(`proxy token store: ${reason}`);
-    this.name = "GrantEntryError";
-    this.reason = reason;
-  }
-}
+// The contract's, since #483 — see ./vault-file.ts's note. `GrantRejection`
+// keeps its name here because the barrel exports it under that one.
+export type { EntryRejection as GrantRejection } from "./custody.js";
+export { GrantEntryError } from "./custody.js";
 
 /**
  * The file backend's `TokenStore`, narrowing `read` back to a synchronous
@@ -227,7 +227,7 @@ export function openTokenStore(options: TokenStoreOptions): FileTokenStore {
         // Dropped, not merged — see the interface doc. The `read` that fed the
         // exchange enforced the binding; if it no longer holds, the record was
         // replaced mid-flight and the rotation belongs to a dead lineage.
-        if (record === undefined || !bindingHolds(record, binding)) {
+        if (record === undefined || !grantBindingHolds(record, binding)) {
           logger?.log("warn", { event: "token_rotation_superseded", credential: name, file });
           return false;
         }
@@ -238,7 +238,8 @@ export function openTokenStore(options: TokenStoreOptions): FileTokenStore {
 
     putGrant(name, record): Promise<void> {
       try {
-        if (!CredentialName.safeParse(name).success) throw new GrantEntryError("invalid_name");
+        const rejection = credentialNameRejection(name);
+        if (rejection !== null) throw new GrantEntryError(rejection);
         validateValue(record.refreshToken);
       } catch (error) {
         return Promise.reject(error);
@@ -272,28 +273,18 @@ function storeExists(file: string): boolean {
   }
 }
 
+/** The contract's word, in this store's error. See ./custody.ts. */
 function validateValue(value: string): void {
-  if (value.length === 0) throw new GrantEntryError("empty_value");
-  if (Buffer.byteLength(value, "utf8") > MAX_SECRET_BYTES) throw new GrantEntryError("value_too_large");
-  if (value.includes("\0")) throw new GrantEntryError("value_has_nul");
-}
-
-function bindingHolds(record: GrantRecord, binding: GrantBinding): boolean {
-  // Byte-for-byte on the issuer — no normalization, the schema's own rule —
-  // and subset on scopes: a sheet may narrow what it uses of a grant, and
-  // widening is a re-grant.
-  return record.issuer === binding.issuer && binding.scopes.every(scope => record.scopes.includes(scope));
+  const rejection = credentialValueRejection(value);
+  if (rejection !== null) throw new GrantEntryError(rejection);
 }
 
 function readFrom(grants: ReadonlyMap<string, GrantRecord>, name: string, binding: GrantBinding): GrantRead {
-  if (!CredentialName.safeParse(name).success) return { status: "missing", reason: "absent" };
-  const record = grants.get(name);
-  if (record === undefined) return { status: "missing", reason: "absent" };
-  if (record.issuer !== binding.issuer) return { status: "missing", reason: "issuer_mismatch" };
-  if (!binding.scopes.every(scope => record.scopes.includes(scope))) {
-    return { status: "missing", reason: "scopes_exceeded" };
-  }
-  return { status: "found", refreshToken: makeSecret(record.refreshToken), clientId: record.clientId };
+  // The name is checked before the map is touched, and the bindings by
+  // `readGrant` — one implementation for every backend, since the two mistakes
+  // available here serve a refresh token to the wrong authorization server.
+  if (credentialNameRejection(name) !== null) return { status: "missing", reason: "absent" };
+  return readGrant(grants.get(name), binding);
 }
 
 function readGrants(file: string, key: VaultKey, logger: Logger | undefined): ReadonlyMap<string, GrantRecord> {
@@ -363,24 +354,11 @@ function parseGrants(plaintext: Buffer): ReadonlyMap<string, GrantRecord> {
   return grants;
 }
 
+/** ./custody.ts's check, in this file's error. One shape, one validator. */
 function parseRecord(record: unknown, malformed: () => TokenStoreError): GrantRecord {
-  if (typeof record !== "object" || record === null) throw malformed();
-  const body = record as Record<string, unknown>;
-  const { issuer, clientId, refreshToken, scopes, obtainedAt, rotatedAt } = body;
-  if (typeof issuer !== "string" || issuer.length === 0) throw malformed();
-  if (typeof clientId !== "string") throw malformed();
-  if (typeof refreshToken !== "string" || refreshToken.length === 0) throw malformed();
-  if (!Array.isArray(scopes) || !scopes.every(scope => typeof scope === "string")) throw malformed();
-  if (typeof obtainedAt !== "number") throw malformed();
-  if (rotatedAt !== undefined && typeof rotatedAt !== "number") throw malformed();
-  return {
-    issuer,
-    clientId,
-    refreshToken,
-    scopes,
-    obtainedAt,
-    ...(rotatedAt !== undefined ? { rotatedAt } : {})
-  };
+  const parsed = parseGrantRecord(record);
+  if (parsed === null) throw malformed();
+  return parsed;
 }
 
 function serializeGrants(grants: ReadonlyMap<string, GrantRecord>): Buffer {
