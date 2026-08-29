@@ -228,6 +228,11 @@ reveals a credential and the one that scrubs the reply.
   from it for the reason `vault-file.ts` is apart from `vault.ts`.
   `custody-conformance.ts` holds the assertions every backend inherits; the
   section "Two credential stores" below is the argument.
+- `custody-gcp.ts` / `custody-aws.ts` — the two managed backends and their
+  clients (`custody-gcp-client.ts`, `custody-aws-client.ts`), each speaking its
+  provider's API with no client library, for `apps/runner/src/docker.ts`'s
+  reason. `fake-secret-manager.ts` and `fake-secrets-manager.ts` are the servers
+  their suites run against; the AWS one also verifies every SigV4 signature.
 - `vault.ts` — the credential vault, read side, and the default backend's half
   of it. One AES-256-GCM blob over the
   whole entry set, so the names are encrypted along with the values; a per-write
@@ -765,6 +770,54 @@ or eventual consistency, and a misreading of the reference would show up as a
 passing suite. `deploy/README.md` carries the operator walkthrough with the same
 warning attached. Treat the first live deployment as the real test, and fix the
 fake where it disagrees.
+
+### The Secrets Manager backend (#484)
+
+`PROXY_CUSTODY_BACKEND=aws` runs both stores on AWS Secrets Manager, in the
+shape #483 proved out: `custody-aws.ts`, `custody-aws-client.ts`, and a
+`custody-aws.test.ts` that is a harness and one call. Writer separation is an
+IAM policy, replace-not-stack is the backend's versioning, and there is no
+master key.
+
+**SigV4 is the difference, and it is what a reviewer should look at.** Google
+takes a bearer token; AWS takes a signature over the request, so this backend
+carries a hundred lines of HMAC that the GCP one does not. What makes that an
+acceptable hundred lines is the direction it fails in: a signing mistake is a
+403, not a disclosure. There is no partial-credit failure where a wrong
+signature still moves a secret. It is checked three ways — the fake recomputes
+every signature and refuses one that does not match, `custody-aws-client.test.ts`
+asserts differentially that each signed input changes the signature, and a
+deliberate break of the body coverage was confirmed to fail both.
+
+**Replace-not-stack needed an extra call here, and it is a deliberate departure
+from AWS convention.** `PutSecretValue` moves `AWSCURRENT` to the new version
+and `AWSPREVIOUS` to the old one, which leaves the superseded value readable to
+anyone with `GetSecretValue` — for a rotated refresh token, the dead one is
+still there. This backend strips the `AWSPREVIOUS` label, so a version left with
+no staging label is deprecated and stops being retrievable: the same property
+GCP's destroy-old buys. AWS keeps `AWSPREVIOUS` for rotation rollback, so this
+gives that up on purpose.
+
+**Removal is irreversible.** `DeleteSecret` defaults to a recovery window of up
+to thirty days during which the name cannot be reused, which would turn
+`vault remove x` followed by `vault set x` into a failure with no workaround.
+This backend passes `ForceDeleteWithoutRecovery`. The operator act removal was
+always paired with — revoking the credential at the service that issued it — is
+not undoable either.
+
+**A dot is fine here**, unlike on GCP: Secrets Manager names allow
+`[A-Za-z0-9/_+=.@-]`, which covers every `CredentialName`. A deployment moving
+from GCP to AWS gains names; one moving the other way may have to rename.
+
+**This one was checked against an independent implementation**, which #483 could
+not be: `packages/aws-conformance` runs the contract suite against LocalStack. It
+found two real defects the fake had mirrored — a missing `ClientRequestToken`,
+which the SDKs generate and a hand-written client omits, and a `remove` that
+derived "was it there" from the delete's own reply where LocalStack and AWS
+disagree. Both are fixed and the fake was made stricter to match. What LocalStack
+still cannot answer is the signature, IAM, quotas, KMS and the recovery window,
+and **nobody has run this against a real account**; `deploy/README.md` says so
+where an operator will read it.
 
 ## Built-in tools
 

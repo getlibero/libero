@@ -308,13 +308,59 @@ describe("custodyFromEnv", () => {
     expect(Object.keys(config).sort()).toEqual(["backend", "prefix", "project"]);
   });
 
+  it("takes Secrets Manager when the backend names it, defaulting the prefix", () => {
+    const config = custodyFromEnv({
+      PROXY_CUSTODY_BACKEND: "aws",
+      PROXY_AWS_REGION: "eu-west-2"
+    });
+    expect(config).toEqual({
+      backend: "aws-secrets-manager",
+      region: "eu-west-2",
+      prefix: "libero"
+    });
+  });
+
+  it("demands a region on the aws branch and no master key", () => {
+    expect(() => custodyFromEnv({ PROXY_CUSTODY_BACKEND: "aws" })).toThrow(/PROXY_AWS_REGION/);
+    expect(() =>
+      custodyFromEnv({ PROXY_CUSTODY_BACKEND: "aws", PROXY_AWS_REGION: "eu-west-2" })
+    ).not.toThrow();
+  });
+
+  // The same rule on every managed branch: no endpoint comes from the
+  // environment, whatever an operator sets.
+  it("builds no aws endpoint override from the environment", () => {
+    const config = custodyFromEnv({
+      PROXY_CUSTODY_BACKEND: "aws",
+      PROXY_AWS_REGION: "eu-west-2",
+      PROXY_AWS_ENDPOINT: "https://attacker.example",
+      AWS_ENDPOINT_URL: "https://attacker.example",
+      PROXY_AWS_METADATA_ENDPOINT: "https://attacker.example"
+    });
+    expect(Object.keys(config).sort()).toEqual(["backend", "prefix", "region"]);
+  });
+
+  // Nor does either managed branch pick up the SDK's own credential variables:
+  // this backend takes the instance role over IMDSv2 and nothing else.
+  it("ignores the AWS SDK's access-key variables", () => {
+    const config = custodyFromEnv({
+      PROXY_CUSTODY_BACKEND: "aws",
+      PROXY_AWS_REGION: "eu-west-2",
+      AWS_ACCESS_KEY_ID: "AKIAEXAMPLE",
+      AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMIexampleKEY",
+      AWS_PROFILE: "default"
+    });
+    expect(JSON.stringify(config)).not.toContain("AKIA");
+    expect(JSON.stringify(config)).not.toContain("wJalrXUtnFEMI");
+  });
+
   each([
     ["a typo", "file"],
-    ["a backend this build does not have", "aws"],
+    ["a backend this build does not have", "azure"],
     ["the internal spelling", "encrypted-files"]
   ])("refuses to start on %s", (_label, named) => {
     expect(() => custodyFromEnv(files({ PROXY_CUSTODY_BACKEND: named }))).toThrow(
-      /PROXY_CUSTODY_BACKEND must be one of: files, gcp/
+      /PROXY_CUSTODY_BACKEND must be one of: files, gcp, aws/
     );
   });
 

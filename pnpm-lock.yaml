@@ -155,6 +155,18 @@ importers:
         specifier: ^30.4.1
         version: 30.4.1
 
+  packages/aws-conformance:
+    devDependencies:
+      '@getlibero/proxy':
+        specifier: workspace:*
+        version: link:../proxy
+      '@getlibero/test-kit':
+        specifier: workspace:*
+        version: link:../test-kit
+      expect:
+        specifier: ^30.4.1
+        version: 30.4.1
+
   packages/cli:
     devDependencies:
       '@getlibero/atomic-write':

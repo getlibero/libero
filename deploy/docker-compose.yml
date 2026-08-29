@@ -161,6 +161,13 @@ services:
       # PROXY_CUSTODY_BACKEND: gcp
       # PROXY_GCP_PROJECT: my-project
       # PROXY_GCP_SECRET_PREFIX: libero
+      #
+      # Or AWS Secrets Manager (#484). Only on EC2: the backend authenticates
+      # with the instance role over IMDSv2, which needs a hop limit of 2 for a
+      # container to reach it. See deploy/README.md.
+      # PROXY_CUSTODY_BACKEND: aws
+      # PROXY_AWS_REGION: eu-west-2
+      # PROXY_AWS_SECRET_PREFIX: libero
       # Read, and required. The proxy resolves
       # <PROXY_CHANNELS_ROOT>/<channel>/channel.toml on every call and refuses
       # anything the sheet does not permit, so for this service the directory is

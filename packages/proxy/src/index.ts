@@ -223,6 +223,16 @@ export type { VaultAdmin } from "./custody-admin.js";
 export { DEFAULT_GCP_ENDPOINTS, GcpCustodyError } from "./custody-gcp-client.js";
 export type { GcpEndpoints, GcpFailure } from "./custody-gcp-client.js";
 
+// The AWS backend (#484), on the GCP one's terms. `fake-secrets-manager.ts` is
+// not exported either — but `openAwsCustody` and `openAwsVaultAdmin` are, which
+// the GCP pair are not, because packages/aws-conformance runs the contract
+// suite against LocalStack from outside this package and needs a way in that
+// does not go through an environment variable.
+export { openAwsCustody, openAwsVaultAdmin } from "./custody-aws.js";
+export type { AwsCustodyOptions } from "./custody-aws.js";
+export { AwsCustodyError, DEFAULT_IMDS_ENDPOINT } from "./custody-aws-client.js";
+export type { AwsEndpoints, AwsFailure } from "./custody-aws-client.js";
+
 export {
   MAX_VAULT_BYTES,
   VAULT_KEY_BYTES,

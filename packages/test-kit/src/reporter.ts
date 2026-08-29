@@ -78,6 +78,11 @@ export const ALLOWED_SKIPS: readonly AllowedSkip[] = [
     name: "a live LiteLLM sidecar, through the agent's own adapters",
     why: "needs a Docker daemon to start the sidecar; #480's acceptance, and the file throws rather than skipping under CI"
   },
+  {
+    file: "localstack.docker.test.js",
+    name: "localstack",
+    why: "needs a Docker daemon to start LocalStack; #484's acceptance, and the file throws rather than skipping under CI"
+  },
   // Reaches the real GitHub, so it needs a credential CI does not have.
   {
     file: "github-live.test.js",

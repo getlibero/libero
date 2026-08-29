@@ -268,10 +268,10 @@ export function vaultKeyFromEnv(env: Env): VaultKey {
  * the call. So the variable stays required for the default shape without ever
  * becoming optional for it, which is the trap an options bag would have set.
  */
-const CUSTODY_BACKENDS = ["files", "gcp"] as const;
+const CUSTODY_BACKENDS = ["files", "gcp", "aws"] as const;
 
-/** This deployment's slice of a GCP project, and half of every secret id. */
-const DEFAULT_GCP_PREFIX = "libero";
+/** This deployment's slice of a project or account, and the lead of every name. */
+const DEFAULT_SECRET_PREFIX = "libero";
 
 export function custodyFromEnv(env: Env): CustodyConfig {
   const named = env.PROXY_CUSTODY_BACKEND;
@@ -298,7 +298,16 @@ export function custodyFromEnv(env: Env): CustodyConfig {
     return {
       backend: "gcp-secret-manager",
       project: requiredEnv(env, "PROXY_GCP_PROJECT"),
-      prefix: prefix === undefined || prefix === "" ? DEFAULT_GCP_PREFIX : prefix
+      prefix: prefix === undefined || prefix === "" ? DEFAULT_SECRET_PREFIX : prefix
+    };
+  }
+
+  if (backend === "aws") {
+    const prefix = env.PROXY_AWS_SECRET_PREFIX;
+    return {
+      backend: "aws-secrets-manager",
+      region: requiredEnv(env, "PROXY_AWS_REGION"),
+      prefix: prefix === undefined || prefix === "" ? DEFAULT_SECRET_PREFIX : prefix
     };
   }
 

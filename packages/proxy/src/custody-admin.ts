@@ -19,6 +19,7 @@
 // entry holds. Adding a command that prints a value back is the failure this
 // file and ./vault.ts exist to prevent.
 
+import { openAwsVaultAdmin } from "./custody-aws.js";
 import { openGcpVaultAdmin } from "./custody-gcp.js";
 import { readVaultEntries, removeEntry, setEntry, writeVaultEntries } from "./vault-file.js";
 import type { Awaitable } from "./custody.js";
@@ -75,6 +76,9 @@ export interface VaultAdmin {
 export function openVaultAdmin(config: CustodyConfig): Promise<VaultAdmin> {
   if (config.backend === "gcp-secret-manager") {
     return openGcpVaultAdmin(config);
+  }
+  if (config.backend === "aws-secrets-manager") {
+    return openAwsVaultAdmin(config);
   }
 
   const { vaultFile, key } = config;
