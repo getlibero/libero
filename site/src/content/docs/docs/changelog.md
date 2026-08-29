@@ -31,6 +31,68 @@ repository names this page as the changelog step:
   after the fact would duplicate it while numbering things that never had
   numbers.
 
+## v0.7.0 — 2026-08-29
+
+**What shipped.** Deployment shapes — the release pilot deployments run from
+([#428](https://github.com/getlibero/libero/issues/428) and
+[#261](https://github.com/getlibero/libero/issues/261) are the trackers). Reaching a model is now
+three chosen shapes with no default among them: directly against a provider; through a LiteLLM
+gateway you already run — a base URL and a key, no service started here, the provider keys with
+whoever runs it; or through the sidecar `deploy/docker-compose.yml` can start behind a `litellm`
+profile, with a worked `model_list` ([#479](https://github.com/getlibero/libero/issues/479)).
+None of the three is a fallback, and `deploy/README.md` and the
+[self-hosting page](/docs/self-hosting/) each carry a section an operator can stand any of them up
+from ([#481](https://github.com/getlibero/libero/issues/481),
+[#488](https://github.com/getlibero/libero/pull/488)).
+
+**The LiteLLM path is proven against the real image, and the proof found a live bug**
+([#480](https://github.com/getlibero/libero/issues/480)). A new conformance package starts the
+exact image the compose file runs and points the real adapters at it. LiteLLM's `prompt_tokens` is
+a sum — fresh, cache-read and cache-write tokens included — and the adapter was adding the four
+tiers on top of it, so every cached token was counted twice: once at the input rate, again at the
+cache rate. On a cache-heavy channel that is the order-of-magnitude metering error the four
+tiers exist to prevent, and it was live on this path until this release. The cache-write count
+also arrives in three spellings; the adapter now reads all three, first one wins.
+
+**What a gateway charged is recorded beside what the price table says**
+([#239](https://github.com/getlibero/libero/issues/239)). Where calls reach a model through a
+LiteLLM, the gateway's own cost figure lands in a second SQLite file beside the counts the proxy
+priced itself, and `node dist/drift.js show` puts the two side by side per model — so a stale
+price table is visible before the provider's invoice is. Recording is the whole feature: nothing
+enforces on the gateway's number, the command has no failing exit code, and enforcement stays
+deterministic and stays in the proxy. Only calls somebody priced are in it — absent and zero stay
+different statements.
+
+**The vault and token store run on a custody contract behind a backend seam**
+([#482](https://github.com/getlibero/libero/issues/482)). The two encrypted files on the proxy's
+volume stay the default backend, unchanged and not deprecated. `PROXY_CUSTODY_BACKEND=gcp` moves
+both stores into Google Secret Manager
+([#483](https://github.com/getlibero/libero/issues/483)); `=aws` into AWS Secrets Manager
+([#484](https://github.com/getlibero/libero/issues/484)). Writer separation becomes an IAM policy
+`deploy/README.md` states, replace-not-stack becomes the provider's versioning with the
+superseded value destroyed rather than kept, and there is no master key to hold. Values still
+leave the stores only as `Secret`, and every backend passes the same contract suite — the AWS one
+also against LocalStack, an independent implementation, which found two client defects the
+repository's own fake had mirrored. Stated rather than implied: neither managed backend has yet
+been run against a live project or account. What each was actually proven against is in
+`deploy/README.md`, and the live verification is
+[#496](https://github.com/getlibero/libero/issues/496).
+
+**The master key can come from a file** ([#495](https://github.com/getlibero/libero/issues/495)).
+`PROXY_VAULT_KEY_FILE` names a path — a compose secret, a Kubernetes projected volume — and with
+the file backend the proxy insists on exactly one source, refusing to start with both or neither
+set. On a managed backend, none of the key variables is read at all.
+
+**Upgrading.** No team-sheet changes. No action required: the file backend, the direct provider
+shape and `PROXY_VAULT_KEY` all keep working unchanged, and every new variable —
+`PROXY_CUSTODY_BACKEND`, `PROXY_VAULT_KEY_FILE`, the `LITELLM_*` keys — is opt-in, with nothing
+new started by default. Two things an operator may notice. If your deployment already reached a
+model through a LiteLLM-compatible gateway, metered spend on cache-heavy channels drops to its
+correct value — the double-charge fix means the old figures were high, not that usage fell. And
+the images and the CLI pair at 0.7.0 as always: upgrade them together.
+
+The e2e security suite passes against this tag.
+
 ## v0.6.0 — 2026-08-26
 
 **What shipped.** Scheduling ([#358](https://github.com/getlibero/libero/issues/358) is the

@@ -15,7 +15,7 @@ every action audited. Channel isolation is a hard admin-defined boundary enforce
 model self-restraint.
 
 <Aside type="caution" title="Pre-1.0">
-`v0.6.0` is current, and these pages describe what runs. What pre-1.0 means in practice: the
+`v0.7.0` is current, and these pages describe what runs. What pre-1.0 means in practice: the
 team-sheet format can still change between releases — the [changelog](/docs/changelog/) says
 when — and certificate rotation is two commands with a human edit between them rather than
 anything automated. [Self-hosting](/docs/self-hosting) is where to start, and it says to start in
@@ -33,7 +33,11 @@ as of `v0.4.0`, code execution in an ephemeral container whose only way out is t
 grows for itself, and the ones an operator publishes once — named per channel in the team sheet,
 mounted read-only, and never touched by the model. As of `v0.6.0` recurrence lives in the team
 sheet: an `[[ambient.rule]]` entry fires a turn at a clock time, in a named timezone, on the days
-it lists — authored by the operator, so a prompt-injected model cannot plant one. `npx @getlibero/cli init` through
+it lists — authored by the operator, so a prompt-injected model cannot plant one. As of `v0.7.0` the
+deployment chooses how it reaches a model — directly, through a LiteLLM you already run, or
+through the sidecar the compose file can start — and where credentials live at rest: two
+encrypted files by default, or Google Secret Manager or AWS Secrets Manager behind one
+variable. `npx @getlibero/cli init` through
 `docker compose up` stands the stack up from a clean checkout. The [roadmap](/docs/roadmap) is the record of how it got here and where a
 release landed differently from its own plan.
 

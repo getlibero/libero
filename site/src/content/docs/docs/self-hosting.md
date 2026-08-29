@@ -12,17 +12,18 @@ run this against a workspace they depend on yet; the section on
 [using a scratch workspace first](#use-a-scratch-workspace-first) is the practical consequence.
 :::
 
-Everything on this page runs as of `v0.6.0`. The proxy speaks mutual TLS, binds every request to
+Everything on this page runs as of `v0.7.0`. The proxy speaks mutual TLS, binds every request to
 a channel, enforces team sheets, holds credentials in an encrypted vault, injects them into
 outbound calls, scrubs them back out of results, meters each channel's daily budget in calls and
 in dollars, and appends a hash-chained audit row for every decided call. The gateway and the
 agent loop reach tools through the proxy and nowhere else, and a held call raises an amber card
 whose click re-submits the identical call with the ticket. The proxy speaks MCP, including OAuth
 against upstreams that require it, and [GitHub's hosted server](/docs/github/) is exercised end
-to end. Memory, skills and ambient mode are whole; two limits are stated rather than hidden — a
-deployment with no embedding provider retrieves skills on full text alone and proposes no merges,
-and a fired scheduled check is one bounded turn over the channel's recent messages that can look
-nothing up ([#348](https://github.com/getlibero/libero/issues/348)).
+to end. Memory, skills and ambient mode are whole; one limit is stated rather than hidden — a
+deployment with no embedding provider retrieves skills on full text alone and proposes no
+merges — and one default is a choice a sheet can change: an unattended turn makes no tool calls
+unless the sheet writes `[ambient] tools = true`
+([#348](https://github.com/getlibero/libero/issues/348)).
 
 Code execution is off unless you start it: `docker compose --profile runner up -d`, plus a
 digest-pinned sandbox image, the runner's client pin, and the host's docker group id. Without the
