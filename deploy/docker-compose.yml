@@ -153,6 +153,14 @@ services:
       # `docker compose run --rm proxy node dist/vault.js set <name>`, which
       # keeps the master key inside this container rather than on the host.
       PROXY_VAULT_FILE: /data/vault/vault.enc
+      # Credentials in Google Secret Manager instead of the two files above
+      # (#483). Uncomment these three, drop the two lines above, and give the
+      # VM a service account with the roles in deploy/README.md. Only on GCP
+      # compute: the backend authenticates with the VM's attached service
+      # account and has no other credential source.
+      # PROXY_CUSTODY_BACKEND: gcp
+      # PROXY_GCP_PROJECT: my-project
+      # PROXY_GCP_SECRET_PREFIX: libero
       # Read, and required. The proxy resolves
       # <PROXY_CHANNELS_ROOT>/<channel>/channel.toml on every call and refuses
       # anything the sheet does not permit, so for this service the directory is

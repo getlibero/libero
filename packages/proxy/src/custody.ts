@@ -16,10 +16,20 @@
 // what makes "the files are the built form" checkable rather than asserted. The
 // same style of claim ./vault.ts makes about never writing.
 //
-// What is *not* here, deliberately: name validation (a backend's own gate — the
-// file backend runs `CredentialName` on both the way in and the way out),
-// envelope constants, and the write path for the vault, which is
-// ./custody-admin.ts because the serving composition must not import it.
+// What is *not* here, deliberately: envelope constants, and the write path for
+// the vault, which is ./custody-admin.ts because the serving composition must
+// not import it.
+//
+// What *is* here beyond the shapes, since #483 gave the contract a second
+// implementation: the three rules a backend must not restate in its own words —
+// what a value may weigh, whether a name is one, and which grant a binding
+// serves. Two backends that each wrote the issuer comparison would be two
+// chances to write it wrong, and the wrong one serves a refresh token to a
+// server the operator never granted it to. `@getlibero/schema` is the one
+// import, which is the shapes both services already agree on rather than
+// anything that knows what a file is.
+
+import { CredentialName } from "@getlibero/schema";
 
 /**
  * `T` or a promise of it.
@@ -255,4 +265,142 @@ export abstract class CustodyError extends Error {
     this.name = "CustodyError";
     this.failure = failure;
   }
+}
+
+/**
+ * Why a name or a value was rejected on the way in. Names and sizes, never a
+ * value.
+ *
+ * Declared here rather than by each backend since #483, because it is the same
+ * four words wherever a credential is stored. The two error classes stay where
+ * they are — `VaultEntryError` in ./vault-file.ts, `GrantEntryError` in
+ * ./token-store.ts — and a backend wraps the word this returns in whichever
+ * fits its path.
+ */
+export type EntryRejection = "invalid_name" | "empty_value" | "value_too_large" | "value_has_nul";
+
+/**
+ * The two rejections, as errors.
+ *
+ * Here rather than in ./vault-file.ts and ./token-store.ts since #483, for one
+ * reason: a second backend needs to throw them, and reaching into the *file*
+ * backend for an error class would make the managed one depend on the store it
+ * replaces. Both keep their names, their messages and their exports from the
+ * modules that used to declare them, so nothing importing them changes.
+ *
+ * Two classes rather than one, because the paths are two: an operator setting a
+ * vault value and the serving process persisting grant material are different
+ * acts with different writers, and an entrypoint that catches one should not
+ * silently catch the other.
+ */
+export class VaultEntryError extends Error {
+  readonly reason: EntryRejection;
+
+  constructor(reason: EntryRejection) {
+    super(`proxy vault: ${reason}`);
+    this.name = "VaultEntryError";
+    this.reason = reason;
+  }
+}
+
+export class GrantEntryError extends Error {
+  readonly reason: EntryRejection;
+
+  constructor(reason: EntryRejection) {
+    super(`proxy token store: ${reason}`);
+    this.name = "GrantEntryError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * What a stored credential may weigh, checked once for every writer.
+ *
+ * Returns the word rather than throwing, so the caller decides which of its own
+ * errors carries it and whether that is a throw or a rejection. `null` is
+ * acceptable.
+ */
+/**
+ * Whether a name is a credential name at all, asked once for every store.
+ *
+ * Through the real schema, so no backend gets to have its own opinion about
+ * what an operator may write in a team sheet. Every read path runs it before
+ * touching the store, so a caller that skipped its own validation cannot reach
+ * a backing with a path segment, an empty string, or a NUL.
+ */
+export function credentialNameRejection(name: string): EntryRejection | null {
+  return CredentialName.safeParse(name).success ? null : "invalid_name";
+}
+
+export function credentialValueRejection(value: string): EntryRejection | null {
+  if (value.length === 0) return "empty_value";
+  if (Buffer.byteLength(value, "utf8") > MAX_SECRET_BYTES) return "value_too_large";
+  if (value.includes("\0")) return "value_has_nul";
+  return null;
+}
+
+/**
+ * The grant's teeth, applied once for every backend.
+ *
+ * **Here rather than in each store, and that is a security decision rather than
+ * tidiness.** A backend that compared issuers with its own normalization, or
+ * got the direction of the scope subset backwards, would serve a refresh token
+ * to an authorization server the operator never granted it to — and the two
+ * mistakes look like working code. There is one implementation, so there is one
+ * thing to review.
+ *
+ * A refresh token is only ever handed out against the issuer its record names,
+ * byte for byte and never normalized (a trailing slash is a different issuer),
+ * and against scopes the grant covers. A sheet asking otherwise finds no grant
+ * — fail closed, re-grant. The three misses stay distinguishable because the
+ * operator's remedy differs: re-run the flow against the new issuer, against
+ * the wider scopes, or for the first time.
+ *
+ * `undefined` in means `absent` out, so a backend that found nothing does not
+ * have to spell the answer itself.
+ */
+export function readGrant(
+  record: GrantRecord | undefined,
+  binding: GrantBinding
+): GrantRead {
+  if (record === undefined) return { status: "missing", reason: "absent" };
+  if (record.issuer !== binding.issuer) return { status: "missing", reason: "issuer_mismatch" };
+  if (!binding.scopes.every(scope => record.scopes.includes(scope))) {
+    return { status: "missing", reason: "scopes_exceeded" };
+  }
+  return { status: "found", refreshToken: makeSecret(record.refreshToken), clientId: record.clientId };
+}
+
+/** Whether a record still binds — `rotate`'s question, asked the same way. */
+export function grantBindingHolds(record: GrantRecord, binding: GrantBinding): boolean {
+  return record.issuer === binding.issuer && binding.scopes.every(scope => record.scopes.includes(scope));
+}
+
+/**
+ * A stored grant, checked field by field. `null` when it is not one.
+ *
+ * Shared for `readGrant`'s reason. This store has a shape where the vault has a
+ * string, and a shapeless record would put `undefined` where the exchange
+ * expects an issuer to pin — which is the same failure as comparing issuers
+ * wrongly, reached from the other side. A backend that wrote its own check
+ * would be a second chance to forget one field.
+ */
+export function parseGrantRecord(value: unknown): GrantRecord | null {
+  if (typeof value !== "object" || value === null) return null;
+  const body = value as Record<string, unknown>;
+  const { issuer, clientId, refreshToken, scopes, obtainedAt, rotatedAt } = body;
+  if (typeof issuer !== "string" || issuer.length === 0) return null;
+  if (typeof clientId !== "string") return null;
+  if (typeof refreshToken !== "string" || refreshToken.length === 0) return null;
+  if (!Array.isArray(scopes) || !scopes.every(scope => typeof scope === "string")) return null;
+  if (typeof obtainedAt !== "number") return null;
+  if (rotatedAt !== undefined && typeof rotatedAt !== "number") return null;
+  return {
+    issuer,
+    clientId,
+    refreshToken,
+    scopes: scopes as readonly string[],
+    obtainedAt,
+    ...(rotatedAt !== undefined ? { rotatedAt } : {})
+  };
 }

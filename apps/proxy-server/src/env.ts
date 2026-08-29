@@ -268,7 +268,10 @@ export function vaultKeyFromEnv(env: Env): VaultKey {
  * the call. So the variable stays required for the default shape without ever
  * becoming optional for it, which is the trap an options bag would have set.
  */
-const CUSTODY_BACKENDS = ["files"] as const;
+const CUSTODY_BACKENDS = ["files", "gcp"] as const;
+
+/** This deployment's slice of a GCP project, and half of every secret id. */
+const DEFAULT_GCP_PREFIX = "libero";
 
 export function custodyFromEnv(env: Env): CustodyConfig {
   const named = env.PROXY_CUSTODY_BACKEND;
@@ -278,6 +281,27 @@ export function custodyFromEnv(env: Env): CustodyConfig {
       `proxy: PROXY_CUSTODY_BACKEND must be one of: ${CUSTODY_BACKENDS.join(", ")}`
     );
   }
+
+  // Each branch demands its own material and nothing else's. `PROXY_VAULT_KEY`
+  // is required below and unreached here, which is #482's point: a managed
+  // backend needing no master key does not make the variable optional for the
+  // shape that does. Secret Manager holds the plaintext and encrypts at rest,
+  // so there is no key for this branch to acquire — #261's "the KMS question
+  // becomes moot for the entries the backend holds."
+  //
+  // No endpoint is read from the environment, deliberately, and
+  // `custodyFromEnv` returning exactly these three fields is asserted in
+  // env.test.ts: a settable API endpoint in the process that holds every
+  // credential is a switch for sending them somewhere else.
+  if (backend === "gcp") {
+    const prefix = env.PROXY_GCP_SECRET_PREFIX;
+    return {
+      backend: "gcp-secret-manager",
+      project: requiredEnv(env, "PROXY_GCP_PROJECT"),
+      prefix: prefix === undefined || prefix === "" ? DEFAULT_GCP_PREFIX : prefix
+    };
+  }
+
   return { backend: "encrypted-files", vaultFile: vaultFileFromEnv(env), key: vaultKeyFromEnv(env) };
 }
 

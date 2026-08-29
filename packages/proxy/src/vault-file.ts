@@ -10,10 +10,14 @@
 // return one, or log one.
 
 import { readFileSync } from "node:fs";
-import { CredentialName } from "@getlibero/schema";
 import { replaceFileAtomically } from "@getlibero/atomic-write";
 import { sealEnvelope } from "./envelope.js";
-import { MAX_SECRET_BYTES } from "./custody.js";
+import {
+  MAX_SECRET_BYTES,
+  VaultEntryError,
+  credentialNameRejection,
+  credentialValueRejection
+} from "./custody.js";
 import {
   MAX_VAULT_BYTES,
   VAULT_SPEC,
@@ -30,18 +34,12 @@ export type VaultEntries = ReadonlyMap<string, string>;
 // it — and is re-exported here so `set`'s callers keep their import.
 export { MAX_SECRET_BYTES };
 
-/** Why an entry was rejected. Names and sizes, never a value. */
-export type EntryRejection = "invalid_name" | "empty_value" | "value_too_large" | "value_has_nul";
-
-export class VaultEntryError extends Error {
-  readonly reason: EntryRejection;
-
-  constructor(reason: EntryRejection) {
-    super(`proxy vault: ${reason}`);
-    this.name = "VaultEntryError";
-    this.reason = reason;
-  }
-}
+// Why an entry was rejected, and the error carrying it, are the contract's
+// (./custody.ts) since #483 — a second backend has to throw them, and reaching
+// into the *file* backend for an error class would make the managed one depend
+// on the store it replaces. Re-exported so every importer keeps its import.
+export type { EntryRejection } from "./custody.js";
+export { VaultEntryError } from "./custody.js";
 
 /**
  * Read the entry set for editing.
@@ -73,14 +71,12 @@ export function readVaultEntries(file: string, key: VaultKey): VaultEntries {
  * `writeVaultEntries` is called with a value the caller has seen validated.
  */
 export function setEntry(entries: VaultEntries, name: string, value: string): VaultEntries {
-  if (!CredentialName.safeParse(name).success) throw new VaultEntryError("invalid_name");
-  if (value.length === 0) throw new VaultEntryError("empty_value");
-  if (Buffer.byteLength(value, "utf8") > MAX_SECRET_BYTES) {
-    throw new VaultEntryError("value_too_large");
-  }
-  // A NUL in a credential is either a paste accident or an attempt to truncate
-  // the value somewhere downstream that hands it to a C library.
-  if (value.includes("\0")) throw new VaultEntryError("value_has_nul");
+  // Both checks are ./custody.ts's, so every writer in every backend refuses
+  // the same names and the same values. A NUL in a credential is either a paste
+  // accident or an attempt to truncate the value somewhere downstream that
+  // hands it to a C library; the cap is `MAX_SECRET_BYTES`.
+  const rejection = credentialNameRejection(name) ?? credentialValueRejection(value);
+  if (rejection !== null) throw new VaultEntryError(rejection);
 
   const next = new Map(entries);
   next.set(name, value);

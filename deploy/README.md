@@ -460,6 +460,114 @@ spellings at once — `prompt_tokens_details.cache_write_tokens`,
 because which spelling a version keeps is not ours to decide and a missing count
 is billed at the input rate.
 
+## Credentials in Google Secret Manager (#483)
+
+The default deployment keeps both credential stores in two encrypted files on
+the proxy's volume, under `PROXY_VAULT_KEY`. `PROXY_CUSTODY_BACKEND=gcp` moves
+them into Google Secret Manager instead. Nothing else about the deployment
+changes: same images, same mounts, same team sheets, and the agent side does not
+learn there was a choice.
+
+> **Not yet run against a live project.** This backend shipped without one. Its
+> contract suite passes against a fake HTTP server written from Google's
+> published REST reference — which is enough to say the custody contract holds
+> over real sockets and real version semantics, and nothing at all about IAM,
+> quotas, replication, CMEK or eventual consistency. The commands below are what
+> that reference says to run. If the first live deployment disagrees with them,
+> the docs and the fake are what is wrong; please report it.
+
+**Where it runs.** On GCE, GKE or Cloud Run, using the VM's attached service
+account. There is no other credential source, deliberately: a service-account
+JSON key mounted into the container that holds every tool credential is a
+long-lived private key on disk, which is worse than the master key it would be
+replacing. If the proxy is not running on GCP compute, use the file backend.
+
+**What the proxy reads:**
+
+```yaml
+PROXY_CUSTODY_BACKEND: gcp
+PROXY_GCP_PROJECT: my-project
+PROXY_GCP_SECRET_PREFIX: libero      # optional; half of every secret id
+```
+
+`PROXY_VAULT_KEY` and `PROXY_VAULT_FILE` are not read on this branch and should
+be removed — Secret Manager holds the plaintext and encrypts at rest, so there
+is no master key for this shape to lose. The `vault-data` volume is unused too.
+
+**One secret per credential.** A vault entry named `github_service_account`
+lives at `libero-vault-github_service_account`; an OAuth grant named
+`notion_grant` lives at `libero-grant-notion_grant`. Both carry two labels the
+proxy filters on. **A credential name containing a dot cannot be a secret id** —
+`vault set stripe.live` is refused as `invalid_name` on this backend. Rename it,
+or stay on the files.
+
+**The IAM policy, as two roles rather than one.** The serving proxy reads both
+kinds and adds versions to grants only; the operator holds everything that
+creates, replaces or deletes. That split is what makes "the process serving tool
+calls never writes the vault" enforced by the platform here rather than only by
+an import list.
+
+```bash
+PROJECT=my-project
+PROXY_SA=libero-proxy@$PROJECT.iam.gserviceaccount.com
+OPERATOR=user:you@example.com
+
+# Enable the API once per project.
+gcloud services enable secretmanager.googleapis.com --project "$PROJECT"
+
+# The operator creates a credential. Values come from a file, never an
+# argument: `ps` shows argv to every user on the box.
+gcloud secrets create libero-vault-github_service_account \
+  --project "$PROJECT" \
+  --replication-policy automatic \
+  --labels libero-kind=vault,libero-deployment=libero
+gcloud secrets versions add libero-vault-github_service_account \
+  --project "$PROJECT" --data-file ./token.txt
+
+# The serving proxy may read it, and may not write it.
+gcloud secrets add-iam-policy-binding libero-vault-github_service_account \
+  --project "$PROJECT" \
+  --member "serviceAccount:$PROXY_SA" \
+  --role roles/secretmanager.secretAccessor
+
+# A grant is the one thing the serving process does write, because an
+# authorization server hands it the successor to a refresh token it just spent.
+gcloud secrets create libero-grant-notion_grant \
+  --project "$PROJECT" \
+  --replication-policy automatic \
+  --labels libero-kind=grant,libero-deployment=libero
+for ROLE in secretAccessor secretVersionAdder secretVersionManager; do
+  gcloud secrets add-iam-policy-binding libero-grant-notion_grant \
+    --project "$PROJECT" \
+    --member "serviceAccount:$PROXY_SA" \
+    --role "roles/secretmanager.$ROLE"
+done
+
+# The operator's own roles, which the proxy deliberately does not have.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$OPERATOR" --role roles/secretmanager.admin
+```
+
+`secretVersionManager` is on the grant secrets and not the vault's because
+replace-not-stack is add-version then *destroy the predecessor*: a rotated
+refresh token stops being retrievable rather than merely stopping being latest.
+The proxy needs `secretmanager.secrets.list` at the project level to find its
+own secrets at startup — grant it `roles/browser` or a custom role with that one
+permission, scoped to the project.
+
+**The operator entrypoints work unchanged.** `node dist/vault.js set|list|remove`
+and `node dist/grant.js add` go through the same seam, so they write Secret
+Manager on this backend and the two files on the other — which means an operator
+who prefers `gcloud secrets create` and one who prefers `vault set` end up with
+the same thing.
+
+**One cost worth knowing before you choose.** The file backend encrypts the
+whole entry set, so the *list of credential names* — an inventory of what this
+deployment reaches — is hidden from anyone who cannot decrypt it. Secret Manager
+names are metadata, visible to anyone holding `secretmanager.secrets.list`. What
+buys it back is that the accessor role can be granted per secret, which the file
+backend cannot express at all.
+
 ## Upgrading across #62 and #239: proxy first
 
 **Upgrade the proxy before the agent, for the same reason twice.** `SpendReport`
