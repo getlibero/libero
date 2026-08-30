@@ -323,6 +323,18 @@ upstream in production today negotiates the legacy era, GitHub included.
 `mcp-catalog.test.ts` pins both halves so this is a decision on the record rather
 than something to rediscover.
 
+**The same narrowing applies to a *result*, which #503 found by looking.** A
+`tools/call` goes out as a raw `request` against `CallEnvelope`'s permissive
+schema precisely so that one unreadable content block costs a placeholder rather
+than the whole answer — and on `2026-07-28` the SDK validates the result against
+the specification's closed content union first, so a block from a newer revision,
+or an `image` whose `data` is not base64, fails the entire call as a protocol
+error. `mcp-bounds.ts`'s `[unsupported content block: …]` and its
+degrade-a-bad-payload branch are therefore **reachable on the legacy era and not
+on the modern one**. They are not dead code: the era they work on is the era
+production runs. `e2e/src/content-blocks.test.ts` asserts them there and says so,
+for the same reason the paragraph above exists.
+
 **What replaces it is a review obligation, not a job.** An
 `@modelcontextprotocol/*` bump lands inside the process that holds every tool
 credential, so it is a security review: read the changelog, and answer the two
