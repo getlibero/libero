@@ -46,7 +46,7 @@
 // one, or declines is its own; what stops a near-copy landing is `name_taken`
 // from the store, and what stops a runaway is the caps and the meter.
 
-import { SKILL_TOOLS, SkillToolName, parseSkillOp, skillOpMessage } from "@getlibero/schema";
+import { SKILL_TOOLS, SkillToolName, parseSkillOp, resultText, skillOpMessage } from "@getlibero/schema";
 import type { SkillOp, SkillOpResult } from "@getlibero/schema";
 import type {
   CompletionClient,
@@ -257,7 +257,13 @@ export function skillTranscript(messages: readonly CompletionMessage[]): Complet
   for (const message of messages) {
     if (message.role !== "tool") continue;
     results.set(message.toolCallId, {
-      content: message.content,
+      // Flattened here, deliberately. This turn asks a model to write a
+      // playbook about how to call tools, and a screenshot is not a fact about
+      // how to call one — the rendering below already reduces a success to
+      // `ok` and clips a failure. `resultText` is the one flatten, so the
+      // sentence a skill author sees for an omitted payload is the sentence the
+      // model saw when it read the result.
+      content: resultText(message.content),
       isError: message.isError === true
     });
   }

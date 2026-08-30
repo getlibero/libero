@@ -69,6 +69,7 @@ import {
   scheduledInstantFromMs,
   serializeScheduledTask
 } from "@getlibero/schema";
+import { textBlock } from "@getlibero/schema";
 import type { ResolvedToolCall, ToolRefusal, ToolResult } from "@getlibero/schema";
 import type { StoredMessage } from "@getlibero/memory";
 import { SearchChannelHistoryArguments } from "./builtins.js";
@@ -176,9 +177,14 @@ function fit(hits: readonly StoredMessage[], maxChars: number): string {
 
 // Every built-in answers in text, so the block array each one produces holds
 // exactly one text block. Call sites keep handing this a string.
+//
+// `fit` below spends `[llm] max_result_chars` by counting characters rather
+// than through `resultCost`, and the two agree exactly here: the cap's rule is
+// that a text block pays `text.length`, which is what a built-in has. There is
+// nothing binary to price differently, because nothing here can produce any.
 const ran = (content: string, isError = false): Dispatch => ({
   outcome: "ran",
-  result: { content: [{ type: "text", text: content }], isError } satisfies ToolResult
+  result: { content: [textBlock(content)], isError } satisfies ToolResult
 });
 
 const refused = (refusal: ToolRefusal): Dispatch => ({ outcome: "refused", refusal });

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { expect } from "expect";
+import { resultText, textBlock } from "@getlibero/schema";
+import type { ToolResultBlock } from "@getlibero/schema";
 import { CompletionError, type CompletionClient, type CompletionRequest } from "./types.js";
 
 /**
@@ -24,6 +26,18 @@ export interface CompletionHarness {
   /** Wire-format response for a scenario, as the provider would return it. */
   fixture(scenario: CompletionScenario): URL;
   createClient(fetchImpl: typeof globalThis.fetch): CompletionClient;
+  /**
+   * Which of `ToolResultBlock`'s types this provider takes natively inside a
+   * tool result. Everything else its adapter renders as the placeholder.
+   *
+   * **Declared by the harness rather than branched on in the assertions**, which
+   * is the same shape `fixture` and `createClient` already have. What a provider
+   * can be handed is the one thing that genuinely differs here — Anthropic takes
+   * an image inside a `tool_result` and chat completions takes text and nothing
+   * else — and a case that branched on `harness.name` would be this file's own
+   * charter given up. A fourth adapter ships this line and no assertion changes.
+   */
+  nativeToolResultBlocks: readonly ToolResultBlock["type"][];
 }
 
 /**
@@ -79,7 +93,33 @@ const CONVERSATION: CompletionRequest = {
       content: "Checking.",
       toolCalls: [{ id: "call_1", name: "list_prs", arguments: { repo: "getlibero/libero" } }]
     },
-    { role: "tool", toolCallId: "call_1", content: "PR 41 is open." }
+    { role: "tool", toolCallId: "call_1", content: [textBlock("PR 41 is open.")] }
+  ]
+};
+
+/**
+ * The payloads the multi-part case looks for, one per non-text block type.
+ *
+ * Distinct from each other on purpose: an assertion that a payload did *not*
+ * cross is worthless if two blocks share one, since finding the survivor would
+ * satisfy a search for the absentee.
+ */
+const IMAGE_DATA = "aW1hZ2UtcGF5bG9hZC1vbmU=";
+const AUDIO_DATA = "YXVkaW8tcGF5bG9hZC10d28=";
+
+/** Every block type a result can carry, in one result. */
+const MULTI_PART_BLOCKS: ToolResultBlock[] = [
+  textBlock("Two pull requests, shown below."),
+  { type: "image", data: IMAGE_DATA, mimeType: "image/png" },
+  { type: "audio", data: AUDIO_DATA, mimeType: "audio/wav" }
+];
+
+/** `CONVERSATION`, with a result that is more than text. */
+const MULTI_PART_CONVERSATION: CompletionRequest = {
+  ...CONVERSATION,
+  messages: [
+    ...CONVERSATION.messages.slice(0, -1),
+    { role: "tool", toolCallId: "call_1", content: MULTI_PART_BLOCKS }
   ]
 };
 
@@ -204,6 +244,33 @@ export function runCompletionConformance(harness: CompletionHarness): void {
       expect(sent).toContain("Which pull requests are open?");
       expect(sent).toContain("PR 41 is open.");
       expect(sent).toContain("list_prs");
+    });
+
+    it("relays every block its provider takes and degrades the rest to the placeholder", async () => {
+      const { calls } = await run("text", MULTI_PART_CONVERSATION);
+      const sent = JSON.stringify(calls[0]?.body);
+
+      for (const block of MULTI_PART_BLOCKS) {
+        if (block.type === "text") {
+          expect(sent).toContain(block.text);
+          continue;
+        }
+        const payload = block.type === "resource" ? block.blob : block.data;
+        if (harness.nativeToolResultBlocks.includes(block.type)) {
+          // Once, not merely present: a payload that appears twice is an
+          // adapter relaying the block *and* flattening it beside itself, which
+          // charges the channel for the same bytes two ways.
+          expect(sent.split(payload)).toHaveLength(2);
+          expect(sent).toContain(block.mimeType);
+          continue;
+        }
+        // The two halves of the definition of done, and the first is the one
+        // worth stating: it degrades to the placeholder rather than to base64
+        // in a string. The expected sentence comes from the schema rather than
+        // being typed a second time, so the wording cannot drift here.
+        expect(sent).not.toContain(payload);
+        expect(sent).toContain(resultText([block]));
+      }
     });
 
     it("rejects when the caller's signal is already aborted", async () => {

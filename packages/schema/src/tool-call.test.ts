@@ -7,10 +7,13 @@ import {
   ToolCallResponse,
   ToolResult,
   ToolResultBlock,
+  omittedText,
   resolveToolCall,
   resultBytes,
+  resultBytesByType,
   resultCost,
-  resultText
+  resultText,
+  textBlock
 } from "./tool-call.js";
 
 const wire = {
@@ -383,5 +386,45 @@ describe("what a result costs and what it weighed", () => {
 
   it("does not inline the payload it is naming", () => {
     expect(resultText([{ type: "image", data: pixel, mimeType: "image/png" }])).not.toContain(pixel);
+  });
+
+  // `textBlock` is `resultText`'s inverse for the one case both can express,
+  // which is what makes the pair worth having in one file: a producer builds
+  // with the first and a text-only provider reads with the second.
+  it("round-trips a string through the block that holds one", () => {
+    expect(resultText([textBlock("one")])).toBe("one");
+    expect(textBlock("one")).toEqual({ type: "text", text: "one" });
+  });
+
+  // The degraded path the proxy needs and `resultText` cannot serve: there is no
+  // `ToolResultBlock` to render when the payload is what failed to parse.
+  it("names a payload it could not measure", () => {
+    expect(omittedText("image", "image/png", "unknown size")).toBe("[image omitted: image/png, unknown size]");
+    expect(omittedText("resource", undefined, "3 bytes")).toBe("[resource omitted: unknown, 3 bytes]");
+    expect(omittedText("audio", "", "3 bytes")).toBe("[audio omitted: unknown, 3 bytes]");
+  });
+});
+
+describe("what crossed, by kind", () => {
+  const six = { type: "image", data: "AAAAAAAA", mimeType: "image/png" } as const;
+
+  // The audit row's second number is the first one grouped, not a third measure,
+  // so a reader can check the two against each other.
+  it("sums to the total it splits", () => {
+    const content = [{ type: "text", text: "café" }, six] as const;
+    const byType = resultBytesByType([...content]);
+    expect(byType).toEqual({ text: 5, image: 6 });
+    expect(Object.values(byType).reduce((a, b) => a + b, 0)).toBe(resultBytes([...content]));
+  });
+
+  it("adds up blocks of one kind rather than keeping the last", () => {
+    expect(resultBytesByType([six, six])).toEqual({ image: 12 });
+  });
+
+  // Absent rather than zero: the row records what crossed, and a zero would be a
+  // claim that an empty image crossed.
+  it("leaves out a kind that carried nothing", () => {
+    expect(resultBytesByType([{ type: "text", text: "abcd" }])).toEqual({ text: 4 });
+    expect(resultBytesByType([])).toEqual({});
   });
 });

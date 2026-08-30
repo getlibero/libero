@@ -224,6 +224,9 @@ importers:
       '@getlibero/agent':
         specifier: workspace:*
         version: link:../agent
+      '@getlibero/schema':
+        specifier: workspace:*
+        version: link:../schema
       '@getlibero/test-kit':
         specifier: workspace:*
         version: link:../test-kit

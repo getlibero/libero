@@ -102,7 +102,10 @@ describe("what the heartbeat turn offers", () => {
 
     expect(requests[0]?.system).toBe(AMBIENT_HEARTBEAT_SYSTEM_PROMPT);
     expect(requests[0]?.messages).toHaveLength(1);
-    const content = requests[0]?.messages[0]?.content ?? "";
+    const first = requests[0]?.messages[0];
+    // The heartbeat's one message is a user turn, whose content is still a
+    // string — only a tool result became blocks.
+    const content = first?.role === "user" ? first.content : "";
     expect(content).toContain("priya: does anyone know why staging is refusing certs?");
     expect(content.indexOf("priya:")).toBeLessThan(content.indexOf("sam:"));
   });

@@ -119,6 +119,17 @@ reveals a credential and the one that scrubs the reply.
   close — a value the upstream *transforms* is invisible to any search for it.
   An empty stored value throws rather than shredding the body.
 
+  Since #501 it also exports `findSecret`, which asks the same needles a
+  different question: **is one of them in here at all.** A tool result's binary
+  payloads are searched twice — once as wire text like everything else, and once
+  *decoded*, in `mcp-bounds.ts`, where a credential the base64 does not spell can
+  be found. It answers rather than edits, because there is no edit: replacing
+  bytes inside a PNG produces a corrupt image at a length the container's own
+  headers no longer describe, so a match raises `RedactionError` and the whole
+  result fails closed. The passes never leave this layer — what crosses to
+  `mcp-bounds.ts` is a `SecretScan`, a closure over them, so the single reveal
+  site is unchanged.
+
   `StreamingRedactor` is the same rules over a body still arriving, and the
   difficulty it exists for is the only one there is: a chunk boundary is chosen
   by an upstream's TCP writes, so a credential can be split across two of them
@@ -138,8 +149,14 @@ reveals a credential and the one that scrubs the reply.
   all of it from fixed templates.
 - `mcp-bounds.ts` — what an upstream is allowed to say and how much of it:
   the channel's bound on a result, the caps on a description and a schema, and
-  the per-entry rule for reading a page of a catalog. No `Secret`, no `fetch`,
-  no I/O. It is policy rather than protocol, which is why it outlived the wire
+  the per-entry rule for reading a page of a catalog. Since #501 it also maps an
+  SDK content block to the wire's four block types, and **vouches for each
+  candidate against the schema the agent will parse it with** rather than
+  re-deriving that schema's rules — a block this module emits that fails over
+  there is not a degraded result, it is a lost call. What it cannot vouch for
+  degrades to the placeholder sentence. No `Secret`, no `fetch`, no I/O — the
+  decoded payload scan it runs is a closure it is handed, never a value it
+  holds. It is policy rather than protocol, which is why it outlived the wire
   format it used to sit beside.
 - `mcp-client.ts` — one upstream's client, over `@modelcontextprotocol/client`
   since #188, and **the only module in the tree that may import the SDK** (an
@@ -1519,6 +1536,16 @@ it was cut, while a binary block degrades to the placeholder naming its type and
 size. Half a base64 payload is a corrupt image rather than a short one, and
 there is no notice to append that would make it decode.
 
+**The cap is walked in order** (#501), rather than fitted across the array by
+some best-fit: the order is the server's own, and the first thing it said is the
+thing it led with. Each block is charged against what is left, and the walk stops
+once the budget is gone rather than degrading every remaining block to a
+sentence — how many blocks an upstream sends is the upstream's choice, so a
+sentence per block would be a way to spend a budget the cap would not otherwise
+permit. It says how many blocks it emitted of how many there were, and that
+notice is only reachable on a multi-block result, so the single-block result
+every producer in this tree emits carries exactly the characters it always did.
+
 They are layered, not alternatives. The wire bound sits well above the result
 bound so an ordinary large answer — a wide file listing, a long diff — is
 truncated and says so, and only a pathological one is refused outright. A
@@ -1549,6 +1576,25 @@ carried, and it was declined because it disagrees with the sentence the model is
 handed (`[image omitted: image/png, 4823 bytes]` has always been decoded) and
 would inflate the column by a third against every row already written, on a
 measure whose whole purpose is comparison over time.
+
+**`result_bytes_by_type` says what crossed** (#501): the same bytes split by
+block type, as a JSON object beside the total, whose values sum to it exactly so
+a reader can check one against the other. The total says how much and could
+never say of what — `4823 bytes` reads the same whether it was a paragraph or a
+thumbnail — and the operator question it leaves unanswered is which calls are
+moving binary at all, which is the one that matters once a channel has raised
+`max_result_chars` to relay images. Written whenever the total is, including on
+an all-text result, because a reader telling "all text" from "not recorded"
+needs the two to look different; a type with no block is absent rather than
+zero, since a zero would be a claim that an empty image crossed.
+
+One text column and not four integer ones. Four would aggregate without parsing,
+which is a real thing to want on an operator-facing table — and they would write
+`ToolResultBlock`'s membership into the audit schema, so a fifth block type
+would become a schema version and a rebuild over every row an operator has. It
+is **version 7, and a widening of the easy kind**, like version 6's
+`destination`: NULL columns are omitted from the preimage, so every row already
+on disk hashes to exactly what it did and the migration costs the chain nothing.
 
 ### The third bound, which makes the other two multiply out
 

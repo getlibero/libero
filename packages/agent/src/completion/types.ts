@@ -2,10 +2,20 @@
 // provider answered: it sees messages in, text and tool calls out, tokens
 // counted. Adapters own every provider-specific shape.
 //
-// These types live here rather than in @getlibero/schema because nothing here
-// crosses a service boundary yet. When the tool-call wire format between the
-// agent and the tool service lands, ToolCall and ToolDefinition move to the
-// schema package and both services import them from there.
+// Most of these types live here rather than in @getlibero/schema because they
+// are not the wire's. ToolCall is what the *model* emitted and ToolDefinition is
+// what a *provider* is handed, so neither became a shared shape when the
+// tool-call wire format landed in #109 -- an earlier version of this comment
+// predicted they would, and they did not, for that reason.
+//
+// The one exception is the tool arm's content below, which is imported. A tool
+// result is not authored here: it arrives from the tool proxy service and this
+// package only relays it, so restating its shape would be two declarations of
+// one thing and a mapping function whose whole job is to prove they agree.
+// Importing it also means a block type added to the wire is a compile error in
+// every adapter, which is where that question should be asked.
+
+import type { ToolResultBlock } from "@getlibero/schema";
 
 /**
  * A tool the model may call. `inputSchema` is JSON Schema, passed through to
@@ -49,7 +59,22 @@ export type CompletionMessage =
        */
       providerState?: unknown;
     }
-  | { role: "tool"; toolCallId: string; content: string; isError?: boolean };
+  | {
+      role: "tool";
+      toolCallId: string;
+      /**
+       * What the tool produced, as the blocks it produced (#160).
+       *
+       * Adapters relay what their provider takes and render the rest as the
+       * placeholder sentence `resultText` writes — which is why that sentence
+       * lives in the schema rather than in either adapter. What a provider can
+       * be handed differs, and the closed union is the ceiling on what any of
+       * them can relay: a block type earns membership when a provider can take
+       * it, not when a server can emit it.
+       */
+      content: ToolResultBlock[];
+      isError?: boolean;
+    };
 
 export interface CompletionRequest {
   /** Model id, passed through verbatim. The per-channel override resolves upstream. */

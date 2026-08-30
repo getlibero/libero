@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { resultText } from "@getlibero/schema";
 import type { ChatCompletion, ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import {
   CompletionError,
@@ -119,7 +120,12 @@ function toOpenAIMessages(
       converted.push({
         role: "tool",
         tool_call_id: message.toolCallId,
-        content: message.content
+        // Whole result, one string. A `role: "tool"` message in chat completions
+        // takes text and nothing else, so this is where a result degrades to
+        // the placeholder rather than to base64 in a string: `resultText`
+        // renders an image as the sentence naming its type and its size, and
+        // structurally cannot render it as its payload.
+        content: resultText(message.content)
       });
       continue;
     }

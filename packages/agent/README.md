@@ -52,6 +52,38 @@ A transcript holding a tool call with no matching result is not a valid
 conversation to continue from, so skipping those would make a capped task
 unresumable.
 
+**A tool result is blocks, not a string** (#160). `ToolResult.content` is
+`@getlibero/schema`'s `ToolResultBlock[]` — text, image, audio, or a binary
+resource — imported rather than restated, because it is the tool proxy service's
+shape and this package only relays it. A member added to that union is therefore
+a compile error in both adapters, which is where the question "can this provider
+be handed one" should be asked.
+
+Each adapter relays what its provider takes and renders the rest as the
+placeholder sentence `resultText` writes:
+
+- **Anthropic** sends `text` and `image` blocks natively inside one
+  `tool_result`. Audio, a binary resource, and an image whose media type is not
+  one of the four the API accepts degrade to the placeholder — the fail-safe
+  direction, because the API rejects a block it does not know and a rejected
+  request loses the whole turn where a placeholder loses one image. That list is
+  a fact about one provider, which is why it lives in the adapter rather than in
+  the proxy.
+- **The OpenAI-compatible adapter** flattens the whole result to one string,
+  because a `role: "tool"` message in chat completions takes text and nothing
+  else. A payload is never inlined there: `resultText` renders an image as the
+  sentence naming its type and its size and structurally cannot render it as its
+  base64.
+
+The wording lives once, in the schema, because it is text a model reads and
+reasons about — the proxy writes the same sentence for a block that never
+crossed, and two writers of it would agree on the day they were written.
+
+Two things in this package still flatten a result, and both are consumers rather
+than seams: `onScheduledTask` below, and the skill-author turn, which renders a
+failed call for a model being asked how to *call* a tool — a screenshot is not a
+fact about that.
+
 ## This package cannot log, and should not learn how
 
 There is no logger here and none should be added. What a log line wants — the

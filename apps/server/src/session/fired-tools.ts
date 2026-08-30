@@ -51,7 +51,8 @@ import {
   AMBIENT_FINDING_TOOL,
   AMBIENT_REQUESTING_USER,
   SCHEDULED_CHECK_TOOL_DEFINITION,
-  parseAmbientFinding
+  parseAmbientFinding,
+  textBlock
 } from "@getlibero/schema";
 import type { AmbientFinding, AmbientFindingFailure } from "@getlibero/schema";
 import type { ToolDefinition, ToolExecutor, ToolSource } from "@getlibero/agent";
@@ -126,20 +127,20 @@ export function createFiredTools(options: FiredToolsOptions): FiredTools {
         }
 
         if (finding !== null || unusable !== undefined) {
-          return { content: ALREADY, isError: true };
+          return { content: [textBlock(ALREADY)], isError: true };
         }
 
         const parsed = parseAmbientFinding(call.name, call.arguments);
         if (parsed.ok) {
           finding = parsed.finding;
-          return { content: RECORDED };
+          return { content: [textBlock(RECORDED)] };
         }
 
         // The same parse the single-turn shape used, and the same two outcomes.
         // Recorded rather than thrown: the model is told, and the caller decides
         // whether the channel hears about it.
         unusable = parsed.reason;
-        return { content: `That answer could not be used: ${parsed.reason}.`, isError: true };
+        return { content: [textBlock(`That answer could not be used: ${parsed.reason}.`)], isError: true };
       }
     },
 

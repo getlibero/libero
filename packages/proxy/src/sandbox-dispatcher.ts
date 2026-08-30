@@ -34,7 +34,7 @@
 
 import { Agent, request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
-import { SandboxRunResult, type SandboxCaps } from "@getlibero/schema";
+import { SandboxRunResult, type SandboxCaps, textBlock } from "@getlibero/schema";
 import type { Dispatch, SandboxDispatcher } from "./dispatch.js";
 import type { Logger } from "./log.js";
 import { createSemaphore } from "./semaphore.js";
@@ -155,7 +155,7 @@ export interface SandboxDispatcherOptions {
 // reads, and stdout is text by construction.
 const ran = (content: string): Dispatch => ({
   outcome: "ran",
-  result: { content: [{ type: "text", text: content }], isError: false }
+  result: { content: [textBlock(content)], isError: false }
 });
 
 export function createSandboxDispatcher(options: SandboxDispatcherOptions): SandboxDispatcher {

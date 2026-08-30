@@ -158,6 +158,7 @@ describe("appending", () => {
         approver: null,
         ticket: null,
         destination: null,
+        result_bytes_by_type: null,
         // #354. The first row chains from the genesis constant, and its hash is
         // asserted by recomputation rather than as a literal — a literal here
         // would have to be regenerated from the code it is meant to check.
@@ -214,6 +215,40 @@ describe("appending", () => {
       result_bytes: null,
       result_is_error: null
     });
+  });
+
+  // #501's half of "the audit row records what crossed": `result_bytes` says how
+  // much, this says of what kinds and in what proportion.
+  it("records what a multi-part result was made of", () => {
+    db.append(record({ resultBytes: 5235, resultBytesByType: { image: 4823, text: 412 } }));
+
+    expect(rows(file)[0]).toMatchObject({
+      result_bytes: 5235,
+      result_bytes_by_type: '{"image":4823,"text":412}'
+    });
+    const reader = openAuditReader({ file });
+    try {
+      expect(reader.page({})[0]?.resultBytesByType).toEqual({ image: 4823, text: 412 });
+    } finally {
+      reader.close();
+    }
+  });
+
+  // Sorted, because this column is hashed: two rows recording the same result
+  // must produce the same bytes, and object key order is the order a producer
+  // happened to walk the blocks in.
+  it("serializes the breakdown by sorted key, whatever order it was built in", () => {
+    db.append(record({ resultBytes: 5235, resultBytesByType: { text: 412, image: 4823 } }));
+
+    expect(rows(file)[0]?.["result_bytes_by_type"]).toBe('{"image":4823,"text":412}');
+  });
+
+  // Written whenever the total is, including on an all-text result: a reader
+  // telling "all text" from "not recorded" needs the two to look different.
+  it("leaves the breakdown null on exactly the rows the total is null on", () => {
+    db.append(record({ outcome: "refused", refusalReason: "tool_not_allowed" }));
+
+    expect(rows(file)[0]).toMatchObject({ result_bytes: null, result_bytes_by_type: null });
   });
 
   it("records a tool's own error without changing the proxy's outcome", () => {
@@ -453,6 +488,7 @@ describe("the canonical serialization", () => {
     approver: null,
     ticket: null,
     destination: null,
+    result_bytes_by_type: null,
     ...overrides
   });
 
@@ -487,6 +523,16 @@ describe("the canonical serialization", () => {
     expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells({ destination: "evil.example.com" }))).toContain(
       '"destination":"evil.example.com"'
     );
+  });
+
+  // Version 7's column, asserted the way version 6's is, and for the same
+  // reason: it is what makes "the migration leaves every existing hash alone" a
+  // checked claim rather than a paragraph in AUDIT_SCHEMA_VERSION's doc.
+  it("leaves a row without a breakdown hashing as it did before version 7", () => {
+    expect(auditRowPreimage(AUDIT_CHAIN_GENESIS, cells())).not.toContain("result_bytes_by_type");
+    expect(
+      auditRowPreimage(AUDIT_CHAIN_GENESIS, cells({ result_bytes_by_type: '{"image":4823}' }))
+    ).toContain('"result_bytes_by_type":"{\\"image\\":4823}"');
   });
 
   it("keeps a numeric column and a text one carrying the same digits apart", () => {
@@ -959,12 +1005,40 @@ END;
  * A version 5 file with `count` chained rows in it.
  *
  * The hashes are computed with the *current* `auditRowHash`, which is the point
- * rather than a shortcut: `destination` is null on every one of these rows and
- * NULL columns are omitted from the preimage, so the current function and the
- * version 5 function produce identical bytes for identical rows. If that ever
- * stopped being true this fixture would stop verifying, which is exactly the
- * alarm wanted.
+ * rather than a shortcut: `destination` and `result_bytes_by_type` are null on
+ * every one of these rows and NULL columns are omitted from the preimage, so the
+ * current function and the version 5 function produce identical bytes for
+ * identical rows. If that ever stopped being true this fixture would stop
+ * verifying, which is exactly the alarm wanted.
  */
+/**
+ * A version 6 file: the version 5 shape plus #219's `destination`.
+ *
+ * Built by migrating a version 5 file with this build's own rebuild and then
+ * re-stamping it as 6, rather than by carrying a second frozen DDL. The rebuild
+ * is version-blind — it reads `PRAGMA table_info` and selects NULL for a column
+ * the old table lacks — so what it produces from a v5 file is the table a v6
+ * build wrote, and the hashes it keeps are the ones a v6 build computed. A
+ * frozen literal would be a second copy of the DDL to drift, which is the thing
+ * `auditTableDdl`'s own header exists to prevent.
+ *
+ * This is the shape every deployed operator actually has, which is why it is
+ * worth a fixture of its own on top of the v5 one.
+ */
+function writeV6File(path: string, count: number): void {
+  writeV5File(path, count);
+  openAuditDb({ file: path }).close();
+  const raw = new DatabaseSync(path);
+  try {
+    raw.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_update");
+    raw.exec("DROP TRIGGER IF EXISTS tool_call_audit_no_delete");
+    raw.exec("ALTER TABLE tool_call_audit DROP COLUMN result_bytes_by_type");
+    raw.exec("UPDATE schema_version SET version = 6");
+  } finally {
+    raw.close();
+  }
+}
+
 function writeV5File(path: string, count: number): void {
   const raw = new DatabaseSync(path);
   try {
@@ -1000,7 +1074,8 @@ function writeV5File(path: string, count: number): void {
         result_is_error: refused ? null : 0,
         approver: refused ? null : "U0BOSS",
         ticket: refused ? null : `tk-${n}`,
-        destination: null
+        destination: null,
+        result_bytes_by_type: null
       } as const;
       const hash = auditRowHash(prev, values);
       insert.run(
@@ -1103,6 +1178,7 @@ describe("migrating a version 1 file", () => {
         ...unchained(before[0] as Record<string, unknown>),
         ticket: null,
         destination: null,
+        result_bytes_by_type: null,
         budget_limit: null,
         day_spend_micro_usd: null,
         price_version: null
@@ -1363,7 +1439,7 @@ describe("migrating a version 3 file", () => {
     }
   });
 
-  it("adds the three columns as null and keeps everything else", () => {
+  it("adds the later columns as null and keeps everything else", () => {
     const before = rows(old);
     const migrated = openAuditDb({ file: old });
     try {
@@ -1374,7 +1450,8 @@ describe("migrating a version 3 file", () => {
           budget_limit: null,
           day_spend_micro_usd: null,
           price_version: null,
-          destination: null
+          destination: null,
+          result_bytes_by_type: null
         }))
       );
     } finally {
@@ -1431,7 +1508,8 @@ describe("migrating a version 2 file", () => {
           budget_limit: null,
           day_spend_micro_usd: null,
           price_version: null,
-          destination: null
+          destination: null,
+          result_bytes_by_type: null
         }))
       );
       expect(after.map(row => row.ticket)).toEqual(["tk-1", "tk-2", "tk-3"]);
@@ -1543,12 +1621,12 @@ describe("migrating a version 5 file", () => {
     writeV5File(old, 3);
   });
 
-  it("adds destination as null and changes nothing else", () => {
+  it("adds the later columns as null and changes nothing else", () => {
     const before = rows(old);
     const migrated = openAuditDb({ file: old });
     try {
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
-      expect(rows(old)).toEqual(before.map(row => ({ ...row, destination: null })));
+      expect(rows(old)).toEqual(before.map(row => ({ ...row, destination: null, result_bytes_by_type: null })));
     } finally {
       migrated.close();
     }
@@ -1599,7 +1677,7 @@ describe("migrating a version 4 file", () => {
       const after = rows(old);
       // Plus version 6's column, which a version 4 row has no value for and is
       // given null — the same reading version 4 gave its own three.
-      expect(after.map(unchained)).toEqual(before.map(row => ({ ...row, destination: null })));
+      expect(after.map(unchained)).toEqual(before.map(row => ({ ...row, destination: null, result_bytes_by_type: null })));
       expect(after.map(row => row.id)).toEqual([1, 2, 3]);
       expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
     } finally {
@@ -1723,6 +1801,65 @@ describe("migrating a version 4 file", () => {
 
     expect(rows(old)).toEqual(before);
     expect(versionOf(old)).toBe(4);
+  });
+});
+
+// The version every deployed operator is on, so this is where "version 7 costs
+// the chain nothing" has to be true rather than argued. The v5 block above
+// proves the rebuild's harder case; this one proves the case that will actually
+// run on upgrade.
+describe("migrating a version 6 file", () => {
+  let old: string;
+
+  beforeEach(() => {
+    old = join(dir, "v6.db");
+    writeV6File(old, 3);
+  });
+
+  it("adds the breakdown as null and changes nothing else", () => {
+    const before = rows(old);
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(versionOf(old)).toBe(AUDIT_SCHEMA_VERSION);
+      expect(rows(old)).toEqual(before.map(row => ({ ...row, result_bytes_by_type: null })));
+    } finally {
+      migrated.close();
+    }
+  });
+
+  // The load-bearing one: NULL columns are omitted from the preimage, so a row
+  // written before the column existed hashes to exactly what it did. If this
+  // ever stopped holding, every operator's log would fail to verify on upgrade.
+  it("leaves every existing row hashing exactly as it did", () => {
+    const before = rows(old).map(row => row["row_hash"]);
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(rows(old).map(row => row["row_hash"])).toEqual(before);
+      expect(firstBrokenRow(old)).toBeUndefined();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("continues the chain into rows written after it", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      migrated.append(record({ task: "t-after", resultBytes: 12, resultBytesByType: { text: 12 } }));
+      expect(rows(old)).toHaveLength(4);
+      expect(rows(old).at(-1)?.["result_bytes_by_type"]).toBe('{"text":12}');
+      expect(firstBrokenRow(old)).toBeUndefined();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it("builds the same table a new file gets", () => {
+    const migrated = openAuditDb({ file: old });
+    try {
+      expect(tableSql(old, "tool_call_audit")).toBe(tableSql(file, "tool_call_audit"));
+    } finally {
+      migrated.close();
+    }
   });
 });
 

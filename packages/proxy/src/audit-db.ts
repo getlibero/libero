@@ -179,7 +179,7 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
-import type { AuditOutcome, AuditRecord, BudgetLimit, RefusalReason } from "@getlibero/schema";
+import type { AuditOutcome, AuditRecord, BudgetLimit, RefusalReason, ToolResultBlock } from "@getlibero/schema";
 import type { Logger } from "./log.js";
 
 /**
@@ -225,10 +225,19 @@ import type { Logger } from "./log.js";
  * than eagerness. `migrate` is a rebuild-and-rename over every row, so the price
  * of this column is paid by whoever has the most of them. Today that is nobody.
  *
+ * **Version 7 is a widening of the same easy kind** (#501): one nullable
+ * `result_bytes_by_type`, the decoded bytes a served result carried split by
+ * block type. Every row written before it is given `NULL`, which is a reading
+ * rather than a gap — the rows that have no `result_bytes` have nothing to
+ * split. It costs the chain nothing for the reason version 6 did not: NULL
+ * columns are omitted from the preimage, so every row already on disk hashes to
+ * exactly what it did, and `rebuildAuditTable` needs no case of its own because
+ * it selects `NULL` for a column the old table does not have.
+ *
  * A file from the future is still a startup failure, and so is a file from a
  * past this build has no migration from.
  */
-export const AUDIT_SCHEMA_VERSION = 6;
+export const AUDIT_SCHEMA_VERSION = 7;
 
 /**
  * The table, parameterised on its name.
@@ -304,6 +313,20 @@ CREATE TABLE ${ifNotExists ? "IF NOT EXISTS " : ""}${table} (
   -- rather than a limitation: #393 made the first denial terminal, so a run has
   -- at most one.
   destination      TEXT,
+  -- #501. What a served call's result was made of, by kind: a JSON object of
+  -- block type to decoded bytes, whose values sum to result_bytes. Null on every
+  -- row that carries no result, which is the same set of rows result_bytes is
+  -- null on -- a call that did not run has nothing to describe, and an
+  -- unanswered one has a result nobody could measure.
+  --
+  -- A text column holding JSON rather than one integer column per block type.
+  -- Four columns would aggregate without parsing, which is a real thing to
+  -- want; they would also write ToolResultBlock's membership into the audit
+  -- schema, so a fifth block type would be a schema version and a migration
+  -- over every row an operator has. The shape of a result is not worth that,
+  -- and result_bytes already answers the aggregate question this table exists
+  -- to be asked.
+  result_bytes_by_type TEXT,
   prev_hash        TEXT    NOT NULL CHECK (length(prev_hash) = 64),
   row_hash         TEXT    NOT NULL CHECK (length(row_hash) = 64)
 )`;
@@ -435,7 +458,8 @@ export const CHAINED_COLUMNS = [
   "result_is_error",
   "approver",
   "ticket",
-  "destination"
+  "destination",
+  "result_bytes_by_type"
 ] as const;
 
 type ChainedColumn = (typeof CHAINED_COLUMNS)[number];
@@ -563,8 +587,23 @@ function auditRowValues(record: AuditRecord): AuditRowValues {
     result_is_error: record.resultIsError === undefined ? null : record.resultIsError ? 1 : 0,
     approver: record.approver ?? null,
     ticket: record.ticket ?? null,
-    destination: record.destination ?? null
+    destination: record.destination ?? null,
+    // Serialized with sorted keys, because this is a hashed column: two rows
+    // recording the same result must produce the same bytes, and object key
+    // order is the order a producer happened to walk the blocks in.
+    result_bytes_by_type:
+      record.resultBytesByType === undefined ? null : stableJson(record.resultBytesByType)
   };
+}
+
+/** An object as JSON with its keys in sorted order. */
+function stableJson(value: Readonly<Record<string, number | undefined>>): string {
+  const sorted: Record<string, number> = {};
+  for (const key of Object.keys(value).sort()) {
+    const entry = value[key];
+    if (entry !== undefined) sorted[key] = entry;
+  }
+  return JSON.stringify(sorted);
 }
 
 export interface AuditDbOptions {
@@ -901,6 +940,13 @@ function rowToEntry(row: Record<string, unknown>): AuditEntry {
     ...(row["result_is_error"] === null ? {} : { resultIsError: row["result_is_error"] === 1 }),
     ...(row["approver"] === null ? {} : { approver: row["approver"] as string }),
     ...(row["ticket"] === null ? {} : { ticket: row["ticket"] as string }),
+    ...(row["result_bytes_by_type"] === null
+      ? {}
+      : {
+          resultBytesByType: JSON.parse(row["result_bytes_by_type"] as string) as Readonly<
+            Partial<Record<ToolResultBlock["type"], number>>
+          >
+        }),
     // Unconditional, unlike everything above them: the columns are NOT NULL, so
     // there is no absence to distinguish from a value.
     prevHash: row["prev_hash"] as string,
@@ -1270,7 +1316,8 @@ function migrate(db: DatabaseSync, file: string): void {
     row.version === 2 ||
     row.version === 3 ||
     row.version === 4 ||
-    row.version === 5
+    row.version === 5 ||
+    row.version === 6
   ) {
     rebuildAuditTable(db);
     return;

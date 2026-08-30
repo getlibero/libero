@@ -6,6 +6,7 @@
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import { textBlock } from "@getlibero/schema";
 import { MEMORY_OP_MAX_TEXT_CHARS, MemoryToolName } from "@getlibero/schema";
 import type { MemoryOp, MemoryOpResult } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
@@ -152,9 +153,9 @@ describe("the transcript the model sees", () => {
   const transcript: CompletionMessage[] = [
     { role: "user", content: "when do we deploy?" },
     { role: "assistant", content: "Let me look.", toolCalls: [call("search", {})] },
-    { role: "tool", toolCallId: "call-1", content: "a page of search results" },
+    { role: "tool", toolCallId: "call-1", content: [textBlock("a page of search results")] },
     { role: "assistant", content: "", toolCalls: [call("search", {}, "call-2")] },
-    { role: "tool", toolCallId: "call-2", content: "more results" },
+    { role: "tool", toolCallId: "call-2", content: [textBlock("more results")] },
     { role: "assistant", content: "Thursdays, after standup.", providerState: { opaque: true } }
   ];
 

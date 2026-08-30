@@ -9,6 +9,7 @@
 // here to a tool a network call to that service.
 
 import { randomUUID } from "node:crypto";
+import { textBlock } from "@getlibero/schema";
 import type { CompletionResponse, StopReason, ToolCall } from "../completion/types.js";
 import { createCapTracker, type AbortStop, type CapTracker } from "./caps.js";
 import type {
@@ -232,7 +233,7 @@ async function dispatchToolCalls(
         messages.push(note(call, `not completed: ${STOP_NOTE[aborted]}`));
         continue;
       }
-      result = { content: toolErrorContent(cause), isError: true };
+      result = { content: [textBlock(toolErrorContent(cause))], isError: true };
     }
 
     // A refusal from the proxy arrives here as an ordinary `isError` result, so
@@ -252,7 +253,7 @@ async function dispatchToolCalls(
 }
 
 function note(call: ToolCall, content: string): AgentTaskResult["messages"][number] {
-  return { role: "tool", toolCallId: call.id, content, isError: true };
+  return { role: "tool", toolCallId: call.id, content: [textBlock(content)], isError: true };
 }
 
 /**
@@ -263,6 +264,11 @@ function note(call: ToolCall, content: string): AgentTaskResult["messages"][numb
  * of the paths a credential leaks out of a process that holds one.
  */
 function toolErrorContent(cause: unknown): string {
+  // A string, still, and wrapped in one text block by its caller: a thrown
+  // failure is text by construction. `MAX_TOOL_ERROR_CHARS` bounds it, which is
+  // a different number with a different owner from the result cap the proxy
+  // spends — that one is the channel's, and nothing this process throws is
+  // charged against it.
   const message = cause instanceof Error ? cause.message : "";
   return `tool error: ${message === "" ? "tool execution failed" : message}`.slice(
     0,

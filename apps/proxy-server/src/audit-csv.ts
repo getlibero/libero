@@ -111,6 +111,13 @@ export const AUDIT_CSV_COLUMNS: readonly Column[] = [
   // #219, appended for this file's own rule: a new column goes at the end,
   // because a script reading this by position should keep working.
   { header: "destination", of: e => optional(e.destination) },
+  // #501, appended for the same rule. JSON in a CSV cell, which `escape` quotes
+  // like any other value carrying a comma — one column that survives a fifth
+  // block type beats four that would each need a schema version.
+  {
+    header: "result_bytes_by_type",
+    of: e => (e.resultBytesByType === undefined ? "" : JSON.stringify(e.resultBytesByType))
+  },
   // #354. Not `optional`, because the columns are NOT NULL — every exported row
   // has both. They are here rather than left off because an export that drops
   // the chain is an export nobody can verify: `row_hash` is what recomputation

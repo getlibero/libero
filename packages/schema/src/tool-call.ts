@@ -264,6 +264,23 @@ export const ToolResult = z
 
 export type ToolResult = z.infer<typeof ToolResult>;
 
+/**
+ * The degenerate result: one block, holding one string.
+ *
+ * Every producer on both sides of the wire that answers in text builds this —
+ * the proxy's built-ins, its sandbox, its transport failures, the agent loop's
+ * cap notes and tool errors, and every test that stands a result up. Before
+ * #501 there were six copies of the same two-line literal, which is the shape
+ * that drifts: the day a text block gains a field, five of them are still
+ * right and one is not.
+ *
+ * Named for what it makes rather than for what it takes, because the reason to
+ * reach for it is that a block is the unit now.
+ */
+export function textBlock(text: string): ToolResultBlock {
+  return { type: "text", text };
+}
+
 /** Base64 decodes to three bytes per four characters, less the padding. */
 export function base64Bytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
@@ -344,6 +361,33 @@ export function resultBytes(content: readonly ToolResultBlock[]): number {
   return total;
 }
 
+/**
+ * The same total, split by block type: what the audit row records as *what*
+ * crossed (#501).
+ *
+ * The same per-block rule as `resultBytes` — this is that function grouped, not
+ * a third measure — so the values sum to it exactly and a reader can check one
+ * against the other. A type with no block is **absent rather than zero**: the
+ * row is a record of what crossed, and a zero would be a claim that an empty
+ * image crossed.
+ *
+ * Text is included even though its count is the same utf8 length the total
+ * already gives for a text-only result, because the reader's question is a
+ * proportion. A result that is 400 bytes of text and 40 KB of image is a
+ * different thing from one that is 40 KB of text, and the total alone cannot
+ * tell them apart.
+ */
+export function resultBytesByType(
+  content: readonly ToolResultBlock[]
+): Partial<Record<ToolResultBlock["type"], number>> {
+  const totals: Partial<Record<ToolResultBlock["type"], number>> = {};
+  for (const block of content) {
+    const bytes = block.type === "text" ? Buffer.byteLength(block.text, "utf8") : blockBytes(block);
+    totals[block.type] = (totals[block.type] ?? 0) + bytes;
+  }
+  return totals;
+}
+
 /** The decoded size of a block's payload. Zero for text, which has none. */
 function blockBytes(block: ToolResultBlock): number {
   switch (block.type) {
@@ -380,10 +424,38 @@ function blockToText(block: ToolResultBlock): string {
       return block.text;
     case "image":
     case "audio":
-      return `[${block.type} omitted: ${block.mimeType}, ${describeBytes(base64Bytes(block.data))}]`;
+      return omittedText(block.type, block.mimeType, describeBytes(base64Bytes(block.data)));
     case "resource":
-      return `[resource omitted: ${block.mimeType ?? "unknown"}, ${describeBytes(base64Bytes(block.blob))}]`;
+      return omittedText("resource", block.mimeType, describeBytes(base64Bytes(block.blob)));
   }
+}
+
+/**
+ * The sentence naming a payload a consumer was not handed.
+ *
+ * **The one writer, because there are two kinds of caller and only one
+ * wording.** `blockToText` above renders a well-formed block this way for a
+ * text-only provider. The proxy renders the same sentence for something that
+ * never became a block at all — an upstream's `resource_link`, a block type
+ * from a protocol revision this tree does not know, a payload that is not
+ * valid base64 — where there is no `ToolResultBlock` to hand this function's
+ * sibling. Both are text a model reads and reasons about, so the wording is a
+ * compatibility surface rather than a rendering detail, and two writers of it
+ * would agree on the day they were written.
+ *
+ * `size` is pre-rendered rather than a number because the second kind of caller
+ * may not know it: a payload it could not decode has no size to describe, and
+ * `unknown size` is what the proxy has always said in that case.
+ *
+ * An absent or empty `mimeType` reads as `unknown`. The schema requires one on
+ * an image or an audio block, so that case only arises on the degraded path.
+ */
+export function omittedText(
+  kind: "image" | "audio" | "resource",
+  mimeType: string | undefined,
+  size: string
+): string {
+  return `[${kind} omitted: ${mimeType === undefined || mimeType === "" ? "unknown" : mimeType}, ${size}]`;
 }
 
 /**

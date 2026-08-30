@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import { expect } from "expect";
 import { each } from "@getlibero/test-kit";
+import { textBlock } from "@getlibero/schema";
+import type { ToolResultBlock } from "@getlibero/schema";
 import { createAnthropicCompletionClient } from "./anthropic.js";
 import { runCompletionConformance, stubTransport } from "./conformance.js";
 import { createCompletionClient } from "./factory.js";
@@ -25,18 +27,45 @@ runCompletionConformance({
   name: "anthropic",
   fixture: anthropicFixture,
   createClient: (fetchImpl) =>
-    createAnthropicCompletionClient({ apiKey: PLACEHOLDER_KEY, fetch: fetchImpl })
+    createAnthropicCompletionClient({ apiKey: PLACEHOLDER_KEY, fetch: fetchImpl }),
+  // A `tool_result` here takes text and image blocks and has no member for
+  // audio or a binary resource.
+  nativeToolResultBlocks: ["text", "image"]
 });
 
 runCompletionConformance({
   name: "openai-compatible",
   fixture: openaiFixture,
   createClient: (fetchImpl) =>
-    createOpenAICompatibleCompletionClient({ apiKey: PLACEHOLDER_KEY, fetch: fetchImpl })
+    createOpenAICompatibleCompletionClient({ apiKey: PLACEHOLDER_KEY, fetch: fetchImpl }),
+  // A `role: "tool"` message in chat completions is text and nothing else.
+  nativeToolResultBlocks: ["text"]
 });
 
 interface AnthropicBody {
-  messages: { role: string; content: { type?: string }[] }[];
+  messages: { role: string; content: { type?: string; content?: unknown }[] }[];
+}
+
+const IMAGE = "aW1hZ2UtcGF5bG9hZA==";
+
+/** One tool result through the Anthropic adapter, and the blocks it sent. */
+async function anthropicToolResult(content: ToolResultBlock[]): Promise<unknown> {
+  const transport = stubTransport(anthropicFixture("text"));
+  await createAnthropicCompletionClient({ apiKey: PLACEHOLDER_KEY, fetch: transport.fetch }).complete({
+    model: "test-model",
+    maxTokens: 1024,
+    messages: [
+      { role: "user", content: "Show me the failing check." },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "toolu_1", name: "screenshot", arguments: {} }]
+      },
+      { role: "tool", toolCallId: "toolu_1", content }
+    ]
+  });
+  const body = transport.calls[0]?.body as unknown as AnthropicBody;
+  return body.messages[2]?.content[0]?.content;
 }
 
 describe("anthropic message mapping", () => {
@@ -81,7 +110,7 @@ describe("anthropic message mapping", () => {
         {
           role: "tool",
           toolCallId: response.toolCalls[0]?.id ?? "",
-          content: "PR 41 is open."
+          content: [textBlock("PR 41 is open.")]
         }
       ]
     });
@@ -92,6 +121,34 @@ describe("anthropic message mapping", () => {
       thinking: "The channel asked which pull requests are open.",
       signature: "sig_test"
     });
+  });
+
+  it("sends an image tool result as an image block and an audio one as its placeholder", async () => {
+    const sent = await anthropicToolResult([
+      textBlock("Here it is."),
+      { type: "image", data: IMAGE, mimeType: "image/png" },
+      { type: "audio", data: "YXVkaW8=", mimeType: "audio/wav" }
+    ]);
+
+    expect(sent).toEqual([
+      { type: "text", text: "Here it is." },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: IMAGE } },
+      // The wording is the schema's, and this is the one place in the tree that
+      // pins what a provider without an audio member actually sends.
+      { type: "text", text: "[audio omitted: audio/wav, 5 bytes]" }
+    ]);
+  });
+
+  it("degrades an image whose media type this API does not take", async () => {
+    const sent = await anthropicToolResult([{ type: "image", data: IMAGE, mimeType: "image/svg+xml" }]);
+
+    // Not the payload in a text block either: the API rejects the block, and a
+    // rejected request loses the whole turn where a placeholder loses one image.
+    expect(sent).toEqual([{ type: "text", text: "[image omitted: image/svg+xml, 13 bytes]" }]);
+  });
+
+  it("sends a result with no blocks as the empty string it always was", async () => {
+    expect(await anthropicToolResult([])).toBe("");
   });
 
   it("merges parallel tool results into a single user turn", async () => {
@@ -112,8 +169,8 @@ describe("anthropic message mapping", () => {
             { id: "toolu_2", name: "trigger_workflow", arguments: { workflow: "ci.yml" } }
           ]
         },
-        { role: "tool", toolCallId: "toolu_1", content: "PR 41 is open." },
-        { role: "tool", toolCallId: "toolu_2", content: "not permitted", isError: true }
+        { role: "tool", toolCallId: "toolu_1", content: [textBlock("PR 41 is open.")] },
+        { role: "tool", toolCallId: "toolu_2", content: [textBlock("not permitted")], isError: true }
       ]
     });
 
@@ -136,6 +193,36 @@ describe("anthropic message mapping", () => {
     });
 
     expect(response.usage.cacheCreationInputTokens).toBe(20);
+  });
+});
+
+describe("openai-compatible message mapping", () => {
+  it("renders a result's blocks as one string and never as base64", async () => {
+    const transport = stubTransport(openaiFixture("text"));
+    await createOpenAICompatibleCompletionClient({
+      apiKey: PLACEHOLDER_KEY,
+      fetch: transport.fetch
+    }).complete({
+      model: "test-model",
+      maxTokens: 1024,
+      messages: [
+        { role: "user", content: "Show me the failing check." },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call_1", name: "screenshot", arguments: {} }]
+        },
+        {
+          role: "tool",
+          toolCallId: "call_1",
+          content: [textBlock("Here it is."), { type: "image", data: IMAGE, mimeType: "image/png" }]
+        }
+      ]
+    });
+
+    const messages = (transport.calls[0]?.body as { messages: { content?: unknown }[] }).messages;
+    expect(messages[2]?.content).toBe("Here it is.\n[image omitted: image/png, 13 bytes]");
+    expect(JSON.stringify(transport.calls[0]?.body)).not.toContain(IMAGE);
   });
 });
 

@@ -5,7 +5,7 @@
 // what the client does with an answer once it has one — which is where the
 // refusal path, the name mapping, and the request body live.
 
-import { ToolCall as WireToolCall, type BudgetWarning } from "@getlibero/schema";
+import { ToolCall as WireToolCall, type BudgetWarning, resultText, textBlock } from "@getlibero/schema";
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
@@ -86,7 +86,7 @@ async function ready(
  * A wire result as the proxy now sends one: blocks, holding the single text
  * block every producer on that side still emits (#500).
  */
-const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
+const text = (content: string): ToolResultBlock[] => [textBlock(content)];
 
 describe("listing the channel's tools", () => {
   it("asks the proxy and returns definitions for what it listed", async () => {
@@ -188,7 +188,7 @@ describe("calling a tool", () => {
     const { client } = await ready();
 
     await expect(client.execute(call("list_prs"), ATTRIBUTION)).resolves.toEqual({
-      content: "upstream said so",
+      content: text("upstream said so"),
       isError: false
     });
   });
@@ -202,7 +202,7 @@ describe("calling a tool", () => {
     });
 
     await expect(client.execute(call("list_prs"), ATTRIBUTION)).resolves.toEqual({
-      content: "404 no such repo",
+      content: text("404 no such repo"),
       isError: true
     });
   });
@@ -233,7 +233,7 @@ describe("a call the proxy would not run", () => {
 
     const result = await client.execute(call("list_prs"), ATTRIBUTION);
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("but not the tool `force_push`");
+    expect(resultText(result.content ?? [])).toContain("but not the tool `force_push`");
   });
 
   it("relays a hold as held when no prompter was given", async () => {
@@ -243,8 +243,8 @@ describe("a call the proxy would not run", () => {
 
     const result = await client.execute(call("merge_pr"), ATTRIBUTION);
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("requires approval");
-    expect(result.content).toContain("The call is held.");
+    expect(resultText(result.content ?? [])).toContain("requires approval");
+    expect(resultText(result.content ?? [])).toContain("The call is held.");
   });
 
   it("words every refusal from the proxy's reason, never from prose it sent", async () => {
@@ -332,7 +332,7 @@ describe("a held call with a prompter", () => {
     expect(sent).toHaveLength(2);
 
     release?.();
-    await expect(pending).resolves.toEqual({ content: "merged #42", isError: false });
+    await expect(pending).resolves.toEqual({ content: text("merged #42"), isError: false });
     expect(sent).toHaveLength(3);
   });
 
@@ -353,7 +353,7 @@ describe("a held call with a prompter", () => {
     const { client } = await ready({ call: heldThen(RAN) }, async () => {});
 
     await expect(client.execute(call("merge_pr"), ATTRIBUTION)).resolves.toEqual({
-      content: "merged #42",
+      content: text("merged #42"),
       isError: false
     });
   });
@@ -366,7 +366,7 @@ describe("a held call with a prompter", () => {
     const result = await client.execute(call("merge_pr"), ATTRIBUTION);
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("A human declined `github.merge_pr`");
+    expect(resultText(result.content ?? [])).toContain("A human declined `github.merge_pr`");
   });
 
   it("hands the model the expiry the proxy wrote", async () => {
@@ -375,7 +375,7 @@ describe("a held call with a prompter", () => {
     const result = await client.execute(call("merge_pr"), ATTRIBUTION);
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("expired before the call was made");
+    expect(resultText(result.content ?? [])).toContain("expired before the call was made");
   });
 
   // The model sees one tool result either way, and never the ticket id: the
@@ -385,7 +385,7 @@ describe("a held call with a prompter", () => {
     for (const second of [RAN, refusedWith("approval_denied"), refusedWith("approval_expired")]) {
       const { client } = await ready({ call: heldThen(second) }, async () => {});
       const result = await client.execute(call("merge_pr"), ATTRIBUTION);
-      expect(result.content).not.toContain(TICKET.id);
+      expect(resultText(result.content ?? [])).not.toContain(TICKET.id);
     }
   });
 
@@ -429,7 +429,7 @@ describe("a held call with a prompter", () => {
       // The same assertion the no-completion case makes above, which is the
       // acceptance criterion: #143 touches the card and nothing the model sees.
       await expect(client.execute(call("merge_pr"), ATTRIBUTION)).resolves.toEqual({
-        content: "merged #42",
+        content: text("merged #42"),
         isError: false
       });
       expect(calls).toBe(1);
@@ -441,7 +441,7 @@ describe("a held call with a prompter", () => {
       const { client, sent } = await ready({ call: heldThen(RAN) }, async () => {});
 
       await expect(client.execute(call("merge_pr"), ATTRIBUTION)).resolves.toEqual({
-        content: "merged #42",
+        content: text("merged #42"),
         isError: false
       });
       expect(sent).toHaveLength(3);
@@ -476,8 +476,8 @@ describe("a held call with a prompter", () => {
 
     expect(sent).toHaveLength(3);
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("has not been decided yet");
-    expect(result.content).not.toContain("xoxb-nothing-from-here-may-leak");
+    expect(resultText(result.content ?? [])).toContain("has not been decided yet");
+    expect(resultText(result.content ?? [])).not.toContain("xoxb-nothing-from-here-may-leak");
   });
 
   // The wait spends the task's wall clock by design, and the deadline composed
@@ -574,7 +574,7 @@ describe("a name the model made up", () => {
     const result = await client.execute(call("force_push"), ATTRIBUTION);
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("not a tool this channel permits");
+    expect(resultText(result.content ?? [])).toContain("not a tool this channel permits");
     expect(sent).toHaveLength(1);
   });
 
@@ -693,7 +693,7 @@ describe("reporting a name the model made up", () => {
     const result = await client.execute(call("force_push"), ATTRIBUTION);
 
     expect(result).toEqual({
-      content: "`force_push` is not a tool this channel permits. The call was not made.",
+      content: text("`force_push` is not a tool this channel permits. The call was not made."),
       isError: true
     });
     expect(sent).toHaveLength(1);
@@ -765,7 +765,7 @@ describe("relaying the soft budget warning", () => {
 
     // The result is untouched: a notice is not an error and does not change
     // what the model is handed.
-    expect(result).toEqual({ content: "ok", isError: false });
+    expect(result).toEqual({ content: text("ok"), isError: false });
     expect(warnings).toEqual([WARNING]);
   });
 
@@ -808,7 +808,7 @@ describe("relaying the soft budget warning", () => {
 
     const result = await client.execute(call("merge_pr"), ATTRIBUTION);
 
-    expect(result).toEqual({ content: "merged", isError: false });
+    expect(result).toEqual({ content: text("merged"), isError: false });
     expect(warnings).toEqual([WARNING]);
   });
 
@@ -846,7 +846,7 @@ describe("relaying the soft budget warning", () => {
     });
 
     expect(await client.execute(call("list_prs"), ATTRIBUTION)).toEqual({
-      content: "ok",
+      content: text("ok"),
       isError: false
     });
   });
@@ -907,7 +907,7 @@ describe("recording a scheduled check", () => {
     const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 90 }), ATTRIBUTION);
 
     expect(seen).toEqual([TICKET]);
-    expect(result).toEqual({ content: TICKET, isError: false });
+    expect(result).toEqual({ content: text(TICKET), isError: false });
   });
 
   // The create is held by default, so the ordinary path is the *second*
@@ -954,7 +954,7 @@ describe("recording a scheduled check", () => {
 
     expect(asked).toBe(2);
     expect(seen).toEqual([TICKET]);
-    expect(result).toEqual({ content: TICKET, isError: false });
+    expect(result).toEqual({ content: text(TICKET), isError: false });
   });
 
   // The three ways a check does not get recorded, and the model is told the same
@@ -968,7 +968,7 @@ describe("recording a scheduled check", () => {
     const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 90 }), ATTRIBUTION);
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("will not run");
+    expect(resultText(result.content ?? [])).toContain("will not run");
     expect(result.content).not.toBe(TICKET);
   });
 
@@ -1003,7 +1003,7 @@ describe("recording a scheduled check", () => {
     const result = await client.execute(call("schedule_task", { prompt: "x", due_in_minutes: 1 }), ATTRIBUTION);
 
     expect(seen).toEqual([]);
-    expect(result).toEqual({ content: "schedule_task: invalid arguments.", isError: true });
+    expect(result).toEqual({ content: text("schedule_task: invalid arguments."), isError: true });
   });
 
   it("does not fire for an ordinary tool", async () => {

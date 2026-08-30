@@ -54,7 +54,14 @@
 // merging the two lists would widen both. What this file does own is the one
 // destination nothing declared — a redirect target — and it refuses to follow.
 
-import { type RedactionPass, StreamingRedactor, applyPasses, redactionPasses } from "./redact.js";
+import {
+  type RedactionPass,
+  type SecretScan,
+  StreamingRedactor,
+  applyPasses,
+  findSecret,
+  redactionPasses
+} from "./redact.js";
 import { makeSecret } from "./custody.js";
 import type { Secret } from "./custody.js";
 
@@ -408,6 +415,22 @@ export interface UpstreamRequest {
    * here knows about it.
    */
   readonly maxBodyBytes?: number;
+  /**
+   * Handed this call's scan, once, before the body is read (#501).
+   *
+   * **What crosses the line here is a question, not an answer.** ./mcp-bounds.ts
+   * decodes a tool result's binary payloads and has to ask whether a credential
+   * is in them, and the needles that could answer that are spellings of the
+   * value. Passing them would put the credential in a second module and end the
+   * single-reveal-site property this file's whole design rests on. So the passes
+   * stay in the closure built below and only `SecretScan` — a function that
+   * takes text and answers a marker — travels.
+   *
+   * Called on every request, including one with no credential, where the scan
+   * finds nothing because there are no needles. The caller's own comment says
+   * why it takes the scan per request rather than per session.
+   */
+  readonly onScan?: (scan: SecretScan) => void;
   /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
   readonly fetch?: typeof globalThis.fetch;
 }
@@ -734,6 +757,12 @@ async function callUpstreamStream(request: UpstreamRequest): Promise<UpstreamStr
     value === undefined ? [] : [{ name: request.credentialName ?? "credential", value }]
   );
 
+  // The scan, handed out as a closure over those passes and never as the passes
+  // themselves — see `onScan`. After construction, so a request whose value
+  // could not be scanned for throws before anything is handed a scan that
+  // would answer `null` to everything.
+  request.onScan?.(text => findSecret(text, passes));
+
   // The allowlisted headers are selected here rather than returned wholesale,
   // and scrubbed with the same needles as the body — the same `passes`, not a
   // second construction of them. Headers are in hand now, so they are scrubbed
@@ -873,6 +902,17 @@ export interface GuardedFetchOptions {
    * connection believes it is in.
    */
   readonly maxBodyBytes?: number | ((method: UpstreamMethod) => number);
+  /**
+   * Forwarded to every request this fetch makes; see `UpstreamRequest.onScan`.
+   *
+   * **Per request rather than per session, and the caller depends on that.** An
+   * OAuth source refreshes mid-session, so the value a scan looks for is not
+   * constant for the life of a connection — a scan captured once at `connect`
+   * would go on searching for a token that has since been replaced. Handing it
+   * out on each call means the scan a result is checked with is built from the
+   * credential that fetched it.
+   */
+  readonly onScan?: (scan: SecretScan) => void;
   /** Injected transport. Tests pass a stub; nothing here reaches the network by default. */
   readonly fetch?: typeof globalThis.fetch;
 }
@@ -969,6 +1009,7 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
         ...(options.source.name !== undefined ? { credentialName: options.source.name } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
+        ...(options.onScan !== undefined ? { onScan: options.onScan } : {}),
         ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
       });
 

@@ -7,6 +7,7 @@
 // credentials and no way to reach a tool that the channel's team sheet does
 // not permit.
 
+import type { ToolResultBlock } from "@getlibero/schema";
 import type { CompletionClient, CompletionMessage, TokenUsage, ToolCall, ToolDefinition } from "../completion/types.js";
 
 /**
@@ -24,7 +25,12 @@ export interface ToolSource {
  * argument. It is not a loop failure.
  */
 export interface ToolResult {
-  content: string;
+  /**
+   * `@getlibero/schema`'s `ToolResultBlock[]`, imported rather than restated —
+   * this is the tool proxy service's shape and the loop only carries it. A
+   * member added to the wire union is therefore a compile error here.
+   */
+  content: ToolResultBlock[];
   isError?: boolean;
 }
 
