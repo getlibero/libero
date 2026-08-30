@@ -8,9 +8,14 @@
 //
 // So this drives three real lifecycles through the rig — a call that ran, a
 // call the sheet refused, and a call a human approved — and then asks the
-// spawned `dist/audit.js` for each of them. Nothing here reads the file
-// directly; `auditRows` is used only to bookmark where the case started, so a
+// spawned `dist/audit.js` for each of them. Nothing here reads the file for an
+// *answer*; `auditRows` is used only to bookmark where the case started, so a
 // shared file read forward is still the demonstration `records.ts` describes.
+//
+// The one case that opens the file for its own sake is #511's, and what it
+// asserts is about the harness rather than about the log: that `AuditRow` names
+// the columns the table has, so every other case's `SELECT *` cast is a
+// description of a row rather than a guess about one.
 //
 // **The property only this file can show** is the connection. The reader opens
 // the log read-only while the proxy is still running and still holding it open
@@ -28,8 +33,10 @@
 import { after as afterAll, before as beforeAll, it } from "node:test";
 import { expect } from "expect";
 import {
+  AUDIT_ROW_COLUMNS,
   CANARY,
   CHANNEL,
+  auditColumns,
   auditRows,
   calls,
   lastAuditId,
@@ -178,6 +185,35 @@ async function audit(...args: string[]) {
   expect(result.status).toBe(0);
   return result.stdout;
 }
+
+// #511. The harness's own interface, checked against the table it is cast from.
+//
+// `AuditRow` is a hand-maintained mirror of the audit table's columns, and
+// `auditRows` reads with `SELECT *` and casts — which is precisely the operation
+// that makes a missing property invisible. A column added to the table and not
+// declared there is not a type error, not a failure, and not visible in any way:
+// the rows come back holding it and every case that could have asserted on it
+// silently cannot. That is not hypothetical — #501 added `result_bytes_by_type`
+// and the interface went without it while this suite stayed green.
+//
+// `AUDIT_ROW_COLUMNS` closes half of that in the compiler, by deriving the set
+// from the proxy's own `CHAINED_COLUMNS` rather than copying it. This closes the
+// other half against SQLite, because a check between two literals in this
+// repository would pass on the two of them agreeing with each other and not with
+// the database — which is the whole shape of the bug. The model is
+// `audit-csv.test.ts` one layer over, which pins the export's headers to
+// `PRAGMA table_info` and caught #501's column in the PR that added it.
+//
+// It reads a *rig's* log rather than a file this case opened, so what it
+// describes is the table a real proxy migrated and is writing to.
+it(
+  "declares every column of the table its rows are cast from, in order",
+  { timeout: CASE_MS },
+  () => {
+    const { auditDb } = rigOf(rig);
+
+    expect(auditColumns(auditDb)).toEqual([...AUDIT_ROW_COLUMNS]);
+  });
 
 // #354. The positive control for the chain, and the only thing that shows a
 // real proxy writes one — every other case for it runs against a file the unit

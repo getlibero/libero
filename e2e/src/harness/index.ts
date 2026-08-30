@@ -79,7 +79,7 @@ export type { AgentOptions, AgentSide } from "./agent.js";
 export { authorizationsSeen, startUpstream } from "./upstream.js";
 export type { UpstreamOptions } from "./upstream.js";
 
-export { auditRows, lastAuditId, spendFor } from "./records.js";
+export { AUDIT_ROW_COLUMNS, auditColumns, auditRows, lastAuditId, spendFor } from "./records.js";
 export type { AuditRow } from "./records.js";
 
 export { mutatingResubmission, recording, replayingSpendReports, withoutSpendReports } from "./transport.js";

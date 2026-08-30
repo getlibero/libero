@@ -56,6 +56,13 @@ export { channelDays, pruneTurnReports, readChannelSpend, resetChannel } from ".
 // `AuditWriter` cannot, which is the whole reason both exist.
 export { AUDIT_SCHEMA_VERSION, openAuditDb } from "./audit-db.js";
 export type { AuditDb, AuditDbOptions } from "./audit-db.js";
+// The audited columns, exported for readers that describe a row rather than
+// write one — the e2e harness's `AuditRow` is the caller (#511), and having it
+// derive the set from this list is what makes a column added here impossible to
+// leave undeclared there. It is already the INSERT's column list, its bind
+// order and the chain's serialization order, so a fourth consumer changes
+// nothing about what it means.
+export { CHAINED_COLUMNS } from "./audit-db.js";
 export { canonicalJson, createSqliteAuditWriter, hashArguments, openAuditWriter } from "./audit-log.js";
 export { DRIFT_SCHEMA_VERSION, openDriftDb } from "./drift-db.js";
 export type { DriftDb, DriftDbOptions, DriftRecorder, DriftRow, ReportedCost } from "./drift-db.js";
