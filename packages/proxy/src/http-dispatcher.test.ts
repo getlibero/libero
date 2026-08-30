@@ -8,6 +8,7 @@ import type { McpServer, ResolvedToolCall } from "@getlibero/schema";
 import { afterEach, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import { type ToolResultBlock, resultText } from "@getlibero/schema";
 import { startFakeTokenIssuer } from "./fake-token-issuer.js";
 import type { FakeTokenIssuer } from "./fake-token-issuer.js";
 import { createHttpDispatcher } from "./http-dispatcher.js";
@@ -108,13 +109,16 @@ function capturingLogger(): { lines: string[]; logger: ReturnType<typeof createJ
   return { lines, logger: createJsonLogger(line => lines.push(line)) };
 }
 
+/** One text block, which is every result the proxy currently produces (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
+
 describe("serving a call", () => {
   it("delivers the real secret to the upstream", async () => {
     fake = await startFakeMcpServer();
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
-    expect(result).toEqual({ outcome: "ran", result: { content: "called list_prs", isError: false } });
+    expect(result).toEqual({ outcome: "ran", result: { content: text("called list_prs"), isError: false } });
     // Every request, not just the call: the discovery probe carries it too.
     expect(fake.received).not.toHaveLength(0);
     for (const request of fake.received) {
@@ -167,8 +171,8 @@ describe("serving a call", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
     expect(result.outcome).toBe("ran");
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).toContain("HTTP 404");
-    expect(result.outcome === "ran" && result.result.content).toContain("no such repo");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toContain("HTTP 404");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toContain("no such repo");
   });
 
   it("reads an event-stream reply as readily as a JSON one", async () => {
@@ -177,7 +181,7 @@ describe("serving a call", () => {
 
     expect(await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS)).toEqual({
       outcome: "ran",
-      result: { content: "called list_prs", isError: false }
+      result: { content: text("called list_prs"), isError: false }
     });
   });
 });
@@ -420,7 +424,7 @@ describe("an upstream that does not answer", () => {
 
       expect(result.outcome).toBe("ran");
       expect(result.outcome === "ran" && result.result.isError).toBe(true);
-      expect(result.outcome === "ran" && result.result.content).toContain("timed_out");
+      expect(result.outcome === "ran" && resultText(result.result.content)).toContain("timed_out");
     } finally {
       hang.closeAllConnections();
       await new Promise<void>(resolve => hang.close(() => resolve()));
@@ -449,7 +453,7 @@ describe("an upstream that does not answer", () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
 
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
-    const content = result.outcome === "ran" ? result.result.content : "";
+    const content = result.outcome === "ran" ? resultText(result.result.content) : "";
 
     expect(content).toBe("The tool server does not speak a version of MCP this proxy supports. The call was not made.");
     expect(content).not.toContain("edge proxy");
@@ -483,12 +487,12 @@ describe("an upstream already running as many calls as this proxy allows", () =>
     // A failure, not a refusal: nothing was denied, and the proxy did not break.
     expect(result.outcome).toBe("ran");
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).toBe(
+    expect(result.outcome === "ran" && resultText(result.result.content)).toBe(
       "This proxy is already running as many calls to that tool server as it allows, and none finished in time. The call was not made."
     );
     // Not "could not be reached", which would send an operator to check a server
     // that is perfectly healthy and was never asked.
-    expect(result.outcome === "ran" && result.result.content).not.toContain("could not be reached");
+    expect(result.outcome === "ran" && resultText(result.result.content)).not.toContain("could not be reached");
 
     // Filed under its own event, so a search for a failing upstream does not
     // turn these up and a search for a saturated one turns up nothing else.
@@ -555,10 +559,10 @@ describe("a call queued for a permit when the proxy shuts down", () => {
     const result = await queued;
 
     expect(result.outcome).toBe("ran");
-    expect(result.outcome === "ran" && result.result.content).toBe(
+    expect(result.outcome === "ran" && resultText(result.result.content)).toBe(
       "The proxy is shutting down. The call was not made."
     );
-    expect(result.outcome === "ran" && result.result.content).not.toContain("could not be reached");
+    expect(result.outcome === "ran" && resultText(result.result.content)).not.toContain("could not be reached");
 
     await fake.close();
     fake = undefined;
@@ -575,7 +579,7 @@ describe("a server this proxy cannot speak to", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).toContain("does not speak a version of MCP");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toContain("does not speak a version of MCP");
     expect(fake.callsTo("tools/call")).toHaveLength(0);
     expect(lines.join("")).toContain("unsupported_protocol");
   });
@@ -609,7 +613,7 @@ describe("an upstream asking for more input", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).toContain("does not answer for a channel");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toContain("does not answer for a channel");
     expect(lines.join("")).toContain("mcp_input_required");
   });
 });
@@ -638,7 +642,7 @@ describe("a schema too deep to scan for header declarations", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(false);
-    expect(result.outcome === "ran" && result.result.content).toBe("called list_prs");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toBe("called list_prs");
   });
 });
 
@@ -660,7 +664,7 @@ describe("a credential revoked mid-session", () => {
       request.rpc?.method === "initialize" ? { status: 401, raw: "token revoked" } : null;
 
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
-    const content = result.outcome === "ran" ? result.result.content : "";
+    const content = result.outcome === "ran" ? resultText(result.result.content) : "";
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
     expect(content).toBe("The tool server rejected this proxy's credential for it. The call was not made.");
@@ -738,7 +742,7 @@ describe("an upstream that echoes its own auth header", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome).toBe("ran");
-    const content = result.outcome === "ran" ? result.result.content : "";
+    const content = result.outcome === "ran" ? resultText(result.result.content) : "";
     // The upstream really did receive it — otherwise this asserts nothing.
     expect(fake.callsTo("tools/call")[0]?.authorization).toBe(`Bearer ${SECRET}`);
     expect(content).toContain("[redacted:github_service_account]");
@@ -753,7 +757,7 @@ describe("an upstream that echoes its own auth header", () => {
     const dispatcher = createHttpDispatcher({ vault: vaultOf({ [CRED]: SECRET }) });
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
-    const content = result.outcome === "ran" ? result.result.content : "";
+    const content = result.outcome === "ran" ? resultText(result.result.content) : "";
     expect(content).toContain("[redacted:github_service_account]");
     expect(content).not.toContain(SECRET);
     expect(content).not.toContain("ghp_");
@@ -769,7 +773,7 @@ describe("an upstream that echoes its own auth header", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).not.toContain(SECRET);
+    expect(result.outcome === "ran" && resultText(result.result.content)).not.toContain(SECRET);
   });
 
   it("keeps it out of a response header the client reads", async () => {
@@ -792,7 +796,7 @@ describe("shutting down", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).toContain("shutting down");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toContain("shutting down");
     expect(fake.received).toEqual([]);
     await closing;
   });
@@ -883,7 +887,7 @@ describe("the two bounds on what comes back", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), { maxResultChars: 1_000 });
 
     expect(result.outcome).toBe("ran");
-    const content = result.outcome === "ran" ? result.result.content : "";
+    const content = result.outcome === "ran" ? resultText(result.result.content) : "";
     expect(content).toContain("[result truncated: 1000 of 200000 characters]");
     // A truncated answer is still an answer: the tool did not fail.
     expect(result.outcome === "ran" && result.result.isError).toBe(false);
@@ -904,7 +908,7 @@ describe("the two bounds on what comes back", () => {
 
     expect(result.outcome).toBe("ran");
     expect(result.outcome === "ran" && result.result.isError).toBe(true);
-    expect(result.outcome === "ran" && result.result.content).toBe(
+    expect(result.outcome === "ran" && resultText(result.result.content)).toBe(
       "The tool server's answer was larger than this proxy will accept. The call was made and the answer was discarded."
     );
     // The honest part of that sentence: the upstream did receive the call, so a
@@ -926,7 +930,7 @@ describe("the two bounds on what comes back", () => {
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), { maxResultChars: 2_000 });
 
     expect(result.outcome === "ran" && result.result.isError).toBe(false);
-    expect(result.outcome === "ran" && result.result.content).toContain("[result truncated: 2000 of 50000");
+    expect(result.outcome === "ran" && resultText(result.result.content)).toContain("[result truncated: 2000 of 50000");
   });
 
   // A handshake runs under MAX_CONTROL_BODY_BYTES, well below the configured
@@ -940,7 +944,7 @@ describe("the two bounds on what comes back", () => {
 
     const result = await dispatcher.dispatch(callTo(), serverAt(fake.url), LIMITS);
 
-    expect(result.outcome === "ran" && result.result.content).toBe(
+    expect(result.outcome === "ran" && resultText(result.result.content)).toBe(
       "The tool server's handshake was larger than this proxy will accept. The call was not made."
     );
   });

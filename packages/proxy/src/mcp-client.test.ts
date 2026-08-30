@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import { type ToolResultBlock, resultText } from "@getlibero/schema";
 import { type McpClient, createMcpClient } from "./mcp-client.js";
 import { type FakeMcpServer, type FakeReply, completeResult, startFakeMcpServer } from "./mcp-fake-server.js";
 // Written down here rather than imported from the client, for the reason
@@ -54,12 +55,15 @@ async function clientFor(
   });
 }
 
+/** One text block, which is every result the proxy currently produces (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
+
 describe("the round trip", () => {
   it("discovers, calls, and returns the result", async () => {
     const client = await clientFor();
     const outcome = await client.callTool("list_prs", { repo: "libero" }, LIMITS, NO_HEADERS);
 
-    expect(outcome).toEqual({ outcome: "called", result: { content: "called list_prs", isError: false } });
+    expect(outcome).toEqual({ outcome: "called", result: { content: text("called list_prs"), isError: false } });
     expect(fake?.received.map(r => r.rpc?.method)).toEqual(["server/discover", "tools/call"]);
   });
 
@@ -67,7 +71,7 @@ describe("the round trip", () => {
     const client = await clientFor({ framing: "sse" });
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
-    expect(outcome).toEqual({ outcome: "called", result: { content: "called list_prs", isError: false } });
+    expect(outcome).toEqual({ outcome: "called", result: { content: text("called list_prs"), isError: false } });
   });
 
   it("sends the transport's required headers", async () => {
@@ -117,7 +121,7 @@ describe("the credential", () => {
     const client = await clientFor({ echoHeaders: "text" });
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
-    const content = outcome.outcome === "called" ? outcome.result.content : "";
+    const content = outcome.outcome === "called" ? resultText(outcome.result.content) : "";
     expect(content).toContain("[redacted:github_service_account]");
     expect(content).not.toContain(VALUE);
     expect(content).not.toContain("ghp_");
@@ -130,7 +134,7 @@ describe("the credential", () => {
     const client = await clientFor({ echoHeaders: "json-escaped" });
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
-    const content = outcome.outcome === "called" ? outcome.result.content : "";
+    const content = outcome.outcome === "called" ? resultText(outcome.result.content) : "";
     expect(content).toContain("[redacted:github_service_account]");
     expect(content).not.toContain(VALUE);
     expect(content).not.toContain("ghp_");
@@ -147,7 +151,7 @@ describe("the credential", () => {
       });
       const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
 
-      const content = outcome.outcome === "called" ? outcome.result.content : "";
+      const content = outcome.outcome === "called" ? resultText(outcome.result.content) : "";
       expect(content).not.toContain(value);
     }
   );
@@ -356,7 +360,7 @@ describe("the ladder", () => {
 
     expect(await client.callTool("list_prs", { repo: "libero" }, LIMITS, NO_HEADERS)).toEqual({
       outcome: "called",
-      result: { content: "called list_prs", isError: false }
+      result: { content: text("called list_prs"), isError: false }
     });
     expect(fake?.received.map(r => r.rpc?.method)).toEqual([
       "server/discover",
@@ -536,7 +540,7 @@ describe("when the call fails", () => {
 
     expect(await client.callTool("list_prs", {}, LIMITS, NO_HEADERS)).toEqual({
       outcome: "called",
-      result: { content: "no such repo", isError: true }
+      result: { content: text("no such repo"), isError: true }
     });
   });
 
@@ -567,7 +571,7 @@ describe("when the call fails", () => {
 
     const outcome = await client.callTool("list_prs", {}, LIMITS, NO_HEADERS);
     expect(outcome.outcome).toBe("called");
-    const content = outcome.outcome === "called" ? outcome.result.content : "";
+    const content = outcome.outcome === "called" ? resultText(outcome.result.content) : "";
     expect(content).toContain("the answer");
     expect(content).toContain("[unsupported content block: hologram]");
   });

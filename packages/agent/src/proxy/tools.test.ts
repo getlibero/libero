@@ -9,6 +9,7 @@ import { ToolCall as WireToolCall, type BudgetWarning } from "@getlibero/schema"
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import type { ToolResultBlock } from "@getlibero/schema";
 import type { ToolCall } from "../completion/types.js";
 import type { ToolCallAttribution } from "../loop/types.js";
 import {
@@ -52,7 +53,7 @@ function fakeTransport(
         return (
           (await answers.call?.(options.body)) ?? {
             status: 200,
-            body: { outcome: "ran", id: "call-1", result: { content: "upstream said so" } }
+            body: { outcome: "ran", id: "call-1", result: { content: text("upstream said so") } }
           }
         );
       }
@@ -80,6 +81,12 @@ async function ready(
   await client.list();
   return { client, sent: fake.sent };
 }
+
+/**
+ * A wire result as the proxy now sends one: blocks, holding the single text
+ * block every producer on that side still emits (#500).
+ */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
 
 describe("listing the channel's tools", () => {
   it("asks the proxy and returns definitions for what it listed", async () => {
@@ -190,7 +197,7 @@ describe("calling a tool", () => {
     const { client } = await ready({
       call: () => ({
         status: 200,
-        body: { outcome: "ran", id: "call-1", result: { content: "404 no such repo", isError: true } }
+        body: { outcome: "ran", id: "call-1", result: { content: text("404 no such repo"), isError: true } }
       })
     });
 
@@ -273,7 +280,7 @@ describe("a held call with a prompter", () => {
 
   const RAN: ProxyResponse = {
     status: 200,
-    body: { outcome: "ran", id: "call-1", result: { content: "merged #42" } }
+    body: { outcome: "ran", id: "call-1", result: { content: text("merged #42") } }
   };
 
   const refusedWith = (reason: string): ProxyResponse => ({
@@ -750,7 +757,7 @@ describe("relaying the soft budget warning", () => {
     const { client, warnings } = await watching({
       call: () => ({
         status: 200,
-        body: { outcome: "ran", id: "call-1", result: { content: "ok" }, warning: WARNING }
+        body: { outcome: "ran", id: "call-1", result: { content: text("ok") }, warning: WARNING }
       })
     });
 
@@ -790,7 +797,7 @@ describe("relaying the soft budget warning", () => {
             }
           : {
               status: 200,
-              body: { outcome: "ran", id: "call-1", result: { content: "merged" }, warning: WARNING }
+              body: { outcome: "ran", id: "call-1", result: { content: text("merged") }, warning: WARNING }
             };
       }
     },
@@ -834,7 +841,7 @@ describe("relaying the soft budget warning", () => {
     const { client } = await ready({
       call: () => ({
         status: 200,
-        body: { outcome: "ran", id: "call-1", result: { content: "ok" }, warning: WARNING }
+        body: { outcome: "ran", id: "call-1", result: { content: text("ok") }, warning: WARNING }
       })
     });
 
@@ -891,7 +898,7 @@ describe("recording a scheduled check", () => {
   }
 
   const served = () => ({
-    call: () => ({ status: 200, body: { outcome: "ran", id: "call-1", result: { content: TICKET } } })
+    call: () => ({ status: 200, body: { outcome: "ran", id: "call-1", result: { content: text(TICKET) } } })
   });
 
   it("hands the ticket to the sink and relays the result unchanged", async () => {
@@ -926,7 +933,7 @@ describe("recording a scheduled check", () => {
                 ticket: { id: "t-1", expiresAt: 1_800_000_000_000 }
               }
             }
-          : { status: 200, body: { outcome: "ran", id: "call-1", result: { content: TICKET } } };
+          : { status: 200, body: { outcome: "ran", id: "call-1", result: { content: text(TICKET) } } };
       }
     });
     const client = createProxyToolClient({
@@ -986,7 +993,7 @@ describe("recording a scheduled check", () => {
           body: {
             outcome: "ran",
             id: "call-1",
-            result: { content: "schedule_task: invalid arguments.", isError: true }
+            result: { content: text("schedule_task: invalid arguments."), isError: true }
           }
         })
       },
@@ -1001,7 +1008,7 @@ describe("recording a scheduled check", () => {
 
   it("does not fire for an ordinary tool", async () => {
     const { client, seen } = await sinking({
-      answers: { call: () => ({ status: 200, body: { outcome: "ran", id: "call-1", result: { content: "ok" } } }) },
+      answers: { call: () => ({ status: 200, body: { outcome: "ran", id: "call-1", result: { content: text("ok") } } }) },
       sink: () => true
     });
 

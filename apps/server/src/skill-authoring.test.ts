@@ -28,6 +28,7 @@ import type { LogFields, LogLevel } from "@getlibero/gateway";
 import { createGateway, createStubSlack } from "@getlibero/gateway";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
+import type { ToolResultBlock } from "@getlibero/schema";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
@@ -101,7 +102,7 @@ const transport: ProxyTransport = {
     }
     return Promise.resolve({
       status: 200,
-      body: { outcome: "ran", id: body.id, result: { content: "ok" } }
+      body: { outcome: "ran", id: body.id, result: { content: text("ok") } }
     });
   }
 };
@@ -298,6 +299,9 @@ afterEach(() => {
   rmSync(channelsRoot, { recursive: true, force: true });
   rmSync(storeRoot, { recursive: true, force: true });
 });
+
+/** A wire result as the proxy now sends one: one text block (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
 
 describe("when the author turn runs", () => {
   // #291's first acceptance criterion, and the whole point of the phase's write

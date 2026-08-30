@@ -149,22 +149,242 @@ export function resolveToolCall(call: ToolCall, channel: string): ResolvedToolCa
 }
 
 /**
+ * How much upstream-authored label text one block may carry.
+ *
+ * These are the proxy's own `MAX_LABEL` and `MAX_URI`, and they live here now
+ * because they stopped being one module's rendering detail the moment a block
+ * became a shape both ends parse. The agent's adapters hand these strings to a
+ * provider, so the bound belongs to the contract rather than to a promise the
+ * proxy makes on its way out.
+ */
+export const MAX_RESULT_MIME_TYPE = 64;
+export const MAX_RESULT_URI = 200;
+
+/**
+ * One part of what a tool produced (#160).
+ *
+ * `ToolResult.content` was a single string until this union existed, and the
+ * cost of that was written down where it was paid: `blockText` in
+ * `packages/proxy/src/mcp-bounds.ts` rendered every image, every audio clip and
+ * every binary resource as a sentence naming the type and the size, because a
+ * string is the only thing it had to render into. A tool whose whole answer is
+ * a screenshot was therefore second-class, and a proxy that governs tool use
+ * should not be the reason a capability is unavailable.
+ *
+ * ## Four types, and what is deliberately not among them
+ *
+ * `text`, `image`, `audio`, `resource` — the vocabulary #160 names, defined
+ * once here so that #501 and #502 relay into it rather than each widening the
+ * wire again.
+ *
+ * MCP's `resource_link`, its deprecated `tool_use`, and any block from a
+ * protocol revision newer than the one this tree knows are **not** members, and
+ * that is not an omission. The proxy flattens each of them to a `text` block
+ * carrying the placeholder it already writes. This is `CallEnvelope`'s bargain
+ * one layer on (`packages/proxy/src/mcp-client.ts`): that reader passes
+ * `z.looseObject({})` precisely so a forward-revision block costs a placeholder
+ * rather than the whole call, and a closed union here is what keeps that true
+ * on this side of the wire too. A block type earns membership when a provider
+ * can be handed it, not when a server can emit it.
+ *
+ * `resource` is the **blob** case alone. MCP's embedded resource is a union of
+ * text-or-blob, and the text half already renders as its own text — promoting
+ * it would be two shapes for one thing, and a consumer would have to know both.
+ *
+ * ## The payload is validated as base64, not merely as a string
+ *
+ * `z.base64()` rather than `z.string()`. Nothing downstream can decode a
+ * payload that is not base64, so the alternative is not leniency but a failure
+ * moved later, into a provider's SDK or a provider's API — past the point where
+ * this proxy could say which tool produced it. This parse is the last place the
+ * question can be asked cheaply.
+ *
+ * ## Array-only, and no bare string beside it
+ *
+ * `ToolResult.content` is an array and nothing else. A union that still
+ * accepted a string would buy tolerance of a version skew this deployment
+ * cannot have — one `v*` tag releases both services together (`RELEASING.md`) —
+ * and would charge every consumer a branch, forever, on a shape that is
+ * normalized on read. That is the trap this file's own header names: a field
+ * whose two forms must be reconciled to be safe is one the next endpoint gets
+ * wrong. The empty array is legal and is what the old `content: ""` becomes.
+ */
+export const ToolResultBlock = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("text"),
+      text: z.string()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("image"),
+      /** The image itself, base64. Bounded by the channel's cap; see `resultCost`. */
+      data: z.base64(),
+      mimeType: z.string().min(1).max(MAX_RESULT_MIME_TYPE)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("audio"),
+      data: z.base64(),
+      mimeType: z.string().min(1).max(MAX_RESULT_MIME_TYPE)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("resource"),
+      uri: z.string().min(1).max(MAX_RESULT_URI),
+      mimeType: z.string().min(1).max(MAX_RESULT_MIME_TYPE).optional(),
+      blob: z.base64()
+    })
+    .strict()
+]);
+
+export type ToolResultBlock = z.infer<typeof ToolResultBlock>;
+
+/**
  * What a tool produced, once it ran.
  *
  * `isError` marks a failure the model should see and may recover from — a 404
  * from the tool, a bad argument. It is not an enforcement outcome and not a
  * transport failure; both of those are other variants of `ToolCallResponse`.
  * Mirrors the agent loop's `ToolResult`, which is the shape this becomes on
- * the other side of the wire.
+ * the other side of the wire — and as of #160 that sentence is true again only
+ * once #502 lands, because the loop still holds a string until it does.
+ *
+ * `content` is a block array; see `ToolResultBlock` for why it is only that.
  */
 export const ToolResult = z
   .object({
-    content: z.string(),
+    content: z.array(ToolResultBlock),
     isError: z.boolean().default(false)
   })
   .strict();
 
 export type ToolResult = z.infer<typeof ToolResult>;
+
+/** Base64 decodes to three bytes per four characters, less the padding. */
+export function base64Bytes(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
+}
+
+/** A byte count as the model is told it: `bytes` under a kilobyte, then `KB`, then `MB`. */
+export function describeBytes(count: number): string {
+  if (count < 1024) return `${String(count)} bytes`;
+  if (count < 1024 * 1024) return `${String(Math.round(count / 1024))} KB`;
+  return `${String(Math.round(count / (1024 * 1024)))} MB`;
+}
+
+/**
+ * What one result costs against the channel's `[llm] max_result_chars`.
+ *
+ * **One cap, over the whole result, and a non-text block pays its decoded
+ * bytes.** A text block contributes `text.length` — UTF-16 code units, which is
+ * exactly the number the cap counted when content was a string, so no channel's
+ * existing setting changes meaning. A binary block contributes the size of what
+ * it actually carries, not the four-thirds of it that base64 spells.
+ *
+ * Two readings were available and are worth recording as declined. **Per
+ * block** is simpler to state and wrong: a result of forty blocks would then be
+ * forty times a cap the operator agreed to once. **A second, byte-denominated
+ * bound for binary alone** keeps the units honest — `max_result_chars` would go
+ * on meaning characters of text — but it introduces a number that exists in no
+ * sheet and no environment variable today, and an operator cannot reason about
+ * a ceiling they have never seen. One number they already tune is worth more
+ * than two that are each individually cleaner.
+ *
+ * The unit mismatch inside this sum is real and is the price: it means the cap
+ * is a budget rather than a measurement. What it buys is that the default of
+ * 32768 already bounds an image, so **nothing binary reaches a model until an
+ * operator raises a number**, which is the same shape as every other capability
+ * in this tree being off until a sheet says otherwise.
+ *
+ * What happens past the cap is the proxy's (`mcp-bounds.ts`), and it is not
+ * symmetric: text truncates and says where it was cut, while a binary block
+ * degrades to its placeholder rather than being sliced. Half a base64 payload
+ * is a corrupt image, not a short one, and there is no notice to append that
+ * would make it decode.
+ */
+export function resultCost(content: readonly ToolResultBlock[]): number {
+  let total = 0;
+  for (const block of content) {
+    total += block.type === "text" ? block.text.length : blockBytes(block);
+  }
+  return total;
+}
+
+/**
+ * What the audit row's `result_bytes` records: the wire cost of what crossed.
+ *
+ * Bytes, not `String.length`, for the reason that column has always given —
+ * it exists to correlate with the next turn's input tokens, and tokenizers are
+ * byte-shaped. Text is counted utf8; a binary block is counted **decoded**,
+ * which is the second decision worth writing down.
+ *
+ * Encoded length was the alternative, and it is closer to what the transport
+ * actually moved. It loses on two counts. It disagrees with the sentence the
+ * model is handed — `[image omitted: image/png, 4823 bytes]` has always been
+ * decoded — so an operator reading the audit log and a model reading the
+ * placeholder would be quoting different numbers for one payload. And it would
+ * inflate the column by a third against every row already written, on a
+ * measure whose whole purpose is comparison over time.
+ *
+ * This is deliberately **not** `resultCost`. They agree on binary and differ on
+ * text, because one answers "what may this channel spend" and the other answers
+ * "what did this call move"; a single function serving both would have to pick
+ * a wrong answer for one of them.
+ */
+export function resultBytes(content: readonly ToolResultBlock[]): number {
+  let total = 0;
+  for (const block of content) {
+    total += block.type === "text" ? Buffer.byteLength(block.text, "utf8") : blockBytes(block);
+  }
+  return total;
+}
+
+/** The decoded size of a block's payload. Zero for text, which has none. */
+function blockBytes(block: ToolResultBlock): number {
+  switch (block.type) {
+    case "text":
+      return 0;
+    case "image":
+    case "audio":
+      return base64Bytes(block.data);
+    case "resource":
+      return base64Bytes(block.blob);
+  }
+}
+
+/**
+ * A result as the one string a text-only consumer can take.
+ *
+ * Two callers need this and they are on opposite sides of the wire: the proxy,
+ * wherever it still owes a string, and the agent's OpenAI adapter, whose
+ * `role: "tool"` message has no block form to relay into. The placeholder
+ * sentences are therefore written **once, here**, rather than in each — they
+ * are text a model reads and reasons about, which makes their wording a
+ * compatibility surface rather than a rendering detail. They match what
+ * `mcp-bounds.ts` has always emitted, character for character.
+ *
+ * Blocks join with a newline, as the proxy's own join always has.
+ */
+export function resultText(content: readonly ToolResultBlock[]): string {
+  return content.map(blockToText).join("\n");
+}
+
+function blockToText(block: ToolResultBlock): string {
+  switch (block.type) {
+    case "text":
+      return block.text;
+    case "image":
+    case "audio":
+      return `[${block.type} omitted: ${block.mimeType}, ${describeBytes(base64Bytes(block.data))}]`;
+    case "resource":
+      return `[resource omitted: ${block.mimeType ?? "unknown"}, ${describeBytes(base64Bytes(block.blob))}]`;
+  }
+}
 
 /**
  * The proxy's answer to a tool call.

@@ -23,6 +23,7 @@ import { budgetWarningMessage } from "@getlibero/schema";
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import type { ToolResultBlock } from "@getlibero/schema";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
@@ -110,6 +111,9 @@ function capturingLogger(): { lines: Array<{ level: LogLevel } & LogFields>; log
   const lines: Array<{ level: LogLevel } & LogFields> = [];
   return { lines, logger: { log: (level, fields) => lines.push({ level, ...fields }) } };
 }
+
+/** A wire result as the proxy now sends one: one text block (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
 
 describe("replyFor", () => {
   it("posts the model's text when the task completed", () => {
@@ -220,7 +224,7 @@ function fakeTransport(
         return (
           (await answers.call?.(options.body)) ?? {
             status: 200,
-            body: { outcome: "ran", id: "call-1", result: { content: "upstream said so" } }
+            body: { outcome: "ran", id: "call-1", result: { content: text("upstream said so") } }
           }
         );
       }
@@ -659,7 +663,7 @@ describe("createMentionHandler", () => {
           body: {
             outcome: "ran",
             id: "call-1",
-            result: { content: "[]" },
+            result: { content: text("[]") },
             warning: { limit: "daily_tokens", spent: 812_345, cap: 1_000_000 }
           }
         })
@@ -715,7 +719,7 @@ describe("createMentionHandler", () => {
           body: {
             outcome: "ran",
             id: "call-1",
-            result: { content: "[]" },
+            result: { content: text("[]") },
             warning: { limit: "daily_tokens", spent: 812_345, cap: 1_000_000 }
           }
         })
@@ -1133,7 +1137,7 @@ describe("a held call in a task", () => {
                 ticket: { id: "tk-7f3a", expiresAt: Date.UTC(2026, 7, 4, 12, 15) }
               }
             }
-          : { status: 200, body: { outcome: "ran", id: "call-1", result: { content: "merged #42" } } }
+          : { status: 200, body: { outcome: "ran", id: "call-1", result: { content: text("merged #42") } } }
     });
     let turn = 0;
     const runner = createTaskRunner({

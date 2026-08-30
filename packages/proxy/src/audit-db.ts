@@ -477,6 +477,12 @@ export type AuditRowValues = Readonly<Record<ChainedColumn, string | number | nu
  * Every numeric column here holds an integer inside `Number.MAX_SAFE_INTEGER`
  * — `at` is epoch ms, `day_spend_micro_usd` is exact past nine billion dollars,
  * `result_bytes` is bounded by the result cap and `result_is_error` is 0 or 1 —
+ * where "bounded by the result cap" is since #500 a statement about magnitude
+ * rather than an identity: the cap counts a text block's characters and a
+ * binary block's decoded bytes, and this column counts utf8 bytes and the same
+ * decoded bytes, so the two agree on binary and differ on multi-byte text by
+ * the factor utf8 costs. `resultCost` in `@getlibero/schema` holds both rules.
+ * Neither can leave the safe-integer range, which is all this paragraph asks —
  * so each renders without a fraction or an exponent. A future column that is not
  * is a serialization change, which is to say a chain break.
  *

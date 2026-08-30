@@ -22,6 +22,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after as afterAll, afterEach, before as beforeAll, beforeEach, describe, it } from "node:test";
 import { each, waitFor } from "@getlibero/test-kit";
 import { expect } from "expect";
+import { type ToolResultBlock, resultText } from "@getlibero/schema";
 import {
   ProxyError,
   type ResolvedToolCall,
@@ -232,13 +233,16 @@ function asked(fields: Record<string, unknown>): Record<string, unknown> {
  * credential, so "a refused call leaves no trace upstream" is the assertion
  * that `seen` is still empty.
  */
+/** One text block, which is every result the proxy currently produces (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
+
 function recordingDispatcher(): ToolDispatcher & { seen: ResolvedToolCall[] } {
   const seen: ResolvedToolCall[] = [];
   return {
     seen,
     dispatch(call: ResolvedToolCall) {
       seen.push(call);
-      return { outcome: "ran", result: { content: "upstream said so", isError: false } };
+      return { outcome: "ran", result: { content: text("upstream said so"), isError: false } };
     }
   };
 }
@@ -2201,7 +2205,7 @@ credential = "github_service_account"
 
       const parsed = ToolCallResponse.parse(response.body);
       expect(parsed.outcome).toBe("ran");
-      const content = parsed.outcome === "ran" ? parsed.result.content : "";
+      const content = parsed.outcome === "ran" ? resultText(parsed.result.content) : "";
       // The upstream really did receive it, so the assertion below is not vacuous.
       expect(authsSeen()).not.toHaveLength(0);
       for (const seen of authsSeen()) expect(seen).toBe(`Bearer ${VAULT_VALUE}`);

@@ -17,6 +17,7 @@ import { DEFAULT_AGENT_LOOP_CAPS } from "@getlibero/agent";
 import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/gateway";
 import { describe, it } from "node:test";
 import { expect } from "expect";
+import type { ToolResultBlock } from "@getlibero/schema";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
@@ -54,7 +55,7 @@ const transport: ProxyTransport = {
     if (options.path === "/v1/spend") return Promise.resolve({ status: 200, body: { outcome: "recorded" } });
     return Promise.resolve({
       status: 200,
-      body: { outcome: "ran", id: (options.body as { id: string }).id, result: { content: "ok" } }
+      body: { outcome: "ran", id: (options.body as { id: string }).id, result: { content: text("ok") } }
     });
   }
 };
@@ -123,6 +124,9 @@ const mention = (text: string, eventId: string) => ({
   threadTs: THREAD,
   eventId
 });
+
+/** A wire result as the proxy now sends one: one text block (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
 
 describe("the live checklist", () => {
   // "A multi-step task produces exactly one checklist message in the thread,
