@@ -151,7 +151,12 @@ export interface SandboxDispatcherOptions {
   readonly queueWaitMs?: number;
 }
 
-const ran = (content: string): Dispatch => ({ outcome: "ran", result: { content, isError: false } });
+// One text block: `render` below already flattens a run to the text a model
+// reads, and stdout is text by construction.
+const ran = (content: string): Dispatch => ({
+  outcome: "ran",
+  result: { content: [{ type: "text", text: content }], isError: false }
+});
 
 export function createSandboxDispatcher(options: SandboxDispatcherOptions): SandboxDispatcher {
   const target = new URL(options.url);

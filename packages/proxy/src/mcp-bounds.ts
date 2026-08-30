@@ -21,7 +21,8 @@
 // rather than inlined, and the one thing this module vouches for about a catalog
 // entry is its name.
 
-import { MAX_TOOL_DESCRIPTION, ToolInputSchema } from "@getlibero/schema";
+import { MAX_TOOL_DESCRIPTION, ToolInputSchema, base64Bytes, describeBytes } from "@getlibero/schema";
+import type { ToolResultBlock } from "@getlibero/schema";
 
 /** How much upstream-authored text may appear inside a placeholder or an error line. */
 const MAX_RELAYED_MESSAGE = 300;
@@ -90,27 +91,18 @@ export function relayedDetail(text: string): string {
   return truncate(text, MAX_RELAYED_MESSAGE);
 }
 
-/** Base64 decodes to three bytes per four characters, less the padding. */
-function base64Bytes(data: string): number {
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
-}
-
-function describeBytes(count: number): string {
-  if (count < 1024) return `${count} bytes`;
-  if (count < 1024 * 1024) return `${Math.round(count / 1024)} KB`;
-  return `${Math.round(count / (1024 * 1024))} MB`;
-}
-
 /**
  * One content block, as the one line of text a `ToolResult` can carry.
  *
- * **Binary payloads are named, not inlined.** `ToolResult.content` is a string
- * that becomes a `tool_result` block in the model's context, where a base64
- * blob is neither viewable as an image nor cheap: it would spend the channel's
- * token budget and inflate the audit row's byte count to deliver something the
- * model cannot use. Naming the type and the size tells the model a thing came
- * back and what it was, which is what lets it say so rather than retry.
+ * **Binary payloads are named, not inlined — for now, and for a smaller
+ * reason than before.** Inlining base64 into text was never the fix: it is not
+ * viewable as an image, and it would spend the channel's token budget and
+ * inflate the audit row's byte count to deliver something the model cannot use.
+ * That argument is untouched. What has changed is that naming is no longer the
+ * only alternative — #500 gave the wire a block for the payload itself, and
+ * #501 is this function learning to reach for it. Every placeholder below
+ * survives that as the answer for a type no provider can be handed, and for a
+ * payload the channel's cap will not pay for.
  *
  * Every label here is upstream-authored text entering the model's context, so
  * every one is truncated. A hostile `mimeType` gets 64 characters, not a
@@ -153,7 +145,7 @@ function blockText(block: unknown): string | null {
 }
 
 /**
- * A `CallToolResult` as the one string and one flag a `ToolResult` holds.
+ * A `CallToolResult` as the blocks and the one flag a `ToolResult` holds.
  *
  * `null` when the shape is not a `CallToolResult` at all, which the caller
  * reports as a protocol error rather than as an empty answer.
@@ -163,10 +155,13 @@ function blockText(block: unknown): string | null {
  * hand the model every well-behaved server's answer twice. It is used only when
  * the content array produced no text at all.
  *
- * Relaying only text is a documented limit rather than an oversight: images,
- * audio, and binary resources need `ToolResult.content` to stop being a string,
- * which is a change across the schema, the agent, and every provider adapter.
- * That is a filed follow-up.
+ * **This still relays only text, and that is now a half-finished change rather
+ * than a documented limit.** `ToolResult.content` stopped being a string in
+ * #500, so the shape no longer forbids an image; what has not happened yet is
+ * this function learning to promote one, which is #501. Until it does, every
+ * result is the single text block below and `blockText` still names what it
+ * cannot carry. The bound that promotion has to respect is already decided and
+ * written down — see `resultCost` in `@getlibero/schema`.
  *
  * **`maxChars` is required and has no default here.** It is the channel's, from
  * `[llm] max_result_chars` and whatever the tool's own entry overrode it with,
@@ -178,7 +173,7 @@ function blockText(block: unknown): string | null {
 export function toolResultText(
   result: Record<string, unknown>,
   maxChars: number
-): { content: string; isError: boolean } | null {
+): { content: ToolResultBlock[]; isError: boolean } | null {
   const blocks = result["content"];
   if (!Array.isArray(blocks)) return null;
 
@@ -203,7 +198,10 @@ export function toolResultText(
       ? JSON.stringify(result["structuredContent"])
       : joined;
 
-  return { content: boundedResult(content, maxChars), isError };
+  // One text block, which is every result this function can still produce.
+  // #501 is what makes it emit more than one; until then the array is the
+  // shape and the flattening above is unchanged.
+  return { content: [{ type: "text", text: boundedResult(content, maxChars) }], isError };
 }
 
 /**
@@ -212,11 +210,20 @@ export function toolResultText(
  * **Characters, not bytes.** Every bound in this module counts characters —
  * `truncate`, `MAX_RELAYED_MESSAGE`, `MAX_LABEL`, `MAX_URI` — and so does
  * `[llm] max_history_chars`, the sheet field this one sits beside. Slicing on
- * bytes would also mean cutting mid-sequence, and `ToolResult.content` is a
- * string that survives this function all the way to a provider. The audit row's
- * `result_bytes` still counts bytes, and that is not an inconsistency: it
- * answers a different question, existing to correlate with the next turn's input
- * tokens, and tokenizers are byte-shaped.
+ * bytes would also mean cutting mid-sequence, and this text survives all the way
+ * to a provider. The audit row's `result_bytes` still counts bytes, and that is
+ * not an inconsistency: it answers a different question, existing to correlate
+ * with the next turn's input tokens, and tokenizers are byte-shaped.
+ *
+ * **What a binary block will cost is decided and is not this function's.** Since
+ * #500 the cap is one number over the whole result, where a text block pays its
+ * character count and a binary block pays its decoded bytes; `resultCost` in
+ * `@getlibero/schema` is that rule and carries the argument for it. The
+ * asymmetry to know before writing #501 is that binary has no equivalent of
+ * what happens here — a payload past the cap degrades to `blockText`'s
+ * placeholder rather than being sliced, because half a base64 payload is a
+ * corrupt image rather than a short one, and there is no notice to append that
+ * would make it decode.
  *
  * **The number recorded in the audit row is therefore the truncated length**,
  * which is the right one for what that column is for: the next turn's input

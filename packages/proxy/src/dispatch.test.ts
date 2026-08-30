@@ -13,6 +13,7 @@ import {
   markProvisional
 } from "./dispatch.js";
 import type { CallLimits } from "./enforce.js";
+import type { ToolResultBlock } from "@getlibero/schema";
 
 /**
  * The channel's bound on a result, which every `callTool` now carries.
@@ -45,8 +46,11 @@ const realMeter: SpendMeter = {
   claimWarning: () => false
 };
 
+/** One text block, which is every result the proxy currently produces (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
+
 const realDispatcher: ToolDispatcher = {
-  dispatch: (): Dispatch => ({ outcome: "ran", result: { content: "", isError: false } })
+  dispatch: (): Dispatch => ({ outcome: "ran", result: { content: text(""), isError: false } })
 };
 
 /**
@@ -92,19 +96,19 @@ describe("createToolDispatcher", () => {
       mcp: {
         dispatch: (_call: ResolvedToolCall, server: McpServer): Dispatch => {
           seen.mcp.push(server);
-          return { outcome: "ran", result: { content: "mcp", isError: false } };
+          return { outcome: "ran", result: { content: text("mcp"), isError: false } };
         }
       },
       builtin: {
         run: (_call: ResolvedToolCall, tool: StoreBuiltinName): Dispatch => {
           seen.builtin.push(tool);
-          return { outcome: "ran", result: { content: "builtin", isError: false } };
+          return { outcome: "ran", result: { content: text("builtin"), isError: false } };
         }
       },
       sandbox: {
         run: (): Dispatch => {
           seen.sandbox += 1;
-          return { outcome: "ran", result: { content: "sandbox", isError: false } };
+          return { outcome: "ran", result: { content: text("sandbox"), isError: false } };
         }
       }
     };
@@ -114,7 +118,7 @@ describe("createToolDispatcher", () => {
     const { seen, mcp, builtin } = arms();
     const result = createToolDispatcher({ mcp, builtin }).dispatch(call, { kind: "mcp", upstream }, LIMITS);
 
-    expect(result).toEqual({ outcome: "ran", result: { content: "mcp", isError: false } });
+    expect(result).toEqual({ outcome: "ran", result: { content: text("mcp"), isError: false } });
     // The arm receives the `McpServer`, not the `Target` around it: it cannot
     // be handed a built-in, so it needs no branch that could mistake one.
     expect(seen.mcp).toEqual([upstream]);
@@ -129,7 +133,7 @@ describe("createToolDispatcher", () => {
       LIMITS
     );
 
-    expect(result).toEqual({ outcome: "ran", result: { content: "builtin", isError: false } });
+    expect(result).toEqual({ outcome: "ran", result: { content: text("builtin"), isError: false } });
     expect(seen.builtin).toEqual(["search_channel_history"]);
     // The arm that holds the vault and the client pool saw nothing.
     expect(seen.mcp).toEqual([]);
@@ -154,7 +158,7 @@ describe("createToolDispatcher", () => {
       LIMITS
     );
 
-    expect(result).toEqual({ outcome: "ran", result: { content: "sandbox", isError: false } });
+    expect(result).toEqual({ outcome: "ran", result: { content: text("sandbox"), isError: false } });
     expect(seen.sandbox).toBe(1);
     // The store-backed arm and the credential-holding arm both saw nothing.
     expect(seen.builtin).toEqual([]);

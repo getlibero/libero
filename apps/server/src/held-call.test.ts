@@ -20,6 +20,7 @@ import { createGateway, createSilentLogger, createStubSlack } from "@getlibero/g
 import { describe, it } from "node:test";
 import { waitFor } from "@getlibero/test-kit";
 import { expect } from "expect";
+import type { ToolResultBlock } from "@getlibero/schema";
 import {
   DEFAULT_FOLLOW_UP_WINDOW_MS,
   DEFAULT_HISTORY_BOUNDS,
@@ -28,6 +29,9 @@ import {
   DEFAULT_SKILL_SETTINGS,
   createServer
 } from "./compose.js";
+
+/** A wire result as the proxy now sends one: one text block (#500). */
+const text = (content: string): ToolResultBlock[] => [{ type: "text", text: content }];
 
 const TEAM = "T024BE7LD";
 const CHANNEL = "C024BE91L";
@@ -119,7 +123,7 @@ function fakeProxy(redeemed: () => ProxyResponse): {
 
 const RAN: ProxyResponse = {
   status: 200,
-  body: { outcome: "ran", id: "call-1", result: { content: "merged #42" } }
+  body: { outcome: "ran", id: "call-1", result: { content: text("merged #42") } }
 };
 
 const refusedWith = (reason: string): ProxyResponse => ({

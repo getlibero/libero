@@ -1501,6 +1501,24 @@ channel's own `max_tokens_per_task`, so a channel raising it spends only its own
 budget. Two entries naming one tool resolve most-restrictive-wins, as `approval`
 does.
 
+Since #500 a result is a block array rather than a string, and this one number
+still bounds the whole of it: a text block pays its character count — exactly
+what the cap counted when content was a string, so no channel's setting changed
+meaning — and a binary block pays its **decoded** bytes. `resultCost` in
+`@getlibero/schema` is the rule and carries the argument, including the two
+readings declined: a per-block cap, which would let forty blocks cost forty
+times what an operator agreed to once, and a second byte-denominated bound for
+binary alone, which keeps the units honest at the price of a ceiling that exists
+in no sheet and no environment variable and that nobody has ever tuned.
+
+The unit mismatch inside that sum is the price, and what it buys is the default:
+32,768 already bounds an image, so **nothing binary reaches a model until an
+operator raises a number**, which is the shape every other capability here takes.
+Past the cap the two halves do not behave alike — text truncates and says where
+it was cut, while a binary block degrades to the placeholder naming its type and
+size. Half a base64 payload is a corrupt image rather than a short one, and
+there is no notice to append that would make it decode.
+
 They are layered, not alternatives. The wire bound sits well above the result
 bound so an ordinary large answer — a wide file listing, a long diff — is
 truncated and says so, and only a pathological one is refused outright. A
@@ -1520,6 +1538,17 @@ what that column is for: it exists to correlate with the next turn's input
 tokens, and those are driven by what the model was handed rather than by what the
 upstream sent. The original size is not lost — it is in the notice the model
 reads.
+
+It is a **different number from the cap's**, and `resultBytes` is a second
+function rather than an argument to the first. They agree on a binary block and
+differ on text, where the cap counts characters and this counts utf8 bytes,
+because one answers what a channel may spend and the other what the call moved;
+one function serving both would have to be wrong for one of them. A binary block
+is counted decoded here too — the encoded length is closer to what the transport
+carried, and it was declined because it disagrees with the sentence the model is
+handed (`[image omitted: image/png, 4823 bytes]` has always been decoded) and
+would inflate the column by a third against every row already written, on a
+measure whose whole purpose is comparison over time.
 
 ### The third bound, which makes the other two multiply out
 

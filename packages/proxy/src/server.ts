@@ -79,7 +79,8 @@ import {
   type ToolCallResponse,
   type ToolRefusal,
   type ToolResult,
-  resolveToolCall
+  resolveToolCall,
+  resultBytes
 } from "@getlibero/schema";
 import { createApprovalStore, type RedeemResult } from "./approvals.js";
 import { createApprovalsRoute } from "./approvals-route.js";
@@ -693,8 +694,10 @@ export function createProxyServer(options: ProxyServerOptions): Server {
             ? {
                 // Bytes, not `String.length`, which counts UTF-16 code units:
                 // this number exists to correlate with the next turn's input
-                // tokens, and tokenizers are byte-shaped.
-                resultBytes: Buffer.byteLength(event.result.content, "utf8"),
+                // tokens, and tokenizers are byte-shaped. Since #500 the sum is
+                // `resultBytes`', because a result is blocks and a binary one
+                // is counted decoded — the rule and its argument are there.
+                resultBytes: resultBytes(event.result.content),
                 resultIsError: event.result.isError
               }
             : {})

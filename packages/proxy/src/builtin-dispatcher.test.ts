@@ -11,7 +11,8 @@ import {
   SCHEDULED_TASK_MAX_HORIZON_MINUTES,
   SCHEDULED_TASK_MAX_PENDING,
   SCHEDULED_TASK_MIN_LEAD_MINUTES,
-  parseScheduledTask
+  parseScheduledTask,
+  resultText
 } from "@getlibero/schema";
 import type { ResolvedToolCall } from "@getlibero/schema";
 import { createBuiltinDispatcher } from "./builtin-dispatcher.js";
@@ -44,7 +45,7 @@ function callWith(args: Record<string, unknown>, channel = CHANNEL): ResolvedToo
 /** The `ran` result's text, or a failure that names what came back instead. */
 function textOf(dispatch: Dispatch): string {
   if (dispatch.outcome !== "ran") throw new Error(`expected ran, got ${dispatch.outcome}`);
-  return dispatch.result.content;
+  return resultText(dispatch.result.content);
 }
 
 function search(args: Record<string, unknown>, limits = LIMITS, channel = CHANNEL): Dispatch {

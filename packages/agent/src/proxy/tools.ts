@@ -36,6 +36,7 @@ import {
   BUILTIN_SERVER,
   ToolListing,
   refusalMessage,
+  resultText,
   type ApprovalTicket,
   type BudgetWarning,
   type ToolCall as WireToolCall,
@@ -265,16 +266,22 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
     mapped: MappedTool
   ): ToolResult {
     if (answer.warning !== undefined) onBudgetWarning?.(answer.warning);
+    // **The seam #502 removes.** The wire carries blocks as of #500 and the
+    // loop still carries a string, so this is where one becomes the other.
+    // Every result the proxy can currently produce is a single text block, so
+    // nothing is lost here yet; what #502 changes is the loop's own type, and
+    // this call goes away with it rather than moving.
+    const text = resultText(answer.result.content);
     if (isScheduleCreate(mapped) && !answer.result.isError) {
       // Synchronous, and before the result reaches the model — which is what
       // makes the proxy's pending count exact against a model rather than
       // approximately right. A task's tool calls are dispatched one at a time,
       // and this write lands before the next create is submitted.
-      if (onScheduledTask === undefined || !onScheduledTask(answer.result.content)) {
+      if (onScheduledTask === undefined || !onScheduledTask(text)) {
         return { content: NOT_RECORDED, isError: true };
       }
     }
-    return answer.result;
+    return { content: text, isError: answer.result.isError };
   }
 
   /** One submission: POST the body, insist on an answer that parses. */

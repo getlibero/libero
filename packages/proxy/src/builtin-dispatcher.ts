@@ -174,9 +174,11 @@ function fit(hits: readonly StoredMessage[], maxChars: number): string {
   return [...lines, notice].join("\n");
 }
 
+// Every built-in answers in text, so the block array each one produces holds
+// exactly one text block. Call sites keep handing this a string.
 const ran = (content: string, isError = false): Dispatch => ({
   outcome: "ran",
-  result: { content, isError } satisfies ToolResult
+  result: { content: [{ type: "text", text: content }], isError } satisfies ToolResult
 });
 
 const refused = (refusal: ToolRefusal): Dispatch => ({ outcome: "refused", refusal });

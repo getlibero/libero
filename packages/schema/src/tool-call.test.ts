@@ -1,7 +1,17 @@
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
-import { ToolCall, ToolCallResponse, resolveToolCall } from "./tool-call.js";
+import {
+  MAX_RESULT_MIME_TYPE,
+  ToolCall,
+  ToolCallResponse,
+  ToolResult,
+  ToolResultBlock,
+  resolveToolCall,
+  resultBytes,
+  resultCost,
+  resultText
+} from "./tool-call.js";
 
 const wire = {
   id: "toolu_01",
@@ -174,8 +184,16 @@ describe("the proxy's answer to a call", () => {
 
   it("parses each of the three outcomes", () => {
     expect(
-      ToolCallResponse.parse({ outcome: "ran", id: "toolu_01", result: { content: "ok" } })
-    ).toEqual({ outcome: "ran", id: "toolu_01", result: { content: "ok", isError: false } });
+      ToolCallResponse.parse({
+        outcome: "ran",
+        id: "toolu_01",
+        result: { content: [{ type: "text", text: "ok" }] }
+      })
+    ).toEqual({
+      outcome: "ran",
+      id: "toolu_01",
+      result: { content: [{ type: "text", text: "ok" }], isError: false }
+    });
 
     expect(ToolCallResponse.parse({ outcome: "held", id: "toolu_01", refusal, ticket })).toEqual({
       outcome: "held",
@@ -219,7 +237,7 @@ describe("the proxy's answer to a call", () => {
       ToolCallResponse.safeParse({ outcome: "ran", id: "toolu_01", refusal }).success
     ).toBe(false);
     expect(
-      ToolCallResponse.safeParse({ outcome: "refused", id: "toolu_01", result: { content: "" } })
+      ToolCallResponse.safeParse({ outcome: "refused", id: "toolu_01", result: { content: [] } })
         .success
     ).toBe(false);
   });
@@ -234,5 +252,136 @@ describe("the proxy's answer to a call", () => {
 
   it("requires the id, so an answer can be matched to its call", () => {
     expect(ToolCallResponse.safeParse({ outcome: "refused", refusal }).success).toBe(false);
+  });
+});
+
+// #160's shape, and the first block of cases this schema has had of its own —
+// `ToolResult` was asserted only through the response until it stopped being a
+// string.
+describe("what a tool produced", () => {
+  const pixel = "iVBORw0KGgo=";
+
+  it("round-trips every block type unchanged", () => {
+    const content = [
+      { type: "text", text: "here is the chart" },
+      { type: "image", data: pixel, mimeType: "image/png" },
+      { type: "audio", data: pixel, mimeType: "audio/wav" },
+      { type: "resource", uri: "file:///report.zip", mimeType: "application/zip", blob: pixel }
+    ];
+    expect(ToolResult.parse({ content })).toEqual({ content, isError: false });
+  });
+
+  // The degenerate case, and the one every producer emits until #501: a result
+  // is an array whether or not it holds more than one thing.
+  it("takes a single text block, and an empty array", () => {
+    expect(ToolResult.parse({ content: [{ type: "text", text: "ok" }] }).content).toHaveLength(1);
+    expect(ToolResult.parse({ content: [] })).toEqual({ content: [], isError: false });
+  });
+
+  it("defaults isError to false", () => {
+    expect(ToolResult.parse({ content: [] }).isError).toBe(false);
+  });
+
+  // A bare string was the shape until #500 and is not a shape it still accepts.
+  // The union that would have taken both was declined: normalizing on read is
+  // the trap this file's header names, and both services ship on one tag.
+  it("does not accept the string it used to be", () => {
+    expect(ToolResult.safeParse({ content: "ok" }).success).toBe(false);
+  });
+
+  // Nothing downstream can decode a payload that is not base64. Refusing it
+  // here is refusing it where the tool that produced it is still known.
+  it("rejects a payload that is not base64", () => {
+    expect(ToolResultBlock.safeParse({ type: "image", data: "not!base64", mimeType: "image/png" }).success).toBe(
+      false
+    );
+    expect(ToolResultBlock.safeParse({ type: "resource", uri: "file:///x", blob: "!!" }).success).toBe(false);
+  });
+
+  each([
+    ["an image with no mimeType", { type: "image", data: "iVBORw0KGgo=" }],
+    ["an audio block with no data", { type: "audio", mimeType: "audio/wav" }],
+    ["a resource with no uri", { type: "resource", blob: "iVBORw0KGgo=" }],
+    ["a block of no known type", { type: "hologram", data: "iVBORw0KGgo=" }],
+    ["a text block carrying a payload", { type: "text", text: "x", data: "iVBORw0KGgo=" }]
+  ])("rejects %s", (_label, block) => {
+    expect(ToolResultBlock.safeParse(block).success).toBe(false);
+  });
+
+  // Every label is text a model reads, so it is bounded on the wire rather than
+  // on the way out of whichever module happened to render it.
+  it("bounds a mimeType", () => {
+    const long = "image/".concat("x".repeat(MAX_RESULT_MIME_TYPE));
+    expect(ToolResultBlock.safeParse({ type: "image", data: pixel, mimeType: long }).success).toBe(false);
+  });
+});
+
+describe("what a result costs and what it weighed", () => {
+  const pixel = "iVBORw0KGgo=";
+  /** Eight base64 characters of payload, which is six bytes decoded. */
+  const six = { type: "image", data: "AAAAAAAA", mimeType: "image/png" } as const;
+
+  it("costs a text block its characters and a binary block its decoded bytes", () => {
+    expect(resultCost([{ type: "text", text: "abcd" }])).toBe(4);
+    expect(resultCost([six])).toBe(6);
+    expect(resultCost([{ type: "text", text: "abcd" }, six])).toBe(10);
+  });
+
+  it("costs the decoded payload, not the four-thirds base64 spells it in", () => {
+    expect(resultCost([six])).toBeLessThan(six.data.length);
+  });
+
+  // The one case that makes the two numbers different, and the reason they are
+  // two functions: the cap counts what the string costs a context window, and
+  // the audit row counts what crossed.
+  it("weighs multi-byte text in bytes where the cap counted characters", () => {
+    const content = [{ type: "text", text: "café" }] as const;
+    expect(resultCost([...content])).toBe(4);
+    expect(resultBytes([...content])).toBe(5);
+  });
+
+  it("agrees with the cap on a binary block", () => {
+    expect(resultBytes([six])).toBe(resultCost([six]));
+  });
+
+  it("weighs an empty result as nothing", () => {
+    expect(resultCost([])).toBe(0);
+    expect(resultBytes([])).toBe(0);
+  });
+
+  // These sentences are what a model is handed in place of a payload, so their
+  // wording is a compatibility surface. They are the ones the proxy has always
+  // written.
+  it("names what it cannot hand over, in the words the proxy used", () => {
+    expect(resultText([{ type: "image", data: "AAAA", mimeType: "image/png" }])).toBe(
+      "[image omitted: image/png, 3 bytes]"
+    );
+    expect(resultText([{ type: "audio", data: "AAAA", mimeType: "audio/wav" }])).toBe(
+      "[audio omitted: audio/wav, 3 bytes]"
+    );
+    expect(resultText([{ type: "resource", uri: "file:///x", mimeType: "application/zip", blob: "AAAA" }])).toBe(
+      "[resource omitted: application/zip, 3 bytes]"
+    );
+  });
+
+  it("says unknown for a resource that named no type", () => {
+    expect(resultText([{ type: "resource", uri: "file:///x", blob: "AAAA" }])).toBe(
+      "[resource omitted: unknown, 3 bytes]"
+    );
+  });
+
+  it("joins blocks with a newline, as the proxy always has", () => {
+    expect(resultText([{ type: "text", text: "one" }, { type: "text", text: "two" }])).toBe("one\ntwo");
+    expect(resultText([])).toBe("");
+  });
+
+  it("scales a large payload the way the placeholder always did", () => {
+    expect(resultText([{ type: "image", data: "A".repeat(8000), mimeType: "image/png" }])).toBe(
+      "[image omitted: image/png, 6 KB]"
+    );
+  });
+
+  it("does not inline the payload it is naming", () => {
+    expect(resultText([{ type: "image", data: pixel, mimeType: "image/png" }])).not.toContain(pixel);
   });
 });
