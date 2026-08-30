@@ -82,6 +82,17 @@ export interface SheetSpec {
    * proxy's meter, quietly and with the same number of upstream calls.
    */
   readonly maxTokensPerTask?: number;
+  /**
+   * `[llm] max_result_chars`, the channel's bound on one tool answer.
+   *
+   * Written out only by the case that is about the bound itself, like
+   * `maxHistoryMessages` above. The default of 32,768 is what makes "nothing
+   * binary reaches a model until an operator raises a number" true, so a case
+   * that wants a payload to *cross* has to say so here — and one that wants to
+   * watch it degrade should leave this alone rather than pick a small number,
+   * because the default is the behaviour every deployment has.
+   */
+  readonly maxResultChars?: number;
   readonly dailyTokens?: number;
   readonly dailyToolCalls?: number;
   /**
@@ -382,6 +393,9 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
             : []),
           ...(spec.maxHistoryMessages !== undefined
             ? [`max_history_messages = ${spec.maxHistoryMessages}`]
+            : []),
+          ...(spec.maxResultChars !== undefined
+            ? [`max_result_chars = ${spec.maxResultChars}`]
             : []),
           ``,
           `[budget]`,

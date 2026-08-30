@@ -47,6 +47,12 @@ export interface AuditRow {
    */
   readonly destination: string | null;
   /**
+   * What a served result was made of, by kind (#501): decoded bytes per block
+   * type, as JSON, summing to `result_bytes`. Null on exactly the rows
+   * `result_bytes` is null on.
+   */
+  readonly result_bytes_by_type: string | null;
+  /**
    * #354. The chain. `prev_hash` is the previous row's `row_hash`, and the first
    * row's is a stated genesis constant; neither is null, because the migration
    * gives every row it copies one.

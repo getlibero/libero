@@ -821,6 +821,17 @@ outlive the run.
   the proxy's meter from a call nobody asked for; and a summarization turn
   reaching for a proxied tool reaching no upstream and no audit row. The other
   half of `deletion-derived.test.ts`, which plants what this writes.
+- `src/content-blocks.test.ts` — #503, the end of #160: an upstream's image
+  reaching the model as an `image` block byte for byte on a channel that raised
+  `[llm] max_result_chars`, with the audit row's `result_bytes_by_type` saying
+  what crossed; audio and a binary resource crossing the same way; what the wire
+  has no member for degrading to a sentence and provably not to base64; the
+  default cap handing over the sentence and never the payload; and the attack
+  leg #501's redaction decision exists for — a canary planted in a payload's
+  *decoded* bytes, which the wire scan cannot spell, failing the whole result
+  closed rather than one block of it. Also the file that found the SDK's result
+  narrowing: two of those degradations are only reachable on the legacy era, and
+  it is written to say so rather than to skip them.
 - `src/skill-maintenance.test.ts` — #308/#305/#294/#295, the background half of
   the skill layer: the embedding pass sending descriptions and provably never a
   body; the lifecycle job writing nothing on first sight and then moving exactly
