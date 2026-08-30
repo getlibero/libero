@@ -70,6 +70,26 @@ describe("rendering a run for the model", () => {
       expect(text.length).toBeGreaterThan(200);
       expect(text.slice(0, 200)).not.toContain("truncated");
     });
+
+    // #509. A run's stdout is arbitrary program output, which makes this the
+    // cutting site likeliest to hold a two-code-unit character at the offset the
+    // cap lands on — and until #509 it was one of the two that sliced without
+    // the guard `boundedText` had. Two adjacent caps, because exactly one of
+    // them splits a pair whatever the length of the header above the output, and
+    // neither may leave a lone high surrogate behind.
+    it("never leaves a lone surrogate at the cut", () => {
+      for (const cap of [200, 201]) {
+        const text = render(result({ stdout: "\u{1F680}".repeat(2_000) }), cap, ASKED);
+
+        expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text)).toBe(false);
+        // The notice reports what was kept rather than the cap. They differ by
+        // one on exactly the cases the guard fires for, and the kept length is
+        // the number the audit row's `result_bytes` agrees with.
+        const kept = text.slice(0, text.lastIndexOf("\n[result truncated: "));
+        expect(kept.length).toBeLessThanOrEqual(cap);
+        expect(text).toContain(`[result truncated: ${String(kept.length)} of `);
+      }
+    });
   });
 });
 

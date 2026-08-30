@@ -1548,6 +1548,20 @@ it was cut, while a binary block degrades to the placeholder naming its type and
 size. Half a base64 payload is a corrupt image rather than a short one, and
 there is no notice to append that would make it decode.
 
+**Where a cut lands is one rule in one function** (#509). `cutAt` in
+`mcp-bounds.ts` keeps at most `limit` code units and drops one more where the cut
+split a surrogate pair: a lone high surrogate is not a character, it survives
+`JSON.stringify` as `\ud83d`, and what a tokenizer does with it is the provider's
+business rather than something this proxy should be finding out per upstream. All
+three places that cut call it — the result bound above, `truncate` on every
+upstream-authored label, and `render` on a sandbox run's stdout, which is
+arbitrary program output and so the likeliest of the three to hold an emoji at an
+arbitrary offset. A caller keeps its own notice and its own ellipsis; none of
+them keeps its own slice, so a fourth cutting site is a call rather than a fourth
+re-derivation. What follows from that is the number a notice reports: the
+**kept** length, not the cap, because the guard makes those different on exactly
+the cases it fires for, and the kept length is what `result_bytes` counts.
+
 **The cap is walked in order** (#501), rather than fitted across the array by
 some best-fit: the order is the server's own, and the first thing it said is the
 thing it led with. Each block is charged against what is left, and the walk stops
