@@ -17,6 +17,7 @@ import {
   SKILL_MERGE_SYSTEM_PROMPT,
   SUMMARIZATION_SYSTEM_PROMPT
 } from "@getlibero/agent";
+import { resultText } from "@getlibero/schema";
 import type {
   CompletionClient,
   CompletionRequest,
@@ -146,7 +147,11 @@ export function relays(): ScriptTurn {
     says(
       request.messages
         .filter(message => message.role === "tool")
-        .map(message => message.content)
+        // Flattened with the canonical flatten, so a text result relays exactly
+        // the characters it always did and a binary one relays the sentence
+        // naming it rather than its payload. The canary scan depends on the
+        // first half of that; #503 is what asserts the second.
+        .map(message => resultText(message.content))
         .join("\n")
     );
 }

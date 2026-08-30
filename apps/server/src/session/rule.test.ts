@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
-import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER } from "@getlibero/schema";
+import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER, textBlock } from "@getlibero/schema";
 import type { AmbientRule } from "@getlibero/schema";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
 import type { MessageStore, StoredMessage } from "@getlibero/memory";
@@ -406,7 +406,7 @@ describe("a rule whose channel opted into tools", () => {
           ]),
         execute: (call: { name: string }, attribution: { requestingUser: string; taskId: string }) => {
           executed.push({ name: call.name, ...attribution });
-          return Promise.resolve({ content: result });
+          return Promise.resolve({ content: [textBlock(result)] });
         }
       }
     };

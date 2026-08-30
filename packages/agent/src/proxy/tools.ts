@@ -37,6 +37,7 @@ import {
   ToolListing,
   refusalMessage,
   resultText,
+  textBlock,
   type ApprovalTicket,
   type BudgetWarning,
   type ToolCall as WireToolCall,
@@ -266,22 +267,26 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
     mapped: MappedTool
   ): ToolResult {
     if (answer.warning !== undefined) onBudgetWarning?.(answer.warning);
-    // **The seam #502 removes.** The wire carries blocks as of #500 and the
-    // loop still carries a string, so this is where one becomes the other.
-    // Every result the proxy can currently produce is a single text block, so
-    // nothing is lost here yet; what #502 changes is the loop's own type, and
-    // this call goes away with it rather than moving.
-    const text = resultText(answer.result.content);
     if (isScheduleCreate(mapped) && !answer.result.isError) {
+      // The one place in this package that still flattens a result, and it is a
+      // *consumer* rather than the seam #502 removed: a `schedule_task` create
+      // answers in text by construction, because what it answers with is a
+      // serialized record. Flattened with the canonical flatten rather than by
+      // reaching into the array for a block it hopes is text, and computed only
+      // in this branch, so an ordinary call pays nothing for it.
+      //
       // Synchronous, and before the result reaches the model — which is what
       // makes the proxy's pending count exact against a model rather than
       // approximately right. A task's tool calls are dispatched one at a time,
       // and this write lands before the next create is submitted.
-      if (onScheduledTask === undefined || !onScheduledTask(text)) {
-        return { content: NOT_RECORDED, isError: true };
+      if (onScheduledTask === undefined || !onScheduledTask(resultText(answer.result.content))) {
+        return { content: [textBlock(NOT_RECORDED)], isError: true };
       }
     }
-    return { content: text, isError: answer.result.isError };
+    // Relayed as it arrived. Nothing between the proxy and the provider's
+    // adapter renders a result any more; what a provider cannot take is that
+    // adapter's question, and it has the list.
+    return { content: answer.result.content, isError: answer.result.isError };
   }
 
   /** One submission: POST the body, insist on an answer that parses. */
@@ -376,7 +381,9 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
           taskId: attribution.taskId
         });
         return {
-          content: `\`${call.name}\` is not a tool this channel permits. The call was not made.`,
+          content: [
+            textBlock(`\`${call.name}\` is not a tool this channel permits. The call was not made.`)
+          ],
           isError: true
         };
       }
@@ -402,13 +409,13 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
         case "refused":
           // Relayed as what it is. `refusalMessage` words it, so the sentence a
           // channel sees cannot disagree with the reason the proxy gave.
-          return { content: refusalMessage(answer.refusal), isError: true };
+          return { content: [textBlock(refusalMessage(answer.refusal))], isError: true };
         case "held": {
           // With nothing to ask a human through, a hold is relayed like a
           // refusal — safe, and it abandons a call a human could have
           // approved. The hold's own sentence says it is held.
           if (onHeld === undefined) {
-            return { content: refusalMessage(answer.refusal), isError: true };
+            return { content: [textBlock(refusalMessage(answer.refusal))], isError: true };
           }
 
           // What the prompter wants told when the re-submission answers, if it
@@ -472,7 +479,7 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
             case "held":
             case "refused":
               completion?.({ state: "refused", refusal: redeemed.refusal });
-              return { content: refusalMessage(redeemed.refusal), isError: true };
+              return { content: [textBlock(refusalMessage(redeemed.refusal))], isError: true };
           }
         }
       }

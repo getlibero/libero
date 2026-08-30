@@ -80,7 +80,8 @@ import {
   type ToolRefusal,
   type ToolResult,
   resolveToolCall,
-  resultBytes
+  resultBytes,
+  resultBytesByType
 } from "@getlibero/schema";
 import { createApprovalStore, type RedeemResult } from "./approvals.js";
 import { createApprovalsRoute } from "./approvals-route.js";
@@ -698,6 +699,11 @@ export function createProxyServer(options: ProxyServerOptions): Server {
                 // `resultBytes`', because a result is blocks and a binary one
                 // is counted decoded — the rule and its argument are there.
                 resultBytes: resultBytes(event.result.content),
+                // The same bytes, split by kind (#501). Written whenever the
+                // total is, including for an all-text result: a reader telling
+                // "all text" from "not recorded" needs the two to look
+                // different.
+                resultBytesByType: resultBytesByType(event.result.content),
                 resultIsError: event.result.isError
               }
             : {})

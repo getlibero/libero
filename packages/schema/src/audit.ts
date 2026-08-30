@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { refusalMessage } from "./refusal.js";
 import type { BudgetLimit, RefusalReason } from "./refusal.js";
+import type { ToolResultBlock } from "./tool-call.js";
 
 /**
  * One row of the audit log: what the proxy did with one tool call.
@@ -177,6 +178,28 @@ export interface AuditRecord {
    * what the upstream did has to count `unanswered` separately.
    */
   readonly resultBytes?: number;
+  /**
+   * What crossed, by kind: the same bytes as `resultBytes`, split by block type
+   * (#501).
+   *
+   * `resultBytes` says how much, and that was the whole answer while a result
+   * was a string. Since #160 a result can be a screenshot, and the operator
+   * question the total cannot answer is which calls are moving binary at all —
+   * whether the spike in a channel's spend is a chatty tool or one that started
+   * returning images, and how much of a raised `max_result_chars` a payload is
+   * eating.
+   *
+   * A partial record: a type absent means no block of that type crossed, which
+   * is why zero is never written. The recorded values sum to `resultBytes`
+   * exactly, so a reader can check the two against each other rather than
+   * having to trust one.
+   *
+   * Set exactly when `resultBytes` is, including on a result whose only block
+   * is text — the shape is the same question either way, and a reader
+   * distinguishing "all text" from "not recorded" needs the empty case to be
+   * different from the absent one.
+   */
+  readonly resultBytesByType?: Readonly<Partial<Record<ToolResultBlock["type"], number>>>;
   /**
    * Whether the tool reported its own failure. Distinct from `outcome`, which is
    * the proxy's verdict: a call the proxy served perfectly can carry a 404 from

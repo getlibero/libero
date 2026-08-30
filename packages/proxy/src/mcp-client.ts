@@ -63,7 +63,7 @@ import {
   isInputRequired,
   parseToolsList,
   relayedDetail,
-  toolResultText
+  boundedToolResult
 } from "./mcp-bounds.js";
 import {
   type CredentialSource,
@@ -75,7 +75,7 @@ import {
   UpstreamError,
   createGuardedFetch
 } from "./outbound.js";
-import { RedactionError } from "./redact.js";
+import { RedactionError, type SecretScan } from "./redact.js";
 
 /** What this proxy calls itself to an upstream: the product, never the caller. */
 const CLIENT_NAME = "libero-proxy";
@@ -339,6 +339,25 @@ type FailureSink = {
    * response off mid-read as `too_large`.
    */
   controlPlane: boolean;
+  /**
+   * The scan for the credential this session's last request carried (#501).
+   *
+   * **A function, never the needles.** ./mcp-bounds.ts decodes a result's binary
+   * payloads and has to ask whether a credential is inside them; the values that
+   * could answer that stay in ./outbound.ts's closure, and only the question
+   * travels. `UpstreamRequest.onScan` is the contract and argues the point.
+   *
+   * Replaced per request rather than held per session, because an OAuth source
+   * refreshes mid-session and a scan built at `connect` would go on searching
+   * for a token that has since been replaced.
+   *
+   * Answers `null` to everything until a request has been made, which is not a
+   * hole: a result exists only because a request produced one, and the request
+   * that produced it set this on its way past. Under concurrency this may be a
+   * sibling call's scan — the same attribution `redaction` above accepts, and
+   * for the same reason, since both calls on one session carry one credential.
+   */
+  scan: SecretScan;
 };
 
 /** Put whatever this proxy raised where the catches below can read it. */
@@ -521,6 +540,11 @@ export function createMcpClient(options: McpClientOptions): McpClient {
     const guarded = createGuardedFetch({
         url: options.url,
         source: options.source,
+        // Every request re-arms the sink's scan with the credential that request
+        // carried. See `FailureSink.scan`.
+        onScan: scan => {
+          sink.scan = scan;
+        },
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       // A `DELETE` is control-plane by verb — session termination is the only
       // one ever sent, and nobody reads its answer — so the phase flag need
@@ -578,7 +602,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
 
   /** Connect, adopting a known era when there is one. Closes the client on failure. */
   const connect = async (prior: "legacy" | undefined): Promise<Opened> => {
-    const sink: FailureSink = { redaction: undefined, controlPlane: true };
+    const sink: FailureSink = { redaction: undefined, controlPlane: true, scan: () => null };
     const { client, transport } = build(sink);
     try {
       await client.connect(transport, {
@@ -749,7 +773,7 @@ export function createMcpClient(options: McpClientOptions): McpClient {
         return { kind: "answered", outcome: { outcome: "call_failed", failure: "input_required" } };
       }
 
-      const mapped = toolResultText(record, limits.maxResultChars);
+      const mapped = boundedToolResult(record, limits.maxResultChars, at.sink.scan);
       if (mapped === null) {
         return {
           kind: "answered",

@@ -62,6 +62,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { createCompletionClient, createEmbeddingClient } from "@getlibero/agent";
+import { textBlock } from "@getlibero/schema";
 
 /**
  * The image, by the tag `deploy/docker-compose.yml` runs.
@@ -122,11 +123,22 @@ if (inCi && !socketPresent) {
  * because what matters is the port LiteLLM was told to dial, and a second would
  * be a second thing to tear down.
  */
+/**
+ * What the fake upstream was asked, most recent last.
+ *
+ * The addition #502 needed: a claim about what LiteLLM does to a *request* on
+ * the way through cannot be read off the response. Recording the far side is
+ * what turns "the image did not cross" from an assumption about the adapter
+ * into an observation about the whole hop.
+ */
+const received: Record<string, unknown>[] = [];
+
 function startUpstream(): Promise<{ server: Server; port: number }> {
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", chunk => void (body += chunk));
     request.on("end", () => {
+      if (body !== "") received.push(JSON.parse(body) as Record<string, unknown>);
       response.setHeader("content-type", "application/json");
       if ((request.url ?? "").includes("embeddings")) {
         response.end(
@@ -310,6 +322,56 @@ describe("a live LiteLLM sidecar, through the agent's own adapters", { skip: !so
     });
     expect(response.text).toBe("pong");
     expect(response.stopReason).toBe("end_turn");
+  });
+
+  // #502's leg of #160, and the honest version of it. `deploy/docker-compose.yml`
+  // runs this sidecar behind `AGENT_PROVIDER=openai-compatible`, so the adapter
+  // that reaches it is the OpenAI one — whose `role: "tool"` message takes text
+  // and nothing else. An image is therefore flattened by the agent *before*
+  // LiteLLM sees it, and what this file can honestly measure is that the
+  // flattening survives the hop rather than that LiteLLM carries a block.
+  //
+  // That is worth measuring rather than assuming, because the negative is a
+  // claim about a whole request envelope a third party rewrote: LiteLLM
+  // reassembles the messages it forwards, and "the payload is nowhere in what
+  // came out" is not something the adapter's own suite can see.
+  it("carries a tool result's image as the placeholder and never as base64", { timeout: 60_000 }, async () => {
+    const payload = "aW1hZ2UtcGF5bG9hZC10aHJvdWdoLXRoZS1zaWRlY2Fy";
+    received.length = 0;
+
+    const response = await createCompletionClient({
+      provider: "openai-compatible",
+      apiKey: MASTER_KEY,
+      baseUrl
+    }).complete({
+      model: "conformance-completion",
+      maxTokens: 64,
+      messages: [
+        { role: "user", content: "Show me the failing check." },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call_1", name: "screenshot", arguments: {} }]
+        },
+        {
+          role: "tool",
+          toolCallId: "call_1",
+          content: [textBlock("Here it is."), { type: "image", data: payload, mimeType: "image/png" }]
+        }
+      ]
+    });
+
+    const forwarded = JSON.stringify(received.at(-1));
+    expect(forwarded).toContain("[image omitted: image/png,");
+    expect(forwarded).not.toContain(payload);
+    // And the tiers still arrive disjointly on the multi-part path, which is
+    // this file's own subject applied to a message shape it had not carried.
+    expect(response.usage).toEqual({
+      inputTokens: UPSTREAM.input,
+      outputTokens: UPSTREAM.output,
+      cacheReadInputTokens: UPSTREAM.cacheRead,
+      cacheCreationInputTokens: UPSTREAM.cacheWrite
+    });
   });
 
   // #62 against the router it was written for. The alias is what the sheet asks

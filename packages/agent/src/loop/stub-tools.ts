@@ -1,6 +1,7 @@
 // Stand-ins for the tool proxy service, so the loop is runnable before the
 // service exists. Neither reaches the network and neither holds a credential.
 
+import { textBlock } from "@getlibero/schema";
 import type { ToolDefinition } from "../completion/types.js";
 import type { ToolExecutor, ToolResult, ToolSource } from "./types.js";
 
@@ -29,6 +30,6 @@ export function createStubToolSource(definitions: ToolDefinition[] = []): ToolSo
 export function createUnavailableToolExecutor(): ToolExecutor {
   return {
     execute: (): Promise<ToolResult> =>
-      Promise.resolve({ content: "tool execution is not configured", isError: true })
+      Promise.resolve({ content: [textBlock("tool execution is not configured")], isError: true })
   };
 }

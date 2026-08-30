@@ -46,7 +46,12 @@ const call = (entry: AuditEntry): string => `${entry.server}.${entry.tool}`;
 function detail(entry: AuditEntry): string {
   if (entry.refusalReason !== undefined) return entry.refusalReason;
   if (entry.resultBytes !== undefined) {
-    return `${entry.resultBytes} bytes${entry.resultIsError === true ? ", tool error" : ""}`;
+    // The kinds only when there is more than one, so the ordinary row — a
+    // result that was all text — reads exactly as it always did and a row that
+    // moved something else says so on the one line an operator greps.
+    const kinds = Object.keys(entry.resultBytesByType ?? {});
+    const shape = kinds.length > 1 ? ` (${kinds.join(", ")})` : "";
+    return `${entry.resultBytes} bytes${shape}${entry.resultIsError === true ? ", tool error" : ""}`;
   }
   return entry.approver ?? "";
 }
@@ -139,6 +144,13 @@ export function showLines(entry: AuditEntry): string[] {
 
   lines.push(
     `result         ${entry.resultBytes === undefined ? "not recorded" : `${entry.resultBytes} bytes`}`,
+    `result blocks  ${
+      entry.resultBytesByType === undefined
+        ? "not recorded"
+        : Object.entries(entry.resultBytesByType)
+            .map(([kind, bytes]) => `${kind} ${String(bytes)}`)
+            .join(", ")
+    }`,
     `tool error     ${entry.resultIsError === undefined ? "not recorded" : String(entry.resultIsError)}`,
     `approver       ${entry.approver ?? "none"}`,
     `ticket         ${entry.ticket ?? "none"}`

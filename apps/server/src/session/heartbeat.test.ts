@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect } from "expect";
 import type { CompletedTurn, CompletionClient, CompletionRequest } from "@getlibero/agent";
-import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER } from "@getlibero/schema";
+import { AMBIENT_FINDING_TOOL, AMBIENT_REQUESTING_USER, textBlock } from "@getlibero/schema";
 import { AMBIENT_HEARTBEAT_SYSTEM_PROMPT } from "@getlibero/agent";
 import type { SharedSkillReader } from "./shared-skills.js";
 import type { LogFields, LogLevel, Logger } from "@getlibero/gateway";
@@ -206,7 +206,9 @@ describe("a heartbeat with something to say", () => {
 
     await heartbeat(CHANNEL, store);
 
-    const content = answering.requests[0]?.messages[0]?.content ?? "";
+    const first = answering.requests[0]?.messages[0];
+    // A user turn, whose content is still a string; only a tool result is blocks.
+    const content = first?.role === "user" ? first.content : "";
     expect(content).toContain("alice: ");
     expect(content.split("\n").filter(line => line.startsWith("alice: "))).toHaveLength(
       MAX_HEARTBEAT_MESSAGES
@@ -761,7 +763,7 @@ describe("a heartbeat whose channel opted into tools", () => {
         },
         execute: (call: { name: string }, attribution: { requestingUser: string }) => {
           executed.push({ name: call.name, requestingUser: attribution.requestingUser });
-          return Promise.resolve({ content: "main has been red for an hour" });
+          return Promise.resolve({ content: [textBlock("main has been red for an hour")] });
         }
       }
     };

@@ -6,7 +6,12 @@
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
-import { SKILL_BODY_MAX_CHARS, SKILL_DESCRIPTION_MAX_CHARS, SkillToolName } from "@getlibero/schema";
+import {
+  SKILL_BODY_MAX_CHARS,
+  SKILL_DESCRIPTION_MAX_CHARS,
+  SkillToolName,
+  textBlock
+} from "@getlibero/schema";
 import type { SkillOp, SkillOpResult } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
 import type {
@@ -204,7 +209,7 @@ describe("the transcript the model sees", () => {
       toolCalls: [call("github.list_pull_requests", { state: "open" }, "c1")],
       providerState: { thinking: "secret" }
     },
-    { role: "tool", toolCallId: "c1", content: '[{"number":301,"title":"the index"}]' },
+    { role: "tool", toolCallId: "c1", content: [textBlock('[{"number":301,"title":"the index"}]')] },
     {
       role: "assistant",
       content: "",
@@ -213,7 +218,7 @@ describe("the transcript the model sees", () => {
     {
       role: "tool",
       toolCallId: "c2",
-      content: "refused: approval required for merge_pull_request",
+      content: [textBlock("refused: approval required for merge_pull_request")],
       isError: true
     },
     { role: "assistant", content: "#301 needs a human click before I can merge it." }
@@ -270,7 +275,9 @@ describe("the transcript the model sees", () => {
   it("keeps an assistant turn that said nothing but called something", () => {
     const kept = skillTranscript(TASK);
 
-    expect(kept.some(message => message.content.startsWith("called github.merge"))).toBe(true);
+    expect(
+      kept.some(message => message.role !== "tool" && message.content.startsWith("called github.merge"))
+    ).toBe(true);
   });
 
   it("drops an assistant turn that said nothing and called nothing", () => {
@@ -289,10 +296,13 @@ describe("the transcript the model sees", () => {
         content: "",
         toolCalls: [call("github.create_issue", { body: "x".repeat(5000) }, "c1")]
       },
-      { role: "tool", toolCallId: "c1", content: "ok" }
+      { role: "tool", toolCallId: "c1", content: [textBlock("ok")] }
     ]);
 
-    expect(kept[0]?.content.length).toBeLessThan(SKILL_STEP_MAX_CHARS + 100);
+    const first = kept[0];
+    expect(first?.role !== "tool" && first !== undefined ? first.content.length : 0).toBeLessThan(
+      SKILL_STEP_MAX_CHARS + 100
+    );
     expect(kept[0]?.content).toContain("[truncated]");
   });
 
@@ -303,7 +313,7 @@ describe("the transcript the model sees", () => {
         content: "",
         toolCalls: [call("github.create_issue", {}, "c1")]
       },
-      { role: "tool", toolCallId: "c1", content: "y".repeat(5000), isError: true }
+      { role: "tool", toolCallId: "c1", content: [textBlock("y".repeat(5000))], isError: true }
     ]);
 
     expect(kept[0]?.content.length).toBeLessThan(SKILL_STEP_MAX_CHARS + 100);

@@ -34,7 +34,8 @@
 // header: the function that sent the credential is the only one that can be
 // certain of catching it echoed back.
 
-import type { McpServer, ResolvedToolCall, ToolResult, ToolResultBlock } from "@getlibero/schema";
+import { textBlock } from "@getlibero/schema";
+import type { McpServer, ResolvedToolCall, ToolResult } from "@getlibero/schema";
 import type { Dispatch, McpToolDispatcher, ToolCatalog, UpstreamCallDefinition } from "./dispatch.js";
 import type { CallLimits } from "./enforce.js";
 import { createSilentLogger, type Logger } from "./log.js";
@@ -163,16 +164,7 @@ export interface HttpDispatcher extends McpToolDispatcher, ToolCatalog {
  * the tool did not answer, and that is a thing the model should see and may
  * recover from. `ToolResult.isError` draws exactly that line.
  */
-/**
- * This dispatcher's own sentences, as the one block each is.
- *
- * Everything below is text the proxy wrote about a call that did not produce a
- * result — a shutdown, a transport failure, an unforeseen throw. None of it can
- * ever be anything but text, so the wrapper is a shape and not a decision.
- */
-function text(content: string): ToolResultBlock {
-  return { type: "text", text: content };
-}
+
 
 function failureText(outcome: Extract<McpOutcome, { outcome: "connect_failed" | "call_failed" }>): string {
   if (outcome.outcome === "connect_failed") {
@@ -487,7 +479,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
         // dismantling, and never a refusal: nothing was denied.
         return {
           outcome: "ran",
-          result: { content: [text("The proxy is shutting down. The call was not made.")], isError: true }
+          result: { content: [textBlock("The proxy is shutting down. The call was not made.")], isError: true }
         };
       }
 
@@ -543,6 +535,12 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
           // only one that can be sure of catching it coming back. Nothing here
           // re-scans — there is no second copy of the secret at this level to
           // scan with, which is the point.
+          //
+          // That covers a binary block's payload too, and since #501 it is not
+          // the only thing that looked at one: ./mcp-bounds.ts searched the
+          // *decoded* bytes, which the wire scan cannot read, and a match there
+          // threw rather than arriving here. A result that reaches this line has
+          // passed both.
           return { outcome: "ran", result: outcome.result };
         }
 
@@ -557,7 +555,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
           ...(protocol !== undefined ? { protocol } : {})
         });
 
-        const result: ToolResult = { content: [text(failureText(outcome))], isError: true };
+        const result: ToolResult = { content: [textBlock(failureText(outcome))], isError: true };
         return { outcome: "ran", result };
       } catch (error) {
         // Fail closed. A redaction that could not be performed is the proxy
@@ -584,7 +582,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
         return {
           outcome: "ran",
           result: {
-            content: [text(`The tool did not answer: ${failure}. The call was made and no result came back.`)],
+            content: [textBlock(`The tool did not answer: ${failure}. The call was made and no result came back.`)],
             isError: true
           }
         };

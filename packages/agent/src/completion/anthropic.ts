@@ -1,4 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { resultText } from "@getlibero/schema";
+import type { ToolResultBlock } from "@getlibero/schema";
 import {
   CompletionError,
   type CompletionClient,
@@ -70,6 +72,60 @@ export function createAnthropicCompletionClient(
   };
 }
 
+/**
+ * The media types this API's image block takes, as a value.
+ *
+ * A copy of a set the SDK declares as a TypeScript union, which cannot be
+ * enumerated at runtime — so this is the copy, and it is re-read on an
+ * `@anthropic-ai/sdk` bump. Checked against 0.117.1.
+ *
+ * An image whose type is not here becomes the placeholder rather than being
+ * sent. That is the fail-safe direction and not a preference: the API rejects
+ * the block, and a rejected request loses the whole turn where a placeholder
+ * loses one image. It is also where the degradation belongs — the proxy cannot
+ * hold this list, because the list is a fact about one provider and the proxy
+ * serves whichever one the channel is configured for.
+ */
+const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
+type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
+
+function isImageMediaType(value: string): value is ImageMediaType {
+  return (IMAGE_MEDIA_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * A tool result's blocks as the blocks a `tool_result` may hold (#502).
+ *
+ * Text and image relay natively. Audio, a binary resource, and an image whose
+ * media type is not one of the four above become the placeholder sentence
+ * `resultText` writes — so the wording a model reads here is character for
+ * character the wording it reads from the OpenAI adapter and from the proxy,
+ * because all three call the one function that writes it.
+ *
+ * An empty result stays the empty string it has always been rather than
+ * becoming an empty array, which this API has no reading for.
+ *
+ * A run of blocks within one result becomes **one** `tool_result` carrying
+ * several provider blocks; a run of tool *messages* — parallel calls — stays
+ * several `tool_result`s in one user turn, which is `flushToolResults` above
+ * and is unchanged. Both are the API's requirement rather than a choice here.
+ */
+function toToolResultContent(
+  blocks: readonly ToolResultBlock[]
+): NonNullable<Anthropic.ToolResultBlockParam["content"]> {
+  if (blocks.length === 0) return "";
+  return blocks.map(block => {
+    if (block.type === "text") return { type: "text" as const, text: block.text };
+    if (block.type === "image" && isImageMediaType(block.mimeType)) {
+      return {
+        type: "image" as const,
+        source: { type: "base64" as const, media_type: block.mimeType, data: block.data }
+      };
+    }
+    return { type: "text" as const, text: resultText([block]) };
+  });
+}
+
 function toAnthropicMessages(messages: CompletionMessage[]): Anthropic.MessageParam[] {
   const converted: Anthropic.MessageParam[] = [];
   let pendingToolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -87,7 +143,7 @@ function toAnthropicMessages(messages: CompletionMessage[]): Anthropic.MessagePa
       pendingToolResults.push({
         type: "tool_result",
         tool_use_id: message.toolCallId,
-        content: message.content,
+        content: toToolResultContent(message.content),
         ...(message.isError === true ? { is_error: true } : {})
       });
       continue;

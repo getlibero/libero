@@ -20,10 +20,25 @@
 // describe this as "the thing that stops secrets leaking" should read that
 // sentence again.
 //
+// **A tool result's binary payloads are searched twice, and the second search
+// cannot repair what it finds** (#501). Every byte of a response passes the
+// streaming scan below as wire text, base64 payloads included, so a credential
+// spelled literally anywhere in the JSON is already replaced. What that cannot
+// see is a credential inside the *decoded* bytes — a screenshot of a terminal
+// with a token on it, say — because no spelling of the value appears in the
+// base64 of those pixels. `findSecret` is the second search, run over the
+// decoded payload in ./mcp-bounds.ts, and it answers rather than edits: a
+// replacement inside a PNG is a corrupt image, so a match fails the whole result
+// closed. It closes one more shape of the careless-upstream leak; the paragraph
+// above is unchanged, and a *transformed* value is as invisible decoded as it is
+// encoded.
+//
 // Pure string work, deliberately: no `Secret`, no vault, no I/O. Custody lives
 // in ./outbound.ts, which is the only file that can produce a value to pass in
 // here, and keeping the rules apart from the custody is what lets the rules be
-// property-tested without standing anything up.
+// property-tested without standing anything up. That holds for the decoded scan
+// too: what leaves ./outbound.ts is a `SecretScan`, so no second module ever
+// holds the value.
 
 /** What replaces a match. Names the credential; never any part of the value. */
 export function redactionMarker(name: string): string {
@@ -33,11 +48,17 @@ export function redactionMarker(name: string): string {
 /**
  * Why a redaction could not be performed.
  *
- * One member, and a closed set for the same reason `VaultFailure` is one: this
- * runs on the path that holds a secret, so a caller reports something chosen
- * from a list rather than a string that came back from somewhere.
+ * A closed set for the same reason `VaultFailure` is one: this runs on the path
+ * that holds a secret, so a caller reports something chosen from a list rather
+ * than a string that came back from somewhere.
+ *
+ * `binary_payload` is the second member and it is a different kind of thing
+ * from the first (#501). `empty_value` is a redaction that could not be
+ * *attempted*. `binary_payload` is one that was attempted, found a credential,
+ * and could not be *performed* — see `findSecret` for why a match inside a
+ * decoded payload has no repair.
  */
-export type RedactionFailure = "empty_value";
+export type RedactionFailure = "empty_value" | "binary_payload";
 
 /**
  * A redaction that could not be completed.
@@ -260,6 +281,62 @@ export function redactionPasses(secrets: readonly SecretValue[]): RedactionPass[
     return { marker: redactionMarker(secret.name), needles: encodingsOf(secret.value) };
   });
 }
+
+/**
+ * The same needles, asked a different question: is one of them in here at all?
+ *
+ * **Why detection and not replacement (#501).** Everything else in this file
+ * scrubs text on its way to the agent, and the reason that works is that a
+ * scrubbed string is still a string — a debug field with `[redacted:github]`
+ * where a token was is a perfectly good debug field. A tool result's binary
+ * payload is not like that. Replacing bytes inside a PNG produces a corrupt
+ * image rather than a scrubbed one, at a length the container's own headers no
+ * longer describe, and the model is handed something that fails to decode with
+ * no explanation. There is no edit to make, so the caller's only honest move is
+ * to refuse the whole result — which is what `RedactionError("binary_payload")`
+ * is for and why the failure vocabulary grew a member rather than reusing one.
+ *
+ * **What this catches, and what it cannot.** The wire scan already covers
+ * everything spelled literally in the response body, payloads included: a
+ * base64 blob is text on the wire and goes through `StreamingRedactor` like any
+ * other. What it cannot see is the credential *inside* the payload — a tool
+ * that screenshots its own terminal with a token on screen writes those pixels,
+ * and no spelling of the value appears in the base64 of them. Decoding first is
+ * what puts a payload's actual bytes in front of the same needles. It closes
+ * one more shape of the careless-upstream leak and it is still a backstop, not
+ * a boundary: this file's opening note is unchanged, and a *transformed* value
+ * is as invisible decoded as it is encoded.
+ *
+ * Returns the marker of the first credential found — which names it and carries
+ * no part of its value, so the answer is safe to log — or `null`.
+ *
+ * Needles are compared as latin1 text over the decoded bytes, so a byte
+ * sequence matches when it spells the credential in any of `encodingsOf`'s
+ * spellings that survive being bytes. A payload is not text and has no
+ * encoding, so this is a byte search wearing a string's interface rather than a
+ * claim about how the payload was encoded.
+ */
+export function findSecret(text: string, passes: readonly RedactionPass[]): string | null {
+  for (const pass of passes) {
+    for (const needle of pass.needles) {
+      if (text.includes(needle)) return pass.marker;
+    }
+  }
+  return null;
+}
+
+/**
+ * A scan closed over the credentials it looks for, answering the marker of what
+ * it found.
+ *
+ * **The passes travel as a function so the value does not travel at all.** A
+ * needle is a spelling of a credential, so handing `RedactionPass[]` up to the
+ * caller that decodes payloads would put the value in a second module — and the
+ * single-reveal-site argument in ./outbound.ts is worth more than the
+ * convenience. ./outbound.ts builds this where it already holds the secret;
+ * ./mcp-bounds.ts holds nothing but the ability to ask.
+ */
+export type SecretScan = (text: string) => string | null;
 
 /** Apply prebuilt passes to a whole string. Each pass is fully applied before the next begins. */
 export function applyPasses(text: string, passes: readonly RedactionPass[]): string {

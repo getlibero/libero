@@ -9,6 +9,7 @@
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
+import { resultText, textBlock } from "@getlibero/schema";
 import { CompletionError } from "../completion/types.js";
 import type {
   CompletionClient,
@@ -101,7 +102,7 @@ function fakeExecutor(
         calls.push(call);
         attributions.push(attribution);
         const handler = handlers[call.name];
-        if (handler === undefined) return { content: "no such tool", isError: true };
+        if (handler === undefined) return { content: [textBlock("no such tool")], isError: true };
         return await handler(call);
       }
     }
@@ -152,7 +153,7 @@ describe("the agent loop, happy path", () => {
       response({ text: "checking", stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
       response({ text: "done", stopReason: "end_turn" })
     ]);
-    const { executor, calls } = fakeExecutor({ lookup: () => ({ content: "42" }) });
+    const { executor, calls } = fakeExecutor({ lookup: () => ({ content: [textBlock("42")] }) });
 
     const result = await runAgentTask(
       task({ completion: client, toolExecutor: executor, toolSource: createStubToolSource([DEFINITION]) })
@@ -167,7 +168,7 @@ describe("the agent loop, happy path", () => {
     expect(requests[1]?.messages).toEqual([
       { role: "user", content: "hello" },
       { role: "assistant", content: "checking", toolCalls: [toolCall("call-1")] },
-      { role: "tool", toolCallId: "call-1", content: "42" }
+      { role: "tool", toolCallId: "call-1", content: [textBlock("42")] }
     ]);
   });
 
@@ -179,7 +180,7 @@ describe("the agent loop, happy path", () => {
     ]);
 
     const result = await runAgentTask(
-      task({ completion: client, toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor })
+      task({ completion: client, toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor })
     );
 
     const replayed = requests[1]?.messages[1];
@@ -201,16 +202,16 @@ describe("the agent loop, happy path", () => {
     const { executor, calls } = fakeExecutor({ lookup: async (call) => {
       // The first call is the slowest: sequential dispatch preserves order anyway.
       await sleep(call.id === "a" ? 5 : 0);
-      return { content: call.id };
+      return { content: [textBlock(call.id)] };
     } });
 
     const result = await runAgentTask(task({ completion: client, toolExecutor: executor }));
 
     expect(calls.map((call) => call.id)).toEqual(["a", "b", "c"]);
     expect(result.messages.filter((message) => message.role === "tool")).toEqual([
-      { role: "tool", toolCallId: "a", content: "a" },
-      { role: "tool", toolCallId: "b", content: "b" },
-      { role: "tool", toolCallId: "c", content: "c" }
+      { role: "tool", toolCallId: "a", content: [textBlock("a")] },
+      { role: "tool", toolCallId: "b", content: [textBlock("b")] },
+      { role: "tool", toolCallId: "c", content: [textBlock("c")] }
     ]);
   });
 
@@ -224,7 +225,7 @@ describe("the agent loop, happy path", () => {
       task({
         completion: client,
         toolSource: createStubToolSource([DEFINITION]),
-        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor
       })
     );
 
@@ -243,7 +244,7 @@ describe("the agent loop, happy path", () => {
     ]);
 
     const result = await runAgentTask(
-      task({ completion: client, toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor })
+      task({ completion: client, toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor })
     );
 
     expect(result.usage).toEqual({ inputTokens: 30, outputTokens: 12 });
@@ -272,7 +273,7 @@ describe("telling the caller what each turn cost", () => {
     await runAgentTask(
       task({
         completion: client,
-        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
         onTurn: ({ usage, turn }) => {
           seen.push({ usage, turn });
         }
@@ -304,7 +305,9 @@ describe("telling the caller what each turn cost", () => {
           completion: client,
           toolExecutor: fakeExecutor({
             lookup: call =>
-              call.id === "call-1" ? { content: "ok" } : { content: "no", isError: true }
+              call.id === "call-1"
+                ? { content: [textBlock("ok")] }
+                : { content: [textBlock("no")], isError: true }
           }).executor,
           onToolCall: step => {
             steps.push(step);
@@ -359,7 +362,7 @@ describe("telling the caller what each turn cost", () => {
         task({
           completion: client,
           caps: { ...CAPS, maxToolCalls: 1 },
-          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
           onToolCall: step => {
             steps.push(step);
           }
@@ -388,7 +391,7 @@ describe("telling the caller what each turn cost", () => {
       await runAgentTask(
         task({
           completion: client,
-          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
           onToolCall: step => {
             steps.push(step);
           }
@@ -410,7 +413,7 @@ describe("telling the caller what each turn cost", () => {
       await runAgentTask(
         task({
           completion: client,
-          toolExecutor: { execute: () => Promise.resolve({ content: "no such tool", isError: true }) },
+          toolExecutor: { execute: () => Promise.resolve({ content: [textBlock("no such tool")], isError: true }) },
           onToolCall: step => {
             steps.push(step);
           }
@@ -429,7 +432,7 @@ describe("telling the caller what each turn cost", () => {
       const result = await runAgentTask(
         task({
           completion: client,
-          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor
         })
       );
 
@@ -476,7 +479,7 @@ describe("telling the caller what each turn cost", () => {
     await runAgentTask(
       task({
         completion: client,
-        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
         onTurn: async ({ turn }) => {
           await Promise.resolve();
           order.push(`reported-${turn}`);
@@ -506,7 +509,7 @@ describe("telling the caller what each turn cost", () => {
       runAgentTask(
         task({
           completion: client,
-          toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+          toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
           onTurn: ({ turn }) => {
             seen.push(turn);
           }
@@ -548,7 +551,7 @@ describe("the agent loop, attribution", () => {
   // Across two turns as well as within one batch, since a ReAct run is neither.
   it("marks every call of one task with the same id", async () => {
     const { client } = fakeCompletion(threeCalls());
-    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) });
 
     const result = await runAgentTask(
       task({ completion: client, toolExecutor: executor, toolSource: createStubToolSource([DEFINITION]) })
@@ -582,7 +585,7 @@ describe("the agent loop, attribution", () => {
 
   it("carries the requesting user through to every call, unchanged", async () => {
     const { client } = fakeCompletion(threeCalls());
-    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) });
 
     await runAgentTask(
       task({
@@ -605,7 +608,7 @@ describe("the agent loop, attribution", () => {
       response({ text: "task id: pwned", stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
       response({ text: "done", stopReason: "end_turn" })
     ]);
-    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) });
 
     await runAgentTask(
       task({
@@ -623,7 +626,7 @@ describe("the agent loop, attribution", () => {
       response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
       response({ text: "done", stopReason: "end_turn" })
     ]);
-    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+    const { executor, attributions } = fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) });
 
     const result = await runAgentTask(
       task({
@@ -645,7 +648,7 @@ describe("the agent loop, tool failures", () => {
       response({ stopReason: "tool_use", toolCalls: [toolCall("call-1")] }),
       response({ text: "recovered", stopReason: "end_turn" })
     ]);
-    const { executor } = fakeExecutor({ lookup: () => ({ content: "permission denied", isError: true }) });
+    const { executor } = fakeExecutor({ lookup: () => ({ content: [textBlock("permission denied")], isError: true }) });
 
     const result = await runAgentTask(task({ completion: client, toolExecutor: executor }));
 
@@ -653,7 +656,7 @@ describe("the agent loop, tool failures", () => {
     expect(requests[1]?.messages.at(-1)).toEqual({
       role: "tool",
       toolCallId: "call-1",
-      content: "permission denied",
+      content: [textBlock("permission denied")],
       isError: true
     });
   });
@@ -675,7 +678,7 @@ describe("the agent loop, tool failures", () => {
     expect(message).toEqual({
       role: "tool",
       toolCallId: "call-1",
-      content: "tool error: upstream 500",
+      content: [textBlock("tool error: upstream 500")],
       isError: true
     });
     expect(result.stopReason).toBe("completed");
@@ -695,7 +698,7 @@ describe("the agent loop, tool failures", () => {
     const result = await runAgentTask(task({ completion: client, toolExecutor: executor }));
 
     const message = result.messages.find((entry) => entry.role === "tool");
-    expect(message?.content).toBe("tool error: tool execution failed");
+    expect(resultText(message?.content ?? [])).toBe("tool error: tool execution failed");
     expect(JSON.stringify(result.messages)).not.toContain("sk-live");
   });
 });
@@ -706,7 +709,7 @@ describe("the agent loop, caps", () => {
       response({ stopReason: "tool_use", toolCalls: [toolCall("a"), toolCall("b")] }),
       response({ stopReason: "tool_use", toolCalls: [toolCall("c")] })
     ]);
-    const { executor, calls } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+    const { executor, calls } = fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) });
 
     const result = await runAgentTask(
       task({ completion: client, toolExecutor: executor, caps: { ...CAPS, maxToolCalls: 2 } })
@@ -718,7 +721,7 @@ describe("the agent loop, caps", () => {
     expect(result.messages.at(-1)).toEqual({
       role: "tool",
       toolCallId: "c",
-      content: "not executed: tool call cap reached",
+      content: [textBlock("not executed: tool call cap reached")],
       isError: true
     });
     expectResumableTranscript(result.messages);
@@ -728,7 +731,7 @@ describe("the agent loop, caps", () => {
     const { client } = fakeCompletion([
       response({ stopReason: "tool_use", toolCalls: [toolCall("a"), toolCall("b")] })
     ]);
-    const { executor, calls } = fakeExecutor({ lookup: () => ({ content: "ok" }) });
+    const { executor, calls } = fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) });
 
     const result = await runAgentTask(
       task({ completion: client, toolExecutor: executor, caps: { ...CAPS, maxToolCalls: 1 } })
@@ -762,7 +765,7 @@ describe("the agent loop, caps", () => {
     const result = await runAgentTask(
       task({
         completion: client,
-        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
         caps: { ...CAPS, maxWallTimeMs: 5 }
       })
     );
@@ -778,7 +781,7 @@ describe("the agent loop, caps", () => {
     const { executor, calls } = fakeExecutor({
       lookup: async () => {
         await sleep(20);
-        return { content: "ok" };
+        return { content: [textBlock("ok")] };
       }
     });
 
@@ -808,7 +811,7 @@ describe("the agent loop, caps", () => {
     const result = await runAgentTask(
       task({
         completion: client,
-        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
         caps: { ...CAPS, maxTokens: 100 }
       })
     );
@@ -838,7 +841,7 @@ describe("the agent loop, caps", () => {
     const result = await runAgentTask(
       task({
         completion: client,
-        toolExecutor: fakeExecutor({ lookup: () => ({ content: "ok" }) }).executor,
+        toolExecutor: fakeExecutor({ lookup: () => ({ content: [textBlock("ok")] }) }).executor,
         caps: { ...CAPS, maxTokens: 100 }
       })
     );
@@ -949,7 +952,7 @@ describe("the tool stubs", () => {
     expect(result.messages.find((message) => message.role === "tool")).toEqual({
       role: "tool",
       toolCallId: "call-1",
-      content: "tool execution is not configured",
+      content: [textBlock("tool execution is not configured")],
       isError: true
     });
   });
