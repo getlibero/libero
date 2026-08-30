@@ -97,7 +97,34 @@ export function isInputRequired(result: Record<string, unknown>): boolean {
  * is how #130 found this.
  */
 export function truncate(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
+  return text.length <= limit ? text : `${cutAt(text, limit - 1)}…`;
+}
+
+/**
+ * At most `limit` code units, and never half a character.
+ *
+ * **One guard, one function, every site that cuts.** A cut that lands between a
+ * surrogate pair leaves a lone high surrogate, which is not a character and is
+ * not something to hand a provider: it survives `JSON.stringify` as `\ud83d`,
+ * and what a tokenizer does with it is the provider's business rather than
+ * something this proxy should be finding out per upstream. One code unit is
+ * dropped, and only when the cut actually split one.
+ *
+ * The guard was `boundedText`'s alone until #509, which is how `truncate` above
+ * and `render` in ./sandbox-dispatcher.ts — arbitrary program output, the
+ * likeliest of the three to hold an emoji at an arbitrary offset — came to slice
+ * without it. A caller still owns its notice and its ellipsis; what none of them
+ * owns any more is where the cut lands, so a fourth cutting site is a call to
+ * this rather than a fourth re-derivation.
+ *
+ * **The kept length is the number a notice reports**, not `limit`. They differ
+ * by one on exactly the cases the guard fires for, and the kept length is what
+ * the audit row's `result_bytes` counts.
+ */
+export function cutAt(text: string, limit: number): string {
+  const kept = text.slice(0, Math.max(0, limit));
+  const last = kept.charCodeAt(kept.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? kept.slice(0, -1) : kept;
 }
 
 /**
@@ -400,12 +427,7 @@ function payloadOf(block: Extract<ToolResultBlock, { type: "image" | "audio" | "
 function boundedText(content: string, limit: number): { text: string; spent: number } {
   if (content.length <= limit) return { text: content, spent: content.length };
 
-  let kept = content.slice(0, Math.max(0, limit));
-  // A cut that lands between a surrogate pair leaves a lone high surrogate,
-  // which is not a character and is not something to hand a provider. One code
-  // unit dropped, and only when the cut actually split one.
-  const last = kept.charCodeAt(kept.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) kept = kept.slice(0, -1);
+  const kept = cutAt(content, limit);
 
   return {
     text: `${kept}\n[result truncated: ${String(kept.length)} of ${String(content.length)} characters]`,

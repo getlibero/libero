@@ -36,6 +36,7 @@ import { Agent, request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
 import { SandboxRunResult, type SandboxCaps, textBlock } from "@getlibero/schema";
 import type { Dispatch, SandboxDispatcher } from "./dispatch.js";
+import { cutAt } from "./mcp-bounds.js";
 import type { Logger } from "./log.js";
 import { createSemaphore } from "./semaphore.js";
 
@@ -302,8 +303,15 @@ export function render(result: SandboxRunResult, maxChars: number, asked: Sandbo
 
   const whole = parts.join("\n\n");
   if (whole.length <= maxChars) return whole;
-  const notice = `\n[result truncated: ${maxChars} of ${whole.length} characters]`;
-  return whole.slice(0, maxChars) + notice;
+  // `cutAt` rather than a slice of this module's own (#509): a run's stdout is
+  // arbitrary program output, so of the three places this proxy cuts a string it
+  // is the likeliest to hold an emoji at an arbitrary offset, and a lone
+  // surrogate is not something to hand a provider. The notice reports the kept
+  // length rather than `maxChars` because the guard makes those different
+  // numbers on the cases it fires for — and the kept length is the one the audit
+  // row's `result_bytes` agrees with.
+  const kept = cutAt(whole, maxChars);
+  return `${kept}\n[result truncated: ${String(kept.length)} of ${String(whole.length)} characters]`;
 }
 
 /**

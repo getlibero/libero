@@ -413,6 +413,24 @@ describe("bounding what an upstream says about a tool", () => {
     }).success).toBe(true);
   });
 
+  // #509. `truncate` bounds every upstream-authored label — a description here,
+  // a `mimeType` or a `uri` on a relayed block — and since #509 its cut is
+  // `cutAt`'s rather than its own. Each emoji is two code units and the cut
+  // lands one inside the bound, so an odd offset through them always splits a
+  // pair. Asserted as a code-unit check rather than against a literal: what is
+  // wrong with a lone high surrogate is that it is not a character, and a
+  // string comparison would be re-stating the arithmetic instead of testing it.
+  it("never leaves a lone surrogate where it cut a label", () => {
+    const long = boundedToolDescription("\u{1F680}".repeat(2000)) ?? "";
+
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(long)).toBe(false);
+    // One under the bound, which is what the guard costs on the cases it fires
+    // for — and still inside it, which is the property #130 pinned: a
+    // description one character over is a listing the agent's parse rejects.
+    expect(long).toHaveLength(MAX_TOOL_DESCRIPTION - 1);
+    expect(long.endsWith("\u2026")).toBe(true);
+  });
+
   // The property the case above pins by example, at the boundary and just past
   // it. Nothing an upstream can write may produce a description the agent's
   // schema will not take.
