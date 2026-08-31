@@ -272,15 +272,29 @@ export function createTokenEngine(options: TokenEngineOptions): TokenEngine {
     return started;
   };
 
+  /**
+   * What a source hands the outbound path: the token, its generation, and the
+   * key it is bound to where it is bound to one (#506).
+   *
+   * The key travels with the token rather than with the binding, because it is
+   * a fact about the token: a `prefer` sheet against an issuer that stopped
+   * advertising holds a bearer token under a binding that asked for proofs, and
+   * that token must be spent as the bearer token it is.
+   */
+  const acquired = (entry: TokenEntry): { secret: Secret; generation: number; proofKey?: SigningKey } => ({
+    secret: entry.accessToken,
+    generation: entry.generation,
+    ...(entry.key !== undefined ? { proofKey: entry.key } : {})
+  });
+
   const source = (binding: OAuthBinding): CredentialSource => ({
     scheme: "oauth",
     name: binding.credential,
 
     async acquire() {
       const entry = tokens.get(binding.credential);
-      if (live(entry)) return { secret: entry.accessToken, generation: entry.generation };
-      const fresh = await mint(binding);
-      return { secret: fresh.accessToken, generation: fresh.generation };
+      if (live(entry)) return acquired(entry);
+      return acquired(await mint(binding));
     },
 
     async refresh(rejected) {
@@ -289,11 +303,10 @@ export function createTokenEngine(options: TokenEngineOptions): TokenEngine {
       // n+1 already exists — it is handed n+1 and retries with that.
       const current = tokens.get(binding.credential);
       if (current !== undefined && current.generation > rejected) {
-        return { secret: current.accessToken, generation: current.generation };
+        return acquired(current);
       }
       try {
-        const fresh = await mint(binding);
-        return { secret: fresh.accessToken, generation: fresh.generation };
+        return acquired(await mint(binding));
       } catch {
         // The mint already logged why. `null` lets the 401 stand, which flows
         // through the client as `unauthorized`; the next dispatch's pre-flight

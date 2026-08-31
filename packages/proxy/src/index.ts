@@ -234,7 +234,19 @@ export type { VaultAdmin } from "./custody-admin.js";
 // `openCustody`. `openSigningKeyStore` and the backing interface stay inside
 // the package, because a backing is a backend's half of the contract rather
 // than anything a caller composes.
-export { SIGNING_ALG } from "./signing-key.js";
+export { SIGNING_ALG, mintSigningKeyMaterial, parseSigningKeyMaterial } from "./signing-key.js";
+
+// The proof maker (#505), and the ability to mint a key to sign one with.
+//
+// Exported for the attack suite, which has to be able to make a proof *this
+// process did not make* — a well-formed one from a key of its own, which is
+// exactly what a thief holding a stolen access token can do. Widens nothing: a
+// proof is worth nothing without a token to present beside it, and signing one
+// is three lines of `node:crypto` to anybody who wants it. The verifier
+// (./dpop-verifier.ts) is deliberately *not* here — it is the fakes' half, and
+// nothing in a serving composition should be able to reach for it.
+export { createDpopProof } from "./dpop.js";
+export type { DpopProofRequest } from "./dpop.js";
 export { SigningStoreError, signingKeyPathFor } from "./signing-store.js";
 export type { SigningStoreFailure } from "./signing-store.js";
 

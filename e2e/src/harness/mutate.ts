@@ -71,7 +71,7 @@ export function breakRedaction(cleanup: Cleanup): string {
  * and the one assertion that fails is the positive control, which is exactly
  * the claim #258 makes about it.
  */
-const INJECT_NEEDLE = "export function injectCredential(headers, scheme, value) {";
+const INJECT_NEEDLE = "export function injectCredential(headers, scheme, value, proof) {";
 const INJECT_REPLACEMENT = `${INJECT_NEEDLE}\n    return { ...headers };`;
 
 /**

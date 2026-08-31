@@ -23,6 +23,7 @@ import {
   destinationHost,
   injectCredential
 } from "./outbound.js";
+import type { CredentialSource } from "./outbound.js";
 import { RedactionError, redactionMarker } from "./redact.js";
 import { mintSigningKeyMaterial, parseSigningKeyMaterial } from "./signing-key.js";
 import type { SigningKey } from "./custody.js";
@@ -800,6 +801,158 @@ describe("the two reveals", () => {
 // `callUpstream` already had; what is new is that they survive being worn as a
 // `fetch`, which is what makes handing the wire to a library safe rather than a
 // leap of faith.
+// Spending a bound token (#506): the wire scheme, the proof, and the resource
+// server's nonce. What the *server* makes of a proof is ./fake-token-issuer.ts
+// and ./mcp-fake-server.ts; what reaches it is here.
+describe("the guarded fetch under DPoP", () => {
+  const boundKey = (): SigningKey => {
+    const parsed = parseSigningKeyMaterial(mintSigningKeyMaterial());
+    if (parsed === null) throw new Error("fixture key failed to parse");
+    return parsed;
+  };
+
+  /** An OAuth source whose token is bound, as the engine's is after a proved mint. */
+  const boundSource = (key: SigningKey): CredentialSource => ({
+    scheme: "oauth",
+    name: "notion_grant",
+    acquire: () => Promise.resolve({ secret: secretOf(VALUE), generation: 1, proofKey: key }),
+    refresh: () => Promise.resolve(null)
+  });
+
+  const claimsOf = (init: RequestInit | undefined): Record<string, unknown> => {
+    const proof = ((init?.headers ?? {}) as Record<string, string>)["dpop"];
+    if (proof === undefined) throw new Error("no proof on the request");
+    return JSON.parse(Buffer.from(proof.split(".")[1] as string, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+  };
+
+  it("presents the token under the DPoP scheme with a proof for this very call", async () => {
+    const { calls, fetch } = recordingFetch();
+    const key = boundKey();
+    await createGuardedFetch({ url: "http://mcp-github:3001/mcp", source: boundSource(key), fetch })(
+      "http://mcp-github:3001/mcp",
+      { method: "POST", body: "{}" }
+    );
+
+    expect(sentHeaders(calls).authorization).toBe(`DPoP ${VALUE}`);
+    const claims = claimsOf(calls[0]?.init);
+    expect(claims["htm"]).toBe("POST");
+    expect(claims["htu"]).toBe("http://mcp-github:3001/mcp");
+    // `ath` binds the proof to the token beside it — the digest, never the
+    // token, so a proof discloses nothing about what it presents.
+    expect(typeof claims["ath"]).toBe("string");
+    expect(JSON.stringify(claims)).not.toContain(VALUE);
+  });
+
+  // The bearer path, unchanged: a vault credential has no key and gets the
+  // header it always got, with nothing extra on the request.
+  it("leaves an unbound credential exactly as it was", async () => {
+    const { calls, fetch } = recordingFetch();
+    await createGuardedFetch({
+      url: "http://mcp-github:3001/mcp",
+      source: constantCredential("bearer", secretOf(VALUE), "github_pat"),
+      fetch
+    })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    expect(sentHeaders(calls).authorization).toBe(`Bearer ${VALUE}`);
+    expect(sentHeaders(calls)["dpop"]).toBeUndefined();
+  });
+
+  it("gives every call its own proof", async () => {
+    const { calls, fetch } = recordingFetch();
+    const guardedFetch = createGuardedFetch({
+      url: "http://mcp-github:3001/mcp",
+      source: boundSource(boundKey()),
+      fetch
+    });
+    await guardedFetch("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+    await guardedFetch("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+    expect(claimsOf(calls[1]?.init)["jti"]).not.toBe(claimsOf(calls[0]?.init)["jti"]);
+  });
+
+  describe("the resource server's nonce", () => {
+    /** A 401 challenge, then whatever the caller wants for the retry. */
+    const challengeThen = (...responses: (() => Response)[]) => {
+      const calls: { url: string; init: RequestInit }[] = [];
+      const fetch = async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        const answer = responses[Math.min(calls.length - 1, responses.length - 1)];
+        if (answer === undefined) throw new Error("fetch sequence exhausted");
+        return answer();
+      };
+      return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
+    };
+
+    const challenge = () =>
+      new Response(JSON.stringify({ error: "use_dpop_nonce" }), {
+        status: 401,
+        headers: { "dpop-nonce": "rs_nonce_1" }
+      });
+
+    it("retries once with the nonce, in a fresh proof", async () => {
+      const { calls, fetch } = challengeThen(challenge, () => new Response("{}", { status: 200 }));
+      const response = await createGuardedFetch({
+        url: "http://mcp-github:3001/mcp",
+        source: boundSource(boundKey()),
+        fetch
+      })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+      expect(response.status).toBe(200);
+      expect(calls).toHaveLength(2);
+      expect(claimsOf(calls[0]?.init)["nonce"]).toBeUndefined();
+      expect(claimsOf(calls[1]?.init)["nonce"]).toBe("rs_nonce_1");
+      // Fresh, not re-sent: a server that remembers `jti` reads a re-send as a
+      // replay, which is the failure the retry exists to avoid.
+      expect(claimsOf(calls[1]?.init)["jti"]).not.toBe(claimsOf(calls[0]?.init)["jti"]);
+    });
+
+    // The nonce is kept for the client's life, so a nonce-requiring upstream
+    // costs one challenge rather than one per call.
+    it("carries the nonce on every later call without being asked again", async () => {
+      const { calls, fetch } = challengeThen(challenge, () => new Response("{}", { status: 200 }));
+      const guardedFetch = createGuardedFetch({
+        url: "http://mcp-github:3001/mcp",
+        source: boundSource(boundKey()),
+        fetch
+      });
+      await guardedFetch("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+      await guardedFetch("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+      expect(calls).toHaveLength(3);
+      expect(claimsOf(calls[2]?.init)["nonce"]).toBe("rs_nonce_1");
+    });
+
+    it("does not retry a 401 that carried no nonce", async () => {
+      const { calls, fetch } = challengeThen(() => new Response("{}", { status: 401 }));
+      const response = await createGuardedFetch({
+        url: "http://mcp-github:3001/mcp",
+        source: boundSource(boundKey()),
+        fetch
+      })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+      expect(response.status).toBe(401);
+      expect(calls).toHaveLength(1);
+    });
+
+    // A bearer source has no proof to remake, so a nonce header on its 401 is
+    // just a header: the refresh path decides, exactly as it did before.
+    it("ignores a nonce offered to an unbound credential", async () => {
+      const { calls, fetch } = challengeThen(challenge);
+      const response = await createGuardedFetch({
+        url: "http://mcp-github:3001/mcp",
+        source: constantCredential("bearer", secretOf(VALUE), "github_pat"),
+        fetch
+      })("http://mcp-github:3001/mcp", { method: "POST", body: "{}" });
+
+      expect(response.status).toBe(401);
+      expect(calls).toHaveLength(1);
+    });
+  });
+});
+
 describe("the guarded fetch", () => {
   const guarded = (
     overrides: Partial<Parameters<typeof createGuardedFetch>[0]> & { fetch: typeof globalThis.fetch }

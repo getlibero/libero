@@ -38,6 +38,7 @@
 
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { checkDpopProof } from "./dpop-verifier.js";
 
 // **The fake owns its own revision strings since #188, and that is the right
 // way round.** They used to come from the hand-rolled client's wire module, so
@@ -241,6 +242,42 @@ export interface FakeMcpServerOptions {
    * go through `respond`, which is what that hook is for.
    */
   pageSize: number | null;
+  /**
+   * Demand a DPoP proof on every request that carries a credential (#506).
+   *
+   * A *resource* server's half of RFC 9449, where ./fake-token-issuer.ts is the
+   * authorization server's: the `Authorization` header must read `DPoP <token>`
+   * rather than `Bearer <token>`, and the `DPoP` header must carry a proof this
+   * request's own method and URL, whose `ath` is the digest of the very token
+   * presented. The check is ./dpop-verifier.ts, shared with the issuer so both
+   * fakes are strict in the same way.
+   *
+   * Off by default, which is what keeps every test written before #506 running
+   * against the bearer server it was written for.
+   */
+  dpop: boolean;
+  /**
+   * Answer the first proof-carrying request with a nonce challenge, and expect
+   * that nonce from then on.
+   *
+   * The resource-server half of the dance the token endpoint already models.
+   * Its own knob for the same reason: a server that always challenges would
+   * double every call, so a suite with no way to turn it off would be testing
+   * the retry and nothing else.
+   */
+  requireNonce: boolean;
+  /**
+   * The thumbprint this server believes its tokens are bound to, or `null` to
+   * accept any well-formed proof.
+   *
+   * A real resource server learns this from the token itself — `cnf.jkt` in a
+   * JWT, or introspection — and this fake's access tokens are opaque strings, so
+   * it is told instead. Set after a mint (from the issuer's `boundThumbprint`)
+   * it is what makes the attack case real: a thief holding a stolen access token
+   * can mint a key and sign a perfectly valid proof, and the only thing that
+   * refuses them is the binding.
+   */
+  dpopThumbprint: string | null;
 }
 
 export interface FakeMcpServer {
@@ -253,6 +290,15 @@ export interface FakeMcpServer {
   options: FakeMcpServerOptions;
   /** Every session id this server has issued and not yet forgotten. */
   readonly liveSessions: ReadonlySet<string>;
+  /**
+   * Why each refused proof was refused, in order (#506).
+   *
+   * The vocabulary is ./dpop-verifier.ts's, plus `wrong_auth_scheme` for a token
+   * presented as `Bearer` where this server binds. Asserted on rather than the
+   * 401, so an attack case cannot pass because the server refused for some other
+   * reason entirely.
+   */
+  readonly dpopFailures: readonly string[];
   /**
    * Forget every live session, so the next request carrying one gets a 404.
    *
@@ -287,7 +333,10 @@ const DEFAULTS: FakeMcpServerOptions = {
     }
   ],
   pageSize: null,
-  requireParamHeaders: false
+  requireParamHeaders: false,
+  dpop: false,
+  requireNonce: false,
+  dpopThumbprint: null
 };
 
 /** Spell every character as `\uXXXX`, the way an over-eager encoder would. */
@@ -300,6 +349,12 @@ function fullyEscape(text: string): string {
 export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions> = {}): Promise<FakeMcpServer> {
   const received: FakeRequest[] = [];
   const sessions = new Set<string>();
+  const dpopFailures: string[] = [];
+  // This server's own replay memory. Per server rather than shared, because two
+  // fakes in one test are two servers and a `jti` spent at one says nothing
+  // about the other.
+  const seenJti = new Set<string>();
+  let nonce: string | undefined;
   let issued = 0;
   const fake: FakeMcpServer = {
     url: "",
@@ -308,8 +363,60 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
     respond: null,
     options: { ...DEFAULTS, ...overrides },
     liveSessions: sessions,
+    dpopFailures,
     expireSessions: () => sessions.clear(),
     close: async () => {}
+  };
+
+  /**
+   * The proof check, run before anything about the request is interpreted.
+   *
+   * Returns the reply to send instead, or `null` to carry on. A request with no
+   * `Authorization` at all passes through: this models an upstream that binds
+   * the credentials it is given, not one that demands a credential — which is
+   * the fake's own `echoHeaders`-style posture and keeps the unauthenticated
+   * cases working.
+   */
+  const guard = (request: FakeRequest, url: string): FakeReply | null => {
+    if (!fake.options.dpop || request.authorization === undefined) return null;
+
+    if (!request.authorization.startsWith("DPoP ")) {
+      // A bound token presented as a bearer token is exactly what a thief with
+      // a stolen access token and no key would send.
+      dpopFailures.push("wrong_auth_scheme");
+      return { status: 401, raw: JSON.stringify({ error: "invalid_token" }) };
+    }
+    if (fake.options.requireNonce && nonce === undefined) {
+      nonce = `rs_nonce_${String(received.length)}`;
+      return {
+        status: 401,
+        raw: JSON.stringify({ error: "use_dpop_nonce" }),
+        headers: { "dpop-nonce": nonce }
+      };
+    }
+
+    const checked = checkDpopProof(
+      {
+        proof: request.headers["dpop"],
+        method: request.method,
+        url,
+        accessToken: request.authorization.slice("DPoP ".length),
+        ...(nonce !== undefined ? { nonce } : {})
+      },
+      seenJti
+    );
+    if (!checked.ok) {
+      dpopFailures.push(checked.refusal);
+      return { status: 401, raw: JSON.stringify({ error: "invalid_dpop_proof" }) };
+    }
+    // The binding. A proof that verifies is only worth something if it was made
+    // with the key this token was issued to — otherwise anyone who can read a
+    // token can mint a key and prove for it, which is the whole attack.
+    if (fake.options.dpopThumbprint !== null && checked.thumbprint !== fake.options.dpopThumbprint) {
+      dpopFailures.push("wrong_key");
+      return { status: 401, raw: JSON.stringify({ error: "invalid_token" }) };
+    }
+    return null;
   };
 
   /** How a legacy framework answers a method it has never heard of. */
@@ -494,7 +601,15 @@ export async function startFakeMcpServer(overrides: Partial<FakeMcpServerOptions
       };
       received.push(request);
 
-      const reply = fake.respond?.(request) ?? defaultReply(request);
+      // Before `respond` and before the default handler: a request that cannot
+      // prove it holds the key has not asked a question yet, which is the order
+      // a real resource server checks in.
+      // The URL this request arrived at, rebuilt from its own `Host` and path —
+      // which is how a real resource server recomputes `htu`, and is why it is
+      // not built from `fake.url` (that one already carries `/mcp`, so joining
+      // the two would check the proof against a path nobody called).
+      const refused = guard(request, `http://${incoming.headers.host ?? "127.0.0.1"}${incoming.url ?? "/"}`);
+      const reply = refused ?? fake.respond?.(request) ?? defaultReply(request);
       // Recorded above, answered never: the caller is left to hit its own
       // timeout. The socket is torn down by `closeAllConnections` at the end of
       // the test rather than here.

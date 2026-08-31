@@ -75,6 +75,31 @@ export function expectSecretReachedUpstream(
   );
 }
 
+/**
+ * The same control for a sender-constrained token (#506).
+ *
+ * Two claims rather than one, because either alone would pass on a run where
+ * DPoP did nothing: the token arrived under the `DPoP` scheme, *and* a proof
+ * came with it. A token presented as `DPoP <token>` with no proof is what a
+ * thief sends, and asserting only the scheme would call that a success.
+ */
+export function expectBoundSecretReachedUpstream(
+  upstream: FakeMcpServer,
+  secret: string,
+  label = "the credential",
+  method = "tools/call"
+): void {
+  const requests = upstream.callsTo(method);
+  const presented = requests.filter(request => request.authorization === `DPoP ${secret}`);
+  if (presented.some(request => (request.headers["dpop"] ?? "").length > 0)) return;
+  throw new Error(
+    `e2e: ${label} never reached the upstream as \`DPoP <${label}>\` with a proof on ${method} — ` +
+      `${String(requests.length)} request(s) to it, ${String(presented.length)} under the DPoP scheme, ` +
+      `${String(presented.filter(request => request.headers["dpop"] !== undefined).length)} carrying a proof. ` +
+      `Every "a stolen token cannot be presented" assertion below would pass for the wrong reason.`
+  );
+}
+
 /** `expectSecretReachedUpstream` for the planted canary, which is what almost every case wants. */
 export function expectCanaryReachedUpstream(upstream: FakeMcpServer, method = "tools/call"): void {
   expectSecretReachedUpstream(upstream, CANARY, "the credential", method);
