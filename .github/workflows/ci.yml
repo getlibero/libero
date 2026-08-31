@@ -46,57 +46,6 @@ jobs:
         # skipping emit is the faster answer while you are working; it just has
         # nothing left to say once a build has passed.
         run: pnpm -r build
-      - name: The CLI publishes one file and no dependency
-        # `@getlibero/cli` is the only package anyone installs from npm, and it
-        # depends on `@getlibero/schema` and `@getlibero/atomic-write`, both
-        # private and never published. esbuild inlines them into dist/index.js,
-        # so the published manifest declares nothing to resolve — and
-        # release-cli.yml deletes
-        # devDependencies before publishing, because npm (unlike pnpm) does not
-        # rewrite `workspace:*` and would ship a specifier no client can install.
-        #
-        # Asserted on every pull request rather than discovered at a tag, and in
-        # a copy of the manifest so nothing here mutates the tree for the steps
-        # that follow.
-        working-directory: packages/cli
-        run: |
-          work=$(mktemp -d)
-          cp package.json "$work/package.json.orig"
-          trap 'mv "$work/package.json.orig" package.json; rm -rf "$work" ./*.tgz' EXIT
-          npm pkg delete devDependencies
-          npm pack --pack-destination "$work" --silent > /dev/null
-          tarball=$(ls "$work"/*.tgz)
-          tar -tzf "$tarball" | sort
-          tar -xzOf "$tarball" package/package.json > "$work/manifest.json"
-          node -e '
-            const m = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-            if (m.dependencies) throw new Error("published manifest declares dependencies");
-            if (JSON.stringify(m).includes("workspace:")) throw new Error("published manifest carries a workspace: spec");
-          ' "$work/manifest.json"
-          tar -xzOf "$tarball" package/dist/index.js > "$work/bundle.js"
-          head -1 "$work/bundle.js" | grep -qx '#!/usr/bin/env node'
-          ! grep -q '"@getlibero/' "$work/bundle.js"
-          # `libero channel add` mints certificates by running dev-certs.sh, and
-          # npm's `files` cannot name a path outside the package — so build.mjs
-          # copies it in. This is what keeps that copy from becoming a fork: the
-          # script two other test suites exec at its repository path, and the one
-          # an operator gets from npm, have to be the same file.
-          tar -xzOf "$tarball" package/dist/dev-certs.sh > "$work/dev-certs.sh"
-          diff -u ../../scripts/dev-certs.sh "$work/dev-certs.sh"
-          # The published package declares MIT and inlines two dependencies, so
-          # its own licence and theirs have to travel with it. `license-check.sh`
-          # asks which licences are allowed, not whether their notices ship —
-          # this is the half that was missing. The build fails on a bundled
-          # dependency with no licence file, so a name absent here means one was
-          # added and its terms were not.
-          tar -xzOf "$tarball" package/LICENSE > "$work/LICENSE"
-          diff -u ../../LICENSE "$work/LICENSE"
-          tar -xzOf "$tarball" package/THIRD-PARTY-NOTICES.md > "$work/notices.md"
-          for bundled in zod smol-toml; do
-            grep -q "^## $bundled " "$work/notices.md" || {
-              echo "::error::THIRD-PARTY-NOTICES.md does not carry $bundled"; exit 1;
-            }
-          done
       - name: Tests
         # Every package that does not need a Docker daemon — which is every
         # package but two, each of which has a job below. The exclusions are
@@ -117,6 +66,19 @@ jobs:
         # they do: drop a name from any of the four and that suite stops
         # running with nothing failing.
         run: pnpm -r --filter '!@getlibero/e2e' --filter '!@getlibero/runner' --filter '!@getlibero/litellm-conformance' --filter '!@getlibero/aws-conformance' test
+      - name: The CLI publishes one file and no dependency
+        # `@getlibero/cli` is the only package anyone installs from npm. The
+        # script packs it the way release-cli.yml publishes it, then checks the
+        # tarball: a manifest with no dependencies and no `workspace:` spec, a
+        # bundle that RUNS on its own, and the script, licence and notices that
+        # have to travel with it. One script shared with the release workflow,
+        # so the two cannot check different things.
+        #
+        # After Tests, deliberately. The `test` script runs tsc, which emits
+        # into the same dist/ the build wrote; a check placed before it passes
+        # on files the next step may overwrite. That ordering is how v0.6.0
+        # and v0.7.0 shipped an entry stub that could not start.
+        run: sh scripts/cli-tarball-check.sh
 
   e2e:
     # The security suite, alone on a runner with a Docker daemon.

@@ -56,6 +56,14 @@ jobs:
         # Same form as apps/proxy-server/Dockerfile's build.
       - run: pnpm --filter "@getlibero/cli..." build
       - run: pnpm --filter @getlibero/cli test
+      - name: Check the tarball that is about to be published
+        # The same script ci.yml runs on every pull request, here at the one
+        # point that matters: after every step that writes to dist/, before
+        # the publish. It packs from a copy of the manifest and executes the
+        # packed bundle. v0.6.0 and v0.7.0 were published with tsc's entry
+        # stub in place of the bundle — `test` re-emits it after `build` —
+        # and no step between the build and the publish looked at the file.
+        run: sh scripts/cli-tarball-check.sh
       # Trusted publishing (OIDC): no token. npm authenticates via the runner's
       # id-token and generates the provenance attestation itself. pnpm 9's
       # publish silently ignores --provenance (0.0.1 shipped unattested), and

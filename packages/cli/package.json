@@ -1,7 +1,7 @@
 {
   "name": "@getlibero/cli",
   "version": "0.7.0",
-  "description": "Libero CLI \u2014 the host-authored half of a deployment: init, channel add, doctor.",
+  "description": "Libero CLI — the host-authored half of a deployment: init, channel add, doctor.",
   "keywords": [
     "libero",
     "slack",
@@ -13,10 +13,10 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "libero": "dist/index.js"
+    "libero": "dist/libero.js"
   },
   "files": [
-    "dist/index.js",
+    "dist/libero.js",
     "dist/dev-certs.sh",
     "README.md",
     "LICENSE",
