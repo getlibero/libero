@@ -32,6 +32,15 @@
 // `vault set` and `grant add` — the one place it can be fixed — and a sheet
 // naming one finds nothing, which fails closed. `deploy/README.md` says so.
 //
+// **The signing key is a third kind of secret, not a third store to write**
+// (#504). `<prefix>-signing-dpop`, labelled `signing` so it is listed with
+// neither of the others, created on the first proof and never written over. Two
+// roles rather than the grants' two: `secretAccessor` plus `secretVersionAdder`,
+// and it is the one secret where the accessor role can be granted to the serving
+// principal alone — which is what makes "the exchange requires a key the store
+// does not hold" a policy here rather than a second file. `deploy/README.md`
+// carries the IAM.
+//
 // **What is not here.** No master key: Secret Manager holds the plaintext and
 // encrypts at rest under Google-managed keys, so `vaultKeyFromEnv` is never
 // reached on this branch — #261's "the files disappear entirely and the KMS
@@ -61,6 +70,7 @@ import type { VaultAdmin } from "./custody-admin.js";
 import { GcpCustodyError, createSecretManagerClient } from "./custody-gcp-client.js";
 import type { GcpClientOptions, SecretManagerClient } from "./custody-gcp-client.js";
 import type { Logger } from "./log.js";
+import { openSigningKeyStore } from "./signing-key.js";
 
 /**
  * How many secrets to access at once while opening the vault.
@@ -103,21 +113,37 @@ export function assertUsablePrefix(prefix: string): void {
   }
 }
 
+/**
+ * The three things this project holds for a deployment. The label every list
+ * filters on and a third of every id — a signing secret is not listed with the
+ * vault's, so `Vault.size` cannot count it and IAM can be written for it alone.
+ */
+type SecretKind = "vault" | "grant" | "signing";
+
+/**
+ * The signing secret's name half, `<prefix>-signing-dpop`.
+ *
+ * One key per deployment (#504), so this is a constant rather than a credential
+ * name: there is nothing for an operator to choose, and a name that could vary
+ * would be a second key waiting to be created by a typo.
+ */
+const SIGNING_NAME = "dpop";
+
 /** `null` when this name cannot be a secret id on this backend. See the header. */
-function secretId(prefix: string, kind: "vault" | "grant", name: string): string | null {
+function secretId(prefix: string, kind: SecretKind, name: string): string | null {
   if (credentialNameRejection(name) !== null) return null;
   if (name.includes(".")) return null;
   return `${prefix}-${kind}-${name}`;
 }
 
-function nameOf(prefix: string, kind: "vault" | "grant", id: string): string | null {
+function nameOf(prefix: string, kind: SecretKind, id: string): string | null {
   const lead = `${prefix}-${kind}-`;
   if (!id.startsWith(lead)) return null;
   const name = id.slice(lead.length);
   return credentialNameRejection(name) === null ? name : null;
 }
 
-const labelsFor = (prefix: string, kind: "vault" | "grant"): Record<string, string> => ({
+const labelsFor = (prefix: string, kind: SecretKind): Record<string, string> => ({
   [KIND_LABEL]: kind,
   [DEPLOYMENT_LABEL]: prefix
 });
@@ -283,10 +309,63 @@ export async function openGcpCustody(
     }
   };
 
+  // One secret, created on the first proof and never written over. `create`
+  // then a re-access rather than a blind `addVersion`: two processes that both
+  // found none converge on whichever version landed last, so neither ends up
+  // signing with a key the store does not hold. The residual race is this
+  // backend's usual one, priced the same — a re-grant, never a wrong answer.
+  const signingId = secretId(prefix, "signing", SIGNING_NAME);
+  const signing = openSigningKeyStore(
+    {
+      read: async () => (signingId === null ? null : client.access(signingId)),
+
+      async create(material: string): Promise<string> {
+        if (signingId === null) throw new GcpCustodyError("malformed_response");
+        // `secretmanager.secrets.create` is a *project* permission — there is
+        // no secret to scope it to before one exists — so a deployment that
+        // keeps it from the serving principal is a supported shape: the
+        // operator creates this one secret by hand and the proxy fills it. A
+        // denial here is therefore not fatal on its own, and it is kept rather
+        // than dropped, because if the operator did neither then the version
+        // write fails against a secret that is not there — and `not found` sends
+        // an operator to look at the network when the answer is IAM.
+        let refused: GcpCustodyError | undefined;
+        try {
+          await client.create(signingId, labelsFor(prefix, "signing"));
+        } catch (error) {
+          if (!(error instanceof GcpCustodyError) || error.reason !== "denied") throw error;
+          refused = error;
+        }
+        const existing = await client.access(signingId);
+        if (existing !== null) return existing;
+        try {
+          await client.addVersion(signingId, material);
+        } catch (error) {
+          throw refused ?? error;
+        }
+        const stored = await client.access(signingId);
+        // A secret that holds no live version immediately after one was added
+        // is a store this process cannot reason about; failing closed costs a
+        // retried exchange, where guessing costs a stranded grant.
+        if (stored === null) throw new GcpCustodyError("malformed_response");
+        return stored;
+      },
+
+      malformed: () => new GcpCustodyError("malformed_response"),
+
+      // The client is the composition's, closed by `close` below — and it
+      // refuses every call afterwards, which is the refusal a closed store owes.
+      close: () => {}
+    },
+    logger !== undefined ? { logger } : {}
+  );
+
   return {
     vault,
     tokens,
+    signing,
     close: () => {
+      signing.close();
       client.close();
     }
   };

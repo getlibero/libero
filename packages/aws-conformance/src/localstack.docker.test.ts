@@ -1,6 +1,6 @@
 // The custody contract against a real Secrets Manager implementation.
 //
-// `packages/proxy/src/custody-aws.test.ts` runs the same sixty-seven cases
+// `packages/proxy/src/custody-aws.test.ts` runs the same seventy-six cases
 // against a fake this repository wrote. This runs them against LocalStack, which
 // is somebody else's reading of the same API — and that is the whole of why the
 // package exists. #483 shipped the GCP backend with no independent
@@ -216,7 +216,7 @@ afterAll(() => {
 // The other side of the gate. `skip` is read at collection, which is why the
 // probe above is synchronous. Accounted for in the reporter's `ALLOWED_SKIPS`,
 // so a contributor without a daemon sees a named absence rather than a green
-// tick over sixty-seven cases that did not run.
+// tick over seventy-six cases that did not run.
 describe("localstack", { skip: !socketPresent }, () => {
   runCustodyConformance({
     name: "aws secrets manager (localstack)",

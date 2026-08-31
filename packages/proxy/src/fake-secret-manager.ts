@@ -61,6 +61,16 @@ export interface FakeSecretManager {
   malformed: boolean;
   /** How many secrets one page returns, so pagination is exercised. */
   pageSize: number | null;
+  /**
+   * Refuse `CreateSecret` with a 403, leaving every other call served.
+   *
+   * A project where the serving principal was not given
+   * `secretmanager.secrets.create` — a real IAM shape, because that permission
+   * is project-level and an operator may prefer to create the secrets by hand.
+   * The signing key tolerates it (#504); a `failWith` of 403 cannot model it,
+   * because it denies the reads that have to keep working.
+   */
+  denyCreate: boolean;
   close(): Promise<void>;
 }
 
@@ -74,7 +84,8 @@ export async function startFakeSecretManager(): Promise<FakeSecretManager> {
     expiresIn: 3600,
     failWith: null as number | null,
     malformed: false,
-    pageSize: null as number | null
+    pageSize: null as number | null,
+    denyCreate: false
   };
 
   const server = createServer((incoming, outgoing) => {
@@ -164,6 +175,10 @@ export async function startFakeSecretManager(): Promise<FakeSecretManager> {
     }
 
     if (secretsPrefix.test(path) && method === "POST") {
+      if (state.denyCreate) {
+        send(403, { error: { code: 403, status: "PERMISSION_DENIED" } });
+        return;
+      }
       const id = url.searchParams.get("secretId") ?? "";
       if (secrets.has(id)) {
         send(409, { error: { code: 409, status: "ALREADY_EXISTS" } });
@@ -284,6 +299,12 @@ export async function startFakeSecretManager(): Promise<FakeSecretManager> {
     },
     set pageSize(value: number | null) {
       state.pageSize = value;
+    },
+    get denyCreate() {
+      return state.denyCreate;
+    },
+    set denyCreate(value: boolean) {
+      state.denyCreate = value;
     },
     // `closeAllConnections()` first, so a parked request cannot stall teardown
     // — ./fake-token-issuer.ts's shape.

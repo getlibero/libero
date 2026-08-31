@@ -749,11 +749,87 @@ is what reserving one instead looks like when it pays off. The one place free te
 subclass; the conformance suite closes it by taking each harness's
 `failureWords` up front and refusing any error carrying something else.
 
+### The signing key: a third store, and where it had to go (#504)
+
+DPoP (#260) binds a token to a key, so the proxy needs one — and the promised
+sentence, the one #506 re-prices the stolen-store paragraph with, is "the
+exchange requires a key the store does not hold." **Where that key lives is what
+decides whether the sentence means anything**, which is why #504 is a decision
+before it is an implementation.
+
+**Not the token store.** A private key in `tokens.enc` under the same subkey
+makes the property vacuous: whoever stole the tokens stole the key that presents
+them, and the paragraph would be re-worded into a claim about nothing.
+
+**Not the vault either, and this is the half worth reading twice.** The vault is
+the store the serving process may only *read*. Putting the key there means one
+of two things: an operator generating an ES256 private key and pasting it
+through `vault set` — a private key through a shell history, and no lazy mint —
+or this process gaining a vault write path. The second is the claim the whole
+custody design is built on, and it is not for sale to save a file.
+
+So the key is a **third store on the same seam**. `SigningKeyStore` in
+`custody.ts` beside `Vault` and `TokenStore`, one more member of `Custody`,
+`signing-key.ts` holding everything about what a key *is*, and each backend
+supplying four methods: read the material, create it if none is stored, name its
+own word for material that is not a key, and close. The built form is
+`signing.enc` beside the other two — same envelope, magic `LBSIGNK`, HKDF info
+`libero.signing.v1`, third subkey — and on a managed backend it is one more
+secret, `<prefix>-signing-dpop` or `<prefix>/signing/dpop`, labelled so it lists
+with neither of the others.
+
+**What that buys, per backend, stated exactly.** On the encrypted files: theft
+of `tokens.enc` plus the master key no longer yields presentable credentials,
+and theft of the whole volume plus the master key still does, because everything
+on the volume is under one key. That is a real narrowing and not the whole
+property, and saying so is the point — the honest version of the claim is
+against a stolen *store*, not against a stolen host. On GCP and AWS it is
+stronger and is enforced by somebody else: the signing secret carries its own
+IAM, so the accessor role on it can be granted to the serving principal alone,
+and there is no master key for anyone to steal. Both are why the location is a
+contract decision rather than the file backend's private business.
+
+**One key per deployment, not per grant.** The private half never leaves the
+process, so an attacker who can use one key can use fifty; per-grant keys would
+buy nothing against that, and would cost one more secret per grant on the
+managed backends, where the two costs of a secret per name are already priced
+below. The cost of one key is stated rather than hidden: authorization servers
+that collude can correlate this deployment across upstreams by its thumbprint,
+which for a self-hosted proxy whose upstreams the operator chose is not a threat
+the operator has.
+
+**Minted lazily, adopted rather than replaced, and never rotated from inside.**
+A deployment with no OAuth upstream never creates a key; the first exchange that
+needs a proof does, which is also why this is the one store that does not open at
+startup. The write is `createFileExclusively`, not a replace, and a `create` that
+loses answers with the winner: a second process that got there first keeps its
+key, because overwriting it strands every grant bound to it. For the same reason
+there is no `rotate` and no second key — rotating this key kills every live
+grant, so it is an operator act (remove the backing, re-grant) rather than a
+method the serving process holds.
+
+**What the key can do and what it cannot.** `SigningKey` is `Secret`'s posture
+one turn further: where a credential leaves through the one guarded `reveal()`,
+this leaves through nothing at all. The `KeyObject` is a closure variable, no
+member returns it, and `sign` is the whole surface — so `Custody`'s new member
+adds no way for material to reach a log line, and the conformance suite walks the
+object to say so. The thumbprint *is* logged, and `log.ts` carries the argument:
+it is a digest of the public members, it is inside every proof this proxy sends,
+and it is the only fact that makes a stranded grant legible.
+
+The conformance suite gained nine cases for all this, so every backend inherits
+the storage semantics rather than re-deriving them — including the one that
+matters most, that a minted key is in **neither of the other two stores**. A
+backend that quietly kept it as a vault entry would pass every other case and
+make #260's claim vacuous. What is deliberately *not* asserted there is anything
+about DPoP itself: proofs, nonces and thumbprint continuity across a refresh are
+#505's, and they belong to the exchange rather than to a store.
+
 ### The Secret Manager backend (#483)
 
 `PROXY_CUSTODY_BACKEND=gcp` runs both stores on Google Secret Manager.
 `custody-gcp.ts` is the backend, `custody-gcp-client.ts` is the wire, and
-`custody-gcp.test.ts` is a harness and one call — the same sixty-seven cases the
+`custody-gcp.test.ts` is a harness and one call — the same seventy-six cases the
 files pass, against a store that shares no code with them below `custody.ts`.
 
 **Writer separation becomes IAM, which is the stronger form of the same claim.**

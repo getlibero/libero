@@ -206,7 +206,88 @@ export interface TokenStore {
 }
 
 /**
- * What the serving composition holds: both stores and one shutdown.
+ * The public half of the proxy's signing key, as JWK members.
+ *
+ * Exactly the three RFC 7638 requires for a P-256 key, spelled here so the
+ * contract can carry a thumbprint without importing anything that knows what a
+ * curve is. `alg` is not among them, deliberately: the thumbprint is computed
+ * over these members and no others, and a fourth would change it.
+ */
+export interface PublicJwk {
+  readonly kty: "EC";
+  readonly crv: "P-256";
+  readonly x: string;
+  readonly y: string;
+}
+
+/**
+ * A key the process can sign with and cannot export.
+ *
+ * `Secret`'s shape one turn further: where a credential leaves through the one
+ * guarded `reveal()`, this leaves through nothing at all. The private half is
+ * held in a closure as a `KeyObject` — there is no member that returns it, no
+ * PEM on a property, and `sign` is the whole of what a caller can do with it.
+ * That is what makes #260's promised sentence, "the exchange requires a key the
+ * store does not hold", a claim about this object as well as about storage: a
+ * process that has the key can present a proof, and a copy of the store cannot.
+ *
+ * `sign` is synchronous because a proof is minted per upstream call and the
+ * key is already in memory — the vault's freshness rule, arrived at from the
+ * other side. The signature is JWS ES256: the P-1363 pair, 64 bytes, not DER.
+ */
+export interface SigningKey {
+  /** The one algorithm, so a proof header quotes this rather than a literal. */
+  readonly alg: "ES256";
+  readonly publicJwk: PublicJwk;
+  /** RFC 7638 thumbprint, base64url. Computed once, at load. */
+  readonly thumbprint: string;
+  sign(input: Buffer): Buffer;
+}
+
+/**
+ * Where the deployment's DPoP signing key lives (#504).
+ *
+ * **A third store rather than a field of the second, and that decision is the
+ * whole point of the sub-issue.** A private key kept in the token store under
+ * the same master key makes the property vacuous — theft of the store yields
+ * the key that presents its tokens — so it is stored apart: its own file under
+ * its own subkey on the default backend, its own secret under its own IAM on a
+ * managed one. `packages/proxy/README.md` carries the argument and, more
+ * importantly, what that does and does not buy on each backend.
+ *
+ * **One key per deployment, not per grant.** The private half never leaves this
+ * process, so an attacker who can use one key can use fifty; per-grant keys
+ * would buy nothing against that and would cost one more secret per grant on
+ * the managed backends, where #483 already priced what a secret per name costs.
+ * What it costs instead is stated rather than hidden: authorization servers
+ * that collude can correlate this deployment across upstreams by its
+ * thumbprint.
+ *
+ * **Minted lazily, adopted rather than replaced.** A deployment with no OAuth
+ * upstream never creates one; the first exchange that needs a proof does. A
+ * backing that already holds a key is loaded, never written over — which is why
+ * there is no `set`, no `rotate` and no second key: rotating this key kills
+ * every live grant, so it is an operator act (remove the backing, re-grant)
+ * rather than a method the serving process holds.
+ *
+ * `Awaitable` for `TokenStore.read`'s reason — a managed backend reaches a
+ * network to answer the first call. Every call after it is served from what the
+ * process already holds, and #505 calls it at the exchange rather than on the
+ * serving path.
+ */
+export interface SigningKeyStore {
+  signingKey(): Awaitable<SigningKey>;
+
+  /** Release the key this retained. Calls fail afterwards. */
+  close(): void;
+}
+
+/**
+ * What the serving composition holds: the three stores and one shutdown.
+ *
+ * Three since #504: the vault, the token store, and the DPoP signing key —
+ * which is a store rather than a field of the second one for the reason
+ * `SigningKeyStore` gives.
  *
  * There is no admin here. `VaultAdmin` is reached through ./custody-admin.ts,
  * which ./custody-backend.ts does not import — the ./vault.ts / ./vault-file.ts
@@ -216,6 +297,8 @@ export interface TokenStore {
 export interface Custody {
   readonly vault: Vault;
   readonly tokens: TokenStore;
+  /** The DPoP signing key's store — see `SigningKeyStore`, and #504. */
+  readonly signing: SigningKeyStore;
   close(): void;
 }
 

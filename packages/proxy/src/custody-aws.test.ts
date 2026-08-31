@@ -1,7 +1,7 @@
 // The AWS backend, run against the contract.
 //
 // A harness and one call, ./custody-file.test.ts's shape and ./custody-gcp.test.ts's
-// — the same sixty-seven cases, against a third store that shares no code with
+// — the same seventy-six cases, against a third store that shares no code with
 // either below ./custody.ts. No contract assertions here.
 //
 // The fake is ./fake-secrets-manager.ts and it verifies every signature, so the

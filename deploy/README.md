@@ -631,6 +631,45 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "$OPERATOR" --role roles/secretmanager.admin
 ```
 
+**The signing key is a third kind of secret** (#504),
+`libero-signing-dpop`, labelled `libero-kind=signing`. It holds the DPoP key
+the proxy binds OAuth tokens to, and it is the one secret the *serving* process
+creates: it is minted on the first exchange that needs a proof, so a deployment
+with no OAuth upstream never has one. The roles are the grants' first two —
+`secretAccessor` and `secretVersionAdder` — and this is the secret where the
+accessor role is granted to the serving principal *alone*, which is what makes
+"the exchange requires a key the token store does not hold" a policy on this
+backend rather than a second file on a volume.
+
+```bash
+# The proxy creates this itself if it may, and fills one you created if it may
+# not — so this block is what you run when the serving principal is not to hold
+# `secrets.create`. Run it before the first OAuth grant either way.
+gcloud secrets create libero-signing-dpop \
+  --project "$PROJECT" \
+  --replication-policy automatic \
+  --labels libero-kind=signing,libero-deployment=libero
+for ROLE in secretAccessor secretVersionAdder; do
+  gcloud secrets add-iam-policy-binding libero-signing-dpop \
+    --project "$PROJECT" \
+    --member "serviceAccount:$PROXY_SA" \
+    --role "roles/secretmanager.$ROLE"
+done
+```
+
+**A note this backend owed before #504.**
+`secretmanager.secrets.create` is a *project*-level permission — there is no
+secret to scope it to before one exists — and the serving proxy calls create on
+its own on two paths: a refresh-token rotation, and the first signing key. So
+either grant the serving service account a custom project role holding
+`secretmanager.secrets.create` and `secretmanager.secrets.list` and nothing
+else, or create the secrets by hand and leave it with `list` alone. The signing
+key tolerates the second shape on purpose — a denied create there is not fatal,
+because the operator may have made the secret already, and a deployment that did
+neither is told it was denied rather than told the secret is missing. The grant
+path does not tolerate it, which is one more thing for #496 to check against a
+live project.
+
 `secretVersionManager` is on the grant secrets and not the vault's because
 replace-not-stack is add-version then *destroy the predecessor*: a rotated
 refresh token stops being retrievable rather than merely stopping being latest.
@@ -727,10 +766,25 @@ retrievable, which AWS does not do by default.
         "secretsmanager:UpdateSecretVersionStage"
       ],
       "Resource": "arn:aws:secretsmanager:eu-west-2:111122223333:secret:libero/grant/*"
+    },
+    {
+      "Sid": "CreateTheSigningKeyOnce",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:CreateSecret", "secretsmanager:TagResource"],
+      "Resource": "arn:aws:secretsmanager:eu-west-2:111122223333:secret:libero/signing/*"
     }
   ]
 }
 ```
+
+**The signing key is a third kind of secret here too** (#504),
+`libero/signing/dpop`, tagged `libero-kind=signing`. The proxy creates it on the
+first exchange that needs a DPoP proof and never writes it again — which is why
+the statement above grants `CreateSecret` and not `PutSecretValue`: a key that
+could be replaced by the serving process is a key that could be replaced by a
+compromised one, and every grant bound to the old one would go with it. Scoping
+create to `libero/signing/*` is something this backend can express and GCP's
+cannot, which is the one place AWS's resource model is the better fit.
 
 That is the *serving* role. It can read every credential and write only grants —
 `libero/vault/*` is readable and not writable, which is "the process serving tool

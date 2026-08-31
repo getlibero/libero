@@ -60,6 +60,24 @@ export interface LogFields {
    * edit land", which is what the line above will be read to answer.
    */
   pins?: number;
+  /**
+   * The proxy's DPoP signing key, as its RFC 7638 JWK thumbprint (#504).
+   *
+   * A hash, so it owes this file's rule the argument `fingerprint` owes it, and
+   * it is the same argument: the thumbprint is computed over the *public*
+   * members of the key, it is sent to the authorization server inside every
+   * proof this proxy makes, and holding it gets you nothing — the private half
+   * is what signs, and it never leaves the process. The hazard the rule is
+   * about is a low-entropy secret whose digest is crackable; there is no secret
+   * behind this digest to crack.
+   *
+   * It is logged because it is the fact that makes a stranded grant legible.
+   * Every token bound to a key names its thumbprint, so an operator whose
+   * refreshes started failing can tell "the key changed" from "the grant was
+   * revoked" by comparing this line across two restarts, and that sentence has
+   * no other way to be finished.
+   */
+  thumbprint?: string;
   host?: string;
   port?: number;
   /**

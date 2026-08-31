@@ -20,6 +20,7 @@
 
 import { openAwsCustody } from "./custody-aws.js";
 import { openGcpCustody } from "./custody-gcp.js";
+import { openFileSigningKeyStore } from "./signing-store.js";
 import { openTokenStore } from "./token-store.js";
 import { openVault } from "./vault.js";
 import type { Custody } from "./custody.js";
@@ -80,14 +81,16 @@ export interface CustodyDeps {
 }
 
 /**
- * Open both stores, failing fast where failing is cheap.
+ * Open the deployment's stores, failing fast where failing is cheap.
  *
  * Runs at startup, before anything binds, which is the one place in the proxy
  * where a throw is the right shape: a wrong key, a corrupt store or an
  * unreachable backend is an operator's problem at `docker compose up` rather
  * than at the far end of a Slack thread. Absent is not a failure for either
  * store — a deployment that has loaded no credentials, or has no OAuth
- * upstream, is a valid one.
+ * upstream, is a valid one. The signing store is the one that does not open at
+ * all: it is lazy (#504), so a deployment that never makes a proof never
+ * creates a key.
  *
  * Logs nothing itself. The two stores log their own opening, so what an
  * operator reads at startup is unchanged by there being a seam.
@@ -108,6 +111,13 @@ export function openCustody(config: CustodyConfig, deps: CustodyDeps = {}): Prom
   // subkeys separated by HKDF info. `tokens.close()` is what zeroes it, which
   // is why `close` below goes through the token store rather than the buffer.
   const vault = openVault({ file: vaultFile, key, ...(logger !== undefined ? { logger } : {}) });
+  // Lazy, so the third file exists only in a deployment that has made a proof —
+  // and holding the same key buffer, which the token store's `close()` zeroes.
+  const signing = openFileSigningKeyStore({
+    vaultFile,
+    key,
+    ...(logger !== undefined ? { logger } : {})
+  });
   const tokens = openTokenStore({
     vaultFile,
     key,
@@ -118,7 +128,11 @@ export function openCustody(config: CustodyConfig, deps: CustodyDeps = {}): Prom
   return Promise.resolve({
     vault,
     tokens,
+    signing,
     close: () => {
+      // The signing store first: it stops answering, and then the token store
+      // zeroes the key buffer both of them hold.
+      signing.close();
       tokens.close();
     }
   });

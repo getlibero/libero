@@ -44,6 +44,8 @@
 //   two backend modules. They are contract-level in everything but their
 //   location.
 
+import { createPublicKey, verify } from "node:crypto";
+import type { JsonWebKey } from "node:crypto";
 import { describe, it } from "node:test";
 import { inspect } from "node:util";
 import { each } from "@getlibero/test-kit";
@@ -263,7 +265,8 @@ export function runCustodyConformance(harness: CustodyHarness): void {
         await withFixture(({ stores, admin }) => {
           expect(surfaceOf(stores.vault)).toEqual(["lookup", "size"]);
           expect(surfaceOf(stores.tokens)).toEqual(["close", "putGrant", "read", "rotate", "size"]);
-          expect(surfaceOf(stores)).toEqual(["close", "tokens", "vault"]);
+          expect(surfaceOf(stores.signing)).toEqual(["close", "signingKey"]);
+          expect(surfaceOf(stores)).toEqual(["close", "signing", "tokens", "vault"]);
           expect(surfaceOf(admin)).toEqual(["close", "names", "remove", "set"]);
         });
       });
@@ -529,6 +532,162 @@ export function runCustodyConformance(harness: CustodyHarness): void {
     });
 
     // One cap on what a stored credential may weigh, wherever it is stored.
+    // The third store (#504). What is asserted here is *storage*: that one key
+    // is minted, that it is the same key the next process opens, and that it is
+    // in neither of the other two stores. What DPoP does with it — proofs,
+    // nonces, thumbprint continuity across a refresh — is #505's, and belongs
+    // to the exchange rather than to a store.
+    describe("the signing key", () => {
+      /** Verify against the public members alone, the way a server would. */
+      const verifies = (
+        key: { readonly publicJwk: object },
+        input: Buffer,
+        signature: Buffer
+      ): boolean =>
+        verify(
+          "sha256",
+          input,
+          {
+            key: createPublicKey({ key: key.publicJwk as JsonWebKey, format: "jwk" }),
+            dsaEncoding: "ieee-p1363"
+          },
+          signature
+        );
+
+      const PROOF = Buffer.from("eyJ0eXAiOiJkcG9wK2p3dCJ9.eyJodG0iOiJQT1NUIn0", "utf8");
+
+      it("offers one verb and no way to export the private half", async () => {
+        await withFixture(async ({ stores }) => {
+          const key = await stores.signing.signingKey();
+          expect(surfaceOf(key)).toEqual(["alg", "publicJwk", "sign", "thumbprint"]);
+          // `d` is the private scalar's JWK member, and a public JWK carrying
+          // one is the single mistake here that would ship the key inside
+          // every proof this proxy makes.
+          expect(Object.keys(key.publicJwk).sort()).toEqual(["crv", "kty", "x", "y"]);
+          expect(JSON.stringify(key)).not.toContain("PRIVATE KEY");
+          expect(inspect(key, { depth: null, showHidden: true })).not.toContain("PRIVATE KEY");
+        });
+      });
+
+      it("signs so that the public half verifies it", async () => {
+        await withFixture(async ({ stores }) => {
+          const key = await stores.signing.signingKey();
+          const signature = key.sign(PROOF);
+          // The P-1363 pair rather than DER: a verifier told `ES256` reads 64
+          // bytes, and a DER signature fails as a bad signature rather than as
+          // a malformed one, which is a day spent on the wrong question.
+          expect(signature).toHaveLength(64);
+          expect(verifies(key, PROOF, signature)).toBe(true);
+          expect(verifies(key, Buffer.from("a different proof"), signature)).toBe(false);
+        });
+      });
+
+      it("mints one key and holds it", async () => {
+        await withFixture(async ({ stores }) => {
+          const first = await stores.signing.signingKey();
+          const second = await stores.signing.signingKey();
+          expect(second.thumbprint).toBe(first.thumbprint);
+          expect(second.publicJwk).toEqual(first.publicJwk);
+        });
+      });
+
+      // The property the whole store exists for: a restart signs with the key
+      // the grants were bound to. A thumbprint that matched while the private
+      // halves differed would pass a weaker assertion, so a signature made by
+      // one handle is verified against the other's public members.
+      it("gives a handle opened afterwards the same key, private half included", async () => {
+        await withFixture(async ({ stores, reopen }) => {
+          const minted = await stores.signing.signingKey();
+          const signature = minted.sign(PROOF);
+
+          const loaded = await (await reopen()).signing.signingKey();
+          expect(loaded.thumbprint).toBe(minted.thumbprint);
+          expect(verifies(loaded, PROOF, signature)).toBe(true);
+        });
+      });
+
+      // Create-if-absent, never replace: a second process that got there first
+      // wins, because overwriting its key strands every grant bound to it.
+      it("adopts one key when two handles ask", async () => {
+        await withFixture(async ({ stores, reopen }) => {
+          const other = (await reopen()).signing;
+          const [first, second] = await Promise.all([
+            stores.signing.signingKey(),
+            other.signingKey()
+          ]);
+          expect(second.thumbprint).toBe(first.thumbprint);
+        });
+      });
+
+      // Where the key is *not*. A backend that kept it as a vault entry or as a
+      // grant would pass every case above and make #260's claim vacuous — the
+      // store holding the tokens would hold the key that presents them.
+      it("is in neither of the other two stores", async () => {
+        await withFixture(async ({ stores, reopen }) => {
+          await stores.signing.signingKey();
+          const opened = await reopen();
+
+          expect(opened.vault.size).toBe(0);
+          expect(opened.tokens.size).toBe(0);
+          for (const name of ["dpop", "signing", "signing_key", "dpop_key"]) {
+            expect(opened.vault.lookup(name)).toEqual({ status: "missing" });
+            expect(await opened.tokens.read(name, BINDING)).toEqual({
+              status: "missing",
+              reason: "absent"
+            });
+          }
+        });
+      });
+
+      // Lazy: a deployment with no OAuth upstream never creates one. Observable
+      // as silence, because a store that minted at open would have said so.
+      it("mints nothing until it is asked", async () => {
+        const { logger, text } = recordingLogger();
+        await withFixture(
+          async ({ stores, admin, reopen }) => {
+            await admin.set(NAME, VALUE);
+            await stores.tokens.putGrant(GRANT, grant());
+            await reopen();
+          },
+          { logger }
+        );
+        expect(text()).not.toContain("signing");
+      });
+
+      it("keeps the key material out of every log line", async () => {
+        const { logger, text } = recordingLogger();
+        await withFixture(
+          async ({ stores, reopen }) => {
+            await stores.signing.signingKey();
+            await (await reopen()).signing.signingKey();
+          },
+          { logger }
+        );
+        // The two spellings the material could reach a line in: the PEM's own
+        // banner, and the private scalar's JWK member. A thumbprint is public
+        // and may be logged — see `thumbprint` in ./log.ts.
+        expect(text()).not.toContain("PRIVATE KEY");
+        expect(text()).not.toContain('"d":');
+      });
+
+      it("reports a corrupt backing in both vocabularies", async () => {
+        await withFixture(async fixture => {
+          fixture.corrupt();
+
+          let thrown: unknown;
+          try {
+            await (await fixture.reopen()).signing.signingKey();
+          } catch (error) {
+            thrown = error;
+          }
+
+          expect(thrown).toBeDefined();
+          expect(CUSTODY_FAILURES).toContain((thrown as { failure?: unknown }).failure);
+          expect(fixture.failureWords).toContain((thrown as { reason?: unknown }).reason);
+        });
+      });
+    });
+
     describe("what a value may weigh", () => {
       each([
         ["empty", "", "empty_value"],
@@ -723,6 +882,7 @@ export function runCustodyConformance(harness: CustodyHarness): void {
           stores.close();
           await expect(async () => stores.tokens.read(GRANT, BINDING)).rejects.toThrow();
           await expect(stores.tokens.putGrant(GRANT, grant())).rejects.toThrow();
+          await expect(async () => stores.signing.signingKey()).rejects.toThrow();
         });
       });
 

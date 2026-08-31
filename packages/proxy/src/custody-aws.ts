@@ -25,6 +25,12 @@
 // operator act it was always paired with — revoking the credential at the
 // service that issued it — is not undoable either.
 //
+// **The signing key is a third kind of secret here too** (#504),
+// `<prefix>/signing/dpop`, tagged `signing` so it lists with neither of the
+// others. `CreateSecret` carries a first value and refuses a name that exists,
+// which makes create-if-absent one call rather than the GCP backend's three —
+// the one place this backend's API is the better shape for what #504 needs.
+//
 // What it shares with GCP, and what makes both worth having: names are metadata
 // here too, so the credential inventory the file backend hides behind whole-set
 // encryption is visible to anyone holding `secretsmanager:ListSecrets`, bought
@@ -55,6 +61,7 @@ import type { VaultAdmin } from "./custody-admin.js";
 import { AwsCustodyError, createSecretsManagerClient } from "./custody-aws-client.js";
 import type { AwsClientOptions, SecretsManagerClient } from "./custody-aws-client.js";
 import type { Logger } from "./log.js";
+import { openSigningKeyStore } from "./signing-key.js";
 
 /** ./custody-gcp.ts's batch, for its reason. */
 const OPEN_CONCURRENCY = 8;
@@ -88,7 +95,12 @@ export function assertUsablePrefix(prefix: string): void {
   }
 }
 
-const leadFor = (prefix: string, kind: "vault" | "grant"): string => `${prefix}/${kind}/`;
+/** ./custody-gcp.ts's three kinds, and its `SIGNING_NAME`, for its reasons. */
+type SecretKind = "vault" | "grant" | "signing";
+
+const SIGNING_NAME = "dpop";
+
+const leadFor = (prefix: string, kind: SecretKind): string => `${prefix}/${kind}/`;
 
 /**
  * `null` when this is not a name this backend could have written.
@@ -96,19 +108,19 @@ const leadFor = (prefix: string, kind: "vault" | "grant"): string => `${prefix}/
  * Unlike the GCP backend there is no character to refuse: every
  * `CredentialName` is a legal segment of a Secrets Manager name.
  */
-function secretName(prefix: string, kind: "vault" | "grant", name: string): string | null {
+function secretName(prefix: string, kind: SecretKind, name: string): string | null {
   if (credentialNameRejection(name) !== null) return null;
   return `${leadFor(prefix, kind)}${name}`;
 }
 
-function nameOf(prefix: string, kind: "vault" | "grant", secret: string): string | null {
+function nameOf(prefix: string, kind: SecretKind, secret: string): string | null {
   const lead = leadFor(prefix, kind);
   if (!secret.startsWith(lead)) return null;
   const name = secret.slice(lead.length);
   return credentialNameRejection(name) === null ? name : null;
 }
 
-const tagsFor = (prefix: string, kind: "vault" | "grant"): Record<string, string> => ({
+const tagsFor = (prefix: string, kind: SecretKind): Record<string, string> => ({
   [KIND_TAG]: kind,
   [DEPLOYMENT_TAG]: prefix
 });
@@ -258,10 +270,41 @@ export async function openAwsCustody(
     }
   };
 
+  // One secret, `<prefix>/signing/dpop`, created on the first proof and never
+  // written over (#504). `CreateSecret` carries the value and answers `false`
+  // when the name was already taken, so create-if-absent is one call here and
+  // the adoption is a `get` — this backend needs none of the GCP one's
+  // re-access dance, because the create is the race's arbiter.
+  const signingSecret = secretName(prefix, "signing", SIGNING_NAME);
+  const signing = openSigningKeyStore(
+    {
+      read: async () => (signingSecret === null ? null : client.get(signingSecret)),
+
+      async create(material: string): Promise<string> {
+        if (signingSecret === null) throw new AwsCustodyError("malformed_response");
+        if (await client.create(signingSecret, material, tagsFor(prefix, "signing"))) {
+          return material;
+        }
+        const existing = await client.get(signingSecret);
+        // A name that exists and holds no `AWSCURRENT` value is a store this
+        // process cannot reason about. ./custody-gcp.ts's branch and its reason.
+        if (existing === null) throw new AwsCustodyError("malformed_response");
+        return existing;
+      },
+
+      malformed: () => new AwsCustodyError("malformed_response"),
+
+      close: () => {}
+    },
+    logger !== undefined ? { logger } : {}
+  );
+
   return {
     vault,
     tokens,
+    signing,
     close: () => {
+      signing.close();
       client.close();
     }
   };
