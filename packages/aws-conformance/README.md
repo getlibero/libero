@@ -2,7 +2,7 @@
 
 One file, asking whether the AWS custody backend's idea of Secrets Manager
 matches somebody else's (#484). It starts LocalStack and runs
-`runCustodyConformance` — the same sixty-seven cases `packages/proxy` runs
+`runCustodyConformance` — the same seventy-six cases `packages/proxy` runs
 against its own fake, and the same cases the file and GCP backends pass.
 
 Private, never published, daemon-gated two-sided like the sandbox suite, and run

@@ -1,6 +1,6 @@
 // The GCP backend, run against the contract.
 //
-// A harness and one call, which is what #482's seam is for: sixty-seven cases
+// A harness and one call, which is what #482's seam is for: seventy-six cases
 // that the file backend already passes, asserting the same things about a store
 // that is two HTTP servers away and shares no code with it below ./custody.ts.
 // No assertion here — an assertion added to this file would be a claim about
@@ -205,5 +205,46 @@ describe("what the gcp backend does that the contract does not ask", () => {
     expect(reopened.tokens.size).toBe(1);
     expect(accessed.some(path => path.includes("-grant-"))).toBe(false);
     reopened.close();
+  });
+
+  // `secretmanager.secrets.create` is project-level, so an operator may keep it
+  // from the serving principal and create the signing secret by hand. The
+  // create is attempted and its denial is not fatal; what would be fatal is the
+  // version write, which is where a deployment that did neither finds out.
+  it("fills a signing secret it was not allowed to create", async () => {
+    const { fake, options } = await open();
+    // The operator's own act: the secret exists and holds no version.
+    const admin = await openGcpVaultAdmin(options);
+    admin.close();
+    const created = await fetch(
+      `${fake.endpoints.secretManager}/v1/projects/${PROJECT}/secrets?secretId=${options.prefix}-signing-dpop`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${fake.accessToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ replication: { automatic: {} }, labels: { "libero-kind": "signing" } })
+      }
+    );
+    expect(created.status).toBe(200);
+
+    fake.denyCreate = true;
+    const custody = await openGcpCustody(options);
+    const key = await custody.signing.signingKey();
+    // And the same key on the next open, which is the whole point of filling
+    // the operator's secret rather than holding a key only in memory.
+    const reopened = await openGcpCustody(options);
+    expect((await reopened.signing.signingKey()).thumbprint).toBe(key.thumbprint);
+    custody.close();
+    reopened.close();
+  });
+
+  it("reports a signing key it may neither create nor write as denied", async () => {
+    const { fake, options } = await open();
+    fake.denyCreate = true;
+    const custody = await openGcpCustody(options);
+
+    await expect(async () => custody.signing.signingKey()).rejects.toThrow(
+      expect.objectContaining({ reason: "denied", failure: "unauthorized" })
+    );
+    custody.close();
   });
 });

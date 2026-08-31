@@ -22,6 +22,7 @@ import type { CustodyFixture } from "./custody-conformance.js";
 import type { Custody } from "./custody.js";
 import { parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
+import { signingKeyPathFor } from "./signing-store.js";
 import { tokenStorePathFor } from "./token-store.js";
 
 /**
@@ -62,13 +63,15 @@ runCustodyConformance({
         return handle;
       },
 
-      // The union of both stores' closed sets. `not_a_vault` and
-      // `not_a_token_store` are the same fact told by two files.
+      // The union of all three stores' closed sets. `not_a_vault`,
+      // `not_a_token_store` and `not_a_signing_store` are the same fact told by
+      // three files.
       failureWords: [
         "unreadable",
         "too_large",
         "not_a_vault",
         "not_a_token_store",
+        "not_a_signing_store",
         "truncated",
         "unsupported_version",
         "bad_key_or_tampered",
@@ -85,6 +88,7 @@ runCustodyConformance({
         // used, which is the check order ./envelope.ts fixes.
         writeFileSync(vaultFile, Buffer.from("not a vault at all"));
         writeFileSync(tokenStorePathFor(vaultFile), Buffer.from("nor is this"));
+        writeFileSync(signingKeyPathFor(vaultFile), Buffer.from("nor this one"));
       },
 
       async dispose(): Promise<void> {

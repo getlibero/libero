@@ -215,11 +215,28 @@ export type { LogFields, Logger, LogLevel } from "./log.js";
 // *not* exported: it imports `node:test` and `expect`, and the barrel is loaded
 // by the serving process.
 export { CustodyError, makeSecret } from "./custody.js";
-export type { Awaitable, Custody, CustodyFailure } from "./custody.js";
+export type {
+  Awaitable,
+  Custody,
+  CustodyFailure,
+  PublicJwk,
+  SigningKey,
+  SigningKeyStore
+} from "./custody.js";
 export { openCustody } from "./custody-backend.js";
 export type { CustodyConfig, CustodyDeps } from "./custody-backend.js";
 export { openVaultAdmin } from "./custody-admin.js";
 export type { VaultAdmin } from "./custody-admin.js";
+
+// The signing key (#504), the seam's third store. Types and the error only: a
+// composition root holds it as part of `Custody` and never opens one, and the
+// backends' stores are reached the way both other stores are — through
+// `openCustody`. `openSigningKeyStore` and the backing interface stay inside
+// the package, because a backing is a backend's half of the contract rather
+// than anything a caller composes.
+export { SIGNING_ALG } from "./signing-key.js";
+export { SigningStoreError, signingKeyPathFor } from "./signing-store.js";
+export type { SigningStoreFailure } from "./signing-store.js";
 
 // The GCP backend (#483). `openGcpCustody` and `openGcpVaultAdmin` are reached
 // through `openCustody`/`openVaultAdmin` rather than directly — a composition
