@@ -668,8 +668,12 @@ spends silently against the service itself; rotation's reuse detection turns a
 stolen-and-used refresh token into a dead grant the operator can see —
 `invalid_grant` on refresh is logged as its own event, a theft signal rather
 than a retry; and the issuer binding stops a mix-up from redirecting the
-exchange. What does not exist yet is sender-constraining (DPoP), which would
-make a stolen token unusable rather than merely loud — parked as #260.
+exchange. Sender-constraining (DPoP, #260) is what makes a stolen token
+*unusable* rather than merely loud, and as of #505 it reaches the exchange:
+where the sheet and the issuer both allow it, the refresh token is bound to a
+key this store does not hold. **This paragraph is not yet re-priced**, because
+the property is not yet whole — #506 carries proofs to the calls that spend an
+access token, and re-words what a stolen store is worth in the same PR.
 
 **The invariant, re-worded.** Tool credentials at rest live in two stores: the
 vault, which the operator writes and the serving process only reads, and the
@@ -824,6 +828,69 @@ backend that quietly kept it as a vault entry would pass every other case and
 make #260's claim vacuous. What is deliberately *not* asserted there is anything
 about DPoP itself: proofs, nonces and thumbprint continuity across a refresh are
 #505's, and they belong to the exchange rather than to a store.
+
+### Sender-constrained tokens: the exchange (#505)
+
+The key (#504) is what a proof is signed with; this is what is signed, and where.
+`dpop.ts` makes a proof — one compact JWS, ES256, per request — and the two token
+exchanges in `outbound.ts` attach one where the sheet and the authorization
+server both allow it. #506 is the other half: proofs on the calls that *spend* a
+token, and the stolen-store paragraph re-priced once the property is whole.
+
+**The sheet decides, in three values, and the default changes nothing.**
+`[mcp_server.auth] dpop` is `prefer` unless an operator says otherwise: proofs
+where discovery advertises `dpop_signing_alg_values_supported`, bearer where it
+does not. That is the only default that leaves every working sheet working,
+because most authorization servers have not shipped DPoP. `require` refuses the
+exchange rather than falling back — a server that quietly stopped advertising
+would otherwise quietly stop binding, and an unannounced downgrade is the thing
+sender-constraining exists to prevent. `off` never sends a proof, for an issuer
+that advertises DPoP and gets it wrong.
+
+`require` is a promise about the *token in hand*, not about the request sent: an
+issuer that advertises, takes the proof and answers `token_type: Bearer` has
+bound nothing, and that is refused under `require` and accepted as a bearer token
+under `prefer`. The reverse — a `DPoP` answer to a request that proved nothing —
+is refused outright, because a token bound to a key nothing will prove with is
+dead on arrival.
+
+**The decision is made before the credential is revealed.** `dpopPlan` runs on
+discovery metadata, so a sheet saying `require` against an issuer that does not
+advertise never takes the refresh token out of its `Secret`. The nonce dance
+(RFC 9449 §8) is one retry and not a loop: a fresh proof carrying the server's
+nonce — fresh because `jti` and `iat` are per-request claims and a re-sent proof
+reads as a replay — and a second challenge is `dpop_nonce_unsatisfied` rather
+than another attempt.
+
+**Three new failure words, because three different people have to do three
+different things**: `dpop_unsupported` (this issuer does not bind and the sheet
+said it must), `dpop_key_mismatch` (this grant is bound to a key this proxy no
+longer holds), `dpop_nonce_unsatisfied` (this issuer keeps asking for a nonce it
+then will not accept). Landing all three on `exchange_failed` would have made
+each of them a debugging session.
+
+**The grant record carries the binding.** `GrantRecord.jkt` is the thumbprint the
+authorization server bound the refresh token to, written by the grant flow when
+the code exchange was proved for and never rewritten — a key does not change
+under a live grant, and a grant whose key is gone is re-run rather than repaired.
+The engine checks it before spending anything: a record bound to a thumbprint the
+current key does not match fails as `dpop_key_mismatch` with no token request
+made at all. Absent is a bearer grant, which is every record written before
+v0.8.0.
+
+**The fake authorization server verifies, and that is the half that makes the
+rest worth anything.** `fake-token-issuer.ts` checks the signature against the
+key the proof carries, checks `htm` and `htu` against the request it received,
+checks `iat` against a window, refuses a `jti` it has seen, demands its own nonce
+where it issued one, refuses a header carrying a private key, and binds each
+grant to the key that proved for it so a later exchange under another key is
+refused. #484's discipline applied to a protocol rather than to an API: a fake
+that accepted any proof would make every DPoP test in the suite pass over a
+client that signed nothing. It computes the thumbprint, the `htu` and the digest
+itself rather than importing `dpop.ts`'s, so the two agree by being checked
+rather than by construction — and `fake-token-issuer.test.ts` is the file that
+holds the verifier to that, asserting *why* each refusal happened rather than
+that a 400 came back.
 
 ### The Secret Manager backend (#483)
 

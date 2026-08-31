@@ -41,6 +41,7 @@ import {
 } from "@getlibero/proxy";
 import type { Custody, CustodyConfig } from "@getlibero/proxy";
 import { parseTeamSheet } from "@getlibero/schema";
+import type { AuthConfig } from "@getlibero/schema";
 import { channelsRootFromEnv, custodyFromEnv } from "./env.js";
 import type { Env } from "./env.js";
 
@@ -142,6 +143,8 @@ export async function runGrantCommand(io: GrantCliIo): Promise<number> {
       scopes: binding.scopes,
       clientId,
       store: custody.tokens,
+      dpop: binding.dpop,
+      signing: custody.signing,
       io: {
         showAuthorizationUrl: url => {
           io.out(
@@ -217,8 +220,13 @@ function scanSheets(
   io: GrantCliIo,
   channelsRoot: string,
   credential: string
-): { issuer: string; scopes: readonly string[] } | null {
-  const declarations: { path: string; issuer: string; scopes: readonly string[] }[] = [];
+): { issuer: string; scopes: readonly string[]; dpop: AuthConfig["dpop"] } | null {
+  const declarations: {
+    path: string;
+    issuer: string;
+    scopes: readonly string[];
+    dpop: AuthConfig["dpop"];
+  }[] = [];
 
   let entries: string[];
   try {
@@ -243,7 +251,12 @@ function scanSheets(
     }
     for (const server of parsed.sheet.mcp_server) {
       if (server.transport !== "http" || server.auth === undefined || server.credential !== credential) continue;
-      declarations.push({ path: sheetPath, issuer: server.auth.issuer, scopes: server.auth.scopes });
+      declarations.push({
+        path: sheetPath,
+        issuer: server.auth.issuer,
+        scopes: server.auth.scopes,
+        dpop: server.auth.dpop
+      });
     }
   }
 
@@ -262,10 +275,24 @@ function scanSheets(
     return null;
   }
 
+  // Refused rather than reconciled, the issuer's rule and its reason (#505):
+  // the grant is one record, and whether its refresh token is bound to a key is
+  // a property of that record rather than of the sheet being read at the time.
+  // Two sheets disagreeing means one of them would get a grant it did not ask
+  // for, and there is no union of `require` and `off` that is either of them.
+  const modes = new Set(declarations.map(declaration => declaration.dpop));
+  if (modes.size > 1) {
+    io.err(`grant: the sheets disagree on dpop for ${credential}:`);
+    for (const declaration of declarations) {
+      io.err(`  ${declaration.path}: ${declaration.dpop}`);
+    }
+    return null;
+  }
+
   const scopes = [...new Set(declarations.flatMap(declaration => declaration.scopes))].sort();
   const first = declarations[0];
   if (first === undefined) return null; // unreachable; for the index signature
-  return { issuer: first.issuer, scopes };
+  return { issuer: first.issuer, scopes, dpop: first.dpop };
 }
 
 /**

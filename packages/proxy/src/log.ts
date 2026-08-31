@@ -252,6 +252,18 @@ export interface LogFields {
    */
   expiresIn?: number;
   /**
+   * Which scheme a minted access token is spent under (#505): `bearer`, or
+   * `dpop` where the issuer bound it to this proxy's key.
+   *
+   * A word about a protocol, not about a value. It is on the `token_minted`
+   * line because that is where an operator finds out whether their issuer
+   * really does what its metadata claims — and, under a sheet saying `prefer`,
+   * it is the only place a downgrade would show: an issuer that stops
+   * advertising goes on minting tokens, and this field is the difference
+   * between that being visible and being silent.
+   */
+  scheme?: "bearer" | "dpop";
+  /**
    * Whether a token report moved the meter. `duplicate` is a retry of a turn
    * already counted, which is a success — so this is not a `reason`.
    */

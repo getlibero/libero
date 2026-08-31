@@ -316,6 +316,7 @@ describe("the example team sheet", () => {
       scheme: "oauth",
       issuer: "https://auth.notion.example",
       scopes: ["mcp.read"],
+      dpop: "prefer",
     });
   });
 });
@@ -1378,6 +1379,27 @@ describe("an mcp_server's auth block", () => {
     expect(sheet.mcp_server[0]?.auth?.scopes).toEqual([]);
   });
 
+  // #505's knob. `prefer` is the default because it is the value that changes
+  // nothing for an issuer that has never heard of DPoP, which is most of them —
+  // a default of `require` would stop every working sheet from working.
+  it("defaults dpop to prefer", () => {
+    const sheet = TeamSheet.parse(oauthServer({ scheme: "oauth", issuer: "https://as.example" }));
+    expect(sheet.mcp_server[0]?.auth?.dpop).toBe("prefer");
+  });
+
+  each(["prefer", "require", "off"])("accepts dpop = %s", value => {
+    expect(paths(oauthServer({ scheme: "oauth", issuer: "https://as.example", dpop: value }))).toBeNull();
+  });
+
+  // A fourth value is a posture nobody implemented. Refused at the sheet, where
+  // the operator can fix it, rather than read as one of the three at the
+  // exchange.
+  it("refuses a dpop value that is not one of the three", () => {
+    expect(paths(oauthServer({ scheme: "oauth", issuer: "https://as.example", dpop: "maybe" }))).toEqual([
+      "mcp_server.0.auth.dpop: invalid_value",
+    ]);
+  });
+
   // A loopback issuer parses, deliberately: the fake authorization server the
   // tests stand up has no certificate, and `url` above takes http for the same
   // reason.
@@ -1455,7 +1477,7 @@ describe("an mcp_server's auth block", () => {
   // stripped rather than carried, and the assertions above make the stripping
   // loud where it would mislead (stdio). This is the sheet's defining property
   // — it holds no value — surviving the new block.
-  it("carries exactly scheme, issuer, and scopes", () => {
+  it("carries exactly scheme, issuer, scopes and dpop", () => {
     const sheet = TeamSheet.parse(
       oauthServer({
         scheme: "oauth",
@@ -1466,7 +1488,14 @@ describe("an mcp_server's auth block", () => {
         token_endpoint: "https://elsewhere.example/token",
       }),
     );
-    expect(Object.keys(sheet.mcp_server[0]?.auth ?? {}).sort()).toEqual(["issuer", "scheme", "scopes"]);
+    // Four fields since #505, and the claim is unchanged: no token, no
+    // lifetime, no endpoint. `dpop` is a posture, not a secret.
+    expect(Object.keys(sheet.mcp_server[0]?.auth ?? {}).sort()).toEqual([
+      "dpop",
+      "issuer",
+      "scheme",
+      "scopes",
+    ]);
   });
 });
 

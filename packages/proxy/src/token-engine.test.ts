@@ -9,10 +9,12 @@ import type { FakeTokenIssuer } from "./fake-token-issuer.js";
 import type { Logger } from "./log.js";
 import { TOKEN_EXPIRY_MARGIN_MS, createTokenEngine } from "./token-engine.js";
 import type { OAuthBinding, TokenEngine } from "./token-engine.js";
+import { openFileSigningKeyStore } from "./signing-store.js";
 import { openTokenStore } from "./token-store.js";
 import type { FileTokenStore } from "./token-store.js";
 import { parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
+import type { GrantRecord, SigningKeyStore } from "./custody.js";
 
 // The engine against the fake issuer over a real socket and a real store in a
 // temp dir, because the claims under test are lifecycle claims: one exchange
@@ -59,20 +61,44 @@ afterEach(async () => {
   issuer = undefined;
   store?.close();
   store = undefined;
+  signing?.close();
+  signing = undefined;
   rmSync(dir, { recursive: true, force: true });
 });
 
 const bindingFor = (issuerUrl: string, scopes: string[] = ["mcp.read"]): OAuthBinding => ({
   credential: NAME,
   issuer: issuerUrl,
-  scopes
+  scopes,
+  dpop: "prefer"
 });
+
+/**
+ * A signing store on its own file in the same temp dir (#504).
+ *
+ * Its own master key, because the store under test holds one of its own and
+ * `close()` zeroes whatever buffer it was handed — a shared parse would leave
+ * the second holder with 32 zero bytes.
+ */
+function signingStore(where: string = dir): SigningKeyStore {
+  // The path is the *vault's*; the store lives at its sibling `signing.enc`, so
+  // two stores meant to hold different keys need two directories rather than
+  // two file names.
+  return openFileSigningKeyStore({ vaultFile: join(where, "signing-fixture.enc"), key: key() });
+}
+
+let signing: SigningKeyStore | undefined;
 
 async function seededEngine(options: {
   issuerOverrides?: Parameters<typeof startFakeTokenIssuer>[0];
   refreshToken?: string;
   now?: () => number;
   logger?: Logger;
+  /** A signing store, for the cases that are about proofs rather than grants. */
+  signing?: SigningKeyStore;
+  /** Extra fields on the stored grant — `jkt` is the one #505 added. */
+  grant?: Partial<GrantRecord>;
+  dpop?: OAuthBinding["dpop"];
 }): Promise<{ engine: TokenEngine; binding: OAuthBinding }> {
   issuer = await startFakeTokenIssuer(options.issuerOverrides ?? {});
   store = openTokenStore({ vaultFile, key: key() });
@@ -81,14 +107,19 @@ async function seededEngine(options: {
     clientId: CLIENT_ID,
     refreshToken: options.refreshToken ?? issuer.currentRefreshToken,
     scopes: ["mcp.read"],
-    obtainedAt: 1_700_000_000_000
+    obtainedAt: 1_700_000_000_000,
+    ...options.grant
   });
   const engine = createTokenEngine({
     store,
+    ...(options.signing !== undefined ? { signing: options.signing } : {}),
     ...(options.now !== undefined ? { now: options.now } : {}),
     ...(options.logger !== undefined ? { logger: options.logger } : {})
   });
-  return { engine, binding: bindingFor(issuer.url) };
+  return {
+    engine,
+    binding: { ...bindingFor(issuer.url), ...(options.dpop !== undefined ? { dpop: options.dpop } : {}) }
+  };
 }
 
 describe("a mint", () => {
@@ -219,13 +250,18 @@ describe("a grant the store will not serve", () => {
     const { engine } = await seededEngine({});
     const requests = issuer?.tokenRequests.length ?? 0;
 
-    const wrongIssuer = await engine.lease({ credential: NAME, issuer: "https://other.example", scopes: [] });
+    const wrongIssuer = await engine.lease({ credential: NAME, issuer: "https://other.example", scopes: [], dpop: "prefer" });
     expect(wrongIssuer).toEqual({ status: "no_grant", reason: "issuer_mismatch" });
 
     const widerScopes = await engine.lease(bindingFor(issuer?.url ?? "", ["mcp.read", "mcp.write"]));
     expect(widerScopes).toEqual({ status: "no_grant", reason: "scopes_exceeded" });
 
-    const unknownName = await engine.lease({ credential: "absent_grant", issuer: issuer?.url ?? "", scopes: [] });
+    const unknownName = await engine.lease({
+      credential: "absent_grant",
+      issuer: issuer?.url ?? "",
+      scopes: [],
+      dpop: "prefer"
+    });
     expect(unknownName).toEqual({ status: "no_grant", reason: "absent" });
 
     expect(issuer?.tokenRequests).toHaveLength(requests);
@@ -309,5 +345,155 @@ describe("the 401 straggler", () => {
     }
 
     expect(await source.refresh(1)).toBeNull();
+  });
+});
+
+// #505 over a real socket: the client that makes proofs and the server that
+// verifies them, meeting. What each half does on its own is asserted in
+// outbound.test.ts and fake-token-issuer.test.ts; what is asserted here is that
+// they agree — which is the only thing neither of those files can check.
+describe("a sender-constrained mint", () => {
+  it("proves for the exchange and reports the scheme it got", async () => {
+    const { logger, text } = recordingLogger();
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({
+      issuerOverrides: { dpop: true },
+      signing,
+      logger
+    });
+
+    const leased = await engine.lease(binding);
+    expect(leased.status).toBe("ok");
+    // The fake refused nothing, which is what makes the success meaningful: it
+    // checked the signature, the method, the url, the freshness and the jti.
+    expect(issuer?.dpopFailures).toEqual([]);
+    expect(issuer?.boundThumbprint).toBe((await signing.signingKey()).thumbprint);
+    expect(text()).toContain('"scheme":"dpop"');
+    engine.close();
+  });
+
+  // The retry, over a socket rather than a stub: a fresh proof carrying the
+  // server's nonce, which the fake accepts only because the `jti` is new.
+  it("answers a nonce challenge and gets its token", async () => {
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({
+      issuerOverrides: { dpop: true, requireNonce: true },
+      signing
+    });
+
+    expect((await engine.lease(binding)).status).toBe("ok");
+    expect(issuer?.dpopFailures).toEqual([]);
+    engine.close();
+  });
+
+  // `prefer` against an issuer that says nothing is the bearer path, and the
+  // engine says so on the line an operator reads.
+  it("stays on bearer where the issuer advertises nothing", async () => {
+    const { logger, text } = recordingLogger();
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({ signing, logger });
+
+    expect((await engine.lease(binding)).status).toBe("ok");
+    expect(text()).toContain('"scheme":"bearer"');
+    engine.close();
+  });
+
+  it("refuses rather than downgrading where the binding says require", async () => {
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({ signing, dpop: "require" });
+
+    expect(await engine.lease(binding)).toEqual({
+      status: "mint_failed",
+      failure: "dpop_unsupported"
+    });
+    engine.close();
+  });
+
+  // The continuity check, from the proxy's side. A grant bound to a key this
+  // process does not hold cannot be refreshed, and saying so here means the
+  // refresh token is never spent — the fake sees no token request at all.
+  it("will not spend a refresh token bound to a key it no longer holds", async () => {
+    const { logger, events } = recordingLogger();
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({
+      issuerOverrides: { dpop: true },
+      signing,
+      logger,
+      grant: { jkt: "a-thumbprint-from-a-key-that-is-gone" }
+    });
+
+    expect(await engine.lease(binding)).toEqual({
+      status: "mint_failed",
+      failure: "dpop_key_mismatch"
+    });
+    expect(events).toContain("dpop_key_mismatch");
+    expect(issuer?.tokenRequests).toHaveLength(0);
+    engine.close();
+  });
+
+  // What a rejection by the *server* looks like from in here. The proxy's own
+  // continuity check cannot catch this one — the record carries no `jkt`, so
+  // nothing local knows the issuer bound the grant to another key — and the
+  // answer is `exchange_failed` rather than `invalid_grant`: the grant is not
+  // dead, this caller just cannot prove for it.
+  it("reports the issuer's refusal of a wrong-key proof as a failure to ask", async () => {
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({
+      issuerOverrides: { dpop: true },
+      signing
+    });
+    expect((await engine.lease(binding)).status).toBe("ok");
+    engine.close();
+
+    // A second proxy — another signing key, the same grant material, which is
+    // what a stolen token store in somebody else's hands amounts to.
+    const thiefDir = mkdtempSync(join(tmpdir(), "libero-token-engine-thief-"));
+    const thief = signingStore(thiefDir);
+    if (store === undefined) throw new Error("fixture not started");
+    await store.putGrant(NAME, {
+      issuer: issuer?.url ?? "",
+      clientId: CLIENT_ID,
+      refreshToken: issuer?.currentRefreshToken ?? "",
+      scopes: ["mcp.read"],
+      obtainedAt: 1_700_000_000_000
+    });
+    const second = createTokenEngine({ store, signing: thief });
+
+    expect(await second.lease(binding)).toEqual({
+      status: "mint_failed",
+      failure: "exchange_failed"
+    });
+    expect(issuer?.dpopFailures).toEqual(["thumbprint_changed"]);
+    second.close();
+    thief.close();
+    rmSync(thiefDir, { recursive: true, force: true });
+  });
+
+  // A bearer grant stays refreshable: `jkt` absent is every record written
+  // before #505, and the check is about a binding that exists.
+  it("refreshes a grant that was never bound at all", async () => {
+    signing = signingStore();
+    const { engine, binding } = await seededEngine({ signing });
+
+    expect((await engine.lease(binding)).status).toBe("ok");
+    engine.close();
+  });
+
+  // An engine composed with no signing store has nothing to prove with. Under
+  // `prefer` it asks anyway, without a proof — and a strict issuer refuses,
+  // which is the honest outcome: the remedy is to compose the store, and the
+  // one thing that must not happen is a token arriving anyway.
+  it("gets nothing from a proof-demanding issuer when it holds no signing store", async () => {
+    const { engine, binding } = await seededEngine({ issuerOverrides: { dpop: true } });
+
+    expect(await engine.lease(binding)).toEqual({
+      status: "mint_failed",
+      failure: "exchange_failed"
+    });
+    // The issuer demanded a proof and got none — which is the fake being
+    // strict, not the engine being wrong. What a deployment does about it is
+    // compose the store; what it must not do is get a token anyway.
+    expect(issuer?.dpopFailures).toEqual(["missing_proof"]);
+    engine.close();
   });
 });

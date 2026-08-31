@@ -63,7 +63,12 @@ import {
   redactionPasses
 } from "./redact.js";
 import { makeSecret } from "./custody.js";
-import type { Secret } from "./custody.js";
+import type { Secret, SigningKey } from "./custody.js";
+import {
+  DPOP_NONCE_HEADER,
+  USE_DPOP_NONCE_ERROR,
+  createDpopProof
+} from "./dpop.js";
 
 /**
  * How the credential is attached.
@@ -1080,7 +1085,15 @@ export type TokenExchangeFailure =
   | "invalid_grant"
   | "exchange_failed"
   | "malformed_token_response"
-  | "rotation_unpersisted";
+  | "rotation_unpersisted"
+  // The three DPoP words (#505). Each is a different operator remedy, which is
+  // what earns each a member rather than all three landing on
+  // `exchange_failed`: this issuer does not do DPoP and the sheet said it must;
+  // this grant was bound to a key this proxy no longer holds; this issuer keeps
+  // asking for a nonce it then will not accept.
+  | "dpop_unsupported"
+  | "dpop_key_mismatch"
+  | "dpop_nonce_unsatisfied";
 
 export class TokenExchangeError extends Error {
   readonly failure: TokenExchangeFailure;
@@ -1090,6 +1103,160 @@ export class TokenExchangeError extends Error {
     this.name = "TokenExchangeError";
     this.failure = failure;
   }
+}
+
+/**
+ * What a sheet's `[mcp_server.auth] dpop` said, as this file reads it.
+ *
+ * The schema's union, restated here rather than imported, so that a fourth
+ * value added there is a compile error at the two dispatcher sites that pass it
+ * in — someone has to decide what the exchange does with it. See `OAuthConfig`
+ * in packages/schema for what each value means to the operator who wrote it.
+ */
+export type DpopMode = "prefer" | "require" | "off";
+
+/** What both exchanges carry about sender-constraining, and nothing more. */
+interface DpopPosture {
+  readonly mode: DpopMode;
+  /** Absent when the caller has no key to prove with; see `dpopPlan`. */
+  readonly key: SigningKey | undefined;
+}
+
+/**
+ * Whether this exchange sends proofs, decided once and before any credential
+ * is revealed.
+ *
+ * Three inputs and one answer: what the sheet said, whether a key is in hand,
+ * and whether the authorization server advertised an algorithm this proxy can
+ * sign with. `require` refuses rather than falls back, which is the whole
+ * reason it is a separate value — an issuer that silently stopped advertising
+ * would otherwise silently stop binding, and a downgrade nobody is told about
+ * is exactly what sender-constraining is for.
+ *
+ * `ES256` is the only algorithm asked for because it is the only one
+ * ./signing-key.ts mints. A server offering `ES384` and nothing else has not
+ * advertised anything this proxy can use, and saying so as `dpop_unsupported`
+ * is more honest than sending a proof it will reject.
+ */
+function dpopPlan(
+  posture: DpopPosture,
+  metadata: AuthorizationServerMetadata
+): SigningKey | undefined {
+  if (posture.mode === "off") return undefined;
+  const advertised = metadata.dpopSigningAlgValuesSupported?.includes("ES256") ?? false;
+  if (advertised && posture.key !== undefined) return posture.key;
+  if (posture.mode === "require") throw new TokenExchangeError("dpop_unsupported");
+  return undefined;
+}
+
+/**
+ * POST the form to the token endpoint, with a proof where one is called for and
+ * exactly one retry when the server answers with a nonce challenge.
+ *
+ * **One retry, not a loop.** RFC 9449 §8 has the server hand back a nonce and
+ * the client repeat the request carrying it; a server that answers the retry
+ * with a second challenge is either misbehaving or disagreeing with this
+ * client about what it sent, and both are better reported than looped over. A
+ * proof is minted fresh for the retry rather than re-signed with the nonce
+ * added: `jti` and `iat` are per-request claims, and a server that remembers
+ * `jti` would read a re-sent proof as a replay.
+ *
+ * The bodies are read here rather than by the caller, because the retry
+ * decision needs the first one — and it is read under the same bound and
+ * discarded the same way: the only member ever looked at is `error`.
+ */
+async function postTokenRequest(options: {
+  readonly send: typeof globalThis.fetch;
+  readonly tokenEndpoint: string;
+  readonly form: URLSearchParams;
+  readonly signal: AbortSignal;
+  readonly key: SigningKey | undefined;
+}): Promise<{ readonly response: Response; readonly body: string }> {
+  const attempt = async (nonce: string | undefined): Promise<{ response: Response; body: string }> => {
+    const proof =
+      options.key === undefined
+        ? undefined
+        : createDpopProof({
+            key: options.key,
+            method: "POST",
+            url: options.tokenEndpoint,
+            ...(nonce !== undefined ? { nonce } : {})
+          });
+
+    let response: Response;
+    try {
+      response = await options.send(options.tokenEndpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "application/json",
+          ...(proof !== undefined ? { dpop: proof } : {})
+        },
+        body: options.form.toString(),
+        redirect: "manual",
+        signal: options.signal
+      });
+    } catch (error) {
+      throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+    }
+
+    if (REDIRECT_STATUSES.has(response.status)) throw new TokenExchangeError("redirected");
+
+    let body: string | null;
+    try {
+      body = await readBoundedText(response.body, MAX_CONTROL_BODY_BYTES);
+    } catch (error) {
+      throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
+    }
+    // A token response is control-plane sized by construction; an issuer
+    // answering the *exchange* with megabytes is not one to keep talking to.
+    if (body === null) throw new TokenExchangeError("too_large");
+    return { response, body };
+  };
+
+  const first = await attempt(undefined);
+  if (options.key === undefined || first.response.ok) return first;
+  if (oauthErrorOf(first.body) !== USE_DPOP_NONCE_ERROR) return first;
+
+  const nonce = first.response.headers.get(DPOP_NONCE_HEADER);
+  // A challenge with no nonce in it is not a challenge. Reported as its own
+  // word rather than as `exchange_failed`, because the remedy is the issuer's.
+  if (nonce === null || nonce.length === 0) throw new TokenExchangeError("dpop_nonce_unsatisfied");
+
+  const second = await attempt(nonce);
+  if (!second.response.ok && oauthErrorOf(second.body) === USE_DPOP_NONCE_ERROR) {
+    throw new TokenExchangeError("dpop_nonce_unsatisfied");
+  }
+  return second;
+}
+
+/**
+ * What the response said its token is, checked against what was asked for.
+ *
+ * Two directions, and only one of them is a downgrade. A bearer answer to a
+ * request that carried no proof is the path this proxy has always taken. A
+ * bearer answer to a request that *did* carry one is an authorization server
+ * that advertised DPoP and then did not bind — harmless under `prefer`, where
+ * the token is used as the bearer token it is, and refused under `require`,
+ * because that value's promise is that the token in hand is sender-constrained
+ * rather than that a proof was sent.
+ */
+function tokenTypeOf(
+  declared: string,
+  proved: boolean,
+  mode: DpopMode
+): "bearer" | "dpop" {
+  const type = declared.toLowerCase();
+  if (type === "dpop") {
+    // An unasked-for binding is not a token this proxy can present: #506
+    // attaches proofs only where it decided to, and a token bound to a key
+    // nothing will prove with is dead on arrival. Fail at the exchange.
+    if (!proved) throw new TokenExchangeError("malformed_token_response");
+    return "dpop";
+  }
+  if (type !== "bearer") throw new TokenExchangeError("malformed_token_response");
+  if (proved && mode === "require") throw new TokenExchangeError("dpop_unsupported");
+  return "bearer";
 }
 
 export interface TokenExchangeRequest {
@@ -1109,6 +1276,17 @@ export interface TokenExchangeRequest {
    * gone at the next restart.
    */
   readonly persistRotation: (rotatedRefreshToken: string) => Promise<void>;
+  /** What the sheet said about sender-constraining this upstream's tokens. */
+  readonly dpop: DpopMode;
+  /**
+   * The proxy's signing key, where the caller acquired one.
+   *
+   * Absent is a caller with nothing to prove with — a sheet that said `off`, so
+   * the key was never minted. Under `require` that is `dpop_unsupported`, which
+   * is the same word an issuer that does not advertise gets: from the sheet's
+   * point of view both are "this exchange cannot be sender-constrained".
+   */
+  readonly signingKey?: SigningKey;
   /** One budget over the whole exchange, discovery included. */
   readonly timeoutMs?: number;
   readonly fetch?: typeof globalThis.fetch;
@@ -1121,6 +1299,16 @@ export interface MintedAccessToken {
   readonly expiresInSeconds: number | undefined;
   /** Whether the issuer rotated the refresh token — already persisted if so. */
   readonly rotated: boolean;
+  /**
+   * Which scheme the token is spent under (#505).
+   *
+   * `dpop` means the issuer bound it to this proxy's key and every call
+   * carrying it needs a proof; `bearer` is the path this file has always taken.
+   * #506 is what reads this at the two attach points — here it is recorded so
+   * that the decision is the exchange's, made where the issuer's answer is in
+   * hand, rather than re-derived from a sheet field at send time.
+   */
+  readonly tokenType: "bearer" | "dpop";
 }
 
 /**
@@ -1149,7 +1337,12 @@ export async function exchangeRefreshToken(request: TokenExchangeRequest): Promi
   // exchange more time than the caller offered.
   const signal = AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
 
-  const { tokenEndpoint } = await discoverAuthorizationServer(send, request.issuer, issuerOrigin, signal);
+  const metadata = await discoverAuthorizationServer(send, request.issuer, issuerOrigin, signal);
+  const { tokenEndpoint } = metadata;
+  // Decided before the refresh token is revealed, so a sheet that says
+  // `require` against an issuer that does not advertise never takes the
+  // credential out of its `Secret` at all.
+  const provingKey = dpopPlan({ mode: request.dpop, key: request.signingKey }, metadata);
 
   // The second of this file's two `reveal()` sites — see the header. Held in a
   // local for the length of one request, used once.
@@ -1163,30 +1356,13 @@ export async function exchangeRefreshToken(request: TokenExchangeRequest): Promi
   // facts, and the sheet⊆grant check already ran at the store read. Asking
   // again here could only narrow by accident or widen by bug.
 
-  let response: Response;
-  try {
-    response = await send(tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: form.toString(),
-      redirect: "manual",
-      signal
-    });
-  } catch (error) {
-    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
-  }
-
-  if (REDIRECT_STATUSES.has(response.status)) throw new TokenExchangeError("redirected");
-
-  let body: string | null;
-  try {
-    body = await readBoundedText(response.body, MAX_CONTROL_BODY_BYTES);
-  } catch (error) {
-    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
-  }
-  // A token response is control-plane sized by construction; an issuer
-  // answering the *exchange* with megabytes is not one to keep talking to.
-  if (body === null) throw new TokenExchangeError("too_large");
+  const { response, body } = await postTokenRequest({
+    send,
+    tokenEndpoint,
+    form,
+    signal,
+    key: provingKey
+  });
 
   if (!response.ok) {
     // The only thing read off a failed exchange is the body's `error` member,
@@ -1211,9 +1387,8 @@ export async function exchangeRefreshToken(request: TokenExchangeRequest): Promi
   if (typeof token.access_token !== "string" || token.access_token.length === 0) {
     throw new TokenExchangeError("malformed_token_response");
   }
-  if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer") {
-    throw new TokenExchangeError("malformed_token_response");
-  }
+  if (typeof token.token_type !== "string") throw new TokenExchangeError("malformed_token_response");
+  const tokenType = tokenTypeOf(token.token_type, provingKey !== undefined, request.dpop);
   if (token.expires_in !== undefined && (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in))) {
     throw new TokenExchangeError("malformed_token_response");
   }
@@ -1235,7 +1410,8 @@ export async function exchangeRefreshToken(request: TokenExchangeRequest): Promi
   return {
     accessToken: makeSecret(token.access_token),
     expiresInSeconds: typeof token.expires_in === "number" ? token.expires_in : undefined,
-    rotated
+    rotated,
+    tokenType
   };
 }
 
@@ -1250,6 +1426,10 @@ export interface CodeExchangeRequest {
   readonly code: string;
   /** The PKCE verifier generated in-process. Never left it; never will. */
   readonly codeVerifier: string;
+  /** What the sheet said about sender-constraining this upstream's tokens. */
+  readonly dpop: DpopMode;
+  /** The proxy's signing key; absent is a caller with nothing to prove with. */
+  readonly signingKey?: SigningKey;
   /** One budget over the whole exchange, discovery included. */
   readonly timeoutMs?: number;
   readonly fetch?: typeof globalThis.fetch;
@@ -1264,6 +1444,15 @@ export interface GrantedTokens {
   readonly refreshToken: string | undefined;
   /** The response's `scope`, verbatim: what was granted, which may be narrower than what was asked. */
   readonly grantedScope: string | undefined;
+  /**
+   * Whether the grant was made under a proof (#505).
+   *
+   * `dpop` is what the caller records on the record as `jkt`, and it is a
+   * grant-time fact rather than a sheet-time one: the refresh token the issuer
+   * just handed over is bound to the key that proved for it, and a later
+   * refresh under a different key is a dead grant however the sheet reads then.
+   */
+  readonly tokenType: "bearer" | "dpop";
 }
 
 /**
@@ -1287,7 +1476,9 @@ export async function exchangeAuthorizationCode(request: CodeExchangeRequest): P
   // the authorization request, so no signal could span the whole grant anyway.
   const signal = AbortSignal.timeout(request.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
 
-  const { tokenEndpoint } = await discoverAuthorizationServer(send, request.issuer, issuerOrigin, signal);
+  const metadata = await discoverAuthorizationServer(send, request.issuer, issuerOrigin, signal);
+  const { tokenEndpoint } = metadata;
+  const provingKey = dpopPlan({ mode: request.dpop, key: request.signingKey }, metadata);
 
   const form = new URLSearchParams({
     grant_type: "authorization_code",
@@ -1299,28 +1490,13 @@ export async function exchangeAuthorizationCode(request: CodeExchangeRequest): P
   // No `scope` parameter: RFC 6749 §4.1.3 defines none for the code exchange —
   // scope was asked at authorization, and the response says what was granted.
 
-  let response: Response;
-  try {
-    response = await send(tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: form.toString(),
-      redirect: "manual",
-      signal
-    });
-  } catch (error) {
-    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
-  }
-
-  if (REDIRECT_STATUSES.has(response.status)) throw new TokenExchangeError("redirected");
-
-  let body: string | null;
-  try {
-    body = await readBoundedText(response.body, MAX_CONTROL_BODY_BYTES);
-  } catch (error) {
-    throw new TokenExchangeError(wasTimeout(error) ? "timed_out" : "unreachable");
-  }
-  if (body === null) throw new TokenExchangeError("too_large");
+  const { response, body } = await postTokenRequest({
+    send,
+    tokenEndpoint,
+    form,
+    signal,
+    key: provingKey
+  });
 
   if (!response.ok) {
     // As the sibling: the one word the caller branches on, everything else
@@ -1345,9 +1521,8 @@ export async function exchangeAuthorizationCode(request: CodeExchangeRequest): P
   if (typeof token.access_token !== "string" || token.access_token.length === 0) {
     throw new TokenExchangeError("malformed_token_response");
   }
-  if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer") {
-    throw new TokenExchangeError("malformed_token_response");
-  }
+  if (typeof token.token_type !== "string") throw new TokenExchangeError("malformed_token_response");
+  const tokenType = tokenTypeOf(token.token_type, provingKey !== undefined, request.dpop);
   if (token.expires_in !== undefined && (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in))) {
     throw new TokenExchangeError("malformed_token_response");
   }
@@ -1360,7 +1535,8 @@ export async function exchangeAuthorizationCode(request: CodeExchangeRequest): P
 
   return {
     refreshToken: token.refresh_token,
-    grantedScope: token.scope
+    grantedScope: token.scope,
+    tokenType
   };
 }
 
@@ -1377,6 +1553,19 @@ export async function exchangeAuthorizationCode(request: CodeExchangeRequest): P
 function wasTimeout(error: unknown): boolean {
   if (error instanceof UpstreamError) return error.failure === "timed_out";
   return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+/**
+ * A metadata member that is a list of strings, or `undefined`.
+ *
+ * Surfaced or absent, never guessed at: a member of the wrong shape reads as
+ * absent and the caller rules on absence. Two members take this now, which is
+ * what made it a function rather than a second inline `every`.
+ */
+function stringsOf(value: unknown): readonly string[] | undefined {
+  return Array.isArray(value) && value.every((member): member is string => typeof member === "string")
+    ? value
+    : undefined;
 }
 
 /** The `error` member of an OAuth error body, or `null`. Nothing else is read. */
@@ -1401,6 +1590,17 @@ export interface AuthorizationServerMetadata {
   readonly tokenEndpoint: string;
   readonly authorizationEndpoint: string | undefined;
   readonly codeChallengeMethodsSupported: readonly string[] | undefined;
+  /**
+   * RFC 9449 §5.1's `dpop_signing_alg_values_supported` (#505).
+   *
+   * Absent means the server said nothing, which is how every issuer that has
+   * never heard of DPoP reads — and the reason the sheet's default is `prefer`
+   * rather than `require`. Never inferred from anything else: a server that
+   * accepts proofs without advertising them is a server this proxy stays on
+   * bearer with, because guessing is how a client ends up sending a credential
+   * shaped for a protocol the other end is not speaking.
+   */
+  readonly dpopSigningAlgValuesSupported: readonly string[] | undefined;
 }
 
 /**
@@ -1461,6 +1661,7 @@ export async function discoverAuthorizationServer(
     token_endpoint?: unknown;
     authorization_endpoint?: unknown;
     code_challenge_methods_supported?: unknown;
+    dpop_signing_alg_values_supported?: unknown;
   };
 
   // Byte for byte, never normalized — a trailing slash is a different issuer.
@@ -1474,15 +1675,14 @@ export async function discoverAuthorizationServer(
   const authorizationEndpoint =
     typeof fields.authorization_endpoint === "string" ? fields.authorization_endpoint : undefined;
   const methods = fields.code_challenge_methods_supported;
-  const codeChallengeMethodsSupported =
-    Array.isArray(methods) && methods.every((member): member is string => typeof member === "string")
-      ? methods
-      : undefined;
+  const codeChallengeMethodsSupported = stringsOf(methods);
+  const dpopSigningAlgValuesSupported = stringsOf(fields.dpop_signing_alg_values_supported);
 
   return {
     tokenEndpoint: fields.token_endpoint,
     authorizationEndpoint,
-    codeChallengeMethodsSupported
+    codeChallengeMethodsSupported,
+    dpopSigningAlgValuesSupported
   };
 }
 

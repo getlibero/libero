@@ -311,4 +311,4 @@ export type { GrantFlowFailure, GrantFlowIo, GrantFlowRequest } from "./grant-fl
 // The exchange's error crosses the boundary with the flow: the entrypoint
 // catches it to print the closed word it carries.
 export { TokenExchangeError } from "./outbound.js";
-export type { TokenExchangeFailure } from "./outbound.js";
+export type { DpopMode, TokenExchangeFailure } from "./outbound.js";

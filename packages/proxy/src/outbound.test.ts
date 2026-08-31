@@ -24,6 +24,8 @@ import {
   injectCredential
 } from "./outbound.js";
 import { RedactionError, redactionMarker } from "./redact.js";
+import { mintSigningKeyMaterial, parseSigningKeyMaterial } from "./signing-key.js";
+import type { SigningKey } from "./custody.js";
 import type { Secret } from "./vault.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -1145,6 +1147,10 @@ describe("the refresh-token exchange", () => {
     refreshToken: secretOf(REFRESH),
     credentialName: "notion_grant",
     persistRotation: async () => undefined,
+    // The default every sheet gets. Against metadata that advertises nothing —
+    // which is every case in this describe but the DPoP ones — it is the bearer
+    // path unchanged, which is the claim #505 owes the release.
+    dpop: "prefer" as const,
     fetch,
     ...over
   });
@@ -1276,6 +1282,268 @@ describe("the refresh-token exchange", () => {
 // The third exchange (#257): the grant flow's half, spending a single-use
 // authorization code rather than a refresh token. Deliberately not a third
 // reveal site — see the header — so nothing here wraps or opens a Secret.
+// Sender-constraining (#505). The client's half: what goes on the wire, what
+// comes back, and which of the three sheet values decides. The *server's* half —
+// that a proof is a proof — is ./fake-token-issuer.test.ts, and the two meet
+// over a socket in token-engine.test.ts.
+describe("the exchange under DPoP", () => {
+  const ISSUER = "http://as.example";
+  const REFRESH = "rt_live_do_not_log";
+
+  const signingKey = (): SigningKey => {
+    const parsed = parseSigningKeyMaterial(mintSigningKeyMaterial());
+    if (parsed === null) throw new Error("fixture key failed to parse");
+    return parsed;
+  };
+
+  const metadata = (advertises: boolean) =>
+    new Response(
+      JSON.stringify({
+        issuer: ISSUER,
+        token_endpoint: `${ISSUER}/token`,
+        ...(advertises ? { dpop_signing_alg_values_supported: ["ES256"] } : {})
+      }),
+      { status: 200 }
+    );
+  const token = (over: Record<string, unknown> = {}, status = 200) =>
+    new Response(
+      JSON.stringify({ access_token: "at_minted", token_type: "Bearer", expires_in: 3600, ...over }),
+      { status }
+    );
+
+  const sequence = (...responses: (() => Response)[]) => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetch = async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      const answer = responses[Math.min(calls.length - 1, responses.length - 1)];
+      if (answer === undefined) throw new Error("fetch sequence exhausted");
+      return answer();
+    };
+    return { calls, fetch: fetch as unknown as typeof globalThis.fetch };
+  };
+
+  const exchange = (
+    fetch: typeof globalThis.fetch,
+    over: Partial<Parameters<typeof exchangeRefreshToken>[0]> = {}
+  ) =>
+    exchangeRefreshToken({
+      issuer: ISSUER,
+      clientId: "https://getlibero.com/client.json",
+      refreshToken: secretOf(REFRESH),
+      credentialName: "notion_grant",
+      persistRotation: async () => undefined,
+      dpop: "prefer",
+      signingKey: signingKey(),
+      fetch,
+      ...over
+    });
+
+  /** The proof header of the nth call, decoded far enough to assert on. */
+  const proofOf = (init: RequestInit | undefined): Record<string, unknown> | undefined => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const proof = headers["dpop"];
+    if (proof === undefined) return undefined;
+    const payload = proof.split(".")[1] as string;
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+  };
+
+  it("sends a proof bound to the token endpoint where the issuer advertises", async () => {
+    const { calls, fetch } = sequence(
+      () => metadata(true),
+      () => token({ token_type: "DPoP" })
+    );
+    const minted = await exchange(fetch);
+
+    const claims = proofOf(calls[1]?.init);
+    expect(claims?.["htm"]).toBe("POST");
+    expect(claims?.["htu"]).toBe(`${ISSUER}/token`);
+    expect(minted.tokenType).toBe("dpop");
+  });
+
+  // The claim #505 owes the release: an issuer that says nothing gets exactly
+  // the request it got before this feature existed.
+  it("sends no proof at all where the issuer advertises nothing", async () => {
+    const { calls, fetch } = sequence(
+      () => metadata(false),
+      () => token()
+    );
+    const minted = await exchange(fetch);
+
+    expect(Object.keys((calls[1]?.init.headers ?? {}) as Record<string, string>)).toEqual([
+      "content-type",
+      "accept"
+    ]);
+    expect(minted.tokenType).toBe("bearer");
+  });
+
+  it("sends no proof where the sheet says off, however loudly the issuer advertises", async () => {
+    const { calls, fetch } = sequence(
+      () => metadata(true),
+      () => token()
+    );
+    const minted = await exchange(fetch, { dpop: "off" });
+
+    expect(proofOf(calls[1]?.init)).toBeUndefined();
+    expect(minted.tokenType).toBe("bearer");
+  });
+
+  // `require` is the value that refuses rather than falls back, and it refuses
+  // *before* the refresh token is spent: the second call never happens.
+  it("refuses rather than downgrading where the sheet says require", async () => {
+    const { calls, fetch } = sequence(
+      () => metadata(false),
+      () => token()
+    );
+
+    await expect(exchange(fetch, { dpop: "require" })).rejects.toThrow(
+      expect.objectContaining({ failure: "dpop_unsupported" })
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses where require was asked for and no key was in hand", async () => {
+    const { fetch } = sequence(
+      () => metadata(true),
+      () => token({ token_type: "DPoP" })
+    );
+
+    // Built without the field rather than with `undefined` in it: absent and
+    // present-but-undefined are two different statements under
+    // `exactOptionalPropertyTypes`, and absent is the one a caller with no key
+    // makes.
+    await expect(
+      exchangeRefreshToken({
+        issuer: ISSUER,
+        clientId: "https://getlibero.com/client.json",
+        refreshToken: secretOf(REFRESH),
+        credentialName: "notion_grant",
+        persistRotation: async () => undefined,
+        dpop: "require",
+        fetch
+      })
+    ).rejects.toThrow(expect.objectContaining({ failure: "dpop_unsupported" }));
+  });
+
+  // An issuer that advertises, takes the proof and then answers `Bearer` has
+  // not bound anything. Under `require` that is a refusal, because the value's
+  // promise is about the token in hand rather than about the proof sent.
+  it("refuses a bearer answer to a proved request where the sheet says require", async () => {
+    const { fetch } = sequence(
+      () => metadata(true),
+      () => token()
+    );
+
+    await expect(exchange(fetch, { dpop: "require" })).rejects.toThrow(
+      expect.objectContaining({ failure: "dpop_unsupported" })
+    );
+  });
+
+  it("takes the same answer as a bearer token where the sheet says prefer", async () => {
+    const { fetch } = sequence(
+      () => metadata(true),
+      () => token()
+    );
+    expect((await exchange(fetch)).tokenType).toBe("bearer");
+  });
+
+  // A token bound to a key nothing will prove with is dead on arrival, so the
+  // exchange refuses it rather than handing the dispatcher something it cannot
+  // spend.
+  it("refuses a DPoP-bound answer to a request that proved nothing", async () => {
+    const { fetch } = sequence(
+      () => metadata(false),
+      () => token({ token_type: "DPoP" })
+    );
+
+    await expect(exchange(fetch)).rejects.toThrow(
+      expect.objectContaining({ failure: "malformed_token_response" })
+    );
+  });
+
+  describe("the nonce dance", () => {
+    const challenge = () =>
+      new Response(JSON.stringify({ error: "use_dpop_nonce" }), {
+        status: 400,
+        headers: { "dpop-nonce": "nonce_from_the_server" }
+      });
+
+    it("retries once carrying the nonce, in a proof of its own", async () => {
+      const { calls, fetch } = sequence(
+        () => metadata(true),
+        challenge,
+        () => token({ token_type: "DPoP" })
+      );
+      const minted = await exchange(fetch);
+
+      const first = proofOf(calls[1]?.init);
+      const second = proofOf(calls[2]?.init);
+      expect(first?.["nonce"]).toBeUndefined();
+      expect(second?.["nonce"]).toBe("nonce_from_the_server");
+      // A fresh proof rather than the first one re-sent: a server that
+      // remembers `jti` reads a re-send as a replay.
+      expect(second?.["jti"]).not.toBe(first?.["jti"]);
+      expect(minted.tokenType).toBe("dpop");
+      expect(calls).toHaveLength(3);
+    });
+
+    it("gives up rather than looping when the retry is challenged again", async () => {
+      const { calls, fetch } = sequence(() => metadata(true), challenge);
+
+      await expect(exchange(fetch)).rejects.toThrow(
+        expect.objectContaining({ failure: "dpop_nonce_unsatisfied" })
+      );
+      expect(calls).toHaveLength(3);
+    });
+
+    it("gives up on a challenge that carries no nonce", async () => {
+      const { fetch } = sequence(
+        () => metadata(true),
+        () => new Response(JSON.stringify({ error: "use_dpop_nonce" }), { status: 400 })
+      );
+
+      await expect(exchange(fetch)).rejects.toThrow(
+        expect.objectContaining({ failure: "dpop_nonce_unsatisfied" })
+      );
+    });
+
+    // Only a nonce challenge is retried. Everything else is the answer.
+    it("does not retry an ordinary refusal", async () => {
+      const { calls, fetch } = sequence(
+        () => metadata(true),
+        () => token({ error: "invalid_grant" }, 400)
+      );
+
+      await expect(exchange(fetch)).rejects.toThrow(
+        expect.objectContaining({ failure: "invalid_grant" })
+      );
+      expect(calls).toHaveLength(2);
+    });
+  });
+
+  // The grant flow's exchange takes the same posture, and it is where a
+  // refresh token first becomes bound to a key.
+  it("proves for the code exchange too, and says what was bound", async () => {
+    const { calls, fetch } = sequence(
+      () => metadata(true),
+      () => token({ token_type: "DPoP", refresh_token: "rt_granted" })
+    );
+    const granted = await exchangeAuthorizationCode({
+      issuer: ISSUER,
+      clientId: "https://getlibero.com/client.json",
+      redirectUri: "http://127.0.0.1/callback",
+      code: "code_1",
+      codeVerifier: "verifier",
+      dpop: "prefer",
+      signingKey: signingKey(),
+      fetch
+    });
+
+    expect(proofOf(calls[1]?.init)?.["htu"]).toBe(`${ISSUER}/token`);
+    expect(granted.tokenType).toBe("dpop");
+    expect(granted.refreshToken).toBe("rt_granted");
+  });
+});
+
 describe("the authorization-code exchange", () => {
   const ISSUER = "http://as.example";
   const CODE = "code_pasted_do_not_log";
@@ -1315,6 +1583,7 @@ describe("the authorization-code exchange", () => {
     redirectUri: "http://127.0.0.1/callback",
     code: CODE,
     codeVerifier: VERIFIER,
+    dpop: "prefer" as const,
     fetch,
     ...over
   });

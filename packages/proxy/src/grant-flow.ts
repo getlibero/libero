@@ -22,7 +22,8 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { discoverAuthorizationServer, exchangeAuthorizationCode } from "./outbound.js";
-import type { TokenStore } from "./custody.js";
+import type { DpopMode } from "./outbound.js";
+import type { SigningKeyStore, TokenStore } from "./custody.js";
 
 export const GRANT_REDIRECT_URI = "http://127.0.0.1/callback";
 
@@ -89,6 +90,19 @@ export interface GrantFlowRequest {
   /** The Client ID Metadata Document URL to make the grant under. */
   readonly clientId: string;
   readonly store: TokenStore;
+  /**
+   * What the declaring sheets said about sender-constraining (#505).
+   *
+   * The grant is where a refresh token first becomes bound to a key, so the
+   * mode has to be known here rather than only at refresh time — a bearer grant
+   * cannot be upgraded without re-running this flow, and a bound one cannot be
+   * refreshed without the key. The entrypoint takes it from the same
+   * declarations it takes the issuer and the scopes from, and refuses a
+   * disagreement the same way.
+   */
+  readonly dpop: DpopMode;
+  /** Where the proof's key comes from. Absent behaves as `off`; see the engine's. */
+  readonly signing?: SigningKeyStore;
   readonly io: GrantFlowIo;
   /** Per network phase; the human in the middle has no timeout. */
   readonly timeoutMs?: number;
@@ -154,12 +168,19 @@ export async function performAuthorizationGrant(request: GrantFlowRequest): Prom
   if (pasted === null) throw new GrantFlowError("input_closed");
   const code = parseCallback(pasted.trim(), state);
 
+  // Acquired only where a sheet asked for it, ./token-engine.ts's rule and its
+  // reason: an operator granting against an issuer nobody wants proofs from
+  // should not find a signing key minted behind their back.
+  const signingKey = request.dpop === "off" ? undefined : await request.signing?.signingKey();
+
   const granted = await exchangeAuthorizationCode({
     issuer: request.issuer,
     clientId: request.clientId,
     redirectUri: GRANT_REDIRECT_URI,
     code,
     codeVerifier,
+    dpop: request.dpop,
+    ...(signingKey !== undefined ? { signingKey } : {}),
     ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
     fetch: send
   });
@@ -188,7 +209,13 @@ export async function performAuthorizationGrant(request: GrantFlowRequest): Prom
     clientId: request.clientId,
     refreshToken: granted.refreshToken,
     scopes,
-    obtainedAt: now()
+    obtainedAt: now(),
+    // Recorded only where the issuer actually bound it. What the exchange
+    // answered, not what the sheet asked for: under `prefer` against an issuer
+    // that does not advertise, this grant is a bearer grant and saying
+    // otherwise here would fail every later refresh on a continuity check
+    // against a binding that was never made.
+    ...(granted.tokenType === "dpop" && signingKey !== undefined ? { jkt: signingKey.thumbprint } : {})
   });
 
   return { replaced };

@@ -45,7 +45,7 @@ import { type McpPool, createMcpPool } from "./mcp-pool.js";
 import { type CredentialSource, UpstreamError, constantCredential, destinationHost } from "./outbound.js";
 import { RedactionError } from "./redact.js";
 import { type TokenEngine, createTokenEngine } from "./token-engine.js";
-import type { TokenStore } from "./custody.js";
+import type { SigningKeyStore, TokenStore } from "./custody.js";
 import type { Vault } from "./custody.js";
 
 // The scheme travels on the CredentialSource now — the vault's is a constant
@@ -86,6 +86,16 @@ export interface HttpDispatcherOptions {
    * grant and is answered `unavailable`, fail closed.
    */
   readonly tokens?: TokenStore;
+  /**
+   * The signing key store beside them (#504), for the sheet blocks that ask for
+   * sender-constrained tokens (#505).
+   *
+   * Absent behaves as every block saying `dpop = "off"` — a deployment that
+   * composed no signing store has nothing to prove with, and a sheet demanding
+   * `require` is then refused at the exchange rather than served a bearer token
+   * it did not ask for.
+   */
+  readonly signing?: SigningKeyStore;
   /** Injected transport, for tests. Defaults to Node's built-in `fetch`. */
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
@@ -296,6 +306,7 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
   // reads `absent`, which is the fail-closed answer, not an error.
   const engine: TokenEngine = createTokenEngine({
     store: options.tokens ?? absentTokenStore(),
+    ...(options.signing !== undefined ? { signing: options.signing } : {}),
     logger,
     ...(options.now !== undefined ? { now: options.now } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -342,7 +353,8 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
         engine.source({
           credential: upstream.credential,
           issuer: upstream.auth.issuer,
-          scopes: upstream.auth.scopes
+          scopes: upstream.auth.scopes,
+          dpop: upstream.auth.dpop
         })
       );
       return client === null ? { ok: false, reason: "shutting_down" } : { ok: true, client };
@@ -426,7 +438,8 @@ export function createHttpDispatcher(options: HttpDispatcherOptions): HttpDispat
         const leased = await engine.lease({
           credential: upstream.credential,
           issuer: upstream.auth.issuer,
-          scopes: upstream.auth.scopes
+          scopes: upstream.auth.scopes,
+          dpop: upstream.auth.dpop
         });
         if (leased.status !== "ok") {
           // The engine already logged the precise failure by name; this line
