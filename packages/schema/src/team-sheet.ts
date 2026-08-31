@@ -183,6 +183,28 @@ const ScopeToken = z
  *
  * `scheme` is the discriminant a second auth shape would join; today the union
  * has one member.
+ *
+ * `dpop` says whether tokens for this upstream are sender-constrained (#505,
+ * RFC 9449). It is the one field here that changes what the proxy *sends*
+ * rather than what it looks for, and its three values are three different
+ * postures towards an authorization server nobody controls:
+ *
+ * - `prefer` (the default) sends proofs where discovery advertises
+ *   `dpop_signing_alg_values_supported` and stays on bearer where it does not.
+ *   That is the value that changes nothing for an issuer that has never heard
+ *   of DPoP, which is why it is the default rather than `require`.
+ * - `require` refuses the exchange outright where DPoP is not advertised. A
+ *   deployment that has confirmed its issuer speaks DPoP wants this: without
+ *   it, an authorization server that silently stopped advertising would
+ *   silently stop binding, and a downgrade nobody is told about is the failure
+ *   this value exists to prevent.
+ * - `off` never sends a proof. For an issuer that advertises DPoP and gets it
+ *   wrong — the reason this is a switch rather than a capability check.
+ *
+ * A default of `require` was considered and refused: it would make every sheet
+ * that already works stop working against issuers that have not shipped DPoP,
+ * which is most of them. The upgrade path is an operator reading their
+ * `token_minted` lines, seeing `dpop`, and pinning it.
  */
 const OAuthConfig = z.object({
   scheme: z.literal("oauth"),
@@ -196,6 +218,7 @@ const OAuthConfig = z.object({
       { message: "an issuer identifier has no query and no fragment" },
     ),
   scopes: z.array(ScopeToken).max(16).default([]),
+  dpop: z.enum(["prefer", "require", "off"]).default("prefer"),
 });
 
 export const AuthConfig = OAuthConfig;

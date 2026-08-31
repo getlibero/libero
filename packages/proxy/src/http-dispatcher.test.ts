@@ -253,7 +253,7 @@ describe("an upstream that cannot be served", () => {
       url: fake.url,
       credential: "notion_grant",
       tool: [{ name: "list_prs" }],
-      auth: { scheme: "oauth", issuer: "https://as.example", scopes: [] }
+      auth: { scheme: "oauth", issuer: "https://as.example", scopes: [], dpop: "prefer" }
     };
 
     expect(await dispatcher.dispatch(callTo(), declared, LIMITS)).toEqual({
@@ -305,7 +305,7 @@ describe("an oauth upstream", () => {
       url,
       credential: GRANT,
       tool: [{ name: "list_prs" }],
-      auth: { scheme: "oauth", issuer: issuerUrl, scopes: ["mcp.read"] }
+      auth: { scheme: "oauth", issuer: issuerUrl, scopes: ["mcp.read"], dpop: "prefer" }
     };
   }
 

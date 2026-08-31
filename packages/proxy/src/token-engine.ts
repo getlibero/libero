@@ -23,12 +23,13 @@
 import { type Logger, createSilentLogger } from "./log.js";
 import {
   type CredentialSource,
+  type DpopMode,
   TokenExchangeError,
   type TokenExchangeFailure,
   destinationHost,
   exchangeRefreshToken
 } from "./outbound.js";
-import type { TokenStore } from "./custody.js";
+import type { SigningKey, SigningKeyStore, TokenStore } from "./custody.js";
 import type { Secret } from "./custody.js";
 
 /**
@@ -48,6 +49,8 @@ export interface OAuthBinding {
   readonly credential: string;
   readonly issuer: string;
   readonly scopes: readonly string[];
+  /** The sheet's `dpop`, carried whole rather than pre-decided. See `OAuthConfig`. */
+  readonly dpop: DpopMode;
 }
 
 /**
@@ -87,6 +90,17 @@ export interface TokenEngine {
 
 export interface TokenEngineOptions {
   readonly store: TokenStore;
+  /**
+   * Where the DPoP signing key comes from (#504), asked only when a sheet says
+   * so.
+   *
+   * Optional because a composition with no OAuth upstream has nothing to prove
+   * with and should not be made to hold a store it never reads — and because
+   * the engine's own tests are about grants and expiry rather than about
+   * proofs. Absent behaves as every sheet saying `off`, which is what a caller
+   * that passed no store asked for.
+   */
+  readonly signing?: SigningKeyStore;
   readonly logger?: Logger;
   /** Injected so expiry is a decision rather than a wait. */
   readonly now?: () => number;
@@ -110,6 +124,18 @@ interface TokenEntry {
   /** Absent when the issuer named no lifetime: live until a 401 says otherwise. */
   readonly expiresAt: number | undefined;
   readonly generation: number;
+  /**
+   * Which scheme this token is spent under, decided by the exchange that
+   * minted it rather than by the sheet that asked for it (#505).
+   *
+   * Held here because it is a fact about *this token*: a sheet saying `prefer`
+   * against an issuer that stopped advertising mints a bearer token, and the
+   * two live side by side under one binding until each expires. #506 is what
+   * reads it at the attach points.
+   */
+  readonly tokenType: "bearer" | "dpop";
+  /** The key the token is bound to, absent on a bearer one. */
+  readonly key: SigningKey | undefined;
 }
 
 export function createTokenEngine(options: TokenEngineOptions): TokenEngine {
@@ -153,12 +179,35 @@ export function createTokenEngine(options: TokenEngineOptions): TokenEngine {
         throw new GrantMissingError(grant.reason);
       }
 
+      // The key is acquired only where a sheet asked for one, which is what
+      // keeps ./signing-key.ts lazy: a deployment whose every upstream says
+      // `off` never mints a key, and one with no OAuth upstream never reaches
+      // here at all.
+      const signingKey = binding.dpop === "off" ? undefined : await options.signing?.signingKey();
+
+      // Thumbprint continuity, the proxy's half of it. The authorization
+      // server bound this refresh token to a key; if that key is not the one in
+      // hand, the exchange can only end as `invalid_grant`, and an operator
+      // reading that would go looking for a revoked grant instead of a signing
+      // store they replaced. Said here, before the refresh token is spent.
+      if (grant.jkt !== undefined && grant.jkt !== signingKey?.thumbprint) {
+        logger.log("error", {
+          event: "dpop_key_mismatch",
+          credential: name,
+          ...(destination !== undefined ? { destination } : {}),
+          ...(signingKey !== undefined ? { thumbprint: signingKey.thumbprint } : {})
+        });
+        throw new TokenExchangeError("dpop_key_mismatch");
+      }
+
       try {
         const minted = await exchangeRefreshToken({
           issuer: binding.issuer,
           clientId: grant.clientId,
           refreshToken: grant.refreshToken,
           credentialName: name,
+          dpop: binding.dpop,
+          ...(signingKey !== undefined ? { signingKey } : {}),
           persistRotation: async rotated => {
             try {
               await store.rotate(name, { issuer: binding.issuer, scopes: binding.scopes }, rotated);
@@ -178,14 +227,21 @@ export function createTokenEngine(options: TokenEngineOptions): TokenEngine {
         const entry: TokenEntry = {
           accessToken: minted.accessToken,
           expiresAt: minted.expiresInSeconds === undefined ? undefined : now() + minted.expiresInSeconds * 1_000,
-          generation: (tokens.get(name)?.generation ?? 0) + 1
+          generation: (tokens.get(name)?.generation ?? 0) + 1,
+          tokenType: minted.tokenType,
+          key: minted.tokenType === "dpop" ? signingKey : undefined
         };
         tokens.set(name, entry);
         logger.log("info", {
           event: "token_minted",
           credential: name,
           ...(destination !== undefined ? { destination } : {}),
-          ...(minted.expiresInSeconds !== undefined ? { expiresIn: minted.expiresInSeconds } : {})
+          ...(minted.expiresInSeconds !== undefined ? { expiresIn: minted.expiresInSeconds } : {}),
+          // Which scheme this token is spent under, on the line an operator
+          // already reads to see minting work. It is how a deployment learns
+          // its issuer really does bind — and, under `prefer`, the line that
+          // says it quietly stopped.
+          scheme: minted.tokenType
         });
         if (minted.rotated) logger.log("info", { event: "token_rotated", credential: name });
         return entry;

@@ -348,6 +348,14 @@ credential = "notion_grant"                 # name only; keys the stored grant
   scheme = "oauth"
   issuer = "https://auth.notion.example"    # compared byte-for-byte, never normalized
   scopes = ["mcp.read"]
+  dpop   = "prefer"                         # "prefer" (default) sends RFC 9449
+                                            # proofs where the issuer advertises
+                                            # them and stays on bearer where it
+                                            # does not; "require" refuses the
+                                            # exchange rather than fall back,
+                                            # which is what a deployment that
+                                            # has confirmed its issuer wants;
+                                            # "off" never sends one.
 
   [[mcp_server.tool]]
   name     = "search_pages"

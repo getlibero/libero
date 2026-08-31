@@ -144,6 +144,23 @@ export interface GrantRecord {
   readonly scopes: readonly string[];
   readonly obtainedAt: number;
   readonly rotatedAt?: number;
+  /**
+   * The JWK thumbprint of the key this grant was bound to, where it was bound
+   * to one (#505).
+   *
+   * Absent is a bearer grant — every grant made before v0.8.0, and every one
+   * made against an issuer that does not speak DPoP. Present, it is the fact a
+   * refresh is checked against: the authorization server bound the refresh
+   * token to that key, so a proxy whose signing key has changed cannot refresh
+   * it, and saying that here is better than sending a proof the issuer will
+   * answer `invalid_grant` to. Neither `rotate` nor anything else rewrites it —
+   * the key does not change under a live grant, and a grant whose key is gone
+   * is re-run rather than repaired.
+   *
+   * Not a secret: a thumbprint is a digest of public members, and the argument
+   * is `thumbprint`'s in ./log.ts.
+   */
+  readonly jkt?: string;
 }
 
 /** What a sheet asks with: the auth block's declarations, never a value. */
@@ -159,7 +176,13 @@ export interface GrantBinding {
  * new issuer or the wider scopes, versus run it for the first time.
  */
 export type GrantRead =
-  | { readonly status: "found"; readonly refreshToken: Secret; readonly clientId: string }
+  | {
+      readonly status: "found";
+      readonly refreshToken: Secret;
+      readonly clientId: string;
+      /** The key the grant is bound to, absent on a bearer grant. See `GrantRecord`. */
+      readonly jkt?: string;
+    }
   | {
       readonly status: "missing";
       readonly reason: "absent" | "issuer_mismatch" | "scopes_exceeded";
@@ -451,7 +474,12 @@ export function readGrant(
   if (!binding.scopes.every(scope => record.scopes.includes(scope))) {
     return { status: "missing", reason: "scopes_exceeded" };
   }
-  return { status: "found", refreshToken: makeSecret(record.refreshToken), clientId: record.clientId };
+  return {
+    status: "found",
+    refreshToken: makeSecret(record.refreshToken),
+    clientId: record.clientId,
+    ...(record.jkt !== undefined ? { jkt: record.jkt } : {})
+  };
 }
 
 /** Whether a record still binds — `rotate`'s question, asked the same way. */
@@ -471,19 +499,25 @@ export function grantBindingHolds(record: GrantRecord, binding: GrantBinding): b
 export function parseGrantRecord(value: unknown): GrantRecord | null {
   if (typeof value !== "object" || value === null) return null;
   const body = value as Record<string, unknown>;
-  const { issuer, clientId, refreshToken, scopes, obtainedAt, rotatedAt } = body;
+  const { issuer, clientId, refreshToken, scopes, obtainedAt, rotatedAt, jkt } = body;
   if (typeof issuer !== "string" || issuer.length === 0) return null;
   if (typeof clientId !== "string") return null;
   if (typeof refreshToken !== "string" || refreshToken.length === 0) return null;
   if (!Array.isArray(scopes) || !scopes.every(scope => typeof scope === "string")) return null;
   if (typeof obtainedAt !== "number") return null;
   if (rotatedAt !== undefined && typeof rotatedAt !== "number") return null;
+  // Absent is the shape every record written before #505 has, so an absent
+  // `jkt` is a bearer grant rather than a malformed one. A *present* one of the
+  // wrong type is malformed, because a record that half-says it is bound is a
+  // record nothing can rule on.
+  if (jkt !== undefined && (typeof jkt !== "string" || jkt.length === 0)) return null;
   return {
     issuer,
     clientId,
     refreshToken,
     scopes: scopes as readonly string[],
     obtainedAt,
-    ...(rotatedAt !== undefined ? { rotatedAt } : {})
+    ...(rotatedAt !== undefined ? { rotatedAt } : {}),
+    ...(jkt !== undefined ? { jkt } : {})
   };
 }

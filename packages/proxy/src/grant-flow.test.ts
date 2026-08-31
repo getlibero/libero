@@ -9,10 +9,12 @@ import type { FakeTokenIssuer } from "./fake-token-issuer.js";
 import { GRANT_REDIRECT_URI, performAuthorizationGrant } from "./grant-flow.js";
 import type { GrantFlowIo, GrantFlowRequest } from "./grant-flow.js";
 import { createTokenEngine } from "./token-engine.js";
+import { openFileSigningKeyStore } from "./signing-store.js";
 import { openTokenStore } from "./token-store.js";
 import type { FileTokenStore } from "./token-store.js";
 import { parseVaultKey } from "./vault.js";
 import type { VaultKey } from "./vault.js";
+import type { SigningKeyStore } from "./custody.js";
 
 // The flow against the fake issuer over a real socket and a real store in a
 // temp dir, with the test playing the browser: fetch the URL the flow showed,
@@ -85,6 +87,7 @@ function requestOf(io: GrantFlowIo, over: Partial<GrantFlowRequest> = {}): Grant
     scopes: ["mcp.read", "mcp.write"],
     clientId: CLIENT_ID,
     store,
+    dpop: "prefer" as const,
     io,
     now: () => 1_700_000_000_000,
     ...over
@@ -162,7 +165,12 @@ describe("the grant, end to end", () => {
     if (store === undefined || issuer === undefined) throw new Error("fixture not started");
 
     const engine = createTokenEngine({ store });
-    const leased = await engine.lease({ credential: NAME, issuer: issuer.url, scopes: ["mcp.read"] });
+    const leased = await engine.lease({
+      credential: NAME,
+      issuer: issuer.url,
+      scopes: ["mcp.read"],
+      dpop: "prefer"
+    });
     expect(leased.status).toBe("ok");
     engine.close();
   });
@@ -334,5 +342,61 @@ describe("what never crosses the Io", () => {
     const seen = `${String(thrown)} ${JSON.stringify(thrown, Object.getOwnPropertyNames(thrown as object))}`;
     expect(seen).not.toContain("code_");
     expect(seen).not.toContain("forged");
+  });
+});
+
+/** A signing store on its own file and its own key — see token-engine.test.ts. */
+function signingStore(): SigningKeyStore {
+  return openFileSigningKeyStore({ vaultFile: join(dir, "signing-fixture.enc"), key: key() });
+}
+
+/** What the store holds under the grant's name, or a thrown fixture failure. */
+function recordOf(held: FileTokenStore): { jkt?: string } {
+  const read = held.read(NAME, { issuer: issuer?.url ?? "", scopes: [] });
+  if (read.status !== "found") throw new Error("grant not stored");
+  return read;
+}
+
+// #505: the grant is where a refresh token first becomes bound to a key, and
+// the record is where that fact has to survive a restart.
+describe("a sender-constrained grant", () => {
+  it("records the key the issuer bound the grant to", async () => {
+    await started({ dpop: true });
+    const signing = signingStore();
+    const { io } = browserIo();
+
+    await performAuthorizationGrant(requestOf(io, { signing }));
+
+    if (store === undefined || issuer === undefined) throw new Error("fixture not started");
+    expect(issuer.dpopFailures).toEqual([]);
+    expect(recordOf(store).jkt).toBe((await signing.signingKey()).thumbprint);
+    expect(recordOf(store).jkt).toBe(issuer.boundThumbprint);
+    signing.close();
+  });
+
+  // `prefer` against an issuer that advertises nothing is a bearer grant, and
+  // writing a `jkt` there would fail every later refresh on a continuity check
+  // against a binding the issuer never made.
+  it("records no key where the issuer bound nothing", async () => {
+    await started();
+    const signing = signingStore();
+    const { io } = browserIo();
+
+    await performAuthorizationGrant(requestOf(io, { signing }));
+
+    if (store === undefined) throw new Error("fixture not started");
+    expect(recordOf(store).jkt).toBeUndefined();
+    signing.close();
+  });
+
+  it("refuses the grant rather than making an unbound one where the sheet says require", async () => {
+    await started();
+    const signing = signingStore();
+    const { io } = browserIo();
+
+    await expect(performAuthorizationGrant(requestOf(io, { signing, dpop: "require" }))).rejects.toThrow(
+      expect.objectContaining({ failure: "dpop_unsupported" })
+    );
+    signing.close();
   });
 });

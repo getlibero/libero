@@ -211,6 +211,15 @@ discovered a channel's first call later, as `no_grant`. Every sheet naming the
 credential must agree on the issuer; the grant covers the union of their
 scopes.
 
+**They must agree on `dpop` too** (#505), and that one is refused rather than
+unioned: whether the refresh token is bound to this proxy's signing key is a
+property of the one record being written, and there is no reconciliation of
+`require` and `off` that is either of them. A disagreement prints both sheets
+and stores nothing. Where the grant is made under a proof, the record keeps the
+key's thumbprint, and a later `grant add` under a signing store that has since
+been replaced is the way to repair one — the engine refuses to spend a refresh
+token bound to a key it no longer holds.
+
 The command prints an authorization URL to open in any browser, on any machine
 — the proxy needs no browser and the browser needs no path to the proxy. The
 redirect URI is a loopback address nothing listens on: after approving, the

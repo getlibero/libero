@@ -158,6 +158,9 @@ const upstreamTimeoutMs = upstreamTimeoutMsFromEnv(process.env);
 const mcp = createHttpDispatcher({
   vault,
   tokens,
+  // The third store (#504), for the sheets that ask for sender-constrained
+  // tokens. It mints nothing until one does.
+  signing: custody.signing,
   logger,
   maxResponseBytes: maxResponseBytesFromEnv(process.env),
   maxUpstreamConcurrency: maxUpstreamConcurrencyFromEnv(process.env),
