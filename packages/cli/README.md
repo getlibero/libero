@@ -193,8 +193,10 @@ the package directory, and it is a copy rather than a move because `packages/pro
 `packages/agent` exec the script at its repository path for their test fixtures. CI asserts the two
 are byte-identical, which is what keeps a copy from becoming a fork.
 
-`build.mjs` bundles the entry point with esbuild,
-inlining `@getlibero/schema` — the workspace package that defines what a team sheet, a model
+`build.mjs` bundles the entry point with esbuild into `dist/libero.js` — a name `tsc` never emits,
+because it writes `src/index.ts` to `dist/index.js` and the `test` script runs it after the build;
+two writers of one file is how v0.6.0 and v0.7.0 published the un-bundled stub. The bundle inlines
+`@getlibero/schema` — the workspace package that defines what a team sheet, a model
 id and a channel id are — along with zod and smol-toml. So the published manifest declares
 **no dependencies**, and installing this reaches no registry twice.
 

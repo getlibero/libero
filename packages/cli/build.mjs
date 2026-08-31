@@ -1,4 +1,4 @@
-// The published artifact, in one file.
+// The published artifact, in one file: dist/libero.js, the `bin` target.
 //
 // `packages/cli` is the only package anyone installs from npm, and it imports
 // `@getlibero/schema` — a `private: true` workspace package that is not
@@ -50,7 +50,15 @@ const nodeFloor = manifest.engines.node;
 await esbuild.build({
   absWorkingDir: here,
   entryPoints: ["src/index.ts"],
-  outfile: "dist/index.js",
+  // NOT dist/index.js. `tsc -p tsconfig.json` emits src/index.ts to exactly
+  // that path — the ten-line process shell, importing ./cli.js — and the
+  // `test` script runs tsc after `build` has run this file. Two writers of
+  // one filename means whichever ran last is what `npm pack` finds, and in
+  // release-cli.yml that was tsc: v0.6.0 and v0.7.0 published the un-bundled
+  // stub, which fails at import with ERR_MODULE_NOT_FOUND on any install.
+  // A name nothing else emits is the fix; scripts/cli-tarball-check.sh
+  // executing the packed file is what keeps it fixed.
+  outfile: "dist/libero.js",
   bundle: true,
   platform: "node",
   format: "esm",
