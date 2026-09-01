@@ -39,6 +39,12 @@ let store: MessageStore;
 const EMBEDDINGS: Record<string, number[]> = {
   // Cluster one: rolling client credentials, said two different ways.
   "how do we roll a new key for a channel": [1, 0, 0],
+  // The same question with no article in it, at the same point, and it exists
+  // for the no-shared-stem control alone. Since #522 `search` widens from AND
+  // to OR when the AND finds nothing, so the phrase above shares `a` with the
+  // summary below and the control matched on that one word — which was never
+  // what the criterion meant by a shared stem. This one shares nothing at all.
+  "how do we roll new keys per channel": [1, 0, 0],
   "rotating a client certificate: --rotate, edit the sheet, --promote": [0.98, 0.02, 0],
   // Cluster two: something else entirely.
   "what did we pick for the base image": [0, 1, 0],
@@ -118,10 +124,12 @@ describe("createRecall", () => {
     summarized("1.1", "rotating a client certificate: --rotate, edit the sheet, --promote");
     summarized("2.1", "chose Debian slim over Alpine because sqlite-vec ships glibc prebuilds");
 
-    const query = "how do we roll a new key for a channel";
+    const query = "how do we roll new keys per channel";
 
-    // The control: Layer 1 cannot answer this. Not one word of the query appears
-    // in the summary, so there is nothing for the index to match on.
+    // The control: Layer 1 cannot answer this. Not one word of the query
+    // appears in either summary, so there is nothing for the index to match on
+    // — under the conjunction it runs first, or under the widened retry behind
+    // it. See the fixture for why this phrasing rather than the other one.
     expect(store.search(query, 10)).toEqual([]);
 
     const { recall } = recallWith();

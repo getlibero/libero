@@ -181,6 +181,7 @@ describe("the interface", () => {
     expect(Object.keys(store).sort()).toEqual([
       "adoptSkillStatus",
       "append",
+      "appendAgentReply",
       "cancelScheduledTask",
       "close",
       "dropEmbeddings",
@@ -216,7 +217,8 @@ describe("the interface", () => {
       "skillMergeNoticed",
       "skillsNeedingEmbedding",
       "staleThreads",
-      "summariesNeedingEmbedding"
+      "summariesNeedingEmbedding",
+      "transcriptInThread"
     ]);
   });
 
@@ -676,9 +678,26 @@ describe("searching", () => {
     expect(found("vault")).toEqual(["1.2", "1.1"]);
   });
 
-  it("requires every term rather than any", () => {
+  it("prefers a message with every term", () => {
+    // AND first, and a conjunctive hit shuts the wider set out: "vault" alone
+    // matches 1.1 and 1.2, and this answers only the one that also says friday.
     expect(found("vault friday")).toEqual(["1.1"]);
-    expect(found("vault lunch")).toEqual([]);
+  });
+
+  // **This assertion used to be `[]`, and it was describing the bug** (#522).
+  // Under AND alone, a query for words no single message holds answered
+  // nothing — and what reaches `search` is a model relaying somebody's
+  // question, which no message ever contains every word of. Measured against a
+  // real channel: "what did I do this weekend?" returned only the other
+  // questions, and "someplace went" returned the asking message itself.
+  // `searchSkills` made this exact trade in #292 and the argument is its.
+  it("widens to any term when nothing has them all", () => {
+    expect(found("vault lunch").sort()).toEqual(["1.1", "1.2", "1.3"]);
+  });
+
+  it("still answers nothing when no message holds any of the terms", () => {
+    // The retry widens what counts as a match and never invents one.
+    expect(found("kubernetes helm")).toEqual([]);
   });
 
   // Porter. Without stemming this is [], which is the failure mode #64 would
@@ -728,6 +747,167 @@ describe("searching", () => {
   // that matches nothing. Stated as a test so nobody rediscovers it as a bug.
   it("ignores a punctuation-only term beside a real one", () => {
     expect(found("vault ---")).toEqual(found("vault"));
+  });
+});
+
+describe("leaving one thread out of a search", () => {
+  // #522, measured on a real deployment. A question asked inside a thread is
+  // already a row by the time the search runs, it shares every word with the
+  // query the model writes out of it, and under the implicit AND the messages
+  // holding all of those words are exactly the other questions — so the answer
+  // was displaced or excluded outright. Every message of the calling thread is
+  // in the prompt anyway, so returning one spends the result bound on text the
+  // model is looking at.
+  const ROOT = "1.10";
+
+  beforeEach(() => {
+    store.append(message("1.1", "I went to medieval times this weekend"));
+    store.append(message(ROOT, "what did I do this weekend?"));
+    store.append(message("1.11", "nothing about someplace I went?", { threadTs: ROOT }));
+  });
+
+  it("excludes the thread's root and its replies", () => {
+    expect(store.search("weekend", 10, { excludeThread: ROOT }).map(hit => hit.ts)).toEqual(["1.1"]);
+  });
+
+  it("leaves every other thread alone", () => {
+    expect(store.search("weekend", 10).map(hit => hit.ts).sort()).toEqual(["1.1", "1.10"]);
+  });
+
+  // The whole reported failure, end to end: the question as the model would
+  // relay it. AND over every word of it matches the two questions and not the
+  // answer, both of those are in the calling thread, and the retry is what is
+  // left to find anything at all.
+  it("answers the question the bug was reported with", () => {
+    expect(
+      store.search("what did I do this weekend?", 10, { excludeThread: ROOT }).map(hit => hit.ts)
+    ).toEqual(["1.1"]);
+  });
+
+  // **The exclusion is inside the statement, not a filter over its rows.** With
+  // the limit applied first, a search whose top hits are all in the calling
+  // thread comes back short or empty — which is the failure this exists to fix,
+  // rebuilt one layer down.
+  it("spends the limit on rows it returns", () => {
+    for (let index = 0; index < 5; index += 1) {
+      store.append(message(`1.2${index}`, "weekend plans again", { threadTs: ROOT }));
+    }
+
+    expect(store.search("weekend", 1, { excludeThread: ROOT }).map(hit => hit.ts)).toEqual(["1.1"]);
+  });
+
+  it("excludes the thread from the widened retry too", () => {
+    // Otherwise the fallback would hand back exactly what the AND was told to
+    // leave out, and the model would meet its own question after all.
+    expect(
+      store.search("someplace medieval", 10, { excludeThread: ROOT }).map(hit => hit.ts)
+    ).toEqual(["1.1"]);
+  });
+
+  it("is the same read through the proxy's handle", () => {
+    // The two processes answer `search_channel_history` and nothing else with
+    // this, so a difference between them would be the proxy answering a
+    // question the gateway does not.
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("weekend", 10, { excludeThread: ROOT }).map(hit => hit.ts)).toEqual([
+      "1.1"
+    ]);
+    reader?.close();
+  });
+});
+
+describe("the agent's own replies", () => {
+  // #523. The store held only what people said, which inside a thread left the
+  // model reasoning from questions with the answers cut out. They live in their
+  // own table, so what keeps them out of search, recall and curation is the
+  // shape of the file rather than a predicate every read has to remember.
+  const ROOT = "1.1";
+  const BOT = "U0BOT";
+
+  function reply(ts: string, text: string, extra: Partial<StoredMessage> = {}): StoredMessage {
+    return message(ts, text, { userId: BOT, threadTs: ROOT, ...extra });
+  }
+
+  beforeEach(() => {
+    store.append(message(ROOT, "where did the vault key go?"));
+    store.appendAgentReply(reply("1.2", "it is in Secret Manager under libero-vault"));
+    store.append(message("1.3", "thanks", { threadTs: ROOT }));
+  });
+
+  it("reads the thread as a conversation, oldest first, each voice named", () => {
+    expect(store.transcriptInThread(ROOT, 10).map(hit => [hit.ts, hit.voice])).toEqual([
+      [ROOT, "human"],
+      ["1.2", "agent"],
+      ["1.3", "human"]
+    ]);
+  });
+
+  it("is not searchable", () => {
+    // The reason the table has no FTS index. A reply is derived from tool
+    // results, so an injected instruction that surfaced in its prose must not
+    // become retrievable text in the channel's own durable state.
+    expect(found("Secret Manager")).toEqual([]);
+    expect(found("vault")).toEqual([ROOT]);
+  });
+
+  it("is not searchable through the proxy's handle either", () => {
+    const reader = openMessageReader({ channel: CHANNEL, root });
+    expect(reader?.search("libero-vault", 10)).toEqual([]);
+    reader?.close();
+  });
+
+  it("is absent from the one-sided reads the summary sweep and the clocks use", () => {
+    // `recentInThread` is what `summarize.ts` reads, and a summary is embedded,
+    // recalled into later tasks and read by the curator — so the agent's own
+    // prose must not be its source.
+    expect(store.recentInThread(ROOT, 10).map(hit => hit.ts)).toEqual([ROOT, "1.3"]);
+    expect(store.recent(10).map(hit => hit.ts)).toEqual([ROOT, "1.3"]);
+  });
+
+  it("mirrors a deletion", () => {
+    // Slack retention reaches every author. A store that mirrored everyone but
+    // one is the gap that argued for storing replies at all.
+    expect(store.remove("1.2")).toBe(true);
+    expect(store.transcriptInThread(ROOT, 10).map(hit => hit.ts)).toEqual([ROOT, "1.3"]);
+  });
+
+  it("mirrors an edit", () => {
+    expect(store.replaceText("1.2", "corrected")).toBe(true);
+    expect(store.transcriptInThread(ROOT, 10)[1]?.text).toBe("corrected");
+  });
+
+  it("answers false for a ts neither table holds", () => {
+    expect(store.remove("9.9")).toBe(false);
+    expect(store.replaceText("9.9", "nope")).toBe(false);
+  });
+
+  it("takes a redelivery as a no-op", () => {
+    expect(store.appendAgentReply(reply("1.2", "it is in Secret Manager"))).toBe(false);
+    expect(store.transcriptInThread(ROOT, 10).length).toBe(3);
+  });
+
+  it("keeps the newest of the conversation when the limit binds", () => {
+    // The bound is `limit` messages of the thread and not of each table, so a
+    // channel's `max_history_messages` means one amount of text however much
+    // the agent has been talking.
+    expect(store.transcriptInThread(ROOT, 2).map(hit => hit.ts)).toEqual(["1.2", "1.3"]);
+  });
+
+  it("caps the limit at the maximum", () => {
+    expect(store.transcriptInThread(ROOT, 10_000).length).toBeLessThanOrEqual(READ_MAX_LIMIT);
+  });
+
+  it("answers nothing for a thread it has never seen", () => {
+    expect(store.transcriptInThread("1700000000.000000", 10)).toEqual([]);
+  });
+
+  it("cannot reach another channel's replies", () => {
+    mkdirSync(join(root, OTHER));
+    const other = openMessageStore({ channel: OTHER, root });
+    other.appendAgentReply(reply("1.9", "another channel's answer"));
+
+    expect(store.transcriptInThread(ROOT, 10).map(hit => hit.ts)).toEqual([ROOT, "1.2", "1.3"]);
+    other.close();
   });
 });
 

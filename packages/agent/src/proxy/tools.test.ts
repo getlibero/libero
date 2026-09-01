@@ -172,6 +172,19 @@ describe("calling a tool", () => {
     });
   });
 
+  // #522. Absent when the task is in no sub-conversation — an ambient turn is
+  // one — so a body that carried `thread: undefined` would be a call the
+  // proxy's strict parser has to tolerate rather than one it was designed for.
+  it("sends the thread when there is one and the key at all when there is not", async () => {
+    const { client, sent } = await ready();
+
+    await client.execute(call("list_prs"), ATTRIBUTION);
+    expect(Object.keys(sent[1]?.body as object)).not.toContain("thread");
+
+    await client.execute(call("list_prs"), { ...ATTRIBUTION, thread: "1758000000.000100" });
+    expect(sent[2]?.body).toMatchObject({ thread: "1758000000.000100" });
+  });
+
   // The channel comes from the certificate the transport presents. A field in
   // the body would be a channel the process running the model chose, and the
   // proxy rejects one anyway — `ToolCall` is strict.

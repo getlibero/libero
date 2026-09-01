@@ -109,6 +109,14 @@ export interface SummarizationTurnOptions {
   /**
    * The thread, oldest first — the root and its replies, as `recentInThread`
    * returns them.
+   *
+   * **`recentInThread` and not `transcriptInThread`**, which is the read that
+   * would also carry the agent's own replies (#523). That is deliberate rather
+   * than incidental: a summary is embedded, recalled into later tasks and read
+   * by the merge curator, so it outlives the thread — and a reply is derived
+   * from tool results, where an injected instruction that surfaced in prose
+   * would then be the source of something durable. What people said is the
+   * corpus; what the agent answered is thread context and stops there.
    */
   messages: readonly SummarizationMessage[];
   /**

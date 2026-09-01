@@ -35,11 +35,24 @@ export type RevisionIgnoreReason =
   /**
    * An app's edit of its own message, including this one's.
    *
-   * **Volume, not correctness.** A bot's message is never stored, so its ts
-   * matches no row and mirroring one would be a no-op anyway. What this saves
-   * is the work: the live checklist edits its card on every step, and each of
-   * those edits arrives here as a `message_changed`. Without this the gateway
-   * would open a session and run a statement per checklist tick.
+   * **Volume, not correctness — and #523 narrowed what that sentence rests
+   * on.** It used to rest on "a bot's message is never stored", so mirroring
+   * one would be a no-op anyway. That is no longer true of this app's own text
+   * replies, which `toMessage` now keeps.
+   *
+   * What the drop still saves is the work, and the work is all of it: the live
+   * checklist edits its card on every step and each edit arrives here as a
+   * `message_changed`, so without this the gateway would open a session and run
+   * a statement per checklist tick. What it costs is one case that does not
+   * happen — only the posting app can edit its own message, and the only thing
+   * this app edits is a card, which was never stored.
+   *
+   * **Deletions are unaffected and still mirror.** `message_deleted` is read
+   * before this check and carries no filter at all, so a reply deleted in Slack
+   * is deleted here; that is the half of retention parity #523 actually needed,
+   * and it is the half the permissive reading above was already written for.
+   * The tombstone path sits below this check, which costs nothing: this app's
+   * replies are replies, never a thread parent with replies of their own.
    */
   | "bot_message"
   /** Not a `message` event, or not one of the two revision subtypes. */

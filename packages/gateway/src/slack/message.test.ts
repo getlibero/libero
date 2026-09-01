@@ -50,7 +50,8 @@ describe("toMessage", () => {
       ts: "1717171717.000100",
       threadTs: null,
       eventId: "Ev0EVENT",
-      mentionsApp: false
+      mentionsApp: false,
+      fromApp: false
     });
   });
 
@@ -116,18 +117,81 @@ describe("toMessage", () => {
     );
   });
 
-  it("ignores a message posted by a bot, including this app's own replies", () => {
-    // The consequence is that a stored conversation is one-sided. That is #67's
-    // to revisit; what must not happen is the agent recording itself by default.
-    expect(ignoredOf(toMessage(envelope({ bot_id: "B0BOT" })))).toBe("bot_message");
-  });
-
-  it("reports a bot message as a bot message even when it also carries a subtype", () => {
-    // `bot_message` is itself a subtype, so the order of the two checks decides
-    // which reason an operator greps for.
-    expect(ignoredOf(toMessage(envelope({ bot_id: "B0BOT", subtype: "bot_message" })))).toBe(
+  it("ignores a message posted by another app", () => {
+    // Its own reply is the exception and the four cases below are that; every
+    // other bot is dropped exactly as it always was. What a third party's bot
+    // message is worth stays an unanswered question rather than one #523
+    // answered on the way past.
+    expect(ignoredOf(toMessage(envelope({ bot_id: "B0BOT", user: "U0OTHERBOT" }), "U0BOT"))).toBe(
       "bot_message"
     );
+  });
+
+  it("ignores a bot message when the app's own id is not known yet", () => {
+    // Fails closed, as `mentionsApp` does and for the cheaper side of the same
+    // trade: a reply lost during startup is one line missing from a thread,
+    // where the other mistake would be filing another app's text under this
+    // app's byline.
+    expect(ignoredOf(toMessage(envelope({ bot_id: "B0BOT", user: "U0BOT" })))).toBe("bot_message");
+  });
+
+  it("records this app's own text reply, marked as its own", () => {
+    // #523: the store held only what people said, and inside a thread that left
+    // the model reasoning from questions with the answers cut out.
+    const message = messageOf(
+      toMessage(
+        envelope({ bot_id: "B0BOT", user: "U0BOT", thread_ts: "1717171717.000100" }),
+        "U0BOT"
+      )
+    );
+
+    expect(message.fromApp).toBe(true);
+    expect(message.userId).toBe("U0BOT");
+    expect(message.threadTs).toBe("1717171717.000100");
+  });
+
+  it("records this app's own reply when Slack attaches the bot_message subtype", () => {
+    // An app with a bot user normally posts with no subtype at all, so this is
+    // the shape that is not guaranteed. Both are the same message.
+    const message = messageOf(
+      toMessage(envelope({ bot_id: "B0BOT", user: "U0BOT", subtype: "bot_message" }), "U0BOT")
+    );
+
+    expect(message.fromApp).toBe(true);
+  });
+
+  it("ignores this app's own cards, which carry attachments", () => {
+    // Approval cards and the live checklist are `chat.update`d as their state
+    // moves, so through this door they would arrive as a stream of edits to
+    // interactive messages. Nothing a person said and nothing the agent
+    // answered.
+    expect(
+      ignoredOf(
+        toMessage(
+          envelope({ bot_id: "B0BOT", user: "U0BOT", attachments: [{ fallback: "held" }] }),
+          "U0BOT"
+        )
+      )
+    ).toBe("bot_message");
+  });
+
+  it("records a reply whose attachments field is present and empty", () => {
+    // The test is for a card, and an empty array is not one. Getting this wrong
+    // the other way would drop replies for a shape Slack is entitled to send.
+    expect(
+      messageOf(toMessage(envelope({ bot_id: "B0BOT", user: "U0BOT", attachments: [] }), "U0BOT"))
+        .fromApp
+    ).toBe(true);
+  });
+
+  it("reports another app's message as a bot message even when it also carries a subtype", () => {
+    // `bot_message` is itself a subtype, so the order of the two checks decides
+    // which reason an operator greps for.
+    expect(
+      ignoredOf(
+        toMessage(envelope({ bot_id: "B0BOT", user: "U0OTHER", subtype: "bot_message" }), "U0BOT")
+      )
+    ).toBe("bot_message");
   });
 
   each([["message_changed"], ["message_deleted"]])(

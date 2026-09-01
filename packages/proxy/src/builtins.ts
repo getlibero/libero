@@ -154,15 +154,21 @@ export interface BuiltinDefinition {
 export const BUILTIN_TOOLS: Record<BuiltinToolName, BuiltinDefinition> = {
   search_channel_history: {
     description:
-      "Search this Slack channel's own message history. " +
-      "Takes plain words, not a query language: every word must appear in a message, " +
-      "in any order, and word endings are matched loosely so \"decide\" finds \"decided\". " +
-      "Results come back ranked by how well they match, not newest first, so ask for a " +
-      "larger limit rather than assuming the top hit is the most recent. " +
+      "Search this Slack channel's message history. " +
+      "Takes plain words, not a query language. Use two or three distinctive words from " +
+      "what you are looking for, not the question you were asked: an answer rarely repeats " +
+      "a question's words, and words like \"what\" or \"did\" match only other questions. " +
+      "Every word must appear in a message, in any order, and word endings are matched " +
+      "loosely so \"decide\" finds \"decided\"; if no message has all of them, messages " +
+      "with some come back instead. " +
+      "Results are ranked by match rather than by recency, so ask for a larger limit " +
+      "rather than assuming the top hit is the newest. " +
       "Each line is the message's date, its author, and its text. " +
+      "Messages from the conversation you are already in are left out — you have been " +
+      "shown those, and this searches the rest of the channel. " +
       "Only this channel is searchable — there is no argument for naming another, and " +
       "messages the app has not seen are not stored. " +
-      "Author names are as they were when the message was stored, and any <@U...> " +
+      "Author names are as they were when stored, and any <@U...> " +
       "mentions inside the text are left as ids.",
     inputSchema: SEARCH_CHANNEL_HISTORY_SCHEMA
   },

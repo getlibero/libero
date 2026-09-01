@@ -804,7 +804,7 @@ name = "search_channel_history"
       server: "libero",
       tool: "search_channel_history",
       approval: "none",
-      description: expect.stringContaining("Search this Slack channel's own message history"),
+      description: expect.stringContaining("Search this Slack channel's message history"),
       inputSchema: expect.objectContaining({ type: "object" })
     });
     // No channel argument, which is what makes the scope structural rather than

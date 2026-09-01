@@ -1077,6 +1077,38 @@ is why `BuiltinEntry` is a discriminated union rather than one flat object — s
 `@getlibero/schema`. The runner behind the arm is #395; until it lands, a
 granted call answers `not_implemented`.
 
+**`search_channel_history` leaves the calling thread out, and widens a query
+that finds nothing** (#522). Both were measured on a live deployment rather than
+reasoned about. Inside a thread the agent's prompt is thread-scoped, so this
+tool is the *only* path to the rest of the channel and has to work on the first
+call; what it did instead was answer the model its own words. The asking message
+is a row by the time the tool runs and shares every word with the query written
+out of it, so under the index's implicit AND the rows matching all of *what did
+I do this weekend* were exactly the other questions, and the answer was excluded
+outright.
+
+So `MessageReader.search` takes a `SearchOptions`, and this arm passes
+`excludeThread`. **The thread comes off `ToolCall.thread`, which the agent
+asserts** — and that is a third kind of asserted field rather than the two this
+system already had. `requestingUser` and `task` are asserted and read by the
+audit log; nothing reads this one. It shapes a *result*, and asserting it can
+only narrow the answer the calling channel was already entitled to: it removes
+rows and adds none, it names a sub-conversation rather than a channel, and the
+channel it applies within still comes off the certificate. An agent under an
+attacker's control that wrote any value there would be hiding messages from
+itself, which is not a capability — that process already decides what to do with
+every row it is handed. The field's own comment in `@getlibero/schema` is the
+record.
+
+**The agent's replies are stored now, and this tool cannot reach them** (#523).
+`packages/memory` keeps them in a table with no FTS index, so what keeps a
+poisoned reply out of a search result is the shape of the file rather than a
+predicate here. It is worth knowing on this side because it is the one thing the
+threat model would otherwise have to be re-argued for: a reply is derived from
+tool results, and a searchable one would give an injection that surfaced in
+prose a second life in the channel's own durable state, wearing the agent's
+byline.
+
 **`schedule_task` is governed here and recorded elsewhere.** The create is a
 served tool call like any other — the sheet lists it, a human clicks, the meter is
 charged, an audit row is written — and what it produces is a *ticket* returned in

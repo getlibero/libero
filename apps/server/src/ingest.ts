@@ -218,7 +218,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
         names === undefined ? undefined : await session.names.get(message.userId, names);
 
       try {
-        session.store.append({
+        const row = {
           ts: message.ts,
           threadTs: message.threadTs,
           userId: message.userId,
@@ -232,7 +232,20 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
           // field's own definition. `message.ts` is the sent time and is stored
           // beside it.
           at: now()
-        });
+        };
+        // One write door, two tables (#523). The app's own replies arrive on
+        // this same subscription and are filed here rather than at post time,
+        // which is what keeps `ingest.ts`'s "no second write door" true: an
+        // edit or a deletion of a reply then mirrors through `createRevisionIngest`
+        // like anyone else's, because the row got in the way every row gets in.
+        //
+        // Recording at post time was the obvious alternative and is the one to
+        // argue against, since it looks simpler: the gateway would hold a `ts`
+        // it deliberately does not return (`MessagePoster.postThreadReply`),
+        // and a reply written by a path the revision handler does not know
+        // about is a row Slack's retention can no longer reach.
+        if (message.fromApp) session.store.appendAgentReply(row);
+        else session.store.append(row);
       } catch (error) {
         // One message lost, and the process carries on. The gateway would log
         // `message_failed` for a rejection, but this is the layer that knows it
@@ -314,8 +327,14 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
       }
     }
 
-    // Three conditions on the way to answering, and each rules out a different
+    // Four conditions on the way to answering, and each rules out a different
     // way of getting this wrong.
+    //
+    // **It must not be this app's own reply** (#523). Those are filed above and
+    // are answerable by nothing: a thread the agent is working in is active by
+    // definition, so without this the agent's answer would be a follow-up to
+    // itself and the loop would only stop when the channel's budget did. It is
+    // first because it is the only one of the four whose failure has no bottom.
     //
     // **It must be in a thread.** `threadTs` is the raw value, so `null` means
     // top-level — not a reply to anything the agent said, and with nowhere to
@@ -333,6 +352,7 @@ export function createMessageIngest(options: MessageIngestOptions): MessageHandl
     // this a follow-up rather than the agent reading the whole channel. The
     // session holds that, with a deadline the channel's own sheet set.
     const thread = message.threadTs;
+    if (message.fromApp) return undefined;
     if (route === undefined || thread === null) return undefined;
     if (message.mentionsApp) return undefined;
     if (!session.threads.isActive(thread, now())) return undefined;

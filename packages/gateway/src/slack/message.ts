@@ -85,6 +85,44 @@ export function mentionsApp(text: string, appUserId: string | undefined): boolea
 }
 
 /**
+ * Whether a `bot_id`-bearing event is one of this app's own text replies (#523).
+ *
+ * Three conditions, each ruling out a different thing, and every one of them
+ * has to hold before a bot message survives `toMessage`'s drop.
+ *
+ * **The app's id has to be known.** Before `auth.test` answers there is nothing
+ * to compare against, so this is false — the same fail-closed direction
+ * `mentionsApp` takes, and the cheap side of it here: a reply that goes
+ * unrecorded during startup is one line missing from a thread, where recording
+ * some other app's message would be putting a third party's text into the
+ * channel's store under this app's byline.
+ *
+ * **The author has to be this app's own user.** `bot_id` says an app posted;
+ * `user` says which account it posted as. Another workspace app is dropped,
+ * which leaves "what is a third party's bot message worth" the separate
+ * question it was — `toMessage`'s own header has said so since #63 and this
+ * does not answer it.
+ *
+ * **It has to be a text reply and not a card.** Approval cards and the live
+ * checklist go out as `attachments` (`web-api.ts` is where that is decided) and
+ * are `chat.update`d repeatedly as their state moves, so through this door they
+ * would arrive as a stream of edits to interactive messages — none of which is
+ * anything a person said or the agent answered. Testing for `attachments`
+ * rather than for `blocks` is what makes this work at all: Slack synthesizes a
+ * `rich_text` block for every plain message, so a `blocks` test would drop
+ * every reply and keep nothing.
+ */
+function isOwnTextMessage(
+  event: Record<string, unknown>,
+  appUserId: string | undefined
+): boolean {
+  if (appUserId === undefined) return false;
+  if (event["user"] !== appUserId) return false;
+  const attachments = event["attachments"];
+  return !Array.isArray(attachments) || attachments.length === 0;
+}
+
+/**
  * Why an envelope is not a message to record. A closed set — each one is a
  * `reason` in a log line, as with `IgnoreReason`.
  */
@@ -131,10 +169,12 @@ function readString(source: Record<string, unknown>, key: string): string | unde
  * double-record, because the store's identity is the message's `ts` and only
  * this path writes.
  *
- * A message this app posted is dropped on `bot_id`, so a stored conversation is
- * one-sided: the agent's own replies are not in it. Whether the assembler wants
- * them back is #67's question, and answering it here would mean deciding what a
- * bot message from *another* app is worth, which is a separate one.
+ * A message another app posted is dropped on `bot_id`. **One of this app's own
+ * survives it** since #523 — a plain text reply, marked `fromApp` — and the
+ * separate question that paragraph used to name is still separate and still
+ * unanswered: what a bot message from *another* app is worth. See
+ * `isOwnTextMessage` for the three conditions, and `SlackMessage.fromApp` for
+ * what a consumer owes one.
  *
  * `appUserId` is the one argument that is not the envelope, and it does not
  * make this impure — same inputs, same answer. It is an argument rather than
@@ -153,13 +193,29 @@ export function toMessage(envelope: SlackEnvelope, appUserId?: string): MessageR
   // Before the subtype check, so a `bot_message` subtype is reported as what it
   // is. `bot_id` and not `app_id`, for the reason mention.ts gives: `app_id`
   // appears on payloads Slack merely routed through an app.
-  if (event["bot_id"] !== undefined) return { ignored: "bot_message" };
+  //
+  // **One kind of bot message now survives this** (#523): a plain text reply
+  // this app posted. `fromApp` below is what decides, and it is three
+  // conditions rather than one — see it for what each rules out. Everything
+  // else carrying a `bot_id` is dropped exactly as before, including this app's
+  // own cards.
+  const fromApp = event["bot_id"] !== undefined && isOwnTextMessage(event, appUserId);
+  if (event["bot_id"] !== undefined && !fromApp) return { ignored: "bot_message" };
 
   const subtype = event["subtype"];
   if (subtype !== undefined) {
     if (typeof subtype !== "string") return { ignored: "message_subtype" };
     if (REVISION_SUBTYPES.has(subtype)) return { ignored: "message_edit" };
-    if (!ALLOWED_SUBTYPES.has(subtype)) return { ignored: "message_subtype" };
+    // `bot_message` is the subtype Slack attaches to a post with no user
+    // account behind it. An app with a bot user normally posts without any
+    // subtype at all, so this arm is the shape that is not guaranteed rather
+    // than the expected one — and both shapes are this app's own message once
+    // `fromApp` has said so, which is the check that already required
+    // `user === appUserId`. It is not added to `ALLOWED_SUBTYPES`, because
+    // that set is about messages a *person* sent.
+    if (!ALLOWED_SUBTYPES.has(subtype) && !(fromApp && subtype === "bot_message")) {
+      return { ignored: "message_subtype" };
+    }
   }
 
   const teamId = readString(body, "team_id");
@@ -192,7 +248,8 @@ export function toMessage(envelope: SlackEnvelope, appUserId?: string): MessageR
       // The raw value. `?? null` and never `?? ts` — see the header.
       threadTs: readString(event, "thread_ts") ?? null,
       eventId,
-      mentionsApp: mentionsApp(text, appUserId)
+      mentionsApp: mentionsApp(text, appUserId),
+      fromApp
     }
   };
 }

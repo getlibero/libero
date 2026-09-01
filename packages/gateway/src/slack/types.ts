@@ -96,6 +96,30 @@ export interface SlackMessage {
    * id is not known yet.
    */
   mentionsApp: boolean;
+  /**
+   * Whether this app posted it (#523).
+   *
+   * The store held only what people said until this field existed, because
+   * `toMessage` dropped every message carrying a `bot_id` — this app's included.
+   * What that cost is in #523: inside a thread the task's prompt is thread-only,
+   * so a follow-up to an answer was a reply to something the model no longer
+   * had.
+   *
+   * **True only for this app's own text replies**, which is three conditions and
+   * not one. Another app's message is still dropped — what a third party's bot
+   * message is worth is a separate question and this is not it. A message with
+   * no `user` matching the app's own id is dropped, which is also what happens
+   * before `auth.test` has answered, so this fails closed exactly as
+   * `mentionsApp` does. And a card is dropped: approval cards and the live
+   * checklist are `chat.update`d repeatedly and carry `attachments`, so they
+   * arrive as a stream of edits to interactive messages that nobody wants in a
+   * transcript.
+   *
+   * A consumer that files messages must file these through a door of their own —
+   * `MessageStore.appendAgentReply` — and must not answer them. See
+   * `apps/server/src/ingest.ts`.
+   */
+  fromApp: boolean;
 }
 
 /**

@@ -381,9 +381,16 @@ describe("searching skills", () => {
     expect(store.searchSkills("how do we rotate an expiring certificate?", 5)).toEqual([
       "rotate-a-cert"
     ]);
-    // The control: the message index answers the same question conjunctively and
-    // finds nothing, which is what makes the paragraph above a difference rather
-    // than a restatement.
+    // **The control, and #522 moved it.** The message index used to answer this
+    // question with nothing at all — it ANDs, and no message holds every word
+    // of a sentence — which is what made the paragraph above a difference
+    // rather than a restatement. That was measured as a real failure and
+    // `search` now widens to OR when the AND finds nothing, for exactly the
+    // reason this one never ANDed at all.
+    //
+    // So what is left of the difference is the *order*: `search` asks
+    // conjunctively first and a hit there shuts the wider set out, where this
+    // ORs outright and lets bm25 decide. The case below is that difference.
     store.append({
       ts: "1.1",
       threadTs: null,
@@ -392,7 +399,33 @@ describe("searching skills", () => {
       text: "when a certificate is expiring",
       at: 1
     });
-    expect(store.search("how do we rotate an expiring certificate?", 5)).toEqual([]);
+    expect(store.search("how do we rotate an expiring certificate?", 5).map(hit => hit.ts)).toEqual(
+      ["1.1"]
+    );
+  });
+
+  it("ORs where the message index would first try to AND", () => {
+    // Two skills and one message, all mentioning certificates. Given a query
+    // every word of which one message holds, `search` answers that message and
+    // stops; `searchSkills` has no conjunctive pass to stop at, so both skills
+    // stay in contention and rank decides.
+    create("rotate-a-cert", "when a certificate is expiring", "run dev-certs.sh --rotate");
+    create("read-a-cert", "when reading a certificate", "run openssl x509");
+    reconcile();
+    store.append({
+      ts: "2.1",
+      threadTs: null,
+      userId: "U0ALICE",
+      displayName: null,
+      text: "a certificate is expiring",
+      at: 1
+    });
+
+    expect(store.search("a certificate is expiring", 5).map(hit => hit.ts)).toEqual(["2.1"]);
+    expect([...store.searchSkills("a certificate is expiring", 5)].sort()).toEqual([
+      "read-a-cert",
+      "rotate-a-cert"
+    ]);
   });
 
   // What OR costs, stated as a test so it is a known trade rather than a

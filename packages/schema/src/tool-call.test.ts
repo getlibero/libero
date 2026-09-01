@@ -94,6 +94,27 @@ describe("the wire tool call", () => {
     expect(ToolCall.safeParse(without("task")).success).toBe(false);
   });
 
+  // #522's field, and it is optional where the two above are required — the
+  // asymmetry is the point. A call with no attribution is one the audit log
+  // cannot answer "who asked" for; a call with no thread is an ordinary call
+  // that excludes nothing, which is what an ambient turn and a front-end with
+  // no sub-conversations both send.
+  it("takes an optional thread and does not require one", () => {
+    expect(ToolCall.parse(wire).thread).toBeUndefined();
+    expect(ToolCall.parse({ ...wire, thread: "1758000000.000100" }).thread).toBe(
+      "1758000000.000100"
+    );
+  });
+
+  // Bounded, and it is a bound rather than a format claim: this file knows what
+  // Slack calls a thread and must not encode it, because a second front-end
+  // names a sub-conversation in its own world. Only ever compared, never parsed.
+  it("rejects an empty or oversized thread and accepts an opaque one", () => {
+    expect(ToolCall.safeParse({ ...wire, thread: "" }).success).toBe(false);
+    expect(ToolCall.safeParse({ ...wire, thread: "x".repeat(129) }).success).toBe(false);
+    expect(ToolCall.safeParse({ ...wire, thread: "conversation/42" }).success).toBe(true);
+  });
+
   // Both land in the audit log and in its CSV export (#98), so what a client
   // can put in them is bounded here rather than at the point a human reads one.
   it("rejects an attribution value that is not a short identifier", () => {

@@ -307,12 +307,19 @@ failure naming `auth_rejected` rather than a reply that never appears.
 An ordinary message in a channel that has a team sheet is stored with its author, its thread, its
 timestamp and its text. A channel with no sheet is recorded nowhere: the agent is in most channels
 of a workspace and provisioned for few, and an unprovisioned one has no authorization behind it.
-Messages the agent posts itself are not stored either, so a transcript is what people said.
+The agent's own replies **are** stored, in a table of their own: a thread read back as a
+conversation is what a follow-up needs, and until v0.8 the model was answering follow-ups from
+questions with the answers cut out. They are kept out of everything a reply should not reach —
+full-text search, semantic recall, thread summaries and memory curation — because a reply is
+derived from tool results, and a searchable one would give an injection that surfaced in its prose
+a second life in the channel's own state. Cards and checklists are not stored at all.
 
 Those messages are what a task starts from. Before the model is asked anything it is given the
 recent conversation, each message attributed to its author (`@alice: …`) and each `<@U…>` resolved
 to a name, bounded by `[llm] max_history_messages` and `max_history_chars`. A question asked inside
-a thread is answered from that thread; a question that starts one sees the channel around it. The
+a thread is answered from that thread — both voices, with the agent's own lines marked, and the
+block says the rest of the channel is not shown; a question that starts one sees the channel
+around it, which is one-sided. The
 block is clearly marked as context rather than instructions and never goes in the system prompt,
 because anyone in the channel can write it.
 

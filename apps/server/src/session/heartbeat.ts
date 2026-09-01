@@ -46,10 +46,17 @@
 //
 //   - **A finding is offered at most once per silence.** A thread that was quiet
 //     when the channel was last weighed sits below the watermark and is never
-//     offered again — which matters because *the agent's own replies are not in
-//     the store*. Nothing records that the agent answered, so without this a
+//     offered again — which matters because *what this reads is the one-sided
+//     view*. `store.recent` answers with what people said, so nothing in front
+//     of this turn records that the agent answered, and without the watermark a
 //     question it had already spoken about would look unanswered forever and be
 //     raised every window until somebody replied to it.
+//
+//     #523 stored the agent's replies and **did not retire this**, deliberately.
+//     `recent` names `message` alone and `agent_message` is a table of its own,
+//     so nothing about what this turn sees has changed. Retiring the watermark
+//     would mean giving the heartbeat a second read and a new question — "did I
+//     already speak about this thread" — where what it has costs one Slack ts.
 //   - **A shut window defers rather than loses.** The window is checked *before*
 //     the evaluation, so a heartbeat that cannot post does not evaluate, does not
 //     advance the watermark, and finds the same material again next time. That is

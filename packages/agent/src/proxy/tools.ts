@@ -396,7 +396,12 @@ export function createProxyToolClient(options: ProxyToolClientOptions): ProxyToo
         // Attribution, not authentication. The proxy writes it down and decides
         // nothing from it — see the fields' doc comments in @getlibero/schema.
         requestingUser: attribution.requestingUser,
-        task: attribution.taskId
+        task: attribution.taskId,
+        // Neither attribution nor a decision's input: it shapes a result, and
+        // the only result it shapes is a history search excluding the thread
+        // the model is already looking at (#522). Omitted rather than sent as
+        // undefined — `ToolCall` is strict and the field is optional there.
+        ...(attribution.thread !== undefined ? { thread: attribution.thread } : {})
       };
       // No `channel` key, and none is possible: `ToolCall` is strict, so a body
       // carrying one is rejected by the proxy rather than having the field

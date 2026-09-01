@@ -59,7 +59,11 @@ export async function runAgentTask(options: AgentTaskOptions): Promise<AgentTask
   // prompt, not in the transcript, and not a tool argument.
   const attribution: ToolCallAttribution = {
     requestingUser: options.requestingUser,
-    taskId: options.taskId ?? randomUUID()
+    taskId: options.taskId ?? randomUUID(),
+    // Spread rather than passed through: `exactOptionalPropertyTypes` makes
+    // "absent" and "present and undefined" two different things, and a task
+    // with no thread has genuinely no thread.
+    ...(options.thread !== undefined ? { thread: options.thread } : {})
   };
 
   const messages = [...options.messages];

@@ -21,11 +21,14 @@ import { ToolRefusal } from "./refusal.js";
  * must be ignored to stay safe is a trap for whoever wires up the next
  * endpoint, so there is no such field.
  *
- * `ToolCall` does carry two fields the agent asserts — `requestingUser` and
- * `task` — and they are not a hole in that argument, because nothing
- * authorizes on them. The line to hold is the one this file draws: what a
- * decision reads must be proved, and what the audit log reads may be asserted.
- * Each field says which it is; see their doc comments before adding a third.
+ * `ToolCall` does carry three fields the agent asserts — `requestingUser`,
+ * `task` and `thread` — and they are not a hole in that argument, because
+ * nothing authorizes on them. The line to hold is the one this file draws: what
+ * a decision reads must be proved, and what the audit log reads may be
+ * asserted. `thread` is neither, and its own comment is where that third case
+ * is argued: it shapes a result, and asserting it can only narrow the answer
+ * the calling channel was already entitled to. Each field says which it is; see
+ * their doc comments before adding a fourth.
  */
 
 export const ToolCall = z
@@ -83,6 +86,42 @@ export const ToolCall = z
      * the decision is what keeps that harmless.
      */
     task: TaskId,
+
+    /**
+     * The sub-conversation this task is answering in, when it is in one (#522).
+     *
+     * **A third asserted field, and it is a third kind of thing** — so this file
+     * owes it the same account it gives the two above rather than letting it sit
+     * on their reasoning. `requestingUser` and `task` are asserted and read by
+     * the *audit log*; the rule they state is that what a decision reads must be
+     * proved and what the audit log reads may be asserted. Nothing reads this
+     * one. Enforcement does not see it, and no audit row records it.
+     *
+     * What it does is shape a **result**: `search_channel_history` leaves this
+     * thread's own messages out of what it returns, because every one of them is
+     * already in the prompt the model is looking at. The measured failure
+     * without it is in #522 — the asker's question is in the channel's store by
+     * the time the search runs, it shares every word with the query, and under
+     * the index's implicit AND it displaced the answer entirely.
+     *
+     * **Asserting it can only narrow the caller's own answer.** It removes rows
+     * from a result the calling channel was already entitled to and can add
+     * none, it names a sub-conversation rather than a channel, and the channel
+     * it is applied within still comes from the certificate. So an agent under
+     * an attacker's control that wrote any value here would be hiding messages
+     * from itself — which is not a capability, since that process already
+     * decides what to do with every row it is handed.
+     *
+     * Optional, because a task with no thread is real: the ambient clock's
+     * turns answer in no sub-conversation, and a front-end that has none supplies
+     * nothing. Absent means nothing is excluded.
+     *
+     * Opaque, and only ever compared. A Slack `thread_ts` today; `TaskRequest`
+     * in `apps/server` makes the same promise about the same value, and neither
+     * end parses it. The bound is a bound and not a format claim — nothing here
+     * knows what a second front-end names a sub-conversation.
+     */
+    thread: z.string().min(1).max(128).optional(),
 
     /**
      * The approval ticket this call is a re-submission of, when it is one.

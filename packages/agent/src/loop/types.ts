@@ -53,6 +53,25 @@ export interface ToolCallAttribution {
   readonly requestingUser: string;
   /** Minted by the loop, once per task, stable across that task's calls. */
   readonly taskId: string;
+  /**
+   * The sub-conversation this task is answering in, when it is in one (#522).
+   *
+   * **Not attribution, and the object's name is now one word short of what it
+   * carries.** It is here rather than on a second parameter because it is the
+   * same kind of thing as the two above — what this process knows about the
+   * request the model is serving, as against what the model emitted — and
+   * keeping that line in one place is the whole reason this shape exists. The
+   * name was not changed for it: every call site would have moved to record a
+   * distinction the field's own comment makes better.
+   *
+   * Nothing decides on it and no audit row holds it. What it does is let the
+   * proxy leave this thread's own messages out of a history search, because the
+   * model has already been shown them. `ToolCall.thread` in `@getlibero/schema`
+   * carries the argument for why asserting it is sound.
+   *
+   * Absent for a task with no thread — an ambient turn answers in none.
+   */
+  readonly thread?: string;
 }
 
 /**
@@ -209,6 +228,16 @@ export interface AgentTaskOptions {
    * the same need `now` covers for the clock.
    */
   taskId?: string;
+  /**
+   * The sub-conversation this task is answering in, passed through to every
+   * call's attribution (#522). Absent for a task that is in none.
+   *
+   * Optional where `requestingUser` is required, and the asymmetry is the
+   * point: a call with no attribution is one the audit log cannot answer "who
+   * asked" for, and a call with no thread is an ordinary call that excludes
+   * nothing. See `ToolCallAttribution.thread`.
+   */
+  thread?: string;
   system?: string;
   /** Seed transcript. The loop appends to a copy and never mutates this array. */
   messages: CompletionMessage[];
