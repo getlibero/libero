@@ -12,6 +12,6 @@
     "@getlibero/agent": "workspace:*",
     "@getlibero/schema": "workspace:*",
     "@getlibero/test-kit": "workspace:*",
-    "expect": "^30.4.1"
+    "expect": "^30.5.0"
   }
 }

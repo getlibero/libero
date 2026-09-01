@@ -23,9 +23,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "eslint": "^10.8.1",
+    "eslint": "^10.9.1",
     "license-checker-rseidelsohn": "^5.0.1",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.67.0"
+    "typescript-eslint": "^8.68.0"
   }
 }

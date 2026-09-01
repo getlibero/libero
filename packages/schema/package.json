@@ -16,12 +16,12 @@
     "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
-    "zod": "^4.4.3",
+    "zod": "^4.5.2",
     "smol-toml": "^1.8.0"
   },
   "devDependencies": {
     "@getlibero/test-kit": "workspace:*",
     "@types/node": "^24.13.3",
-    "expect": "^30.4.1"
+    "expect": "^30.5.0"
   }
 }

@@ -16,13 +16,13 @@
     "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
+    "@anthropic-ai/sdk": "^0.122.0",
     "@getlibero/schema": "workspace:*",
-    "openai": "^7.5.0"
+    "openai": "^7.8.0"
   },
   "devDependencies": {
     "@getlibero/test-kit": "workspace:*",
     "@types/node": "^24.13.3",
-    "expect": "^30.4.1"
+    "expect": "^30.5.0"
   }
 }
