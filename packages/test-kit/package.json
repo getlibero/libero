@@ -21,6 +21,6 @@
     "test": "tsc -p tsconfig.json && node --test --test-reporter=@getlibero/test-kit/reporter 'dist/**/*.test.js'"
   },
   "devDependencies": {
-    "expect": "^30.4.1"
+    "expect": "^30.5.0"
   }
 }
