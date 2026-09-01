@@ -63,13 +63,20 @@ function toolResults(seen: readonly { messages?: readonly unknown[] }[]): string
 }
 
 /** One inbound message, on the `message` subscription that fills the store. */
-async function say(active: Rig, text: string, ts: string, channelId = CHANNEL): Promise<void> {
+async function say(
+  active: Rig,
+  text: string,
+  ts: string,
+  channelId = CHANNEL,
+  threadTs?: string
+): Promise<void> {
   await active.agent.slack.deliverMessage({
     teamId: "T024BE7LD",
     channelId,
     userId: "U024BE7LH",
     text,
-    ts
+    ts,
+    ...(threadTs !== undefined ? { threadTs } : {})
   });
 }
 
@@ -105,7 +112,7 @@ it(
     // so unlike an upstream's this can never arrive thin.
     const offered = model.seen[0]?.tools?.find(tool => tool.name === "search_channel_history");
     expect(offered).toBeDefined();
-    expect(offered?.description).toContain("Search this Slack channel's own message history");
+    expect(offered?.description).toContain("Search this Slack channel's message history");
 
     // The result reached the model, and it is the stored message rather than a
     // refusal. This is the positive control for every negative below: without
@@ -233,4 +240,69 @@ it(
     expect(rows).toHaveLength(2);
     expect(rows.every(row => row.channel === CHANNEL)).toBe(true);
     expect(rows.every(row => row.server === "libero")).toBe(true);
+  });
+
+
+it(
+  "leaves the calling thread out, and widens the query when nothing holds every word",
+  { timeout: CASE_MS },
+  async () => {
+    // **#522, end to end and in the shape it was reported.** A fact is said
+    // top-level; the question about it is asked inside a thread, where the
+    // prompt is thread-scoped (#66) and this tool is therefore the only path to
+    // the rest of the channel. Two things then went wrong at once and both are
+    // asserted below.
+    //
+    // The asking message is already a row by the time the tool runs, and it
+    // shares every word with the query the model writes out of it — so under
+    // the index's implicit AND the rows matching all of *what did I do this
+    // weekend* were exactly the other questions, and the answer was excluded
+    // outright. Measured against the deployment's own `store.db`, the natural
+    // query returned only questions.
+    rig = await startRig({
+      sheets: { [CHANNEL]: GRANTED },
+      script: [
+        // The question, relayed as the model relays one. Not a trimmed query:
+        // the point is that this is what actually gets sent.
+        calls("search_channel_history", { query: "what did I do this weekend?" }),
+        says("You went to medieval times.")
+      ]
+    });
+    const { agent, model } = rigOf(rig);
+
+    // The answer, top-level and outside the thread the question is asked in.
+    await say(rig, "I went to medieval times this weekend", "1758000000.000100");
+
+    // A thread, and the question inside it. The question is stored because
+    // Slack delivers a mention on both subscriptions — which is exactly how the
+    // model's own words got into the corpus it is told to search.
+    await say(rig, "hello", "1758000000.000200");
+    await say(
+      rig,
+      "what did I do this weekend?",
+      "1758000000.000300",
+      CHANNEL,
+      "1758000000.000200"
+    );
+
+    await agent.slack.deliverMention({
+      teamId: "T024BE7LD",
+      channelId: CHANNEL,
+      userId: "U024BE7LH",
+      text: "what did I do this weekend?",
+      ts: "1758000000.000300",
+      threadTs: "1758000000.000200",
+      eventId: "Ev00000003"
+    });
+
+    const results = toolResults(model.seen);
+
+    // The answer came back. Under AND alone this was empty, which is the whole
+    // bug: no message contains every word of a question.
+    expect(results).toContain("I went to medieval times this weekend");
+
+    // And the model's own question did not, because the thread it was asked in
+    // is left out. Without that, the widened retry hands back the question
+    // ahead of the answer — bm25 ranks it first, since it matches every term.
+    expect(results).not.toContain("what did I do this weekend?");
   });

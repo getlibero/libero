@@ -445,10 +445,29 @@ deliberate exception (#369) — it does sit in the system prompt, composed by
 `systemPromptFor` in `task.ts`, and may, because it is operator-authored: it
 arrives through a file in the operator's git repo, never through the channel.
 
-**It is not a dialogue.** The agent's own replies are not stored, so history is
-one-sided — a labelled block of what people said is exactly as much as is true,
-and an assistant/user alternation reconstructed from half a conversation would
-be a lie the model reasons from.
+**It is not a dialogue, and it is no longer one-sided** (#523). Nothing here
+builds `assistant` turns — an alternation reconstructed from a transcript is a
+lie the model would reason from, and that half of the rule is unchanged. What
+changed is the other half. Inside a thread this block is the *whole* of what the
+model can see, so with the replies missing a follow-up was answered from
+questions with the answers cut out. `transcriptInThread` reads both voices,
+`packages/memory` is where the replies live and where the argument for keeping
+them out of search, recall and curation is made, and the block marks the app's
+own lines `(you)` and says so in its preamble. That is still "exactly as much as
+is true", which was always the rule rather than one-sidedness being it.
+
+**A reply is capped tighter than a person's message.** 1,000 characters against
+2,000, because `max_history_chars` is shared and a reply is typically several
+times the length of the message it answers — it is where a tool result or a
+computation landed. `max_history_messages` counts both voices, so the sheet's
+number means one amount of transcript however much the agent has been talking.
+
+**Inside a thread the block says so.** "The messages in this thread, oldest
+first. The rest of this channel is not shown." #66's thread scoping was
+invisible to the model until #522: it read "recent messages in this channel",
+searched for the rest of the channel with the words of the question, and
+concluded the channel held nothing. The sentence names no tool — a channel that
+grants no history search has nothing to be told to reach for.
 
 **It bounds itself.** Nothing in the agent package counts a transcript's tokens
 before sending it, so an oversized seed would fail at the provider rather than
@@ -1566,10 +1585,15 @@ One Slack `ts` per channel, in this factory's closure, advanced to the channel's
 newest message **when an evaluation runs** — including when the answer was
 silence. Two properties fall out and both are load-bearing.
 
-**A finding is offered at most once per silence.** This matters because *the
-agent's own replies are not in the store*: nothing records that it already spoke
-about a thread, so without the watermark a question it had raised would look
-unanswered forever and be raised again every window. A thread that says something
+**A finding is offered at most once per silence.** This mattered originally
+because *the agent's own replies were not in the store*: nothing recorded that
+it had already spoken about a thread, so without the watermark a question it had
+raised would look unanswered forever and be raised again every window. #523
+stored the replies and **did not retire the watermark**, deliberately: the
+heartbeat reads `recent`, which is the one-sided read, so nothing about what it
+sees has changed. Retiring it would mean giving the heartbeat a second read and
+a new question — "did I already speak about this thread" — where what it has
+today is a high-water mark that costs one Slack ts. A thread that says something
 more rises back above the watermark, goes quiet again, and is eligible again —
 say-once is per silence, not forever.
 

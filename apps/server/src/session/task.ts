@@ -537,6 +537,14 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           // sent it — display-name resolution is the context assembler's (#67),
           // and a name is not what an audit record wants anyway.
           requestingUser: request.requestingUser,
+          // The sub-conversation this task is answering in (#522). Not
+          // attribution and not a decision's input: it is what lets the proxy
+          // leave this thread's own messages out of a history search, because
+          // the transcript above has already shown them to the model. Sent for
+          // every task, because every `TaskRequest` has a thread — a front-end
+          // with no such concept supplies the request's own id, which makes
+          // this exclude that one request and nothing else.
+          thread: request.thread,
           // The static prompt plus this channel's standing region: the sheet's
           // own description of the channel, and the shared skills it names on
           // every task. Assembled per task rather than per session, because the

@@ -248,8 +248,9 @@ What bounds unbidden speech, and holds against a model talked into finding every
 - **The rate window.** One heartbeat post per channel per four hours, an architecture constant no
   sheet field widens. It is checked *before* the evaluation spends, so a shut window defers a
   finding rather than paying to rediscover it every tick.
-- **The watermark.** A finding is said once. The agent's own replies are not in the store, so a
-  per-channel watermark is what records that it already spoke.
+- **The watermark.** A finding is said once. The heartbeat reads the store's one-sided view — what
+  people said — so nothing there records that the agent already spoke, and a per-channel watermark
+  is what does. Its own replies are stored as of v0.8 and that read does not see them.
 - **Spend.** The evaluation draws from the same per-channel meter as everything else, and a capped
   channel's heartbeat is silent: nobody asked, so nothing is owed.
 

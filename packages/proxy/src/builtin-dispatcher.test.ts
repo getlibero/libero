@@ -30,7 +30,11 @@ let root: string;
 let store: MessageStore;
 let dispatcher: BuiltinDispatcher;
 
-function callWith(args: Record<string, unknown>, channel = CHANNEL): ResolvedToolCall {
+function callWith(
+  args: Record<string, unknown>,
+  channel = CHANNEL,
+  thread?: string
+): ResolvedToolCall {
   return {
     id: "toolu_01",
     server: "libero",
@@ -38,6 +42,7 @@ function callWith(args: Record<string, unknown>, channel = CHANNEL): ResolvedToo
     arguments: args,
     requestingUser: "U0ASKER",
     task: "b9d5a2f0-0000-4000-8000-000000000001",
+    ...(thread !== undefined ? { thread } : {}),
     channel
   };
 }
@@ -48,8 +53,13 @@ function textOf(dispatch: Dispatch): string {
   return resultText(dispatch.result.content);
 }
 
-function search(args: Record<string, unknown>, limits = LIMITS, channel = CHANNEL): Dispatch {
-  return dispatcher.run(callWith(args, channel), "search_channel_history", limits);
+function search(
+  args: Record<string, unknown>,
+  limits = LIMITS,
+  channel = CHANNEL,
+  thread?: string
+): Dispatch {
+  return dispatcher.run(callWith(args, channel, thread), "search_channel_history", limits);
 }
 
 function stored(ts: string, text: string, extra: Record<string, unknown> = {}): void {
@@ -141,6 +151,52 @@ describe("search_channel_history", () => {
 // The acceptance criterion, in the place it is actually enforced. `.strict()`
 // on the argument parser is what makes "no argument the model controls can
 // widen the search beyond the calling channel" a shape rather than a check.
+describe("the thread the call came from", () => {
+  // #522. The agent asserts the thread on the call; nothing decides on it and
+  // no audit row holds it. What it does is remove rows the model has already
+  // been shown, which is why asserting it is sound where asserting a channel
+  // would not be — it can only narrow an answer this channel was entitled to.
+  const THREAD = "1700000000.000200";
+
+  beforeEach(() => {
+    stored("1700000000.000100", "I went to medieval times this weekend");
+    stored(THREAD, "what did I do this weekend?");
+    stored("1700000000.000300", "nothing about someplace I went?", { threadTs: THREAD });
+  });
+
+  it("leaves the calling thread's root and replies out", () => {
+    const text = textOf(search({ query: "weekend" }, LIMITS, CHANNEL, THREAD));
+
+    expect(text).toContain("I went to medieval times this weekend");
+    expect(text).not.toContain("what did I do this weekend?");
+  });
+
+  it("returns the whole channel when the call names no thread", () => {
+    // The control. An ambient turn answers in no sub-conversation, and a
+    // front-end with no such concept sends nothing — neither should have a
+    // narrower search than it used to.
+    expect(textOf(search({ query: "weekend" }))).toContain("what did I do this weekend?");
+  });
+
+  // The reported failure, whole: the question relayed as the model relays one.
+  // Under the conjunction the only matches are the questions, both of them in
+  // the calling thread — so the exclusion and the widened retry are each
+  // load-bearing and neither answers this alone.
+  it("answers a question relayed word for word", () => {
+    expect(
+      textOf(search({ query: "what did I do this weekend?" }, LIMITS, CHANNEL, THREAD))
+    ).toBe("2023-11-14 @Alice: I went to medieval times this weekend");
+  });
+
+  it("takes a thread the store has never heard of as excluding nothing", () => {
+    // A thread id is not validated here and does not need to be: an id matching
+    // no row removes no row.
+    expect(
+      textOf(search({ query: "weekend" }, LIMITS, CHANNEL, "1699999999.000000"))
+    ).toContain("what did I do this weekend?");
+  });
+});
+
 describe("what the model may send", () => {
   it("refuses an argument naming a channel, and says which key", () => {
     const dispatch = search({ query: "vault", channel: OTHER });

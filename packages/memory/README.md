@@ -18,7 +18,7 @@ until #272 unified the three that existed. `src/log.ts` is a duplicated `Logger`
 interface, and that duplication is argued in the file too — it stayed duplicated
 because an interface the gateway also declares has no third home to move to.
 
-## Three reads, and they are not each other
+## Four reads, and they are not each other
 
 `search(text, limit)` answers "what was said about this": ranked full-text,
 best match first, and it takes **text and never an FTS5 expression**.
@@ -36,15 +36,29 @@ root's `ts`, so a thread is one row matching on `ts` and the rest matching on
 `thread_ts`. An unknown thread answers nothing rather than throwing — a caller
 may hold a ts from a conversation that started before this file did.
 
+`transcriptInThread(thread, limit)` answers "how did this thread actually go":
+the same rows plus the agent's own replies, each carrying which voice said it
+(#523). **It is not `recentInThread` with another argument** — the rule
+`idleThreads` keeps against `staleThreads`, for the same kind of reason. The
+one-sided read is what a corpus that outlives the thread has to be built from: a
+summary is embedded, recalled into later tasks and read by the curator, so the
+agent's own prose must not be its source. This one is what a task needs in front
+of it to answer the next message in the thread, and the missing half there was a
+measured bug rather than a theoretical one. Two questions, two methods.
+
 Ordering is on `ts`, compared as a string, and that is correct because a Slack
 timestamp is fixed-width: ten digits of seconds, a dot, six more. The two
 alternatives are both wrong. `id` is insertion order, which a redelivery or a
 late event reorders; `at` is when this store *learned* of a message, which is a
 different clock.
 
-All three are clamped to `READ_MAX_LIMIT`, which is one ceiling rather than
-three because what it bounds is the same thing every time: how much of this file
-a single call can pull into a model's context.
+All four are clamped to `READ_MAX_LIMIT`, which is one ceiling rather than four
+because what it bounds is the same thing every time: how much of this file a
+single call can pull into a model's context. `transcriptInThread` clamps the
+*conversation* rather than each table: it asks each side for at most that many
+and keeps the newest N of what comes back, so a channel's
+`max_history_messages` means one amount of transcript however much the agent has
+been talking.
 
 ### `search` takes text, and the index has a tokenizer
 
@@ -63,6 +77,80 @@ once because it is baked into the index — changing it means rebuilding every
 channel's file. Without stemming, an AND of the terms in "what did we decide
 about the vault" does not match "we decided to ship the vault", which is the
 first question the proxy's `search_channel_history` built-in (#64) would ask.
+
+**It ANDs first and widens to OR when that finds nothing** (#522). The
+conjunction is what a person means by search and is wrong for what actually
+arrives: a model relaying somebody's question, no message containing every word
+of one. Measured against a real channel, "what did I do this weekend?" returned
+only the *other* questions and excluded the answer outright — so the retry is
+the same trade `searchSkills` made in #292, made one step more conservatively
+because a conjunctive hit, where there is one, is still the better answer. What
+the retry does not do is exclude the weak tail; bm25 ranks it low and `limit`
+cuts it, which is the cost recorded on `toAnyMatchQuery`.
+
+**It can leave one thread out**, and that is the other half of #522. Every
+message of the thread a question was asked in is already in the model's prompt,
+and the asking message shares every word with the query written out of it — so
+under the conjunction it displaced the answer, and under the retry it would
+outrank it. `SearchOptions.excludeThread` is applied inside the statement rather
+than over its rows, because a row discarded after the limit is a limit the
+excluded rows already spent.
+
+**The agent's own replies are not searchable at all**, and that is the shape of
+the file rather than a predicate: `agent_message` carries no FTS index and no
+trigger that would build one. See below.
+
+## The agent's own replies, in a table of their own (#523)
+
+The store held only what people said, deliberately, and three files argued for
+it. What that cost was measured on a live deployment: a task's prompt inside a
+thread is thread-scoped (#66), so a follow-up to an answer was a reply to
+something the model no longer had — the thread's other half was simply missing,
+and the summary of a Q&A thread was a list of questions.
+
+What must not follow is that the replies become searchable, embeddable or
+curatable. A reply is derived from tool results. The proxy redacts credentials,
+but an injected instruction or poisoned data can surface in prose — and today
+that text exists once, in Slack. Stored carelessly it would become retrievable,
+summarizable, and a candidate for memory curation: the injection gets a second
+life in the channel's own state, wearing the agent's byline, where "what people
+said" at least has a person behind it.
+
+**A `kind` column on `message` was the obvious shape and is the wrong one.** It
+would make that a predicate every read has to remember — in the three FTS
+triggers, in `recent`, in the sweep's grouping, in `staleThreads`, and in every
+statement written afterwards. This package's rule is that a claim about what the
+statements can reach is checkable by reading one screen, and one more column to
+forget is the opposite of it.
+
+`agent_message` makes it structural. There is no FTS index over that table and
+no trigger that would build one, so `search` cannot reach it. Nothing joins it
+to `embedding_source`, so `nearest` cannot. `recent`, `recentInThread`,
+`staleThreads` and `idleThreads` name `message` alone, so the summary sweep, the
+heartbeat and the fired turn read exactly what they read before —
+`transcriptInThread` is the one read that sees both.
+
+Three consequences worth stating rather than discovering.
+
+**The schema version did not move**, measured by the rule on
+`MESSAGE_STORE_SCHEMA_VERSION` rather than assumed: this is additive DDL, and
+every statement that existed before it names `message` and only `message`, so no
+reader of an older build is wrong about anything it asks for. A `kind` column
+*would* have moved it, and that is the clearest way to see the difference — an
+older build's context assembler would have rendered the new rows inside "what
+people said", which is the wrong answer with no symptom that constant exists to
+prevent.
+
+**`remove` and `replaceText` reach both tables.** Slack's retention applies to
+every author, and a store that mirrored everyone but one is the gap that argued
+for storing replies at all. A `ts` names a row in at most one table, so the two
+are one namespace to the caller.
+
+**There is one write door and it is not the poster.** `appendAgentReply` is
+called from the same message ingest everybody else's message goes through,
+because Slack delivers this app's own posts on that subscription. Recording at
+post time instead would have meant a row written by a path the revision handler
+does not know about — a reply Slack's retention could no longer reach.
 
 ## The isolation boundary
 
@@ -98,7 +186,7 @@ not expressible either.
 ## Six openers, and what each one may touch
 
 `openMessageStore` is the gateway's: it creates the schema, stamps the version,
-and holds the six statements that write and read a channel's messages.
+and holds the statements that write and read a channel's messages.
 
 `openMessageReader` is the tool proxy's (#64). It opens the same file
 `readOnly`, runs no DDL, stamps nothing, and exposes `search`, `close`, and —
@@ -727,9 +815,12 @@ Two builders, `toMatchQuery` and `toAnyMatchQuery`, sharing their escaping and
 differing only in the joiner — and the difference is that the two answer
 different questions.
 
-`search` is handed words a person chose and means conjunctively; dropping it to
-OR would drown a real search in documents matching one common word.
-`searchSkills` is handed a **whole question somebody asked in Slack**, because
+`search` is handed words a person chose and means conjunctively, so it asks that
+way *first* and a conjunctive hit shuts the wider set out; dropping straight to
+OR would drown a real search in documents matching one common word. (#522 gave
+it the same fallback behind that pass, for this section's reason arriving one
+issue later — see "`search` takes text". What is left of the difference is the
+order.) `searchSkills` is handed a **whole question somebody asked in Slack**, because
 what calls it is retrieval at the head of a task. Under the implicit AND, "how do
 we cut a release?" requires every one of `how`, `do`, `we`, `cut`, `a` and
 `release` to appear in the skill, which no real playbook does — so the lexical

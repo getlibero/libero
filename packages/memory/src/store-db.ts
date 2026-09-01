@@ -356,6 +356,62 @@ CREATE TRIGGER IF NOT EXISTS message_fts_update AFTER UPDATE ON message BEGIN
   INSERT INTO message_fts (rowid, text) VALUES (new.id, new.text);
 END;
 
+-- The agent's own replies (#523), in a **second table rather than a column on
+-- \`message\`**. That choice is the whole of this feature's safety, so it is worth
+-- saying what it buys before saying what it holds.
+--
+-- Until now this store held only what people said, deliberately, and three
+-- files argued for it. What that cost was measured on a live deployment: a
+-- task's prompt inside a thread is thread-scoped (#66), so a follow-up to an
+-- answer was a reply to something the model no longer had — the thread's other
+-- half was simply missing. Storing the replies is what closes that.
+--
+-- What must not follow is that they become searchable, embeddable or curatable.
+-- A reply is derived from tool results, so an injected instruction that
+-- surfaced in its prose would get a second life in the channel's own durable
+-- state wearing the agent's byline — where "what people said" at least has a
+-- person behind it. Today that text exists once, in Slack.
+--
+-- A \`kind\` column on \`message\` would have made that a predicate every read has
+-- to remember: in the three FTS triggers, in \`recent\`, in the sweep's grouping,
+-- in \`staleThreads\`, and in every statement written here afterwards. This
+-- file's rule is that a claim about what the statements can reach should be
+-- checkable by reading one screen, and one more column to forget is the
+-- opposite of that.
+--
+-- A second table makes it structural instead. There is no FTS index over this
+-- one and no trigger that would build one, so \`search\` cannot reach it; nothing
+-- joins it to \`embedding_source\`, so \`nearest\` cannot; and \`recent\`,
+-- \`recentInThread\`, \`staleThreads\` and \`idleThreads\` name \`message\` alone, so
+-- the summary sweep, the heartbeat and the fired turn read exactly what they
+-- read before. **One read sees both tables** — \`transcriptInThread\`, which is a
+-- task's thread context and the only place a reply is wanted.
+--
+-- \`MESSAGE_STORE_SCHEMA_VERSION\` does not move, measured by that constant's own
+-- rule rather than assumed: this is additive DDL, and every statement that
+-- existed before it names \`message\` and only \`message\`, so no reader of an
+-- older build is wrong about anything it asks for. A \`kind\` column would have
+-- been the other case and would have moved it — an older build's context
+-- assembler would have rendered the new rows inside "what people said", which
+-- is the wrong answer with no symptom that constant exists to prevent.
+--
+-- The columns are \`message\`'s exactly, so the two read back as one shape.
+-- \`user_id\` is the app's own Slack user id: it is what the event carries, and
+-- it is what makes a reply attributable rather than anonymous in a transcript.
+CREATE TABLE IF NOT EXISTS agent_message (
+  id           INTEGER PRIMARY KEY,
+  ts           TEXT NOT NULL UNIQUE,
+  thread_ts    TEXT,
+  user_id      TEXT NOT NULL,
+  display_name TEXT,
+  text         TEXT NOT NULL,
+  at           INTEGER NOT NULL
+);
+
+-- \`transcriptInThread\` reads this table the way \`recentInThread\` reads the
+-- other one, so it wants the same index for \`message_thread\`'s reason.
+CREATE INDEX IF NOT EXISTS agent_message_thread ON agent_message (thread_ts, ts);
+
 -- Which model produced every vector in this file, and at what width. **One
 -- row**, enforced by the CHECK rather than by a convention.
 --
@@ -918,6 +974,49 @@ export interface StoredMessage {
 }
 
 /**
+ * One message of a thread read as a conversation: a `StoredMessage` and which
+ * of the two voices said it (#523).
+ *
+ * **`voice` is a fact about which table the row came out of**, not a field
+ * anything wrote into a row. `human` is `message`, `agent` is `agent_message`,
+ * and the reader cannot be handed a row whose voice disagrees with where it is
+ * stored — which is the same kind of guarantee the absence of a `channel`
+ * column gives this file, one scale down.
+ *
+ * It exists because the caller has to render the two differently. A transcript
+ * that attributed the agent's replies the way it attributes a person's would be
+ * the fake dialogue `apps/server/src/session/context.ts` refuses to build; one
+ * that could not tell them apart would have no choice but to build it.
+ */
+export interface ThreadMessage extends StoredMessage {
+  readonly voice: "human" | "agent";
+}
+
+/**
+ * How a search may narrow itself beyond the words (#522).
+ *
+ * One option, and it exists because of a measured failure rather than a
+ * generality: the model's own question is in this store by the time the search
+ * runs, and under the implicit AND of `toMatchQuery` the messages containing
+ * every word of *what did I do this weekend* are exactly the other questions —
+ * so a natural query returned the asker's words and excluded the answer.
+ *
+ * Excluding the calling thread is what makes the results answer-shaped, and it
+ * is sound for a reason narrower than "it helps": every message in that thread
+ * is already in the prompt, so returning one spends the caller's result bound
+ * on text the model is looking at.
+ */
+export interface SearchOptions {
+  /**
+   * A thread root `ts` whose messages are left out, or absent for none.
+   *
+   * Matched as `COALESCE(thread_ts, ts)`, so it excludes the root and its
+   * replies together — the same identity `recentInThread` reads a thread by.
+   */
+  readonly excludeThread?: string;
+}
+
+/**
  * What a vector was derived from.
  *
  * The pair is this file's identity for an embedding, and `putEmbedding` upserts
@@ -1087,10 +1186,31 @@ export interface MessageStore {
    */
   append(message: StoredMessage): boolean;
   /**
+   * Stores one reply this app posted (#523). False if this `ts` is already
+   * stored, on `append`'s terms and for its reason.
+   *
+   * **A second method rather than a flag on `append`**, because the two write
+   * different tables and the difference is what keeps a reply out of the index,
+   * out of the vector store and out of every read but one. See the DDL for
+   * `agent_message`. A caller that could pass the voice as an argument is a
+   * caller that could pass the wrong one.
+   *
+   * The shape is `StoredMessage` because the row is: `userId` is the app's own
+   * Slack user id, and `ts`, `threadTs` and `at` mean exactly what they mean
+   * beside a person's message.
+   */
+  appendAgentReply(message: StoredMessage): boolean;
+  /**
    * Deletes a message and its index entry. False if there was no such message.
    *
    * This is how a Slack deletion is mirrored, so retention is respected rather
    * than quietly outlived.
+   *
+   * **It reaches both tables** (#523). A deleted reply of the app's own is a
+   * deletion like any other, and the alternative — a store that mirrors every
+   * author but one — is the retention gap that argued for storing replies in
+   * the first place. The `ts` namespace is Slack's, so no one value can name a
+   * row in each.
    */
   remove(ts: string): boolean;
   /**
@@ -1099,7 +1219,7 @@ export interface MessageStore {
    *
    * This is how a Slack edit is mirrored. It matters for the same reason
    * `remove` does: an unmirrored edit means the store keeps text its author
-   * retracted.
+   * retracted. It reaches both tables, on `remove`'s reasoning.
    */
   replaceText(ts: string, text: string): boolean;
   /**
@@ -1111,8 +1231,18 @@ export interface MessageStore {
    *
    * Returns order and not a score: bm25 is negative, which no caller expects,
    * and exposing it invites thresholding on an FTS5 implementation detail.
+   *
+   * **The agent's own replies are not searchable**, and that is the shape of
+   * the store rather than a filter here: `agent_message` carries no FTS index.
+   * See its DDL for why that is deliberate.
+   *
+   * **A query that matches nothing under AND is retried under OR** (#522). See
+   * `toAnyMatchQuery` for the argument, which is `searchSkills`' and arrives
+   * here for the same reason: what this is handed is a model relaying a
+   * person's question, not the deliberate conjunction a person types into a
+   * search box.
    */
-  search(text: string, limit: number): readonly StoredMessage[];
+  search(text: string, limit: number, options?: SearchOptions): readonly StoredMessage[];
   /**
    * The most recent `limit` messages in this channel, **oldest first**.
    *
@@ -1147,6 +1277,30 @@ export interface MessageStore {
    * for a thread that has not reached this file rather than an error condition.
    */
   recentInThread(thread: string, limit: number): readonly StoredMessage[];
+  /**
+   * One thread as a conversation, **oldest first**: what people said and what
+   * this app replied, interleaved (#523).
+   *
+   * **Not `recentInThread` with another argument**, on the rule `idleThreads`
+   * already keeps against `staleThreads`. They answer different questions.
+   * `recentInThread` answers *what did people say in this thread*, which is
+   * what the summary sweep reads and what a corpus that outlives the thread has
+   * to be built from — a summary is embedded, recalled into later tasks and
+   * read by the curator, so the agent's own prose must not be its source. This
+   * answers *how did this thread actually go*, which is what a task needs in
+   * front of it to answer the next message in it, and where the missing half
+   * was a measured bug.
+   *
+   * Two statements against two tables rather than a UNION, merged here: the
+   * bound is `limit` messages of the *conversation*, so each table is asked for
+   * at most that many and the merge keeps the newest `limit` of what comes
+   * back. Ordering is on `ts`, which is `recent`'s comment's argument
+   * unchanged — the two tables share Slack's clock.
+   *
+   * A thread with no replies from either voice returns nothing, on
+   * `recentInThread`'s terms: an unknown thread is not an error.
+   */
+  transcriptInThread(thread: string, limit: number): readonly ThreadMessage[];
   /**
    * Stores one vector against what it was derived from, replacing any vector
    * already held for that `(kind, ref)`.
@@ -1867,10 +2021,16 @@ export interface MessageReader {
   /**
    * Ranked full-text search over this channel's messages, best match first.
    *
-   * Identical to `MessageStore.search` — same statement, same clamp, same
-   * text-not-an-expression rule. See `toMatchQuery`.
+   * Identical to `MessageStore.search` — same statements, same clamp, same
+   * text-not-an-expression rule, same OR retry, and the same structural
+   * inability to return one of the app's own replies. See `toMatchQuery`.
+   *
+   * `options.excludeThread` is the one thing the proxy passes that it did not
+   * read off a certificate. It cannot widen an answer — the only thing it does
+   * is remove rows — so an agent that asserted the wrong thread would be
+   * narrowing its own results and nothing else. See `SearchOptions`.
    */
-  search(text: string, limit: number): readonly StoredMessage[];
+  search(text: string, limit: number, options?: SearchOptions): readonly StoredMessage[];
   /**
    * How many of this channel's scheduled checks have not fired (#323).
    *
@@ -2061,6 +2221,38 @@ const SEARCH_SQL = `SELECT m.ts, m.thread_ts, m.user_id, m.display_name, m.text,
             LIMIT ?) AS hit
        ON m.id = hit.hit_id
     ORDER BY hit.hit_rank`;
+
+/**
+ * The same search with one thread left out (#522).
+ *
+ * **A second statement rather than a predicate added to the first**, because
+ * the LIMIT has to move and the comment above says why it was where it was. In
+ * `SEARCH_SQL` the limit is inside the subquery so the join runs over `limit`
+ * rows; here a row can be discarded *after* the join, so a limit applied before
+ * the filter would be a limit the excluded rows had already spent — a search
+ * for a word the calling thread happens to use would come back short, or empty,
+ * which is the failure this was written to fix.
+ *
+ * So the subquery is unbounded and the LIMIT is outside it. The cost is that
+ * FTS5 can no longer stop early on a match set larger than `limit`; what bounds
+ * it is the channel's own store, and SQLite evaluates the subquery as a
+ * coroutine, so the ordinary case still stops once the outer limit fills.
+ *
+ * `COALESCE(m.thread_ts, m.ts)` is a thread's identity as `recentInThread`
+ * reads it — the root's own `thread_ts` is NULL — and it is the expression
+ * `message_root` indexes, though nothing here needs that index. Neither side is
+ * ever NULL, so `<>` is total.
+ */
+const SEARCH_EXCLUDING_THREAD_SQL = `SELECT m.ts, m.thread_ts, m.user_id, m.display_name, m.text, m.at
+     FROM message m
+     JOIN (SELECT rowid AS hit_id, rank AS hit_rank
+             FROM message_fts
+            WHERE message_fts MATCH ?
+            ORDER BY rank) AS hit
+       ON m.id = hit.hit_id
+    WHERE COALESCE(m.thread_ts, m.ts) <> ?
+    ORDER BY hit.hit_rank
+    LIMIT ?`;
 
 /**
  * The nearest-neighbour read, joined back to provenance.
@@ -2862,6 +3054,75 @@ function toStoredMessage(row: MessageRow): StoredMessage {
   };
 }
 
+/** The two prepared searches, as either opener holds them. */
+interface SearchStatements {
+  readonly search: StatementSync;
+  readonly searchExcludingThread: StatementSync;
+}
+
+/**
+ * The search itself, shared by both openers.
+ *
+ * Lifted out for `SEARCH_SQL`'s reason one level up: the statement was already
+ * shared so the two processes could not disagree about it, and once a search is
+ * two statements and a retry, the *choice* between them is the part that could
+ * drift. The proxy answers `search_channel_history` and the gateway answers
+ * nothing with this today; they still have to mean the same thing.
+ *
+ * ## The retry
+ *
+ * `toMatchQuery` is an implicit AND, which is what a person means by search and
+ * is wrong for what actually arrives here — a model relaying somebody's
+ * question. #292 made this exact trade for `searchSkills` and the argument
+ * transfers whole: under AND, *what did I do this weekend* requires every one
+ * of those words to appear, so the rows that match are the other questions and
+ * the answer is excluded. Measured against a real channel's store, a natural
+ * question returned only questions.
+ *
+ * So: AND first, because when it finds something it has found the better thing,
+ * and OR only when it found nothing at all. bm25 is what makes the fallback
+ * usable rather than a firehose — a message matching three of the words
+ * outranks one matching `a` — and `limit` cuts the tail. What it does not do is
+ * exclude the tail, which is the same cost `searchSkills` accepted and
+ * `session/recall.ts` records for having no distance cutoff: something weak and
+ * visible beats nothing at all.
+ *
+ * **Nothing new is the same as nothing**, once `excludeThread` is applied
+ * inside each statement rather than after it. That is why the exclusion is SQL
+ * and not a filter over the rows: a conjunctive search whose every hit was in
+ * the calling thread has found the model its own words, and the retry is
+ * exactly what it needs.
+ */
+function runSearch(
+  statements: SearchStatements,
+  text: string,
+  limit: number,
+  options: SearchOptions | undefined
+): readonly StoredMessage[] {
+  const bounded = clampLimit(limit);
+  const exclude = options?.excludeThread;
+
+  const run = (query: string): MessageRow[] =>
+    exclude === undefined
+      ? (statements.search.all(query, bounded) as MessageRow[])
+      : (statements.searchExcludingThread.all(query, exclude, bounded) as MessageRow[]);
+
+  const all = toMatchQuery(text);
+  // Nothing to search for. Answered with no rows rather than an empty MATCH,
+  // which throws — see `toMatchQuery`.
+  if (all === undefined) return [];
+
+  const conjunctive = run(all);
+  if (conjunctive.length > 0) return conjunctive.map(toStoredMessage);
+
+  const any = toAnyMatchQuery(text);
+  // A one-term query builds the same expression both ways, so there is no
+  // second question to ask. Checked on the strings rather than on the term
+  // count, because that is the property that actually makes the retry pointless.
+  if (any === undefined || any === all) return [];
+  return run(any).map(toStoredMessage);
+}
+
 export function openMessageStore(options: MessageStoreOptions): MessageStore {
   const { channel, root, logger } = options;
 
@@ -2927,9 +3188,22 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (ts) DO NOTHING`
     ),
+    // The app's own reply (#523). ON CONFLICT DO NOTHING for `append`'s
+    // reasons exactly: the same event stream delivers it, at least once.
+    appendAgentReply: db.prepare(
+      `INSERT INTO agent_message (ts, thread_ts, user_id, display_name, text, at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (ts) DO NOTHING`
+    ),
     remove: db.prepare(`DELETE FROM message WHERE ts = ?`),
+    // The other half of a mirrored deletion. Two statements rather than one
+    // over a view: a `ts` names a row in at most one of these tables, so both
+    // run and at most one reports a change.
+    removeAgentReply: db.prepare(`DELETE FROM agent_message WHERE ts = ?`),
     replaceText: db.prepare(`UPDATE message SET text = ? WHERE ts = ?`),
+    replaceAgentReplyText: db.prepare(`UPDATE agent_message SET text = ? WHERE ts = ?`),
     search: db.prepare(SEARCH_SQL),
+    searchExcludingThread: db.prepare(SEARCH_EXCLUDING_THREAD_SQL),
     listSkills: db.prepare(LIST_SKILLS_SQL),
     upsertSkill: db.prepare(UPSERT_SKILL_SQL),
     readSkillHash: db.prepare(`SELECT description_hash FROM skill WHERE name = ?`),
@@ -3040,6 +3314,20 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
     recentInThread: db.prepare(
       `SELECT ts, thread_ts, user_id, display_name, text, at
          FROM message
+        WHERE ts = ? OR thread_ts = ?
+        ORDER BY ts DESC
+        LIMIT ?`
+    ),
+    // `recentInThread` against the other table, word for word — the same
+    // predicate, the same order, the same clamp — because the two halves of a
+    // conversation are read the same way and `transcriptInThread` merges them.
+    // A reply of the app's own is never a thread root today, and the `ts = ?`
+    // arm is kept anyway rather than being reasoned away: what selects a thread
+    // is one rule, and a second spelling of it here would be the copy that goes
+    // wrong when a proactive post starts one.
+    agentRepliesInThread: db.prepare(
+      `SELECT ts, thread_ts, user_id, display_name, text, at
+         FROM agent_message
         WHERE ts = ? OR thread_ts = ?
         ORDER BY ts DESC
         LIMIT ?`
@@ -3208,19 +3496,38 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       );
     },
 
+    appendAgentReply(message) {
+      return (
+        Number(
+          statements.appendAgentReply.run(
+            message.ts,
+            message.threadTs,
+            message.userId,
+            message.displayName,
+            message.text,
+            message.at
+          ).changes
+        ) === 1
+      );
+    },
+
     remove(ts) {
-      return Number(statements.remove.run(ts).changes) === 1;
+      // Both, and the `||` is not short-circuited by accident: a `ts` names a
+      // row in at most one table, so running the second after the first found
+      // something would be a wasted statement — and running it only when the
+      // first found nothing is what makes the two tables one namespace to the
+      // caller.
+      if (Number(statements.remove.run(ts).changes) === 1) return true;
+      return Number(statements.removeAgentReply.run(ts).changes) === 1;
     },
 
     replaceText(ts, text) {
-      return Number(statements.replaceText.run(text, ts).changes) === 1;
+      if (Number(statements.replaceText.run(text, ts).changes) === 1) return true;
+      return Number(statements.replaceAgentReplyText.run(text, ts).changes) === 1;
     },
 
-    search(text, limit) {
-      const query = toMatchQuery(text);
-      if (query === undefined) return [];
-      const rows = statements.search.all(query, clampLimit(limit)) as MessageRow[];
-      return rows.map(toStoredMessage);
+    search(text, limit, options) {
+      return runSearch(statements, text, limit, options);
     },
 
     recent(limit) {
@@ -3238,6 +3545,29 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
         clampLimit(limit)
       ) as MessageRow[];
       return rows.map(toStoredMessage).reverse();
+    },
+
+    transcriptInThread(thread, limit) {
+      const bounded = clampLimit(limit);
+      const said = statements.recentInThread.all(thread, thread, bounded) as MessageRow[];
+      const replied = statements.agentRepliesInThread.all(
+        thread,
+        thread,
+        bounded
+      ) as MessageRow[];
+
+      // Each statement asked for the newest `bounded` of its own table, so the
+      // merge sorts at most twice that and keeps the newest `bounded` of the
+      // conversation. Sorting once, ascending, is what makes "keep the newest"
+      // a slice from the end and the return order the same array — `recent`
+      // reverses because SQLite ordered it descending, and here the merge is
+      // ours to order.
+      const merged: ThreadMessage[] = [
+        ...said.map(row => ({ ...toStoredMessage(row), voice: "human" as const })),
+        ...replied.map(row => ({ ...toStoredMessage(row), voice: "agent" as const }))
+      ];
+      merged.sort((left, right) => (left.ts < right.ts ? -1 : left.ts > right.ts ? 1 : 0));
+      return merged.length <= bounded ? merged : merged.slice(merged.length - bounded);
     },
 
     putEmbedding(embedding) {
@@ -3692,9 +4022,9 @@ function readVersion(db: DatabaseSync, file: string): void {
  * header, and answering `null` to all three would turn a broken deployment into
  * a channel that quietly remembers nothing.
  *
- * The caller closes it. It holds one prepared statement and no cache, so it is
- * cheap enough to open per call — which is what the proxy does, rather than
- * pooling handles it would then have to evict.
+ * The caller closes it. It holds a handful of prepared statements and no cache,
+ * so it is cheap enough to open per call — which is what the proxy does, rather
+ * than pooling handles it would then have to evict.
  */
 export function openMessageReader(options: MessageReaderOptions): MessageReader | null {
   const { channel, root, logger } = options;
@@ -3722,7 +4052,10 @@ export function openMessageReader(options: MessageReaderOptions): MessageReader 
     throw error;
   }
 
-  const search = db.prepare(SEARCH_SQL);
+  const searchStatements: SearchStatements = {
+    search: db.prepare(SEARCH_SQL),
+    searchExcludingThread: db.prepare(SEARCH_EXCLUDING_THREAD_SQL)
+  };
 
   // Asked once, at open, rather than caught per call. A store written before
   // #323 has no `scheduled_task` table, and `prepare` against a missing table
@@ -3737,11 +4070,8 @@ export function openMessageReader(options: MessageReaderOptions): MessageReader 
   logger?.log("info", { event: "store_reader_opened", channel, file });
 
   return {
-    search(text, limit) {
-      const query = toMatchQuery(text);
-      if (query === undefined) return [];
-      const rows = search.all(query, clampLimit(limit)) as MessageRow[];
-      return rows.map(toStoredMessage);
+    search(text, limit, options) {
+      return runSearch(searchStatements, text, limit, options);
     },
 
     pendingScheduledTasks() {

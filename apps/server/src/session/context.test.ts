@@ -8,8 +8,8 @@
 import { describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
-import type { StoredMessage } from "@getlibero/memory";
-import { MAX_MESSAGE_CHARS, assembleContext } from "./context.js";
+import type { StoredMessage, ThreadMessage } from "@getlibero/memory";
+import { MAX_AGENT_MESSAGE_CHARS, MAX_MESSAGE_CHARS, assembleContext } from "./context.js";
 import type { HistorySource } from "./context.js";
 import { createNameCache } from "./names.js";
 import type { DisplayNameLookup } from "./names.js";
@@ -62,15 +62,20 @@ function request(partial: Partial<TaskRequest> = {}): TaskRequest {
 /**
  * A store over one array, answering both reads the way a real one would.
  *
- * `recentInThread` applies the store's own predicate — the root matches on
+ * `transcriptInThread` applies the store's own predicate — the root matches on
  * `ts`, replies on `thread_ts` — rather than a simplification, because what
  * several tests below turn on is which of the two reads answered.
+ *
+ * A `StoredMessage` with no voice is a person's, so the ordinary case here
+ * states a channel exactly as it did before #523. A case about the agent's own
+ * replies says `voice: "agent"` on the rows it means.
  */
-function source(history: StoredMessage[]): HistorySource {
+function source(history: Array<StoredMessage | ThreadMessage>): HistorySource {
+  const voiced = history.map(entry => ({ voice: "human" as const, ...entry }));
   return {
-    recent: (limit: number) => history.slice(-limit),
-    recentInThread: (thread: string, limit: number) =>
-      history.filter(entry => entry.ts === thread || entry.threadTs === thread).slice(-limit)
+    recent: (limit: number) => voiced.filter(entry => entry.voice === "human").slice(-limit),
+    transcriptInThread: (thread: string, limit: number) =>
+      voiced.filter(entry => entry.ts === thread || entry.threadTs === thread).slice(-limit)
   };
 }
 
@@ -305,9 +310,9 @@ describe("assembleContext", () => {
             reads += 1;
             return many(10);
           },
-          recentInThread: (): StoredMessage[] => {
+          transcriptInThread: (): ThreadMessage[] => {
             reads += 1;
-            return many(10);
+            return many(10).map(entry => ({ ...entry, voice: "human" as const }));
           }
         },
         names: createNameCache(),
@@ -331,7 +336,7 @@ describe("assembleContext", () => {
             asked.push(limit);
             return [];
           },
-          recentInThread: (_thread: string, limit: number): StoredMessage[] => {
+          transcriptInThread: (_thread: string, limit: number): ThreadMessage[] => {
             asked.push(limit);
             return [];
           }
@@ -479,6 +484,98 @@ describe("assembleContext", () => {
       );
 
       expect(content).toContain("@bob: earlier in the channel");
+    });
+
+    it("says the thread is all that is shown, and does not say it of the channel", async () => {
+      // #522's third mechanism. The thread scoping was invisible to the model:
+      // it read "recent messages in this channel", searched for the rest of the
+      // channel with the words of the question, and concluded there was
+      // nothing. The sentence names no tool — a channel that grants no history
+      // search has nothing to be told to reach for.
+      const inThread = await assemble(conversation(), { request: request({ thread: ROOT }) });
+      expect(inThread).toContain("The messages in this thread, oldest first.");
+      expect(inThread).toContain("The rest of this channel is not shown.");
+
+      const fallback = await assemble(conversation(), {
+        request: request({ thread: "1700000000.000000" })
+      });
+      expect(fallback).toContain("Recent messages in this channel, oldest first.");
+      expect(fallback).not.toContain("The rest of this channel is not shown.");
+    });
+  });
+
+  describe("the agent's own replies", () => {
+    // #523. The thread read carries both voices; the channel read does not, and
+    // the store has no both-voices channel read for it to carry.
+    const ROOT = "1758000000.000100";
+    const reply = (text: string, ts: string): ThreadMessage => ({
+      ...stored("U0BOT", text, { ts, threadTs: ROOT }),
+      voice: "agent"
+    });
+
+    const thread = (): Array<StoredMessage | ThreadMessage> => [
+      stored("U0BOB", "when did we roll back?", { ts: ROOT }),
+      reply("The rollback was at four.", "1758000000.000200"),
+      stored("U0BOB", "before or after the migration?", { ts: "1758000000.000300", threadTs: ROOT })
+    ];
+
+    it("renders a reply attributed and marked, inside the same block", async () => {
+      const content = await assemble(thread(), { request: request({ thread: ROOT }) });
+
+      // Not an `assistant` turn — that is the fake alternation this file
+      // refuses — and not unmarked either, which would have the model read its
+      // own words as something a person in the channel asserted.
+      expect(content).toContain("@U0BOT (you): The rollback was at four.");
+      expect(content).toContain("Lines marked (you) are replies this app posted.");
+    });
+
+    it("keeps the two voices in the order they were said", async () => {
+      const content = await assemble(thread(), { request: request({ thread: ROOT }) });
+
+      expect(content.indexOf("when did we roll back?")).toBeLessThan(
+        content.indexOf("The rollback was at four.")
+      );
+      expect(content.indexOf("The rollback was at four.")).toBeLessThan(
+        content.indexOf("before or after the migration?")
+      );
+    });
+
+    it("says nothing about the marker in a thread the agent has not spoken in", async () => {
+      const content = await assemble(
+        [stored("U0BOB", "anyone about?", { ts: ROOT })],
+        { request: request({ thread: ROOT }) }
+      );
+
+      expect(content).not.toContain("Lines marked (you)");
+    });
+
+    it("cuts a long reply tighter than a long message", async () => {
+      // `max_history_chars` is shared and a reply is several times the length of
+      // the message it answers, so a thread's own answers would crowd out what
+      // people said.
+      const content = await assemble(
+        [
+          stored("U0BOB", "b".repeat(3_000), { ts: ROOT }),
+          reply("a".repeat(3_000), "1758000000.000200")
+        ],
+        { request: request({ thread: ROOT }), bounds: { maxChars: 12_000 } }
+      );
+
+      expect(content).toContain(`@U0BOT (you): ${"a".repeat(MAX_AGENT_MESSAGE_CHARS)}`);
+      expect(content).toContain(`@bob: ${"b".repeat(MAX_MESSAGE_CHARS)}`);
+    });
+
+    it("counts a reply against the message bound like anything else", async () => {
+      // One number, one amount of transcript, however much the agent has been
+      // talking.
+      const content = await assemble(thread(), {
+        request: request({ thread: ROOT }),
+        bounds: { maxMessages: 2 }
+      });
+
+      expect(content).not.toContain("when did we roll back?");
+      expect(content).toContain("The rollback was at four.");
+      expect(content).toContain("before or after the migration?");
     });
   });
 });

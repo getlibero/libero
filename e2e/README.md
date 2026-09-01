@@ -747,6 +747,14 @@ back to answer `search_channel_history`. Grant it with `builtins` on a sheet
 spec; omit the field and the channel does not have the tool, which is the
 refusal fixture.
 
+**The last case in `channel-history.test.ts` is #522, in the shape it was
+reported.** A fact said top-level, a question asked inside a thread, and the
+question relayed to the tool as the model relays one. Both assertions are
+load-bearing in opposite directions: the answer comes back only because a query
+no message holds every word of widens from AND to OR, and the model's own
+question stays out only because the calling thread is excluded — without which
+the widened retry hands it back first, since it matches every term.
+
 **A `search_channel_history` assertion has to be narrowed to the tool result.**
 The seeded turn already carries a `<channel-history>` block of the channel's
 recent messages (#67), so `expect(JSON.stringify(model.seen)).toContain(…)` is
@@ -812,6 +820,11 @@ outlive the run.
 - `src/context.test.ts` — #67, the same shape: `[llm] max_history_messages`
   followed out of a real `channel.toml`, through the shipped schema and
   resolver, into the prompt.
+- `src/thread-transcript.test.ts` — #523, the two write doors and the read
+  between them: this app's own reply arriving on the ordinary `message`
+  subscription, filed through `appendAgentReply`, and assembled into the next
+  task in that thread marked `(you)` — with the second case proving the reply is
+  not reachable through `search_channel_history`, positive control included.
 - `src/memory-curation.test.ts` — #228, the curation write path: the cap and the
   malformed operations refused with the file provably unchanged, the curation
   turn's own tokens on the proxy's meter, and the one case here that documents

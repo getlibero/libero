@@ -26,7 +26,8 @@ const MESSAGE: SlackMessage = {
   ts: "1717171717.000300",
   threadTs: null,
   eventId: "Ev0MESSAGE",
-  mentionsApp: false
+  mentionsApp: false,
+  fromApp: false
 };
 
 /** The same message, in a thread. What a follow-up looks like on the wire. */
@@ -38,23 +39,34 @@ function inThread(partial: Partial<SlackMessage> = {}): SlackMessage {
 function recordingStore(append: (message: StoredMessage) => boolean = () => true): {
   store: MessageStore;
   appended: StoredMessage[];
+  replies: StoredMessage[];
   closes: () => number;
 } {
   const appended: StoredMessage[] = [];
+  const replies: StoredMessage[] = [];
   let closed = 0;
   return {
     appended,
+    replies,
     closes: () => closed,
     store: {
       append: message => {
         appended.push(message);
         return append(message);
       },
+      // The second door (#523). A separate array rather than a flag on the
+      // rows, so a case asserting where a message landed cannot pass by
+      // inspecting a field the ingest could have got wrong in the same way.
+      appendAgentReply: message => {
+        replies.push(message);
+        return true;
+      },
       remove: () => false,
       replaceText: () => false,
       search: () => [],
       recent: () => [],
       recentInThread: () => [],
+      transcriptInThread: () => [],
       // Inert, like `remove` and `search` above: ingestion writes messages and
       // never touches Layer 3, so these exist to satisfy `MessageStore` rather
       // than to be called.
@@ -119,6 +131,71 @@ describe("createMessageIngest", () => {
         at: 1_749_998_700_123
       }
     ]);
+  });
+
+  it("files this app's own reply through the second door, not the first", async () => {
+    // #523. Two doors and not a flag, because the two write different tables —
+    // and what keeps a reply out of search, recall and curation is which table
+    // it landed in.
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+    const ingest = createMessageIngest({ sessions, now: () => 1_749_998_700_123 });
+
+    await ingest({
+      ...MESSAGE,
+      fromApp: true,
+      userId: "U0BOTBOTB",
+      text: "The rollback was at four.",
+      threadTs: "1717171717.000100",
+      ts: "1717171717.000900"
+    });
+
+    expect(recorded.appended).toEqual([]);
+    expect(recorded.replies).toEqual([
+      {
+        ts: "1717171717.000900",
+        threadTs: "1717171717.000100",
+        userId: "U0BOTBOTB",
+        displayName: null,
+        text: "The rollback was at four.",
+        at: 1_749_998_700_123
+      }
+    ]);
+  });
+
+  it("never answers this app's own reply as a follow-up", async () => {
+    // The one condition of the four whose failure has no bottom: a thread the
+    // agent is working in is active by definition, so an agent that answered
+    // itself would stop only when the channel's budget did.
+    const recorded = recordingStore();
+    const sessions = createSessionRegistry({ openStore: () => recorded.store });
+    const routed: string[] = [];
+    const ingest = createMessageIngest({
+      sessions,
+      route: request => {
+        routed.push(request.text);
+        return Promise.resolve({ text: "answered" });
+      }
+    });
+
+    // The thread is made active by a follow-up from a person first, so this
+    // asserts the guard rather than an inactive thread.
+    const thread = "1717171717.000100";
+    sessions
+      .open({ workspace: MESSAGE.teamId, channel: MESSAGE.channelId })
+      .threads.activate(thread, Date.now(), 60_000);
+
+    const reply = await ingest({
+      ...MESSAGE,
+      fromApp: true,
+      userId: "U0BOTBOTB",
+      text: "The rollback was at four.",
+      threadTs: thread,
+      ts: "1717171717.000900"
+    });
+
+    expect(reply).toBeUndefined();
+    expect(routed).toEqual([]);
   });
 
   it("stores the parent thread's ts for a reply and null for a top-level message", async () => {
@@ -375,6 +452,8 @@ describe("createMessageIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        transcriptInThread: () => [],
+        appendAgentReply: () => true,
         putEmbedding: () => {},
         nearest: () => [],
         removeEmbedding: () => false,
@@ -438,6 +517,8 @@ describe("createMessageIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        transcriptInThread: () => [],
+        appendAgentReply: () => true,
         putEmbedding: () => {},
         nearest: () => [],
         removeEmbedding: () => false,
@@ -876,6 +957,8 @@ describe("createRevisionIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        transcriptInThread: () => [],
+        appendAgentReply: () => true,
         putEmbedding: () => {},
         nearest: () => [],
         removeEmbedding: () => false,
@@ -982,6 +1065,8 @@ describe("createRevisionIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        transcriptInThread: () => [],
+        appendAgentReply: () => true,
         putEmbedding: () => {},
         nearest: () => [],
         removeEmbedding: () => false,
@@ -1045,6 +1130,8 @@ describe("createRevisionIngest", () => {
         search: () => [],
         recent: () => [],
         recentInThread: () => [],
+        transcriptInThread: () => [],
+        appendAgentReply: () => true,
         putEmbedding: () => {},
         nearest: () => [],
         removeEmbedding: () => false,

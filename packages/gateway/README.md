@@ -159,6 +159,25 @@ than a reply that never appears.
 follow-up costs a message the user can repeat; mistaking a mention for one costs
 two model turns and two replies in the same thread.
 
+**One bot message survives the `bot_id` drop** (#523): a plain text reply this
+app posted, marked `SlackMessage.fromApp`. Three conditions, each ruling out
+something different. The app's id has to be known, so this fails closed the way
+`mentionsApp` does — and on the cheap side, since a reply lost during startup is
+one line missing from a thread where the other mistake files a third party's
+text under this app's byline. The author has to be this app's own user, which
+leaves "what is another app's bot message worth" the separate question it was.
+And it has to carry no `attachments`, which is how a reply is told from a card:
+approval cards and the live checklist go out as attachments and are
+`chat.update`d as their state moves, so through this door they would arrive as a
+stream of edits to interactive messages. Testing `attachments` rather than
+`blocks` is what makes it work at all — Slack synthesizes a `rich_text` block
+for every plain message, so a `blocks` test would keep nothing.
+
+A consumer owes `fromApp` two things: file it through a door of its own, and
+never answer it. The thread the agent is working in is active by definition, so
+an agent that answered its own reply would stop only when the channel's budget
+did.
+
 A `MessageHandler` returns a `SlackReply | undefined`, and the gateway posts it
 to `message.threadTs` and **never `?? ts`** — so the adapter still cannot start a
 thread on a message nobody addressed it in. An answered message logs `follow_up`,
@@ -190,9 +209,14 @@ Three things it decides:
   `subtype: "tombstone"` when the deleted message was a thread parent with
   replies. Read as an edit, it would overwrite the stored text with Slack's
   placeholder and leave the row standing.
-- **An app's own edit is dropped on `bot_id`** — volume, not correctness. A
-  bot's message is never stored, so its ts matches nothing, but the live
-  checklist edits its card on every step and each one arrives here.
+- **An app's own edit is dropped on `bot_id`** — volume, not correctness, and
+  #523 narrowed what that rests on. It used to rest on "a bot's message is never
+  stored"; this app's own text replies now are. What the drop still saves is all
+  of the work — the live checklist edits its card on every step and each one
+  arrives here — and what it costs is a case that does not happen, since only
+  the posting app can edit its own message and the only thing this one edits is
+  a card. **Deletions are unaffected**: `message_deleted` is read before the
+  check and carries no filter, so a reply deleted in Slack is deleted here.
 
 What is deliberately *not* restated in `revision.ts` is `ALLOWED_SUBTYPES`. The
 store holds exactly the messages that passed it and both operations key on `ts`,

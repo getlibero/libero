@@ -35,8 +35,9 @@
 //
 // ## Why the reader is opened per call
 //
-// `openMessageReader` opens read-only, runs no DDL, and prepares one statement,
-// so it costs less than the audit write and the meter write that bracket it. A
+// `openMessageReader` opens read-only, runs no DDL, and prepares a handful of
+// statements, so it costs less than the audit write and the meter write that
+// bracket it. A
 // pool would buy a fraction of that and cost an eviction policy, a lifetime, and
 // a set of open file handles across every channel the proxy has ever served —
 // which is a much worse thing for the process holding every tool credential to
@@ -242,7 +243,20 @@ export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): Buil
     if (reader === null) return ran(NO_STORE);
 
     try {
-      const hits = reader.search(parsed.data.query, parsed.data.limit);
+      // The calling thread is left out (#522). `call.thread` is asserted by the
+      // agent and read by nothing that decides anything — see its comment in
+      // `@getlibero/schema` for why that is sound here and would not be for a
+      // channel: it removes rows and can add none.
+      //
+      // What it fixes is that the model's own question is in this store by the
+      // time this runs, and shares every word with the query. Under the index's
+      // implicit AND the rows matching all of *what did I do this weekend* are
+      // the other questions, so the answer was excluded outright; and inside a
+      // thread this tool is the only path to the rest of the channel, so it has
+      // to work on the first call.
+      const hits = reader.search(parsed.data.query, parsed.data.limit, {
+        ...(call.thread !== undefined ? { excludeThread: call.thread } : {})
+      });
       return ran(hits.length === 0 ? NO_MATCHES : fit(hits, limits.maxResultChars));
     } finally {
       reader.close();
