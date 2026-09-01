@@ -144,7 +144,15 @@ describe("the thumbprint", () => {
 
   it("changes when any member of the public key does", () => {
     const key = parsed(mintSigningKeyMaterial());
-    const bumped = { ...key.publicJwk, x: `${key.publicJwk.x.slice(0, -1)}A` };
+    // The replacement is chosen against what is there rather than fixed, and
+    // the fixture is asserted before the thumbprint is. A fixed `"A"` passes
+    // for fifteen keys in sixteen and mutates nothing for the sixteenth — the
+    // last character of a 43-character base64url value comes from a set of
+    // sixteen — so it failed in CI having passed everywhere else, which is the
+    // worst way for a fixture to be wrong.
+    const x = key.publicJwk.x;
+    const bumped = { ...key.publicJwk, x: `${x.slice(0, -1)}${x.endsWith("A") ? "B" : "A"}` };
+    expect(bumped.x).not.toBe(x);
     expect(jwkThumbprint(bumped)).not.toBe(key.thumbprint);
   });
 });
