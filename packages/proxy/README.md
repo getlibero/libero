@@ -659,21 +659,41 @@ write requires the master key at write time. That is the heap-dump concession
 `vault.ts` already makes, held longer — not a second copy — and the startup
 `delete` of `PROXY_VAULT_KEY` stays.
 
-**What a stolen store is worth.** The client is public — PKCE and a metadata
-URL, no client secret — so `tokens.enc` plus the master key yields refresh
-tokens exchangeable by anyone who can read the public client id. What bounds
-that: the volume copy alone is worthless without the key; the exchange happens
-at the issuer, observable and revocable, where a stolen vault credential
-spends silently against the service itself; rotation's reuse detection turns a
+**What a stolen store is worth**, re-priced now that sender-constraining is
+whole (#506). The client is public — PKCE and a metadata URL, no client secret —
+so `tokens.enc` plus the master key yields refresh tokens, **and whether those
+tokens are worth anything now depends on one thing: whether the grant is bound.**
+
+*An unbound grant* — an issuer that does not speak DPoP, or a sheet that says
+`off` — is priced exactly as it always was, and every clause below still holds
+for it. The volume copy alone is worthless without the key. The exchange happens
+at the issuer, observable and revocable, where a stolen vault credential spends
+silently against the service itself. Rotation's reuse detection turns a
 stolen-and-used refresh token into a dead grant the operator can see —
-`invalid_grant` on refresh is logged as its own event, a theft signal rather
-than a retry; and the issuer binding stops a mix-up from redirecting the
-exchange. Sender-constraining (DPoP, #260) is what makes a stolen token
-*unusable* rather than merely loud, and as of #505 it reaches the exchange:
-where the sheet and the issuer both allow it, the refresh token is bound to a
-key this store does not hold. **This paragraph is not yet re-priced**, because
-the property is not yet whole — #506 carries proofs to the calls that spend an
-access token, and re-words what a stolen store is worth in the same PR.
+`invalid_grant` on refresh is logged as its own event, a theft signal rather than
+a retry. And the issuer binding stops a mix-up from redirecting the exchange.
+
+*A bound grant* adds the sentence #260 promised: **the exchange is the only path
+from the store to a live credential, and the exchange requires a key the token
+store does not hold.** The refresh token in `tokens.enc` is bound to the proxy's
+signing key, so presenting it takes a proof, and the key is in a third store
+(#504) that `tokens.enc` does not contain. The access token is bound too, so it
+is not a password either: a token lifted from a log line, from a TLS-terminating
+hop, or from a compromised upstream cannot be spent without a proof from the same
+key. The e2e suite asserts that last one against a fake resource server that
+verifies proofs — a stolen token presented as a bearer token, as `DPoP` with no
+proof, and as `DPoP` with a *valid* proof from a key of the thief's own are all
+refused, the third being the one the whole feature exists for.
+
+**What that does not buy, said plainly.** On the encrypted-files backend the
+signing key lives on the same volume under the same master key, so an attacker
+who takes the whole volume *and* the master key takes the key as well and the
+property is gone. What is bought is the narrower theft: one file, a backup, a
+snapshot of the token store, a token seen in transit. On the managed backends the
+key is a separate secret with its own IAM and there is no master key at all, so
+there the separation is enforced by somebody else. `signing-store.ts`'s header
+carries the same account, and #504's section above prices the location decision
+that makes both true.
 
 **The invariant, re-worded.** Tool credentials at rest live in two stores: the
 vault, which the operator writes and the serving process only reads, and the
@@ -891,6 +911,46 @@ itself rather than importing `dpop.ts`'s, so the two agree by being checked
 rather than by construction — and `fake-token-issuer.test.ts` is the file that
 holds the verifier to that, asserting *why* each refusal happened rather than
 that a 400 came back.
+
+### Which upstreams get which scheme, and why (#506)
+
+The exchange decides, per token, and the answer travels with the token rather
+than being re-derived at send time. Three inputs, in this order:
+
+1. **The sheet.** `[mcp_server.auth] dpop` — `prefer` by default, `require` to
+   refuse a fallback, `off` never to prove. A vault credential has no `auth`
+   block at all and is always a bearer token: `Bearer <value>` on the wire,
+   exactly as before, because nothing minted it and there is nothing to bind it
+   to.
+2. **The authorization server.** Under `prefer`, discovery's
+   `dpop_signing_alg_values_supported` decides. An issuer that advertises
+   nothing gets the bearer path byte for byte.
+3. **What the issuer actually answered.** A token is bound only if the exchange
+   came back `token_type: DPoP`. Under `prefer` a bearer answer to a proved
+   request is used as the bearer token it is; under `require` it is a refusal.
+
+So a deployment can be running both at once — one upstream bound, another
+bearer, under one proxy and one signing key — and the `token_minted` log line
+carries `scheme` so an operator can see which is which. That field is also the
+only place a *downgrade* shows: an issuer that quietly stops advertising goes on
+minting tokens, and under `prefer` the line changes from `dpop` to `bearer` with
+nothing else to mark it. An operator who has confirmed their issuer should pin
+`require`, which turns that silence into a failed mint.
+
+**On the wire**, a bound token is `Authorization: DPoP <token>` plus a `DPoP`
+proof carrying this request's method, this request's URL and the `ath` digest of
+the token itself — a fresh proof per call, since `jti` and `iat` are per-request
+claims and a re-sent proof reads as a replay. `DPoP-Nonce` from a resource server
+is remembered for the client's life and retried once, so a nonce-requiring
+upstream costs one challenge per rotation rather than one per call.
+
+**There is one attach point, not two.** `callUpstreamStream` is where a
+credential becomes a header, and the MCP transport reaches it through
+`createGuardedFetch` rather than assembling headers of its own — which is what
+made "the transport's header path gets the same treatment" a no-op rather than a
+second implementation. The same property `injectCredential` has always had holds
+for the proof: it is built from the revealed value inside the one function that
+also scrubs the reply, so there is no second site where a credential is spent.
 
 ### The Secret Manager backend (#483)
 

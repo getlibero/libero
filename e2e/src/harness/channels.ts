@@ -50,7 +50,16 @@ export interface SheetSpec {
    * or fails as `issuer_mismatch`. The schema requires `credential` beside it:
    * that name is where the grant lives in the token store.
    */
-  readonly auth?: { readonly issuer: string; readonly scopes?: readonly string[] };
+  readonly auth?: {
+    readonly issuer: string;
+    readonly scopes?: readonly string[];
+    /**
+     * The sheet's `dpop` posture (#505). Absent leaves the schema's default,
+     * `prefer` — which against an issuer that advertises nothing is the bearer
+     * path, and is what every case written before #506 wants.
+     */
+    readonly dpop?: "prefer" | "require" | "off";
+  };
   readonly tools: readonly SheetTool[];
   readonly serverName?: string;
   /**
@@ -481,7 +490,8 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
                 `  issuer = "${spec.auth.issuer}"`,
                 ...(spec.auth.scopes === undefined
                   ? []
-                  : [`  scopes = [${spec.auth.scopes.map(scope => `"${scope}"`).join(", ")}]`])
+                  : [`  scopes = [${spec.auth.scopes.map(scope => `"${scope}"`).join(", ")}]`]),
+                ...(spec.auth.dpop === undefined ? [] : [`  dpop = "${spec.auth.dpop}"`])
               ]),
           ``,
           tools,

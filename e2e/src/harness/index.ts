@@ -9,6 +9,7 @@ export {
   CANARY_CREDENTIAL,
   OAUTH_CREDENTIAL,
   REFRESH_CANARY,
+  expectBoundSecretReachedUpstream,
   expectCanaryReachedUpstream,
   expectNoCanary,
   expectNoSecret,

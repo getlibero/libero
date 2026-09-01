@@ -34,20 +34,19 @@
 // feature exists for — bind each refresh token to the key that proved for it and
 // refuse a later exchange presenting a different one.
 //
-// It computes the thumbprint, the `htu` and the digest **itself** rather than
-// importing ./dpop.ts's, deliberately. A verifier that shares the maker's
-// arithmetic agrees with it by construction; written from RFC 9449 instead, a
-// disagreement between the two is a test failure rather than a fact nobody
-// learns until an authorization server disagrees in production.
+// The check itself is ./dpop-verifier.ts, shared with the fake resource server
+// (#506) — one verifier for both fakes, written from RFC 9449 and importing
+// nothing from ./dpop.ts, so it can disagree with the maker rather than agreeing
+// with it by construction.
 //
 // `dpopFailures` records *why* it refused, and the tests assert on that rather
 // than on the 400 alone: a fake that rejected a replay because it mis-parsed the
 // header would make a replay test green for the wrong reason.
 
-import { createHash, createPublicKey, randomBytes, verify } from "node:crypto";
-import type { JsonWebKey } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { checkDpopProof } from "./dpop-verifier.js";
 
 export interface FakeTokenRequest {
   /** The parsed form body: grant_type, refresh_token, client_id. */
@@ -158,87 +157,26 @@ export async function startFakeTokenIssuer(
   let issuedNonce: string | undefined;
 
   /**
-   * Verify one proof against the request it arrived on, RFC 9449 §4.3.
+   * Verify one proof against the request it arrived on.
    *
-   * Returns the key's thumbprint, or `null` having recorded why not. Written
-   * from the RFC rather than from ./dpop.ts — see the header — so every value it
-   * compares against is recomputed here: the `htu` from this request's own URL,
-   * the thumbprint from the JWK's own members.
+   * The check itself is ./dpop-verifier.ts, shared with the fake resource
+   * server (#506) so there is one implementation for both fakes to be strict
+   * with. What stays here is this server's own bookkeeping: which refusals it
+   * has recorded, and which `jti` values it has already spent.
    */
-  const verifyProof = (
-    proof: string | undefined,
-    method: string,
-    requestUrl: string
-  ): string | null => {
-    const refuse = (why: string): null => {
-      dpopFailures.push(why);
-      return null;
-    };
-    if (proof === undefined) return refuse("missing_proof");
-
-    const parts = proof.split(".");
-    if (parts.length !== 3) return refuse("not_a_jws");
-    const [encodedHeader, encodedPayload, encodedSignature] = parts as [string, string, string];
-
-    let header: Record<string, unknown>;
-    let payload: Record<string, unknown>;
-    try {
-      header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")) as Record<string, unknown>;
-      payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as Record<string, unknown>;
-    } catch {
-      return refuse("not_json");
-    }
-
-    if (header["typ"] !== "dpop+jwt") return refuse("wrong_typ");
-    if (header["alg"] !== "ES256") return refuse("wrong_alg");
-    const jwk = header["jwk"];
-    if (typeof jwk !== "object" || jwk === null) return refuse("no_jwk");
-    const members = jwk as Record<string, unknown>;
-    // A private key in a proof header is a client leaking its own key; the RFC
-    // forbids it and a verifier that accepted one would never tell anybody.
-    if (members["d"] !== undefined) return refuse("private_key_in_header");
-    if (members["kty"] !== "EC" || members["crv"] !== "P-256") return refuse("wrong_key_type");
-    if (typeof members["x"] !== "string" || typeof members["y"] !== "string") return refuse("malformed_jwk");
-
-    let publicKey;
-    try {
-      publicKey = createPublicKey({ key: jwk as JsonWebKey, format: "jwk" });
-    } catch {
-      return refuse("malformed_jwk");
-    }
-    const signed = verify(
-      "sha256",
-      Buffer.from(`${encodedHeader}.${encodedPayload}`, "utf8"),
-      { key: publicKey, dsaEncoding: "ieee-p1363" },
-      Buffer.from(encodedSignature, "base64url")
+  const verifyProof = (proof: string | undefined, method: string, requestUrl: string): string | null => {
+    const checked = checkDpopProof(
+      {
+        proof,
+        method,
+        url: requestUrl,
+        ...(issuedNonce !== undefined ? { nonce: issuedNonce } : {})
+      },
+      seenJti
     );
-    if (!signed) return refuse("bad_signature");
-
-    if (payload["htm"] !== method) return refuse("wrong_htm");
-    const expectedHtu = new URL(requestUrl);
-    expectedHtu.search = "";
-    expectedHtu.hash = "";
-    if (payload["htu"] !== expectedHtu.toString()) return refuse("wrong_htu");
-
-    const iat = payload["iat"];
-    if (typeof iat !== "number") return refuse("no_iat");
-    if (Math.abs(Math.floor(Date.now() / 1_000) - iat) > 300) return refuse("stale_iat");
-
-    const jti = payload["jti"];
-    if (typeof jti !== "string" || jti.length === 0) return refuse("no_jti");
-    if (seenJti.has(jti)) return refuse("replayed_jti");
-
-    if (issuedNonce !== undefined && payload["nonce"] !== issuedNonce) return refuse("wrong_nonce");
-
-    // RFC 7638 over the required members, in the order the RFC fixes. Written
-    // out here rather than shared with ./signing-key.ts: this is the check a
-    // real server makes, and it has to be able to disagree.
-    const thumbprint = createHash("sha256")
-      .update(`{"crv":"P-256","kty":"EC","x":"${String(members["x"])}","y":"${String(members["y"])}"}`, "utf8")
-      .digest("base64url");
-
-    seenJti.add(jti);
-    return thumbprint;
+    if (checked.ok) return checked.thumbprint;
+    dpopFailures.push(checked.refusal);
+    return null;
   };
 
   let respondToken: ((request: FakeTokenRequest) => FakeIssuerReply | null) | undefined;

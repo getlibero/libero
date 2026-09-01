@@ -69,6 +69,7 @@ import {
   USE_DPOP_NONCE_ERROR,
   createDpopProof
 } from "./dpop.js";
+import type { DpopProofRequest } from "./dpop.js";
 
 /**
  * How the credential is attached.
@@ -108,12 +109,28 @@ export type AuthScheme = "bearer" | "oauth";
  * forcing a second refresh when its rejection was already answered by one:
  * a source holding generation n+1 hands it back rather than minting n+2.
  */
+export interface AcquiredCredential {
+  readonly secret: Secret;
+  readonly generation: number;
+  /**
+   * The key this token is bound to, present exactly when it is (#506).
+   *
+   * A fact about the *token*, not about the source: a sheet saying `prefer`
+   * against an issuer that stopped advertising mints a bearer token from an
+   * OAuth source, and the two live side by side under one binding until each
+   * expires. Present means the call carries `Authorization: DPoP` and a proof;
+   * absent is the bearer path unchanged. Only ./token-engine.ts sets it, and
+   * only from what the exchange answered.
+   */
+  readonly proofKey?: SigningKey;
+}
+
 export interface CredentialSource {
   readonly scheme: AuthScheme;
   /** The credential's team-sheet name, for the redaction marker. */
   readonly name?: string;
-  acquire(): Promise<{ secret: Secret; generation: number } | undefined>;
-  refresh(rejected: number): Promise<{ secret: Secret; generation: number } | null>;
+  acquire(): Promise<AcquiredCredential | undefined>;
+  refresh(rejected: number): Promise<AcquiredCredential | null>;
 }
 
 /**
@@ -258,11 +275,22 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * the response for — and revealing it twice would put a second call site in the
  * tree, which is the thing the grep test forbids.
  */
-export function credentialHeader(scheme: AuthScheme, value: string): readonly [string, string] {
+export function credentialHeader(
+  scheme: AuthScheme,
+  value: string,
+  bound = false
+): readonly [string, string] {
+  // `bound` is the *wire* question and `scheme` is the provenance one, and they
+  // are deliberately two arguments rather than a third `AuthScheme` member. A
+  // vault value can never be bound; an OAuth token is bound only when the
+  // exchange said so (#505), which is a fact about one token rather than about
+  // the source it came from — so folding it into the scheme would make the
+  // enum mean two things and let a caller name a combination that cannot exist.
+  if (bound) return ["authorization", `DPoP ${value}`];
   switch (scheme) {
     case "bearer":
       return ["authorization", `Bearer ${value}`];
-    // A minted access token is a bearer token on the wire (OAuth 2.1's own
+    // An unbound access token is a bearer token on the wire (OAuth 2.1's own
     // framing). What differs is the value's provenance — the token store, not
     // the vault — and provenance is not this function's business.
     case "oauth":
@@ -286,11 +314,20 @@ export function credentialHeader(scheme: AuthScheme, value: string): readonly [s
 export function injectCredential(
   headers: Readonly<Record<string, string>>,
   scheme: AuthScheme,
-  value: string | undefined
+  value: string | undefined,
+  proof?: DpopProofRequest
 ): Record<string, string> {
   if (value === undefined) return { ...headers };
-  const [header, headerValue] = credentialHeader(scheme, value);
-  return { ...headers, [header]: headerValue };
+  const [header, headerValue] = credentialHeader(scheme, value, proof !== undefined);
+  return {
+    ...headers,
+    [header]: headerValue,
+    // The proof is minted here rather than by the caller, for the reason the
+    // authorization header is attached here: both are built from the revealed
+    // value, and a proof made anywhere else would need `ath` computed over a
+    // credential in a second module.
+    ...(proof !== undefined ? { dpop: createDpopProof(proof) } : {})
+  };
 }
 
 /**
@@ -347,7 +384,7 @@ export class UpstreamError extends Error {
  * replays a marker, the server refuses it, and the call fails — which is the
  * right outcome, and none of it is the value.
  */
-const READABLE_RESPONSE_HEADERS = ["content-type", "mcp-session-id"] as const;
+const READABLE_RESPONSE_HEADERS = ["content-type", "mcp-session-id", "dpop-nonce"] as const;
 
 export interface UpstreamRequest {
   /** Absolute URL of the upstream. Comes from the team sheet, never the model. */
@@ -385,6 +422,24 @@ export interface UpstreamRequest {
   readonly scheme: AuthScheme;
   /** Resolved from the vault by the caller. `undefined` for an unauthenticated upstream. */
   readonly secret: Secret | undefined;
+  /**
+   * The key the credential is bound to, where it is one (#506).
+   *
+   * Present turns this call into a DPoP one: `Authorization: DPoP` instead of
+   * `Bearer`, and a proof carrying this request's method, this request's URL and
+   * the `ath` digest of the token being spent. Absent — every vault credential,
+   * and every access token an issuer did not bind — is the bearer path
+   * unchanged, byte for byte.
+   */
+  readonly proofKey?: SigningKey;
+  /**
+   * The resource server's most recent `DPoP-Nonce`, where it has issued one.
+   *
+   * Carried on the request rather than remembered here, because this function
+   * makes one call and the memory belongs to the client that makes many. See
+   * `createGuardedFetch`, which holds it and retries.
+   */
+  readonly dpopNonce?: string;
   /**
    * The credential's team-sheet name, for the redaction marker. Required
    * whenever `secret` is set — a response scrubbed of a value has to say which
@@ -694,7 +749,20 @@ async function callUpstreamStream(request: UpstreamRequest): Promise<UpstreamStr
       ...safeRequestHeaders(request.headers)
     },
     request.scheme,
-    value
+    value,
+    // A proof only where there is both a key and a value to bind it to. The
+    // `ath` claim is the digest of the token this very request spends, which is
+    // what stops a proof lifted off one call from carrying a different token on
+    // the next.
+    request.proofKey !== undefined && value !== undefined
+      ? {
+          key: request.proofKey,
+          method,
+          url: request.url,
+          accessToken: value,
+          ...(request.dpopNonce !== undefined ? { nonce: request.dpopNonce } : {})
+        }
+      : undefined
   );
 
   let response: Response;
@@ -982,6 +1050,20 @@ export interface GuardedFetchOptions {
 export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
   const origin = originOf(options.url);
 
+  /**
+   * The resource server's most recent nonce (#506), kept for the client's life.
+   *
+   * RFC 9449 §9 has the server hand one back and expect it on the calls that
+   * follow. Remembering it is what keeps the cost at one challenge per rotation
+   * rather than one per request: without it, a nonce-requiring upstream would
+   * answer 401 to every first attempt and every call would pay two round trips.
+   *
+   * Not a credential and not secret — it is the server's own value, sent to the
+   * server that issued it — but it is per upstream, which is why it lives in
+   * this closure rather than anywhere shared.
+   */
+  let nonce: string | undefined;
+
   return async (url, init) => {
     const method = (init?.method ?? "GET").toUpperCase();
     if (method !== "POST" && method !== "DELETE") {
@@ -1001,7 +1083,19 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
     // synchronous and single.
     const acquired = await options.source.acquire();
 
-    const call = (secret: Secret | undefined): Promise<UpstreamStreamResponse> =>
+    /**
+     * Take the server's nonce if it sent one.
+     *
+     * On every response rather than only on a challenge, because a resource
+     * server may rotate its nonce on a *successful* call and expect the new one
+     * next time — answering the old one with a 401 the request after.
+     */
+    const remember = (response: UpstreamStreamResponse): void => {
+      const issued = response.headers[DPOP_NONCE_HEADER];
+      if (issued !== undefined && issued.length > 0) nonce = issued;
+    };
+
+    const call = (acquired: AcquiredCredential | undefined): Promise<UpstreamStreamResponse> =>
       callUpstreamStream({
         url: String(url),
         method,
@@ -1010,7 +1104,9 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
         ...(init?.signal != null ? { signal: init.signal } : {}),
         headers: headersToRecord(init?.headers),
         scheme: options.source.scheme,
-        secret,
+        secret: acquired?.secret,
+        ...(acquired?.proofKey !== undefined ? { proofKey: acquired.proofKey } : {}),
+        ...(nonce !== undefined ? { dpopNonce: nonce } : {}),
         ...(options.source.name !== undefined ? { credentialName: options.source.name } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
         ...(bound !== undefined ? { maxBodyBytes: bound } : {}),
@@ -1018,7 +1114,20 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
         ...(options.fetch !== undefined ? { fetch: options.fetch } : {})
       });
 
-    let response = await call(acquired?.secret);
+    let response = await call(acquired);
+    remember(response);
+
+    // The nonce challenge, and it comes *before* the 401 retry below because it
+    // is not a credential failure: the token is fine and the proof was merely
+    // missing the server's current nonce. One retry with the same token and a
+    // fresh proof — `jti` and `iat` are per-request claims, so a re-sent proof
+    // would read as a replay — and if that is refused too, the 401 path below
+    // takes it as any other rejection.
+    if (response.status === 401 && acquired?.proofKey !== undefined && nonce !== undefined) {
+      await response.body?.cancel().catch(() => undefined);
+      response = await call(acquired);
+      remember(response);
+    }
 
     // The one retry on a 401, and it sits below the SDK on purpose: a
     // connect-time rejection and a mid-call one take the identical path.
@@ -1034,7 +1143,8 @@ export function createGuardedFetch(options: GuardedFetchOptions): GuardedFetch {
         // rather than dropped, which releases the socket instead of leaving it
         // held until the transport times it out.
         await response.body?.cancel().catch(() => undefined);
-        response = await call(fresh.secret);
+        response = await call(fresh);
+        remember(response);
       }
     }
 
