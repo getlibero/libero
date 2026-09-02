@@ -147,7 +147,10 @@ export async function startFakeSecretManager(): Promise<FakeSecretManager> {
     const path = url.pathname;
     const secretsPrefix = /^\/v1\/projects\/[^/]+\/secrets$/;
     const secretPath = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+)$/;
-    const accessPath = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+)\/versions\/latest:access$/;
+    // `latest` or a version number (#529). The signing key is read by number,
+    // because it is the one secret that is written once and never rotated —
+    // see `SecretManagerClient.accessFirst`.
+    const accessPath = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+)\/versions\/(latest|\d+):access$/;
     const addPath = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):addVersion$/;
     const destroyPath = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+)\/versions\/(\d+):destroy$/;
 
@@ -199,7 +202,15 @@ export async function startFakeSecretManager(): Promise<FakeSecretManager> {
         send(404, { error: { code: 404, status: "NOT_FOUND" } });
         return;
       }
-      const live = [...secret.versions].reverse().find(version => !version.destroyed);
+      const wantedVersion = accessed[2] ?? "latest";
+      // `latest` is the newest live version; a number is that version and only
+      // that one, absent when it was never written or has been destroyed.
+      const live =
+        wantedVersion === "latest"
+          ? [...secret.versions].reverse().find(version => !version.destroyed)
+          : secret.versions.find(
+              version => version.version === Number(wantedVersion) && !version.destroyed
+            );
       if (live === undefined) {
         // What the real API answers for a secret whose every version is
         // destroyed: a 400, not a 404. Both mean "no value under this name".

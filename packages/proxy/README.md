@@ -832,6 +832,42 @@ there is no `rotate` and no second key — rotating this key kills every live
 grant, so it is an operator act (remove the backing, re-grant) rather than a
 method the serving process holds.
 
+**Two handles that both mint have to converge, and on GCP they did not** (#529).
+This is the one place the three backends differ in more than their spelling, so
+it is worth being exact about why.
+
+The file backend has `O_EXCL` and the AWS one has a `CreateSecret` that carries
+the first value, so on both of them create-if-absent is a single atomic call and
+the loser reads back the winner. Secret Manager has no such call — `create` makes
+an empty secret and `addVersion` fills it — so the write is two calls with a gap
+in the middle, and two processes that both found nothing could each write, each
+re-read before the other's write landed, and each adopt its own key. Worse than
+a disagreement: `addVersion` is replace-not-stack, so the second write *destroyed*
+the first's version, and the loser went on signing with material the store no
+longer held. The contract's "adopts one key when two handles ask" caught it about
+once in twenty-five runs.
+
+Two changes close it, and the second is the one that makes convergence
+structural rather than likely. The create **arbitrates where it can**: a secret
+that already existed is one somebody else owns, so its key is read rather than
+written over, which is `custody-aws.ts`'s posture reached the long way round. And
+the signing secret is **written with `appendVersion` and read with `accessFirst`**
+— stack rather than replace, version 1 rather than latest — so even when both
+processes write, both read the same key back and neither version is destroyed
+under its holder. That is licensed by a property of this secret alone: it is the
+one thing in the deployment that never rotates, so version 1 *is* the key for the
+life of the secret. Nothing else may be read that way — the vault entries and the
+grant secrets are replaced on every `set` and every refresh, and reading their
+first version would answer with a credential the deployment retired.
+
+**What is left, priced rather than closed.** `secretmanager.secrets.create` is a
+project permission an operator may withhold, creating the secret by hand instead;
+there nobody wins a call nobody is allowed to make, so both processes fall
+through to the write. They still converge on version 1 — that is the point of the
+pair — and what remains is one inert version that nothing reads and nothing adds
+to. Closing even that would mean waiting on a clock, which buys a narrower race
+at the price of a timing dependency in every suite that opens a store.
+
 **What the key can do and what it cannot.** `SigningKey` is `Secret`'s posture
 one turn further: where a credential leaves through the one guarded `reveal()`,
 this leaves through nothing at all. The `KeyObject` is a closure variable, no
@@ -842,7 +878,9 @@ it is a digest of the public members, it is inside every proof this proxy sends,
 and it is the only fact that makes a stranded grant legible.
 
 The conformance suite gained nine cases for all this, so every backend inherits
-the storage semantics rather than re-deriving them — including the one that
+the storage semantics rather than re-deriving them — and #529 is the argument for
+having written them: the case that caught the GCP race is a *contract* case, so
+the backend that could not meet it was found by a suite it did not own — including the one that
 matters most, that a minted key is in **neither of the other two stores**. A
 backend that quietly kept it as a vault entry would pass every other case and
 make #260's claim vacuous. What is deliberately *not* asserted there is anything
