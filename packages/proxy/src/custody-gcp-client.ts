@@ -148,10 +148,37 @@ export interface SecretManagerClient {
   list(labels: Readonly<Record<string, string>>): Promise<readonly SecretSummary[]>;
   /** The latest enabled version's payload, or `null` when there is none. */
   access(secretId: string): Promise<string | null>;
+  /**
+   * Version **1**'s payload, or `null` when there is none (#529).
+   *
+   * `access`'s counterpart for a secret that is written once and never
+   * rotated, which is exactly one of them: the DPoP signing key. The pair below
+   * is what makes a lost race converge — `appendVersion` stacks, this reads the
+   * bottom of the stack, and every process therefore adopts the same key
+   * whatever order the writes landed in.
+   *
+   * It must not be used for anything that rotates. The vault entries and the
+   * grant secrets are replaced on every `set` and every refresh, and reading
+   * their first version would answer with a credential the deployment retired.
+   */
+  accessFirst(secretId: string): Promise<string | null>;
   /** Create with labels. `false` when it already existed. */
   create(secretId: string, labels: Readonly<Record<string, string>>): Promise<boolean>;
   /** Add a version and destroy its predecessor — replace-not-stack. */
   addVersion(secretId: string, value: string): Promise<void>;
+  /**
+   * Add a version and destroy nothing — stack, not replace (#529).
+   *
+   * `addVersion`'s counterpart, and the *destroy* is the whole difference. Two
+   * processes that both mint a signing key must not have one's version
+   * destroyed under it: the loser would go on signing with a key the store no
+   * longer holds, and no grant bound to it could be diagnosed. Stacking leaves
+   * both, and `accessFirst` is what makes them agree on which one counts.
+   *
+   * The cost is one inert version in the rare case that both write, which
+   * nothing reads and which no later write adds to.
+   */
+  appendVersion(secretId: string, value: string): Promise<void>;
   /** `false` when the secret was not there. */
   deleteSecret(secretId: string): Promise<boolean>;
   /** Drop the cached access token. Calls fail afterwards. */
@@ -174,6 +201,60 @@ export function createSecretManagerClient(options: GcpClientOptions): SecretMana
 
   const requireOpen = (): void => {
     if (closed) throw new GcpCustodyError("unreachable");
+  };
+
+  /**
+   * One version's payload, whichever version the caller named.
+   *
+   * The two public reads differ in that one string and in nothing else, so they
+   * share this rather than each holding a copy of the status list — which is
+   * where the two would drift, and drifting means one of them turning a
+   * destroyed version into a failure while the other keeps calling it absence.
+   */
+  const accessVersion = async (secretId: string, version: string): Promise<string | null> => {
+    requireOpen();
+    const signal = AbortSignal.timeout(timeoutMs);
+    // 404 is a secret that is not there; 400 is one whose every version has
+    // been destroyed, which `remove` and `addVersion` both leave behind. Both
+    // are "no value under this name" rather than a failure. A named version
+    // that was never written answers the same way, which is what makes
+    // `accessFirst` on a secret holding nothing yet an absence rather than an
+    // error the caller has to tell apart.
+    const body = await authorized(
+      signal,
+      `/v1/${parent}/secrets/${encodeURIComponent(secretId)}/versions/${version}:access`,
+      { method: "GET" },
+      [200, 400, 404]
+    );
+    const parsed = parseJson(body) as { payload?: { data?: unknown }; error?: unknown };
+    if (parsed.error !== undefined) return null;
+    const data = parsed.payload?.data;
+    if (data === undefined) return null;
+    if (typeof data !== "string") throw new GcpCustodyError("malformed_response");
+    return decodeBase64(data);
+  };
+
+  /**
+   * The write both add-version verbs make, and the returned name is the version
+   * it landed as.
+   *
+   * Shared so that `appendVersion` and `addVersion` differ in exactly one
+   * thing — whether the predecessor is destroyed afterwards — rather than in a
+   * payload encoding or an accepted status that could quietly diverge.
+   */
+  const addOneVersion = async (secretId: string, value: string): Promise<string> => {
+    requireOpen();
+    const signal = AbortSignal.timeout(timeoutMs);
+    const secret = `/v1/${parent}/secrets/${encodeURIComponent(secretId)}`;
+    const body = await authorized(
+      signal,
+      `${secret}:addVersion`,
+      json({ payload: { data: Buffer.from(value, "utf8").toString("base64") } }),
+      [200]
+    );
+    const name = (parseJson(body) as { name?: unknown }).name;
+    if (typeof name !== "string") throw new GcpCustodyError("malformed_response");
+    return name;
   };
 
   /**
@@ -306,25 +387,9 @@ export function createSecretManagerClient(options: GcpClientOptions): SecretMana
       throw new GcpCustodyError("too_large");
     },
 
-    async access(secretId): Promise<string | null> {
-      requireOpen();
-      const signal = AbortSignal.timeout(timeoutMs);
-      // 404 is a secret that is not there; 400 is one whose every version has
-      // been destroyed, which `remove` and `addVersion` both leave behind. Both
-      // are "no value under this name" rather than a failure.
-      const body = await authorized(
-        signal,
-        `/v1/${parent}/secrets/${encodeURIComponent(secretId)}/versions/latest:access`,
-        { method: "GET" },
-        [200, 400, 404]
-      );
-      const parsed = parseJson(body) as { payload?: { data?: unknown }; error?: unknown };
-      if (parsed.error !== undefined) return null;
-      const data = parsed.payload?.data;
-      if (data === undefined) return null;
-      if (typeof data !== "string") throw new GcpCustodyError("malformed_response");
-      return decodeBase64(data);
-    },
+    access: (secretId): Promise<string | null> => accessVersion(secretId, "latest"),
+
+    accessFirst: (secretId): Promise<string | null> => accessVersion(secretId, "1"),
 
     async create(secretId, labels): Promise<boolean> {
       requireOpen();
@@ -341,18 +406,12 @@ export function createSecretManagerClient(options: GcpClientOptions): SecretMana
       return !(parseJson(body) as { error?: unknown }).error;
     },
 
+    appendVersion: (secretId, value): Promise<void> => addOneVersion(secretId, value).then(() => {}),
+
     async addVersion(secretId, value): Promise<void> {
-      requireOpen();
+      const name = await addOneVersion(secretId, value);
       const signal = AbortSignal.timeout(timeoutMs);
       const secret = `/v1/${parent}/secrets/${encodeURIComponent(secretId)}`;
-      const body = await authorized(
-        signal,
-        `${secret}:addVersion`,
-        json({ payload: { data: Buffer.from(value, "utf8").toString("base64") } }),
-        [200]
-      );
-      const name = (parseJson(body) as { name?: unknown }).name;
-      if (typeof name !== "string") throw new GcpCustodyError("malformed_response");
 
       // Replace-not-stack, as add-version / destroy-old. Only the predecessor
       // needs destroying: every version before it was destroyed by its own

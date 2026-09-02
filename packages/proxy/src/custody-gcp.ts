@@ -309,15 +309,32 @@ export async function openGcpCustody(
     }
   };
 
-  // One secret, created on the first proof and never written over. `create`
-  // then a re-access rather than a blind `addVersion`: two processes that both
-  // found none converge on whichever version landed last, so neither ends up
-  // signing with a key the store does not hold. The residual race is this
-  // backend's usual one, priced the same — a re-grant, never a wrong answer.
+  // One secret, created on the first proof and never written over — and **read
+  // and written by version, which is what makes that true** (#529).
+  //
+  // This is the one secret in the deployment that never rotates, and the whole
+  // convergence argument rests on it. RFC 9449 binds every token to the key, so
+  // replacing it strands every grant; `SigningKeyBacking` accordingly has no
+  // replace verb, and rotating means deleting this secret and re-granting.
+  // Because nothing rotates it, **version 1 is the key, for the life of the
+  // secret** — so `accessFirst` and `appendVersion` are a pair, and two
+  // processes that both minted converge on the same key whatever order their
+  // writes landed in.
+  //
+  // The version was where the previous shape went wrong, and it is worth
+  // recording rather than quietly repairing. It read `latest` and wrote with
+  // `addVersion`, which destroys its predecessor — so two processes that both
+  // found none did *not* "converge on whichever version landed last", as this
+  // comment used to claim: whichever re-read before the other's write returned
+  // its own key, and the other's `addVersion` then destroyed that key's
+  // version. The loser went on signing with a key the store no longer held,
+  // which is the one thing the old comment promised could not happen, and it
+  // failed the contract's "adopts one key when two handles ask" about once in
+  // twenty-five runs.
   const signingId = secretId(prefix, "signing", SIGNING_NAME);
   const signing = openSigningKeyStore(
     {
-      read: async () => (signingId === null ? null : client.access(signingId)),
+      read: async () => (signingId === null ? null : client.accessFirst(signingId)),
 
       async create(material: string): Promise<string> {
         if (signingId === null) throw new GcpCustodyError("malformed_response");
@@ -330,22 +347,44 @@ export async function openGcpCustody(
         // write fails against a secret that is not there — and `not found` sends
         // an operator to look at the network when the answer is IAM.
         let refused: GcpCustodyError | undefined;
+        let created = false;
         try {
-          await client.create(signingId, labelsFor(prefix, "signing"));
+          created = await client.create(signingId, labelsFor(prefix, "signing"));
         } catch (error) {
           if (!(error instanceof GcpCustodyError) || error.reason !== "denied") throw error;
           refused = error;
         }
-        const existing = await client.access(signingId);
-        if (existing !== null) return existing;
+
+        // **The create is the arbiter where it can be**, which is what
+        // ./custody-aws.ts has always done — `CreateSecret` there carries the
+        // first value, so it is one call. Here it is two, and this is the half
+        // of it that matters: a secret that already existed is one somebody
+        // else owns, so its key is read rather than written over. The read is
+        // skipped when we created the secret ourselves, because a secret this
+        // call just made holds no version by construction.
+        if (!created) {
+          const existing = await client.accessFirst(signingId);
+          if (existing !== null) return existing;
+        }
+
+        // Reached in three ways, and the write is right in all of them. We
+        // created the secret. Or the operator did, and nothing has filled it —
+        // the denied-create shape above, where no arbiter exists because
+        // nobody wins a call nobody is allowed to make. Or a racer created it
+        // microseconds ago and has not written yet, which is the residual and
+        // is why the write **stacks**: both keys survive, `accessFirst` picks
+        // the same one for both processes, and the loser's version is inert
+        // rather than a key with nothing behind it. Closing that window
+        // instead would mean waiting on a clock, which buys a narrower race at
+        // the price of a timing dependency in every suite that opens a store.
         try {
-          await client.addVersion(signingId, material);
+          await client.appendVersion(signingId, material);
         } catch (error) {
           throw refused ?? error;
         }
-        const stored = await client.access(signingId);
-        // A secret that holds no live version immediately after one was added
-        // is a store this process cannot reason about; failing closed costs a
+        const stored = await client.accessFirst(signingId);
+        // A secret that holds no version 1 immediately after one was added is a
+        // store this process cannot reason about; failing closed costs a
         // retried exchange, where guessing costs a stranded grant.
         if (stored === null) throw new GcpCustodyError("malformed_response");
         return stored;

@@ -248,3 +248,151 @@ describe("what the gcp backend does that the contract does not ask", () => {
     custody.close();
   });
 });
+
+// #529. The contract's "adopts one key when two handles ask" is a conformance
+// case and it failed here about once in twenty-five runs, which is a suite
+// saying something true and saying it too quietly to act on. These are the
+// properties that make the race impossible rather than unlikely, each asserted
+// on its own so that a regression names which one went.
+//
+// They are backend-specific by nature: the file backend has `O_EXCL` and the
+// AWS one has a `CreateSecret` that carries the first value, so neither has a
+// version to choose between. Only this backend writes in two calls.
+describe("what makes the gcp signing key converge when two handles mint (#529)", () => {
+  const open = async () => {
+    const fake = await startFakeSecretManager();
+    fakes.push(fake);
+    const prefix = `t${Math.random().toString(36).slice(2, 10)}`;
+    return { fake, options: { project: PROJECT, prefix, endpoints: fake.endpoints } };
+  };
+
+  /** The signing secret's id, spelled as `custody-gcp.ts` spells it. */
+  const signingSecret = (prefix: string): string => `${prefix}-signing-dpop`;
+
+  /** The operator's own act: the secret exists and holds no version. */
+  const precreate = async (fake: FakeSecretManager, prefix: string): Promise<void> => {
+    const created = await fetch(
+      `${fake.endpoints.secretManager}/v1/projects/${PROJECT}/secrets?secretId=${signingSecret(prefix)}`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${fake.accessToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ replication: { automatic: {} }, labels: { "libero-kind": "signing" } })
+      }
+    );
+    expect(created.status).toBe(200);
+  };
+
+  /** A version written behind the store's back, as a second process would. */
+  const appendVersion = async (
+    fake: FakeSecretManager,
+    prefix: string,
+    value: string
+  ): Promise<void> => {
+    const added = await fetch(
+      `${fake.endpoints.secretManager}/v1/projects/${PROJECT}/secrets/${signingSecret(prefix)}:addVersion`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${fake.accessToken}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          payload: { data: Buffer.from(value, "utf8").toString("base64") }
+        })
+      }
+    );
+    expect(added.status).toBe(200);
+  };
+
+  // The read is by number, and this is the property the convergence rests on:
+  // whatever a racer wrote afterwards, every process answers with version 1.
+  it("reads version 1, so a version written after it cannot change the answer", async () => {
+    const { fake, options } = await open();
+    const custody = await openGcpCustody(options);
+    const minted = await custody.signing.signingKey();
+    custody.close();
+
+    // A second process's key, landing after the first. Under `latest` this is
+    // the value every later open would adopt, and every grant bound to the
+    // first would be stranded with no record of why.
+    await appendVersion(fake, options.prefix, "a second process's material");
+
+    const reopened = await openGcpCustody(options);
+    expect((await reopened.signing.signingKey()).thumbprint).toBe(minted.thumbprint);
+    reopened.close();
+
+    expect(fake.requests.some(path => path.endsWith("/versions/1:access"))).toBe(true);
+    expect(
+      fake.requests.some(
+        path => path.includes(signingSecret(options.prefix)) && path.endsWith("/versions/latest:access")
+      )
+    ).toBe(false);
+  });
+
+  // The arbiter, where there is one. A secret that already existed is one
+  // somebody else owns, so the second handle adopts rather than writing — which
+  // is what keeps the stacked version above a rarity rather than the norm.
+  it("writes nothing when it lost the create", async () => {
+    const { fake, options } = await open();
+    const first = await openGcpCustody(options);
+    const minted = await first.signing.signingKey();
+
+    const before = fake.requests.filter(path => path.endsWith(":addVersion")).length;
+    const second = await openGcpCustody(options);
+    expect((await second.signing.signingKey()).thumbprint).toBe(minted.thumbprint);
+    expect(fake.requests.filter(path => path.endsWith(":addVersion")).length).toBe(before);
+
+    first.close();
+    second.close();
+  });
+
+  // The residual, **driven rather than waited for**. The conformance case caught
+  // this by luck about once in twenty-five runs, which is why the barrier is
+  // here: both handles are held at the write until both have arrived, so the
+  // interleaving that used to strand a key is the one this case always takes.
+  //
+  // The two arrive there at all because the secret is pre-created and empty —
+  // the operator's shape — so neither wins the create and neither finds a
+  // version. Convergence is then by construction rather than by ordering: both
+  // versions survive the write, and version 1 is what both read back.
+  it("adopts one key when both handles write, because both read version 1", async () => {
+    const { fake, options } = await open();
+    await precreate(fake, options.prefix);
+
+    let arrived = 0;
+    let release = (): void => {};
+    const both = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    // Wrapping `fetch` rather than gating the fake: the seam already exists for
+    // exactly this, and a knob on the fake would be a second way to express one
+    // test's ordering.
+    const held: typeof globalThis.fetch = async (input, init) => {
+      if (String(input).endsWith(":addVersion")) {
+        arrived += 1;
+        if (arrived === 2) release();
+        await both;
+      }
+      return fetch(input, init);
+    };
+    const gated = { ...options, fetch: held };
+
+    const a = await openGcpCustody(gated);
+    const b = await openGcpCustody(gated);
+    const [first, second] = await Promise.all([a.signing.signingKey(), b.signing.signingKey()]);
+
+    expect(second.thumbprint).toBe(first.thumbprint);
+    // Both wrote — the control. Without it this asserts convergence on a race
+    // that did not happen, which is the one way it could pass for the wrong
+    // reason, and it is how the conformance case was passing most days.
+    expect(arrived).toBe(2);
+    expect(
+      fake.requests.filter(
+        path => path.includes(signingSecret(options.prefix)) && path.endsWith(":addVersion")
+      ).length
+    ).toBe(2);
+    // And neither key was destroyed under its holder. Version 2 is inert:
+    // nothing reads it, and nothing later adds to it.
+    expect(fake.requests.some(path => path.endsWith(":destroy"))).toBe(false);
+
+    a.close();
+    b.close();
+  });
+});
