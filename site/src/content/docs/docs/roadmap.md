@@ -258,10 +258,19 @@ against a live project and a live account is
 is gated on cloud accounts nobody has yet, which is the same gated-on-deployments shape as the
 data-gated items, and it is scheduled below rather than left to the disposition pass.
 
-**v0.8 — richer tools, wider adoption.** Tool results stop being a string — image, audio and
-resource content relayed to the model ([#160](https://github.com/getlibero/libero/issues/160)) — a
-channel gets a persona ([#270](https://github.com/getlibero/libero/issues/270)), and OAuth upstreams
-get sender-constrained tokens ([#260](https://github.com/getlibero/libero/issues/260)).
+**v0.8.0 — richer tools, wider adoption. Shipped.** Tool results stopped being a string: text,
+image, audio and embedded resource cross as themselves, vouched by the proxy against the schema the
+agent parses them with and degraded to the placeholder — never to base64 inlined in text — wherever
+a provider or a protocol revision cannot take them
+([#160](https://github.com/getlibero/libero/issues/160)). A channel got a persona, appended to the
+standing region and never substituted for it
+([#270](https://github.com/getlibero/libero/issues/270)). And OAuth upstreams got sender-constrained
+tokens — RFC 9449 DPoP, with the signing key in a third store on the custody seam, so theft of the
+token store plus the master key yields credentials a thief cannot present
+([#260](https://github.com/getlibero/libero/issues/260)). Beside the three, the published CLI was
+found unable to start at 0.6.0 and 0.7.0 and fixed with a check that executes what is packed
+([#514](https://github.com/getlibero/libero/issues/514)), and the compose file stopped shipping
+`:latest` for all three images ([#519](https://github.com/getlibero/libero/issues/519)).
 
 #270 was written as *a name, an icon and a persona*, and **landed as the persona alone**; the other
 two were declined rather than deferred, which is the second arm of the milestone's own clause rather
@@ -287,6 +296,23 @@ gateway reads its display name from the same `auth.test` that tells it its user 
 who renames the app in Slack renames the agent. That was not in the issue at all, and without it the
 release would have shipped a model still introducing itself as Libero under somebody else's avatar,
 which is the half-delivered version of the thing #270 was for.
+
+**Two of the three landed wider than the milestone's wording rather than narrower**, and the
+difference is worth naming beside #270's. #260's definition of done said the exchange should
+require "a key the store does not hold", which named no store; where that key lives turned out to
+be the whole of whether the sentence means anything, so it went into a *third* store on the custody
+seam — not the token store, which would make the claim vacuous, and not the vault, whose design is
+that the serving process cannot write to it. And #160's clause about restating the result bound for
+multi-part results was answered by one bound over the whole result rather than a second
+byte-denominated one beside it, with `result_bytes` changing what it measures rather than gaining a
+sibling.
+
+**The release also carries a fix to the two before it.** `@getlibero/cli` 0.6.0 and 0.7.0 could not
+start from npm at all — two writers of one filename, published in the order that lost — and the
+gates that should have caught it were both blind: the tarball check ran before the step that
+clobbered the file, and its one grep could never fail. That is a self-hoster's report against the
+published artifacts rather than anything this repository's own suite found, which is the shape of
+bug wider adoption is supposed to surface, arriving in the release named for it.
 
 **v0.9 — close-out.** The data-gated items, now buildable against pilot data (#283, and #284 if the
 numbers say so); the managed custody backends proven against a live GCP project and AWS account
