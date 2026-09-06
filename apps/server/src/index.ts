@@ -50,12 +50,19 @@ import {
   channelsRootFromEnv,
   completionConfigFromEnv,
   embeddingConfigFromEnv,
+  heartbeatPostWindowMsFromEnv,
+  lifecycleIntervalMsFromEnv,
+  maxOpenProposalsFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
+  recallLimitFromEnv,
+  recallMaxCharsFromEnv,
   sharedSkillsRootFromEnv,
+  skillsMaxCharsFromEnv,
   slackTokensFromEnv,
   storeRootFromEnv
 } from "./env.js";
+import { READ_MAX_LIMIT } from "@getlibero/memory";
 import { createChannelLister } from "./session/channels.js";
 import { createMemoryFileOpener } from "./session/memory.js";
 import { createQueryEmbedder } from "./session/embed.js";
@@ -125,6 +132,39 @@ const embeddings = embedding === null ? null : createEmbeddingClient(embedding.c
 // A per-channel client certificate is resolved on first use — one channel with
 // no certificate is that channel's problem, not the process's.
 const transport = createProxyTransport(proxyConfigFromEnv(process.env));
+
+// The six figures a deployment may move (#539, from #465's inventory). Every
+// one is optional and absent means the module's own constant, so a deployment
+// that sets none of them behaves exactly as it did before this landed.
+//
+// Read here with the rest of the environment rather than at each construction
+// site, per this file's own contract: all of it, before anything connects.
+const recallLimit = recallLimitFromEnv(process.env);
+const recallMaxChars = recallMaxCharsFromEnv(process.env);
+const skillsMaxChars = skillsMaxCharsFromEnv(process.env);
+const maxOpenProposals = maxOpenProposalsFromEnv(process.env);
+const lifecycleIntervalMs = lifecycleIntervalMsFromEnv(process.env);
+const heartbeatPostWindowMs = heartbeatPostWindowMsFromEnv(process.env);
+
+// The one figure with a bound that is not ours to set. `nearest` clamps to
+// `READ_MAX_LIMIT`, so a larger number is not refused and does not do what it
+// says either — said here rather than thrown in `env.ts`, because refusing it
+// would be this repository deciding an operator may not ask, and silence would
+// be the surprise `[llm] max_history_messages`' own ceiling exists to prevent.
+//
+// `apps/runner/src/env.ts` makes this move first: `ceilingIsEmpty` is exported
+// so `index.ts` can log the ceiling in force, "what makes optionality safe
+// rather than quiet".
+if (recallLimit !== undefined && recallLimit > READ_MAX_LIMIT) {
+  logger.log("warn", {
+    event: "recall_limit_clamped",
+    // The effective figure, not the one asked for: an operator reading this
+    // already has their own env file, and what they cannot see anywhere else is
+    // what the process is actually doing with it.
+    count: READ_MAX_LIMIT,
+    reason: "AGENT_RECALL_LIMIT is above the message store's maximum rows per read"
+  });
+}
 
 // Aborts every task in flight when the process is asked to stop. The loop
 // reports `cancelled` rather than throwing, and a cancelled task posts nothing
@@ -263,12 +303,19 @@ const embed = createQueryEmbedder({
 // Semantic recall (#232). It embeds nothing of its own since #292 — what it
 // takes is the vector above, so a deployment with no embedding provider gets a
 // null and no summaries, which is #230's stated degradation unchanged.
-const recall = createRecall({ logger });
+const recall = createRecall({
+  logger,
+  ...(recallLimit === undefined ? {} : { limit: recallLimit }),
+  ...(recallMaxChars === undefined ? {} : { maxChars: recallMaxChars })
+});
 
 // Skill retrieval (#292). No embedding client and no meter: the vector arrives
 // as an argument, and with none it retrieves on full text alone, which the team
 // sheet says is the behaviour rather than a setting.
-const skillRecall = createSkillRecall({ logger });
+const skillRecall = createSkillRecall({
+  logger,
+  ...(skillsMaxChars === undefined ? {} : { maxChars: skillsMaxChars })
+});
 
 // How a channel's `skills/` directory is opened. Hoisted out of the dependency
 // object below because two things need it now: the router, per task, and the
@@ -322,6 +369,7 @@ const embedSkills = createSkillEmbedSweep({
 // fresh for a clock as it is for a reply, and a channel with no sheet ages
 // nothing.
 const lifecycleSkills = createSkillLifecyclePass({
+  ...(lifecycleIntervalMs === undefined ? {} : { intervalMs: lifecycleIntervalMs }),
   files: skills,
   settings: async channel => {
     const settings = await sheets(channel);
@@ -359,6 +407,7 @@ const proposals = createSkillProposalsOpener({ storeRoot, channelsRoot, logger }
 // inside `skills/` whose name parses is a retrievable skill, and a proposal
 // quoting two playbooks must never become a third.
 const curateSkills = createSkillCuratePass({
+  ...(maxOpenProposals === undefined ? {} : { maxOpenProposals }),
   completion,
   sharedSkills,
   files: skills,
@@ -551,6 +600,9 @@ const fireRule = (post: ProactivePoster): AmbientRuleFire =>
   });
 
 const { gateway, ambient } = createServer({
+  // #539. Absent keeps `HEARTBEAT_POST_WINDOW_MS`; on this interface rather
+  // than resolved above because the poster is built inside `createServer`.
+  ...(heartbeatPostWindowMs === undefined ? {} : { heartbeatPostWindowMs }),
   // The one thing this process supplies that a test does not: the real socket
   // and the real Web API client, built from the two tokens. `onFatal` stays
   // here with them, because what it does is exit.

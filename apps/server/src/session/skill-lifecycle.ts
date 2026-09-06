@@ -180,6 +180,15 @@ export interface SkillLifecycleOptions {
   now?: () => number;
   /** Cancels in-flight work when the process is stopping. */
   signal?: AbortSignal;
+  /**
+   * How often one channel's pass may run, defaulting to
+   * `LIFECYCLE_INTERVAL_MS`. `AGENT_SKILL_LIFECYCLE_INTERVAL_MS` (#539).
+   *
+   * The spec calls this a weekly job, and what makes any interval at or below
+   * that satisfy it is idempotence — so the figure is a cost decision, and the
+   * operator serving the channels is the one who pays it.
+   */
+  intervalMs?: number;
 }
 
 /**
@@ -272,6 +281,7 @@ const RANK: Record<SkillStatus, number> = { active: 0, stale: 1, archived: 2 };
 export function createSkillLifecyclePass(options: SkillLifecycleOptions): SkillLifecyclePass {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
+  const intervalMs = options.intervalMs ?? LIFECYCLE_INTERVAL_MS;
 
   // When each channel last ran. ./skill-embed.ts's map and its reasons, with one
   // of its own: this is the only state the job keeps in memory, so a restart
@@ -283,7 +293,7 @@ export function createSkillLifecyclePass(options: SkillLifecycleOptions): SkillL
   return async (channel, store) => {
     const startedAt = now();
     const previous = lastRanAt.get(channel);
-    if (previous !== undefined && startedAt - previous < LIFECYCLE_INTERVAL_MS) return 0;
+    if (previous !== undefined && startedAt - previous < intervalMs) return 0;
     // Stamped before the work rather than after, so a slow pass does not let a
     // second one start behind it.
     lastRanAt.set(channel, startedAt);

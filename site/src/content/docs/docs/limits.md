@@ -32,6 +32,38 @@ That rule is real and it is not sufficient. It cleanly separates machine-grown f
 it does not answer what to do when the operator is *both* author and setter. The **Decision** column
 below is where that third answer gets applied, figure by figure.
 
+## What an operator may set, and why nothing here has a ceiling
+
+Eleven figures are settable per deployment (#539) — the seven marked
+**deployment-configurable** below, plus the four the proxy already carried. They
+are environment variables in the `AGENT_*` and `PROXY_*` contracts each service
+already documents, rather than a new file to mount: the environment is
+per-process by construction, so a limit the proxy enforces is one the agent has
+no path to, without that having to be arranged.
+
+**Absent is the whole default.** Every one keeps the figure its module argues
+for, so a deployment that sets none of them is the deployment it was before they
+existed, and `""` is a setting removed rather than a setting of zero.
+
+**None of them has an upper bound, and that was a decision rather than an
+oversight.** #539 asked for a ceiling on each. The answer is that a ceiling this
+repository invents is advice wearing a boundary's clothes: the operator owns the
+heap, the bill and the context window, and a figure chosen here against one
+imagined workspace is exactly what #465 objected to in the first place. So the
+whole of what is enforced is that a value is a positive whole number, because
+`AGENT_RECALL_LIMIT=0` and `AGENT_RECALL_LIMIT=none` are both an operator trying
+to say something and neither means what silently continuing would do.
+
+There is one real bound in the whole set and it is not ours. `AGENT_RECALL_LIMIT`
+is clamped by the message store, which returns at most `READ_MAX_LIMIT` rows for
+any one read — so a larger number is not refused and does not do what it says
+either. The process logs `recall_limit_clamped` at boot and uses 200. Refusing
+it would be deciding an operator may not ask; saying nothing would be the
+surprise `[llm] max_history_messages`' own ceiling exists to prevent.
+
+`libero doctor` reports any of the eleven that is set to something that is not a
+positive whole number, one restart before the service would refuse to start.
+
 ## How to read a row
 
 The **Figure** column carries the source text, not a reading of it — `15 * 60 * 1000` rather than
@@ -130,9 +162,9 @@ load-bearing; an optional knob for a number nobody has yet had a reason to chang
 | --- | --- | --- |
 | `apps/server/src/session/context.ts:MAX_MESSAGE_CHARS` | `2_000` | **Fixed.** One human message's contribution to history. This process's rather than the sheet's: it exists so a single pasted stack trace cannot spend a channel's whole assembly budget on one author. |
 | `apps/server/src/session/context.ts:MAX_AGENT_MESSAGE_CHARS` | `1_000` | **Fixed.** Tighter than a person's, deliberately, since `max_history_chars` is shared (#523). |
-| `apps/server/src/session/recall.ts:RECALL_LIMIT` | `5` | **Candidate for deployment configuration.** Summaries one task starts with. "A retrieved summary that was not relevant is not neutral, it is a distractor." The figure is sized against a corpus, and a deployment with a much larger one has no way to say so. |
-| `apps/server/src/session/recall.ts:RECALL_MAX_CHARS` | `6_000` | **Candidate for deployment configuration.** The recall block's total. A constant rather than a sheet field because what it bounds is what this process assembles; whether a *deployment* may raise it is the open question. |
-| `apps/server/src/session/skill-recall.ts:SKILLS_MAX_CHARS` | `12_000` | **Candidate for deployment configuration.** Three times `SKILL_BODY_MAX_CHARS`, and deliberately not the sum of three maxima. |
+| `apps/server/src/session/recall.ts:RECALL_LIMIT` | `5` | **Deployment-configurable** as `AGENT_RECALL_LIMIT` (#539). "A retrieved summary that was not relevant is not neutral, it is a distractor" — but the figure is sized against a corpus, and the size of one is a deployment fact. The message store returns at most `READ_MAX_LIMIT` rows for any one read, so a larger value is logged at boot rather than refused or silently taken. |
+| `apps/server/src/session/recall.ts:RECALL_MAX_CHARS` | `6_000` | **Deployment-configurable** as `AGENT_RECALL_MAX_CHARS` (#539). Still not a sheet field: what it bounds is what this process assembles, and a channel raising it would spend a budget it shares. |
+| `apps/server/src/session/skill-recall.ts:SKILLS_MAX_CHARS` | `12_000` | **Deployment-configurable** as `AGENT_SKILLS_MAX_CHARS` (#539). Three times `SKILL_BODY_MAX_CHARS`, and deliberately not the sum of three maxima. The per-channel caps beside it stay `[skills]` fields. |
 | `apps/server/src/session/fired-turn.ts:MAX_FIRED_TURN_MESSAGES` | `40` | **Fixed.** Messages a fired turn reads. Re-exported as `MAX_CHECK_MESSAGES` rather than restated, because "two numbers for one quantity is how one of them gets read as the other". |
 | `apps/server/src/session/heartbeat.ts:MAX_HEARTBEAT_MESSAGES` | `40` | **Fixed.** Messages one heartbeat evaluation reads. |
 | `apps/server/src/session/summarize.ts:SWEEP_INTERVAL_MS` | `5 * 60 * 1000` | **Fixed.** How often one channel may sweep for quiet threads. |
@@ -141,15 +173,15 @@ load-bearing; an optional knob for a number nobody has yet had a reason to chang
 | `apps/server/src/session/ambient.ts:AMBIENT_RESCAN_MS` | `60_000` | **Fixed.** The ceiling on the sleep before re-reading the channels directory, matching `heartbeat_every_minutes`' floor of one. |
 | `apps/server/src/session/ambient.ts:MAX_CONCURRENT_HEARTBEATS` | `4` | **Fixed.** After a restart every enabled channel takes the same first-sight instant and therefore comes due together. |
 | `apps/server/src/session/skill-curate.ts:CURATE_INTERVAL_MS` | `24 * 60 * 60 * 1000` | **Fixed.** What this bounds is how often a team may be asked to read something. |
-| `apps/server/src/session/skill-curate.ts:MAX_OPEN_PROPOSALS` | `3` | **Candidate for deployment configuration.** Counted from the directory rather than from the index. A larger team plausibly holds more open proposals than a three-person one. |
+| `apps/server/src/session/skill-curate.ts:MAX_OPEN_PROPOSALS` | `3` | **Deployment-configurable** as `AGENT_MAX_OPEN_PROPOSALS` (#539). Counted from the directory rather than the index. What it bounds is how much unread review a team is carrying, which is a fact about the team. |
 | `apps/server/src/session/skill-curate.ts:MAX_PROPOSAL_PRUNES_PER_PASS` | `8` | **Fixed.** Orphaned rows cleared per pass. |
 | `apps/server/src/session/skill-embed.ts:MAX_SKILLS_PER_EMBED_PASS` | `10` | **Fixed.** `[skills] max_skills` defaults to a hundred, so a full library is worked through over ten passes. |
-| `apps/server/src/session/skill-lifecycle.ts:LIFECYCLE_INTERVAL_MS` | `6 * 60 * 60 * 1000` | **Candidate for deployment configuration.** The spec calls this a weekly job; what makes any interval at or below that satisfy it is idempotence. |
+| `apps/server/src/session/skill-lifecycle.ts:LIFECYCLE_INTERVAL_MS` | `6 * 60 * 60 * 1000` | **Deployment-configurable** as `AGENT_SKILL_LIFECYCLE_INTERVAL_MS` (#539). The spec calls this a weekly job; idempotence is what makes any interval at or below that satisfy it, so the figure is a cost decision and the operator pays it. |
 | `apps/server/src/session/skill-lifecycle.ts:MAX_SKILL_STATUS_WRITES_PER_PASS` | `20` | **Fixed.** What it bounds is neither calls nor tokens but writes to files a team owns. |
 | `apps/server/src/session/registry.ts:SESSION_IDLE_MS` | `30 * 60_000` | **Fixed**, and coupled — see [figures that are two figures](#figures-that-are-two-figures). Moving it down means moving `follow_up_window_seconds`' ceiling down (#66). |
 | `apps/server/src/session/sheet.ts:DEFAULT_FOLLOW_UP_WINDOW_MS` | `900_000` | **Sheet field.** The fallback a sheet that says nothing inherits for `follow_up_window_seconds`. |
 | `apps/server/src/session/names.ts:NAME_CACHE_MAX` | `500` | **Fixed.** Distinct users one session remembers. |
-| `apps/server/src/proactive/proactive.ts:HEARTBEAT_POST_WINDOW_MS` | `4 * 60 * 60 * 1000` | **Candidate for deployment configuration.** "Too short kills the feature and too long only costs a finding." The rate limit on unbidden posts is deliberately not a sheet field, and `[ambient]`'s own comment refuses one by name — but a deployment is not a channel. |
+| `apps/server/src/proactive/proactive.ts:HEARTBEAT_POST_WINDOW_MS` | `4 * 60 * 60 * 1000` | **Deployment-configurable** as `AGENT_HEARTBEAT_POST_WINDOW_MS` (#539). "Too short kills the feature and too long only costs a finding." `[ambient]`'s comment refuses the *sheet field* by name and that refusal stands — a channel tightening its cadence must not loosen its own throttle. The throttle stays in the posting surface, reachable from no sheet. An operator is not a channel. |
 | `apps/server/src/checklist/checklist.ts:MIN_EDIT_INTERVAL_MS` | `1_000` | **Fixed.** It exists to stay inside Slack's rate limits, which belong to the app rather than to any channel, and a sheet able to lower it would be one channel spending an allowance the whole workspace shares. |
 | `apps/server/src/index.ts:SHUTDOWN_DRAIN_MS` | `8_000` | **Fixed.** Not how long a task can take. Sized against one spend call and one Slack edit, under the `stop_grace_period: 20s` that `deploy/docker-compose.yml` sets. |
 | `packages/agent/src/loop/loop.ts:MAX_TOOL_ERROR_CHARS` | `2048` | **Fixed.** A tool that returns a megabyte of stack trace should not become a megabyte of context. |
@@ -183,7 +215,7 @@ may write, not what a channel may spend.
 
 | Limit | Figure | Decision and why |
 | --- | --- | --- |
-| `packages/schema/src/schedule-task.ts:SCHEDULED_TASK_MAX_PENDING` | `10` | **Candidate for deployment configuration**, and #465's named example. "A channel with ten checks outstanding has a scheduling problem rather than a tooling one, and every one of them was clicked through by a human — the cap is the backstop behind that click, not the primary control." |
+| `packages/schema/src/schedule-task.ts:SCHEDULED_TASK_MAX_PENDING` | `10` | **Deployment-configurable** as `PROXY_MAX_PENDING_SCHEDULED_TASKS` (#539), and #465's named example. "The cap is the backstop behind that click, not the primary control." `packages/schema` is untouched and still reads no environment: the cap counts rows in a store rather than checking a shape, so the schema states the figure and `builtin-dispatcher.ts` reads it. |
 | `packages/schema/src/schedule-task.ts:SCHEDULED_TASK_MIN_LEAD_MINUTES` | `5` | **Fixed.** Below it the design cannot honour the time it promised: the clock rescans at most once a minute and a create is held for a human's click, so a two-minute lead is a check already late when approved. |
 | `packages/schema/src/schedule-task.ts:SCHEDULED_TASK_MAX_HORIZON_MINUTES` | `10_080` | **Fixed.** A week, which is `answer_after_idle_minutes`' own roof and the same judgement. |
 | `packages/schema/src/schedule-task.ts:SCHEDULED_TASK_MAX_PROMPT_CHARS` | `500` | **Fixed.** Enough to say what to check and what would count as worth mentioning, and short enough that a human reading it on an approval card reads all of it. Under `AMBIENT_FINDING_MAX_CHARS`, deliberately. |

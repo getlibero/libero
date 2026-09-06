@@ -53,7 +53,13 @@ export interface LogFields {
    * fixes are three different acts: publish the file, raise the cap or shorten
    * the skill, and mount the root. Thread summaries:
    * "summarized", "summary_failed", "summary_unusable", "summary_embed_failed".
-   * Recall: "recalled", "recall_hit", "recall_failed", "query_embedding_failed"
+   * Recall: "recalled", "recall_hit", "recall_failed", "query_embedding_failed",
+   * and "recall_limit_clamped" — a boot line, not a task one: the operator set
+   * `AGENT_RECALL_LIMIT` above what the store will return for any one read
+   * (#539), so `count` is what they actually get. It is a `warn` rather than a
+   * refusal because deciding an operator may not ask is not this repository's
+   * business, and silence is the surprise `[llm] max_history_messages`' own
+   * ceiling exists to prevent.
    * — and the summaries' middle two are deliberately distinct words, because
    * "the provider is down" and "the model cannot follow the schema" want
    * different answers from whoever is reading. "recall_hit" is one line per

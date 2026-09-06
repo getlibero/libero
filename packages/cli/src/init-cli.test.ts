@@ -53,6 +53,21 @@ const OPENAI = ["OPENAI_API_KEY", "OPENAI_BASE_URL"];
 // variables never reach.
 const LITELLM = ["LITELLM_ANTHROPIC_API_KEY", "LITELLM_OPENAI_API_KEY"];
 
+/** In the order `template()` writes them: the proxy's, then the agent's. */
+const TUNABLES = [
+  "PROXY_MAX_PENDING_SCHEDULED_TASKS",
+  "PROXY_MAX_RESPONSE_BYTES",
+  "PROXY_MAX_UPSTREAM_CONCURRENCY",
+  "PROXY_MAX_SANDBOX_CONCURRENCY",
+  "PROXY_UPSTREAM_TIMEOUT_MS",
+  "AGENT_RECALL_LIMIT",
+  "AGENT_RECALL_MAX_CHARS",
+  "AGENT_SKILLS_MAX_CHARS",
+  "AGENT_MAX_OPEN_PROPOSALS",
+  "AGENT_SKILL_LIFECYCLE_INTERVAL_MS",
+  "AGENT_HEARTBEAT_POST_WINDOW_MS"
+];
+
 /** Written whatever the flags say, and after the completion keys. */
 const ALWAYS_AFTER_KEYS = [
   "AGENT_EMBEDDING_PROVIDER",
@@ -60,7 +75,13 @@ const ALWAYS_AFTER_KEYS = [
   "AGENT_EMBEDDING_API_KEY",
   "AGENT_EMBEDDING_BASE_URL",
   "PROXY_VAULT_KEY",
-  "PROXY_PRICE_TABLE"
+  "PROXY_PRICE_TABLE",
+  // The limits a deployment may move (#539). Blank, every one — blank means the
+  // figure the code already argues for, so an operator who reads past this block
+  // and changes nothing has changed nothing. They are scaffolded rather than
+  // omitted because a variable nobody can see is a variable nobody knows they
+  // have, which is `[memory] enabled`'s argument applied to an env file.
+  ...TUNABLES
 ];
 
 const RUNNER = [

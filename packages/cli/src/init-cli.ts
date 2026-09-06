@@ -660,6 +660,45 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
       ],
       vars: [{ name: "PROXY_PRICE_TABLE", value: "" }]
     },
+    {
+      comment: [
+        "Capacity, and what a task assembles (#539). Every one of these is",
+        "optional: leave it blank and the figure the code already argues for",
+        "applies, so a deployment that sets none of them behaves exactly as one",
+        "that predates them. Blank is a setting removed, not a setting of zero.",
+        "",
+        "None has a ceiling. You own the heap, the bill and the context window,",
+        "and a cap invented here would be advice wearing a boundary's clothes.",
+        "What is refused is a value that is not a positive whole number at all.",
+        "",
+        "None is a team sheet field either, and that split is the decision: what",
+        "a channel spends on its own task is [llm]'s business, while how much",
+        "memory this deployment lends a response, how many rows a task pulls, and",
+        "how often the agent speaks unbidden are yours.",
+        "",
+        "AGENT_RECALL_LIMIT is the one with a bound that is not ours to set: the",
+        "message store returns at most 200 rows for any one read, so a larger",
+        "number is logged at boot and 200 is used.",
+        "",
+        "The four PROXY_ ones ship real figures in docker-compose.yml and are",
+        "blank here, so an empty line keeps what that file ships. Raising",
+        "PROXY_MAX_SANDBOX_CONCURRENCY means lowering RUNNER_MAX_MEMORY_MB, or",
+        "the other way about: their product is what the host has to hold."
+      ],
+      vars: [
+        { name: "PROXY_MAX_PENDING_SCHEDULED_TASKS", value: "" },
+        { name: "PROXY_MAX_RESPONSE_BYTES", value: "" },
+        { name: "PROXY_MAX_UPSTREAM_CONCURRENCY", value: "" },
+        { name: "PROXY_MAX_SANDBOX_CONCURRENCY", value: "" },
+        { name: "PROXY_UPSTREAM_TIMEOUT_MS", value: "" },
+        { name: "AGENT_RECALL_LIMIT", value: "" },
+        { name: "AGENT_RECALL_MAX_CHARS", value: "" },
+        { name: "AGENT_SKILLS_MAX_CHARS", value: "" },
+        { name: "AGENT_MAX_OPEN_PROPOSALS", value: "" },
+        { name: "AGENT_SKILL_LIFECYCLE_INTERVAL_MS", value: "" },
+        { name: "AGENT_HEARTBEAT_POST_WINDOW_MS", value: "" }
+      ]
+    },
     ...only(options.profiles.includes("runner"), {
       comment: [
         "The code-execution sandbox (#368), which you asked for and which still",

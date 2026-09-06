@@ -298,3 +298,114 @@ export function embeddingConfigFromEnv(
       );
   }
 }
+
+/**
+ * A positive whole number, or nothing at all.
+ *
+ * **The first numbers this file has ever read, and the exception wants
+ * arguing rather than assuming.** `session/registry.ts` states the rule they
+ * bend: "this process's environment contract is that everything in it is
+ * required and load-bearing; an optional knob for a number nobody has yet had a
+ * reason to change cuts against it." Read exactly, that is a bar and not a ban
+ * — it refuses a knob for a number *nobody has had a reason to change*. #465 is
+ * the reason, arrived at by asking which of the figures bounding a deployment
+ * an operator may move and finding that the answer for every one of these was
+ * "none, short of a fork".
+ *
+ * So the contract is not "every variable is required" but the sentence
+ * immediately above `sharedSkillsRootFromEnv`: the test for whether an absence
+ * may be optional is whether the process still does the thing it exists to do.
+ * Absent, every one of these keeps the figure the module already argued for, so
+ * a deployment that sets nothing changes nothing.
+ *
+ * `apps/runner/src/env.ts` is the shape being copied, down to why `""` is
+ * absent and why zero is refused rather than ignored: `AGENT_RECALL_LIMIT=0`
+ * and `AGENT_RECALL_LIMIT=none` are both an operator trying to say something,
+ * and neither means what silently continuing would do. It is copied rather than
+ * shared, because sharing would mean one service importing another's package —
+ * the edge that file refuses in its own header.
+ *
+ * **No ceiling on any of them**, which is `PROXY_MAX_RESPONSE_BYTES`' argument
+ * one process over: capping the principal who owns the heap, the bill and the
+ * context window would be advice rather than a boundary. The one figure with a
+ * real bound is `AGENT_RECALL_LIMIT`, and that bound is the store's rather than
+ * this file's — `index.ts` says so at boot instead of refusing it here.
+ */
+function positiveInteger(env: Env, name: string): number | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    // Echoed, the way `completionConfigFromEnv` echoes a bad provider name: a
+    // count is not a secret, and the number an operator typed is the whole of
+    // what they need to see to fix it.
+    throw new Error(`server: ${name} is not a positive whole number: ${raw}`);
+  }
+  return value;
+}
+
+/**
+ * How many thread summaries one task may open with: `AGENT_RECALL_LIMIT`.
+ *
+ * `RECALL_LIMIT`'s five is sized against a corpus — "a retrieved summary that
+ * was not relevant is not neutral, it is a distractor" — and the size of the
+ * corpus is a deployment fact this repository cannot know. A workspace with
+ * years of threads and one with a fortnight's are not the same question.
+ *
+ * Not a sheet field, and that split is the same one `PROXY_MAX_RESPONSE_BYTES`
+ * draws: what a channel may spend on its own task is `[llm]`'s business, and
+ * how many rows this process pulls out of a store on every task is the
+ * operator's.
+ */
+export function recallLimitFromEnv(env: Env): number | undefined {
+  return positiveInteger(env, "AGENT_RECALL_LIMIT");
+}
+
+/** How many characters the recall block may reach: `AGENT_RECALL_MAX_CHARS`. */
+export function recallMaxCharsFromEnv(env: Env): number | undefined {
+  return positiveInteger(env, "AGENT_RECALL_MAX_CHARS");
+}
+
+/** How many characters retrieved skills may reach: `AGENT_SKILLS_MAX_CHARS`. */
+export function skillsMaxCharsFromEnv(env: Env): number | undefined {
+  return positiveInteger(env, "AGENT_SKILLS_MAX_CHARS");
+}
+
+/**
+ * How many merge proposals may wait at once: `AGENT_MAX_OPEN_PROPOSALS`.
+ *
+ * What `MAX_OPEN_PROPOSALS` bounds is how much unread review a team is carrying,
+ * and three is sized against a small one. A larger team clears them faster and
+ * has no way to say so.
+ */
+export function maxOpenProposalsFromEnv(env: Env): number | undefined {
+  return positiveInteger(env, "AGENT_MAX_OPEN_PROPOSALS");
+}
+
+/**
+ * How often the skill lifecycle job may run, in milliseconds:
+ * `AGENT_SKILL_LIFECYCLE_INTERVAL_MS`.
+ *
+ * The spec calls this a weekly job and `LIFECYCLE_INTERVAL_MS` is six hours;
+ * what makes any interval at or below a week satisfy it is idempotence. An
+ * operator serving many channels is the one who knows what that costs them.
+ */
+export function lifecycleIntervalMsFromEnv(env: Env): number | undefined {
+  return positiveInteger(env, "AGENT_SKILL_LIFECYCLE_INTERVAL_MS");
+}
+
+/**
+ * How long between unbidden posts, in milliseconds:
+ * `AGENT_HEARTBEAT_POST_WINDOW_MS`.
+ *
+ * `[ambient]`'s own comment refuses the *sheet field* version of this and the
+ * refusal stands: "nothing named `posts_per_hour` goes on this block", because
+ * a channel able to tighten its cadence must not thereby loosen its own
+ * throttle. **An operator is not a channel.** The throttle stays where that
+ * comment puts it, enforced in the posting surface and reachable by no sheet;
+ * what moves is who may size it, and the deployment paying for the posts is
+ * better placed than a figure chosen once against one workspace's taste.
+ */
+export function heartbeatPostWindowMsFromEnv(env: Env): number | undefined {
+  return positiveInteger(env, "AGENT_HEARTBEAT_POST_WINDOW_MS");
+}

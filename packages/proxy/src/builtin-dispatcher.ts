@@ -88,6 +88,24 @@ export interface BuiltinDispatcherOptions {
   readonly storeRoot: string;
   readonly logger: Logger;
   /**
+   * How many unfired checks one channel may hold, defaulting to
+   * `SCHEDULED_TASK_MAX_PENDING`. `PROXY_MAX_PENDING_SCHEDULED_TASKS` (#539).
+   *
+   * An option here rather than a second reading of the environment, and
+   * `packages/schema` is untouched: the cap is enforced in this dispatcher
+   * because it counts rows in a store rather than checking a shape, so the
+   * schema states the figure and never reads it. That is what lets this move
+   * without the base package learning about deployments.
+   *
+   * Nothing model-facing changes with it. The cap appears in neither
+   * `SCHEDULE_TASK_INPUT_SCHEMA` nor the tool description, and
+   * `refusalMessage`'s sentence for `schedule_full` carries no number — so a
+   * deployment that raises it does not have to re-state it anywhere the model
+   * reads. The lead and horizon are not like this and are not configurable:
+   * both are baked into that JSON Schema and into its description string.
+   */
+  readonly maxPendingScheduledTasks?: number;
+  /**
    * Injected so a test states the clock rather than faking timers.
    *
    * It exists for `schedule_task` and for nothing else: an offset from the model
@@ -223,6 +241,8 @@ function argumentFault(error: ZodError): string {
 export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): BuiltinDispatcher {
   const { storeRoot, logger } = options;
   const now = options.now ?? Date.now;
+  const maxPendingScheduledTasks =
+    options.maxPendingScheduledTasks ?? SCHEDULED_TASK_MAX_PENDING;
 
   const searchChannelHistory = (call: ResolvedToolCall, limits: CallLimits): Dispatch => {
     const parsed = SearchChannelHistoryArguments.safeParse(call.arguments);
@@ -322,7 +342,7 @@ export function createBuiltinDispatcher(options: BuiltinDispatcherOptions): Buil
       // No store is no tickets, which is the same answer the reader gives for a
       // file whose writer predates the table.
       const pending = reader?.pendingScheduledTasks() ?? 0;
-      if (pending >= SCHEDULED_TASK_MAX_PENDING) return refused({ reason: "schedule_full" });
+      if (pending >= maxPendingScheduledTasks) return refused({ reason: "schedule_full" });
     } finally {
       reader?.close();
     }

@@ -1,13 +1,20 @@
 import { describe, it } from "node:test";
+import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import {
   channelsRootFromEnv,
+  heartbeatPostWindowMsFromEnv,
+  lifecycleIntervalMsFromEnv,
+  maxOpenProposalsFromEnv,
   completionConfigFromEnv,
   embeddingConfigFromEnv,
   modelFromEnv,
   proxyConfigFromEnv,
+  recallLimitFromEnv,
+  recallMaxCharsFromEnv,
   requiredEnv,
   sharedSkillsRootFromEnv,
+  skillsMaxCharsFromEnv,
   slackTokensFromEnv,
   storeRootFromEnv
 } from "./env.js";
@@ -348,5 +355,52 @@ describe("embeddingConfigFromEnv", () => {
     expect(() =>
       embeddingConfigFromEnv({ ...CONFIGURED, AGENT_EMBEDDING_PROVIDER: "voyage-native" })
     ).toThrow(/voyage-native/);
+  });
+});
+
+
+// #539: the first numbers this process reads. `each` because the six differ
+// only by variable name and the rule they share is the point — a sixth parser
+// that quietly diverged is exactly what one case per function would hide.
+describe("the deployment's numeric limits", () => {
+  interface Parser {
+    readonly name: string;
+    readonly parse: (env: Record<string, string | undefined>) => number | undefined;
+  }
+  const parsers: Parser[] = [
+    { name: "AGENT_RECALL_LIMIT", parse: recallLimitFromEnv },
+    { name: "AGENT_RECALL_MAX_CHARS", parse: recallMaxCharsFromEnv },
+    { name: "AGENT_SKILLS_MAX_CHARS", parse: skillsMaxCharsFromEnv },
+    { name: "AGENT_MAX_OPEN_PROPOSALS", parse: maxOpenProposalsFromEnv },
+    { name: "AGENT_SKILL_LIFECYCLE_INTERVAL_MS", parse: lifecycleIntervalMsFromEnv },
+    { name: "AGENT_HEARTBEAT_POST_WINDOW_MS", parse: heartbeatPostWindowMsFromEnv }
+  ];
+
+  each(parsers)("$name reads a positive whole number", ({ name, parse }) => {
+    expect(parse({ [name]: "42" })).toBe(42);
+  });
+
+  // The load-bearing half of "a deployment that sets nothing changes nothing":
+  // absent and blank both mean the module's own constant, so no caller has to
+  // distinguish them and a commented-out line is a setting removed.
+  each(parsers)("$name treats absent and empty alike, as no opinion", ({ name, parse }) => {
+    expect(parse({})).toBeUndefined();
+    expect(parse({ [name]: "" })).toBeUndefined();
+  });
+
+  // Zero and a word are both an operator trying to say something, and neither
+  // means what silently continuing would do. `apps/runner/src/env.ts` makes the
+  // argument; this asserts this process took it.
+  each(parsers)("$name refuses a non-count, naming the variable and echoing it", ({ name, parse }) => {
+    for (const raw of ["0", "-1", "1.5", "none", "ten"]) {
+      expect(() => parse({ [name]: raw })).toThrow(new RegExp(`${name}.*${raw}`));
+    }
+  });
+
+  // No ceiling, and it is asserted rather than left as an absence: #539 asked
+  // for one and it was declined, so a later reader finding a huge number
+  // accepted here should find it deliberate.
+  each(parsers)("$name imposes no ceiling of its own", ({ name, parse }) => {
+    expect(parse({ [name]: "100000000" })).toBe(100_000_000);
   });
 });

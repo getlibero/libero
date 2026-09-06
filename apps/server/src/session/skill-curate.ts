@@ -167,6 +167,14 @@ export interface SkillCuratePassOptions {
   proposals: SkillProposalsOpener;
   /** The channel's skill settings. `null` skips the channel entirely. */
   settings: (channel: string) => Promise<SkillCurateSettings | null>;
+  /**
+   * How many merge proposals may wait before the pass stops proposing,
+   * defaulting to `MAX_OPEN_PROPOSALS`. `AGENT_MAX_OPEN_PROPOSALS` (#539).
+   *
+   * What it bounds is how much unread review a team is carrying, which is a
+   * fact about the team rather than about this process.
+   */
+  maxOpenProposals?: number;
   /** Reports the turn's spend to the proxy's meter. Must not throw. */
   reportTurn: (channel: string, turn: CompletedTurn & { id: string }) => Promise<void>;
   /**
@@ -196,6 +204,7 @@ export type SkillCuratePass = (channel: string, store: MessageStore) => Promise<
 export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCuratePass {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
+  const maxOpenProposals = options.maxOpenProposals ?? MAX_OPEN_PROPOSALS;
 
   // ./skill-lifecycle.ts's map and its reasons: this module's business, one
   // number per channel the process has seen, never evicted. Its own rather than
@@ -262,7 +271,7 @@ export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCur
       logger.log("warn", { event: "skill_merge_failed", channel, reason: reasonOf(error) });
       return 0;
     }
-    if (waiting >= MAX_OPEN_PROPOSALS) {
+    if (waiting >= maxOpenProposals) {
       // An `info` line rather than silence, so an operator asking why a channel
       // stopped proposing gets an answer without reading this file.
       logger.log("info", { event: "skill_merge_backlog", channel, count: waiting });

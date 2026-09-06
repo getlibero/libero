@@ -124,6 +124,25 @@ services:
       AGENT_EMBEDDING_MODEL: ${AGENT_EMBEDDING_MODEL:-}
       AGENT_EMBEDDING_API_KEY: ${AGENT_EMBEDDING_API_KEY:-}
       AGENT_EMBEDDING_BASE_URL: ${AGENT_EMBEDDING_BASE_URL:-}
+      # What a task assembles, and how often the background passes run (#539).
+      # All six optional and all six empty here: empty means the figure the code
+      # already argues for, so a deployment that sets none of them behaves
+      # exactly as it did before they existed.
+      #
+      # None of them has a ceiling — the operator owns the heap, the bill and
+      # the context window. AGENT_RECALL_LIMIT is the one with a bound that is
+      # not ours: the message store returns at most 200 rows for any one read,
+      # so a larger number is logged at boot and 200 is used.
+      #
+      # None is a team sheet field either. What a channel spends on its own task
+      # is [llm]'s business; how many rows this process pulls per task, how often
+      # a job runs, and how often the agent speaks unbidden are the deployment's.
+      AGENT_RECALL_LIMIT: ${AGENT_RECALL_LIMIT:-}
+      AGENT_RECALL_MAX_CHARS: ${AGENT_RECALL_MAX_CHARS:-}
+      AGENT_SKILLS_MAX_CHARS: ${AGENT_SKILLS_MAX_CHARS:-}
+      AGENT_MAX_OPEN_PROPOSALS: ${AGENT_MAX_OPEN_PROPOSALS:-}
+      AGENT_SKILL_LIFECYCLE_INTERVAL_MS: ${AGENT_SKILL_LIFECYCLE_INTERVAL_MS:-}
+      AGENT_HEARTBEAT_POST_WINDOW_MS: ${AGENT_HEARTBEAT_POST_WINDOW_MS:-}
     volumes:
       # Read-only: the agent reads sheets and writes none. The proxy's mount is
       # already :ro for the same reason.
@@ -315,11 +334,17 @@ services:
       # concurrent call, because the decoded string, the redaction pass's copy,
       # and the parsed object graph all exist at once.
       #
+      # The capacity settings below take a value from .env and fall back to
+      # what this file ships (#539). They were literals until then, which meant
+      # retuning one was an edit to a repo-shipped file and therefore a merge
+      # conflict on every upgrade. The figures are unchanged, so a deployment
+      # that sets none of them is byte-for-byte the deployment it was.
+      #
       # Not a team sheet field, and that is a boundary rather than a filing
       # choice — this heap is shared by every channel the proxy serves. What a
       # channel *can* set is how much of a result reaches its model, in
       # [llm] max_result_chars.
-      PROXY_MAX_RESPONSE_BYTES: 4194304
+      PROXY_MAX_RESPONSE_BYTES: ${PROXY_MAX_RESPONSE_BYTES:-4194304}
       # How many calls this process will run against one tool server at once.
       # The factor that makes the bound above a number you can multiply out:
       # worst case against one misbehaving upstream is that value, times its
@@ -329,7 +354,7 @@ services:
       # shares this budget, so a busy channel cannot spend a shared server's rate
       # limit on the others' behalf. A call past the limit waits briefly and is
       # then told it was not made.
-      PROXY_MAX_UPSTREAM_CONCURRENCY: 8
+      PROXY_MAX_UPSTREAM_CONCURRENCY: ${PROXY_MAX_UPSTREAM_CONCURRENCY:-8}
       # How many sandbox runs the deployment holds at once (#405). A separate
       # bound from the one above and not a widening of it: that counts sockets
       # against one upstream, this counts containers — each run is a sandbox
@@ -344,11 +369,19 @@ services:
       # A call past the limit queues briefly and is then told the deployment is
       # full, which is a 501 and not a refusal — nothing about the channel's
       # grant changed.
-      PROXY_MAX_SANDBOX_CONCURRENCY: 1
+      PROXY_MAX_SANDBOX_CONCURRENCY: ${PROXY_MAX_SANDBOX_CONCURRENCY:-1}
       # How long any one outbound request may hold a socket: each tool call,
       # and each OAuth token exchange. Safe to lower — past the window a call
       # is "timed out", a failed call rather than a served one.
-      PROXY_UPSTREAM_TIMEOUT_MS: 30000
+      PROXY_UPSTREAM_TIMEOUT_MS: ${PROXY_UPSTREAM_TIMEOUT_MS:-30000}
+      # How many unfired scheduled checks one channel may hold (#539). Ten is
+      # the package's own figure, and it is a backstop behind a human click —
+      # every ticket was approved by somebody — rather than the primary control.
+      #
+      # Not a team sheet field: a scheduled ticket is machine-grown, so how many
+      # may be pending is a bound on this process. That settles what a *channel*
+      # may do and says nothing about the operator, who runs the process.
+      PROXY_MAX_PENDING_SCHEDULED_TASKS: ${PROXY_MAX_PENDING_SCHEDULED_TASKS:-10}
       PROXY_TLS_CERT: /etc/libero/certs/proxy/server.pem
       PROXY_TLS_KEY: /etc/libero/certs/proxy/server.key
       # Client certs are verified against this CA and nothing else. A client

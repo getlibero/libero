@@ -8,6 +8,7 @@ import {
   DEFAULT_UPSTREAM_RESPONSE_BYTES
 } from "@getlibero/proxy";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { SCHEDULED_TASK_MAX_PENDING } from "@getlibero/schema";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import {
@@ -19,6 +20,7 @@ import {
   channelsRootFromEnv,
   custodyFromEnv,
   hostFromEnv,
+  maxPendingScheduledTasksFromEnv,
   maxResponseBytesFromEnv,
   maxUpstreamConcurrencyFromEnv,
   maxSandboxConcurrencyFromEnv,
@@ -584,5 +586,34 @@ describe("maxSandboxConcurrencyFromEnv", () => {
   // about how many containers their host can hold.
   it("is not moved by the upstream concurrency setting", () => {
     expect(maxSandboxConcurrencyFromEnv({ PROXY_MAX_UPSTREAM_CONCURRENCY: "32" })).toBe(DEFAULT_SANDBOX_CONCURRENCY);
+  });
+});
+
+
+describe("maxPendingScheduledTasksFromEnv", () => {
+  it("defaults to the schema's figure when unset or blanked", () => {
+    expect(maxPendingScheduledTasksFromEnv({})).toBe(SCHEDULED_TASK_MAX_PENDING);
+    expect(maxPendingScheduledTasksFromEnv({ PROXY_MAX_PENDING_SCHEDULED_TASKS: "" })).toBe(
+      SCHEDULED_TASK_MAX_PENDING
+    );
+  });
+
+  it("reads a positive count", () => {
+    expect(maxPendingScheduledTasksFromEnv({ PROXY_MAX_PENDING_SCHEDULED_TASKS: "40" })).toBe(40);
+  });
+
+  each(["0", "-1", "2.5", "many"])("refuses %s, naming the variable and echoing it", raw => {
+    expect(() => maxPendingScheduledTasksFromEnv({ PROXY_MAX_PENDING_SCHEDULED_TASKS: raw })).toThrow(
+      new RegExp(`PROXY_MAX_PENDING_SCHEDULED_TASKS.*${raw}`)
+    );
+  });
+
+  // No ceiling (#539). Asserted rather than left as an absence, because the
+  // issue asked for one and it was declined: capping the principal who owns the
+  // store and clicked through every ticket would be advice, not a boundary.
+  it("imposes no ceiling of its own", () => {
+    expect(maxPendingScheduledTasksFromEnv({ PROXY_MAX_PENDING_SCHEDULED_TASKS: "100000" })).toBe(
+      100_000
+    );
   });
 });

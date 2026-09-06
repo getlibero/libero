@@ -168,6 +168,21 @@ export interface RecalledSummary {
 
 export interface RecallOptions {
   logger?: Logger;
+  /**
+   * How many summaries a task opens with, defaulting to `RECALL_LIMIT`.
+   *
+   * `AGENT_RECALL_LIMIT` (#539). An option with a constant default rather than
+   * a second reading of the environment here: this module states the figure and
+   * its argument, and the process that reads env is the one that composes it.
+   *
+   * **The store clamps this to `READ_MAX_LIMIT`**, so a value above 200 is not
+   * refused here and does not do what it says either. `index.ts` is where that
+   * is said out loud, because it is the only place that knows what the operator
+   * asked for.
+   */
+  limit?: number;
+  /** How many characters the block may reach, defaulting to `RECALL_MAX_CHARS`. */
+  maxChars?: number;
 }
 
 export interface RecallRequest {
@@ -197,6 +212,8 @@ export type Recall = (request: RecallRequest) => Promise<readonly RecalledSummar
 
 export function createRecall(options: RecallOptions): Recall {
   const logger = options.logger ?? createSilentLogger();
+  const limit = options.limit ?? RECALL_LIMIT;
+  const maxChars = options.maxChars ?? RECALL_MAX_CHARS;
 
   return async request => {
     // Two ways to have nothing to do, and neither is a failure.
@@ -217,7 +234,7 @@ export function createRecall(options: RecallOptions): Recall {
       // hundred skills would fill all five of these slots with them and this
       // would answer nothing. Passing the kind moves the filter inside vec0's
       // own search, where it costs a slot nothing.
-      const hits = request.store.nearest(vector, RECALL_LIMIT, "summary");
+      const hits = request.store.nearest(vector, limit, "summary");
       const recalled: RecalledSummary[] = [];
       let chars = 0;
       // Set by the first hit the character budget refuses, and never unset. It
@@ -268,7 +285,7 @@ export function createRecall(options: RecallOptions): Recall {
         // of `assembleContext`, which drops the oldest. Here the ordering is
         // relevance and not time, so what a bound should shed is the weakest
         // match rather than the earliest one.
-        if (chars + summary.text.length > RECALL_MAX_CHARS) {
+        if (chars + summary.text.length > maxChars) {
           full = true;
           record("dropped_chars");
           continue;

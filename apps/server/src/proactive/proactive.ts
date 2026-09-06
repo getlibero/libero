@@ -201,6 +201,20 @@ export interface ProactivePosterOptions {
   /** Injected so a test states the clock rather than faking timers. */
   now?: () => number;
   logger?: Logger;
+  /**
+   * How long between unbidden posts, defaulting to `HEARTBEAT_POST_WINDOW_MS`.
+   * `AGENT_HEARTBEAT_POST_WINDOW_MS` (#539).
+   *
+   * `[ambient]`'s comment refuses the sheet-field version of this, and that
+   * refusal stands: nothing named `posts_per_hour` goes on that block, because
+   * a channel tightening its own cadence must not thereby loosen its own
+   * throttle. **An operator is not a channel.** The throttle stays exactly
+   * where that comment puts it — here, in the posting surface, reachable from
+   * no sheet. What an option changes is who may size it, and the deployment
+   * paying for the posts is better placed than one figure chosen against one
+   * workspace's taste.
+   */
+  windowMs?: number;
 }
 
 /**
@@ -213,6 +227,7 @@ export interface ProactivePosterOptions {
 export function createProactivePoster(options: ProactivePosterOptions): ProactivePoster {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
+  const windowMs = options.windowMs ?? HEARTBEAT_POST_WINDOW_MS;
 
   /** When each channel last had a heartbeat post attempted. Task posts never appear. */
   const lastHeartbeatPost = new Map<string, number>();
@@ -220,7 +235,7 @@ export function createProactivePoster(options: ProactivePosterOptions): Proactiv
   /** Whether `at` is outside the channel's window. The one comparison, once. */
   function windowOpen(channel: string, at: number): boolean {
     const last = lastHeartbeatPost.get(channel);
-    return last === undefined || at - last >= HEARTBEAT_POST_WINDOW_MS;
+    return last === undefined || at - last >= windowMs;
   }
 
   return {
@@ -240,7 +255,7 @@ export function createProactivePoster(options: ProactivePosterOptions): Proactiv
             // How long the caller would have to wait, rather than when the last
             // post was: an operator reading this wants to know whether the
             // window is nearly open or just shut.
-            waitMs: HEARTBEAT_POST_WINDOW_MS - (at - last)
+            waitMs: windowMs - (at - last)
           });
           return false;
         }
