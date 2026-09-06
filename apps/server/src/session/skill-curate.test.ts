@@ -54,7 +54,7 @@ const SETTINGS: SkillCurateSettings = {
   // No shared skills and no description, which is the channel every case here
   // is about: what #450 wired is that this turn *can* carry a standing region,
   // and `standing.test.ts` is where it does.
-  standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
+  standing: { description: "", persona: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
   curate: true,
   maxSkills: MAX_SKILLS,

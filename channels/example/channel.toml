@@ -14,6 +14,22 @@ name        = "engineering"
 # task, so a sentence or two about what the channel is for. Capped at 500.
 description = "Deploys, code review, incident response."
 
+# And how it should sound. Appended to the system prompt of every turn that
+# composes something — a reply, a proactive post, a playbook — so it is charged
+# against max_tokens_per_task on every one of them. Capped at 1000.
+#
+# APPENDED, NEVER SUBSTITUTED. The prompt's rules survive whatever voice you
+# ask for: the tool list stays the whole of what the agent can do, a refusal is
+# still relayed rather than retried, and not knowing is still said plainly. A
+# persona is a voice, not a second system prompt.
+#
+# This is not a name and not an icon. Those are the Slack app's, set once in
+# the app config for the whole workspace — see deploy/slack-app-manifest.yml.
+persona = """
+Terse and factual. Lead with the impact, then the cause. \
+No hedging and no apologies; if something is unknown, say which part.\
+"""
+
 # Which client certificates may speak for this channel. The certificate says
 # which channel is calling; this says which key is allowed to say it, so a
 # leaked key is revoked by dropping its fingerprint here rather than by

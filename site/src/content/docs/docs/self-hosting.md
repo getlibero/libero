@@ -293,12 +293,21 @@ app and read history anywhere the app is installed.
 | `chat:write` | Posting replies and approval cards, and editing its own messages — a card goes amber, then green or red, in place |
 | `channels:history` | Channel messages for recall and thread follow-ups. Without it the agent answers mentions and remembers nothing — the store stays empty |
 | `groups:history` | The same, for private channels — omit if the agent only serves public ones |
-| `users:read` | Display names, so the model can address the right person. Without it every author in the transcript is a raw `U…` id, and the agent logs `user_lookup_failed` with `missing_scope` |
+| `users:read` | Display names, so the model can address the right person — and the app's own, so the agent introduces itself as this workspace calls it. Without it every author in the transcript is a raw `U…` id, the agent logs `user_lookup_failed` with `missing_scope`, and the agent's own name falls back to what `auth.test` carries |
 
 The agent also calls `auth.test` once before opening the socket, to learn its own user id — a
 message that mentions the app is delivered on both subscriptions, and only an id tells the two
 copies apart. That call needs no scope, and it means a bot token Slack will not accept is a startup
 failure naming `auth_rejected` rather than a reply that never appears.
+
+**The app's name and icon are set once here, for the whole workspace**, in the app config the
+manifest seeds — and the agent reads its own name back at startup, so renaming the app in Slack
+also changes what the model calls itself. There is no per-channel or per-message override, and one
+is not planned: `chat.update` accepts no name or icon, and every approval card and live checklist
+is a `chat.update`, so an override would apply to replies and not to cards. The @-handle people
+type is workspace-wide regardless. `chat:write.customize` is deliberately not requested. What *is*
+per-channel is the sheet's [`[channel] persona`](/docs/team-sheet#channel) — how the agent should
+sound in that channel, which is prose for the model rather than anything Slack renders.
 
 ### Event subscriptions
 

@@ -260,9 +260,33 @@ data-gated items, and it is scheduled below rather than left to the disposition 
 
 **v0.8 — richer tools, wider adoption.** Tool results stop being a string — image, audio and
 resource content relayed to the model ([#160](https://github.com/getlibero/libero/issues/160)) — a
-channel gets a name, an icon and a persona
-([#270](https://github.com/getlibero/libero/issues/270)), and OAuth upstreams get
-sender-constrained tokens ([#260](https://github.com/getlibero/libero/issues/260)).
+channel gets a persona ([#270](https://github.com/getlibero/libero/issues/270)), and OAuth upstreams
+get sender-constrained tokens ([#260](https://github.com/getlibero/libero/issues/260)).
+
+#270 was written as *a name, an icon and a persona*, and **landed as the persona alone**; the other
+two were declined rather than deferred, which is the second arm of the milestone's own clause rather
+than a shortfall. Its definition of done said a sheet's identity should change what a reply "looks
+and sounds like", and only *sounds* was delivered. The reason is that the first two are not the
+service's to control. `chat.update` accepts no `username` or `icon_*`, and every approval card and
+live checklist this system paints is a `chat.update` — so a per-message override would apply to
+replies and not to cards, or would rename a live checklist halfway through a task. The @-handle is
+workspace-wide regardless, so a per-channel display name could never give a channel its own handle,
+which is the thing an operator asking for one actually wants. So `chat:write.customize` is not
+requested and the app's name and icon stay the Slack app config's, argued in
+`packages/gateway/README.md` where the next person to reach for that scope will meet it.
+
+The clause about settling the `chat.update` question **by testing it before the feature's shape was
+fixed** was answered by the shape no longer depending on it: with no per-message override anywhere,
+what an edited message displays decides nothing here. Slack's own reference — which lists
+`chat.update`'s full argument set and does not include the three — is what closed it.
+
+Two things landed that its wording did not name. The field is `[channel] persona` rather than a new
+`[identity]` block: one field does not earn a section, and `[channel] description` is its sibling in
+every respect that matters. And the agent now **learns its own name from its installation** — the
+gateway reads its display name from the same `auth.test` that tells it its user id, so an operator
+who renames the app in Slack renames the agent. That was not in the issue at all, and without it the
+release would have shipped a model still introducing itself as Libero under somebody else's avatar,
+which is the half-delivered version of the thing #270 was for.
 
 **v0.9 — close-out.** The data-gated items, now buildable against pilot data (#283, and #284 if the
 numbers say so); the managed custody backends proven against a live GCP project and AWS account

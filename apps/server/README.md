@@ -493,7 +493,9 @@ way.
 
 Each task resolves its channel's sheet — `$AGENT_CHANNELS_ROOT/<channel
 id>/channel.toml` — to a model, the four per-task caps, the two context bounds,
-the follow-up window, and the `[memory]` block, and runs on those. `[llm] model`
+the follow-up window, the `[memory]` block, and the channel's two operator-
+authored strings (`[channel] description` and `[channel] persona`), and runs on
+those. `[llm] model`
 wins over `AGENT_MODEL`; everything in the schema has a default, so a channel
 whose sheet has no `[llm]` block still gets all eight of those. `max_task_seconds` and
 `follow_up_window_seconds` are seconds in the sheet and milliseconds in the
@@ -599,19 +601,53 @@ once.
 #435 it composes a **region** rather than appending one field. What goes in it,
 in order, and the order is the argument:
 
-1. `SYSTEM_PROMPT` — what the agent is. Static.
+1. `systemPrompt(name)` — what the agent is. Static except for the name, which
+   is the installation's; see below.
 2. The sheet's `[channel] description` — where it is. One operator-authored
    sentence about the channel itself (#369).
-3. The `[[shared_skill]] load = "always"` entries — how it should work here. A
+3. The sheet's `[channel] persona` — who it is there. One operator-authored
+   paragraph about how the agent should sound (#270).
+4. The `[[shared_skill]] load = "always"` entries — how it should work here. A
    voice, a house style, a standard playbook, published once by the operator into
    the third root and named by this sheet, wrapped in `<shared-skills>`.
 
-#270's persona will be the fourth, saying *who* it is, and it slots in without a
-second composition point. That is what this function was already for — the note
-about persona has been on it since #369 — and #373 settled the rest: persona as
-inline sheet text and shared voice skills as named files are one abstraction
-apart, so they belong in one region with one ceiling rather than three fields
-appended in three places by three features.
+**The persona landed third, where this file predicted fourth**, and the
+difference is recorded rather than the sentence being quietly edited. The
+prediction was about *when* it arrived, not about where it belongs: the ordering
+argument decides, and who-the-agent-is-here is only meaningful once
+where-it-is has been fixed, so it follows the description. Shared skills stay
+last because they are the fenced, tagged, longest block, and a paragraph
+appended after a closing tag reads as a footnote to the skills rather than as
+part of the region.
+
+Everything else about it landed as predicted. It slotted in without a second
+composition point, which is what this function was already for — the note about
+persona has been on it since #369 — and #373 settled the rest: persona as inline
+sheet text and shared voice skills as named files are one abstraction apart, so
+they belong in one region rather than three fields appended in three places by
+three features.
+
+**The name is not in the region, and that is the line #270 nearly blurred.** The
+region is text a *sheet* stands up for one channel. The name is the
+installation's — one bot token, one `auth.test`, one answer in every channel — so
+it substitutes into the base where `systemPrompt` builds it, and a turn composing
+a different base names no agent at all. What that buys is an agent whose model
+agrees with its avatar: an operator who renames the app in their Slack app config
+has renamed the agent, and until #270 the prompt said "Libero" regardless.
+`compose.ts` reads it off the gateway per task, the same late binding the ambient
+scheduler already does for the workspace, because `auth.test` has not answered
+when the runner is composed. Absent — no Slack surface, or an `auth.test` that
+said nothing — it is `DEFAULT_AGENT_NAME`, because one word in a prompt is not
+worth a startup failure.
+
+**A per-channel name and icon were declined rather than deferred** (#270).
+`chat.update` accepts no `username` or `icon_*`, and every card and checklist
+this process paints is a `chat.update`, so a per-message override would either
+apply to replies and not to cards or flip a card's identity halfway through a
+task. The @-handle is workspace-wide in any case, so a per-channel display name
+could never give a channel its own handle. `packages/gateway/README.md` has the
+argument at length; what belongs here is that the sheet has one identity field
+and it is prose.
 
 **Why the system prompt at all**, when `<channel-skills>` sits in a `user`
 message: `context.ts` argues that untrusted text stays there, and this is the
@@ -715,13 +751,32 @@ names — which is why the issue's original ask for a use count on the index was
 answered this way instead: the counter would have had no row, and giving it one
 would mean `packages/memory` learning load modes for something no clock reads.
 
-### Two bounds, and only one of them can live here
+### Three bounds, and each lives where it can be checked
 
-`[skills] max_always_skills` is the **schema's**: its root check refuses a sheet
+The region's ceiling is `base + 500 + 1000 + max_always_chars`, and the three
+numbers after the base are set in three different places for one reason: **a
+bound belongs wherever the thing it bounds can actually be measured.**
+
+`[channel] description` (500) and `[channel] persona` (1000) are the **schema's
+outright**, because they are strings in the sheet — the parser can see exactly
+what they weigh, so an operator hears "too long" at edit time. Neither is ever
+truncated, for the reason `description` established and the persona sharpens:
+half a paragraph reads as complete, and the sentence that went may be the one
+that mattered.
+
+`[skills] max_always_skills` is the schema's too: its root check refuses a sheet
 naming more `always` entries than the cap, so a sheet that parsed is already
-inside it. It is applied again at composition because it costs a `slice`, and
-what that buys is a region that bounds itself whatever it is one day assembled
-from — #270 is what stops that being hypothetical.
+inside it. It is applied again at composition because it costs a `slice`.
+
+**An earlier version of this section said #270's persona was what would stop
+that second application from being hypothetical — a region that bounds itself
+whatever it is one day assembled from. It is not, and the record is worth more
+than the prediction.** The persona is bounded at parse precisely *because* it is
+inline sheet text, so it never reaches the composition-time slice, which still
+bounds only the skills. The re-application remains cheap insurance against a
+future member the schema cannot count, and #270 turned out not to be one. What
+#270 did settle is the shape such a member has to have: text the schema can
+measure gets a parse bound, and text in a file it cannot gets a composition one.
 
 `[skills] max_always_chars` can only live here. The schema can see how many
 entries a sheet names and cannot see what those files weigh, and the weight is
@@ -2191,7 +2246,8 @@ brings it back once the environment is fixed.
   an ESLint rule on `src/session/**` is what keeps that true.
 - `src/session/mutex.ts` — one at a time, in arrival order.
 - `src/session/registry.ts` — the sessions, and when they are torn down.
-- `src/session/sheet.ts` — a channel's team sheet to a model and four caps.
+- `src/session/sheet.ts` — a channel's team sheet to a model, four caps, and the
+  two strings the standing region is built from.
 - `src/session/store.ts` — a channel's message store, gated on it having a
   sheet. Symmetric with `sheet.ts`, and total in the same way: it answers `null`
   rather than throwing, because `registry.open` is synchronous and uncaught.

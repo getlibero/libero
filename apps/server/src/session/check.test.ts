@@ -35,7 +35,7 @@ const SETTINGS: CheckSettings = {
   // No shared skills and no description, which is the channel every case here
   // is about: what #450 wired is that this turn *can* carry a standing region,
   // and `standing.test.ts` is where it does.
-  standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
+  standing: { description: "", persona: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
   // Off, which is every sheet that has not opted in (#348) — so every case in
   // this file is about the single-call shape unless it says otherwise.

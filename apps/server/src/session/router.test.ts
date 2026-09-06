@@ -31,6 +31,7 @@ import type {
 const SETTINGS: ChannelSettings = {
   model: "test-model",
   description: "",
+  persona: "",
   sharedSkills: [],
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },

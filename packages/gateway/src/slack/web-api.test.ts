@@ -445,10 +445,71 @@ describe("createWebApiSurface", () => {
       // bot's user id, and the two are different identifiers. `team_id` comes
       // back under the agent side's name for it (#317) — one call, two answers,
       // because a second method would be a second `auth.test`.
+      // No name: the default `users.info` behaviour answers `{ ok: true }`, so
+      // rung one finds nothing and this `auth.test` says no `user` either. The
+      // key is absent rather than `undefined` — `exactOptionalPropertyTypes` is
+      // on, and `toEqual` would not have told the two apart.
       return expect(surface(fake).identity.identify()).resolves.toEqual({
         userId: "U0LIBERO",
         workspace: "T0LIBERO"
       });
+    });
+
+    it("prefers the display name the workspace set for this app (#270)", () => {
+      const fake = fakeClient(
+        undefined,
+        () => Promise.resolve({ ok: true, user: { profile: { display_name: "Ada" }, name: "ada" } }),
+        () =>
+          Promise.resolve({
+            ok: true,
+            user_id: "U0LIBERO",
+            user: "ada",
+            team_id: "T0LIBERO"
+          })
+      );
+
+      // The first rung, and the reason it is first: `auth.test`'s own `user` is
+      // the display name slugged, so it says "ada" where the workspace says
+      // "Ada". The agent introduces itself as the latter.
+      return expect(surface(fake).identity.identify()).resolves.toEqual({
+        userId: "U0LIBERO",
+        workspace: "T0LIBERO",
+        name: "Ada"
+      });
+    });
+
+    it("falls back to the name auth.test carries when users.info cannot answer", async () => {
+      const fake = fakeClient(
+        undefined,
+        () => Promise.reject(new WebAPIPlatformError({ ok: false, error: "missing_scope" })),
+        () =>
+          Promise.resolve({ ok: true, user_id: "U0LIBERO", user: "ada", team_id: "T0LIBERO" })
+      );
+
+      // The installation without `users:read`. It still gets the name its
+      // operator chose rather than this repository's, which is the whole reason
+      // the ladder has a second rung instead of ending at the default.
+      await expect(surface(fake).identity.identify()).resolves.toEqual({
+        userId: "U0LIBERO",
+        workspace: "T0LIBERO",
+        name: "ada"
+      });
+    });
+
+    it("answers without a name rather than failing, when Slack says nothing about one", async () => {
+      const fake = fakeClient(undefined, undefined, () =>
+        Promise.resolve({ ok: true, user_id: "U0LIBERO", team_id: "T0LIBERO" })
+      );
+
+      // **The asymmetry with the two cases below is the claim.** A missing
+      // `user_id` or `team_id` stops the process, because neither has an honest
+      // default and both cost a channel something it cannot see. A missing name
+      // costs one word in a system prompt, and taking a deployment dark over a
+      // cosmetic string would be the wrong trade.
+      const self = await surface(fake).identity.identify();
+
+      expect(self).toEqual({ userId: "U0LIBERO", workspace: "T0LIBERO" });
+      expect(self).not.toHaveProperty("name");
     });
 
     each(["invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired"])(

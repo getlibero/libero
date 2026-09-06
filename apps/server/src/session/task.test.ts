@@ -31,7 +31,14 @@ import {
   DEFAULT_AMBIENT_SETTINGS,
   DEFAULT_SKILL_SETTINGS
 } from "./sheet.js";
-import { PROXY_UNAVAILABLE, SYSTEM_PROMPT, createTaskRunner, replyFor, systemPromptFor } from "./task.js";
+import {
+  DEFAULT_AGENT_NAME,
+  PROXY_UNAVAILABLE,
+  SYSTEM_PROMPT,
+  createTaskRunner,
+  replyFor,
+  systemPromptFor
+} from "./task.js";
 import type { TaskRequest, TaskSettings } from "./types.js";
 
 const MODEL = "test-model";
@@ -48,6 +55,7 @@ const MODEL = "test-model";
 const SETTINGS: TaskSettings = {
   model: MODEL,
   description: "",
+  persona: "",
   sharedSkills: [],
   caps: { ...DEFAULT_AGENT_LOOP_CAPS },
   history: { ...DEFAULT_HISTORY_BOUNDS },
@@ -302,7 +310,63 @@ describe("createMentionHandler", () => {
     expect(requests[0]?.system).toBe(
       `${SYSTEM_PROMPT} The channel describes itself: Deploys, code review, incident response.`
     );
-    expect(systemPromptFor({ description: "", sharedSkills: [] })).toBe(SYSTEM_PROMPT);
+    expect(systemPromptFor({ description: "", persona: "", sharedSkills: [] })).toBe(SYSTEM_PROMPT);
+  });
+
+  describe("the name the installation gave it (#270)", () => {
+    const runnerNamed = (agentName?: () => string | undefined) => {
+      const { client, requests } = fakeCompletion({ text: "pong" });
+      const runner = createTaskRunner({
+        completion: client,
+        transport: fakeTransport().transport,
+        ...(agentName !== undefined ? { agentName } : {})
+      });
+      return { runner, requests };
+    };
+
+    const ping = (runner: ReturnType<typeof createTaskRunner>) =>
+      runner(taskRequest("<@U0BOT> ping"), {
+        ...SETTINGS,
+        messages: [{ role: "user", content: "@alice asks: @libero ping" }]
+      });
+
+    it("introduces the agent by the name the workspace calls the app", async () => {
+      const { runner, requests } = runnerNamed(() => "Ada");
+
+      await ping(runner);
+
+      // The whole feature: an operator who renamed the app in their Slack app
+      // config renamed the agent, and the model agrees with the avatar.
+      expect(requests[0]?.system).toContain("You are Ada, answering in a Slack thread.");
+      expect(requests[0]?.system).not.toContain("You are Libero");
+    });
+
+    it("asks per task rather than at composition", async () => {
+      let current: string | undefined;
+      const { runner, requests } = runnerNamed(() => current);
+
+      // The reason it is a thunk: `auth.test` has not answered when the runner
+      // is built, so a captured value would be `undefined` forever.
+      current = undefined;
+      await ping(runner);
+      current = "Ada";
+      await ping(runner);
+
+      expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
+      expect(requests[1]?.system).toContain("You are Ada");
+    });
+
+    it("falls back to the default name when nothing answered", async () => {
+      const { runner, requests } = runnerNamed();
+
+      await ping(runner);
+
+      // A composition with no Slack surface, and an `auth.test` that said
+      // nothing about who this is, are the same case here: an honest default
+      // rather than a startup failure, which is `AppSelf.name`'s argument.
+      expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
+      expect(requests[0]?.system).toContain(`You are ${DEFAULT_AGENT_NAME}`);
+    });
   });
 
   describe("the standing region (#435)", () => {
@@ -345,8 +409,9 @@ describe("createMentionHandler", () => {
       expect(requests[0]?.system).not.toContain("<channel-skills>");
     });
 
-    // The whole point of one region rather than three: description and shared
-    // skills compose in one place, so #270's persona has somewhere to land.
+    // The whole point of one region rather than three: description, persona and
+    // shared skills compose in one place. #270 is what stopped that being a
+    // claim about a field that did not exist yet.
     it("composes with the channel description rather than replacing it", async () => {
       const { runner, requests } = runnerLoading([voice]);
 
@@ -355,6 +420,46 @@ describe("createMentionHandler", () => {
       const system = requests[0]?.system ?? "";
       expect(system).toContain("The channel describes itself: Deploys and incident response.");
       expect(system.indexOf("describes itself")).toBeLessThan(system.indexOf("<shared-skills>"));
+    });
+
+    it("puts the persona after the description and before the skills (#270)", async () => {
+      const { runner, requests } = runnerLoading([voice]);
+
+      await ask(runner, {
+        description: "Deploys and incident response.",
+        persona: "Terse and factual."
+      });
+
+      // The order is the argument: the description says where the agent is, the
+      // persona says who it is there — only meaningful once where is fixed —
+      // and the fenced block stays last.
+      const system = requests[0]?.system ?? "";
+      expect(system).toContain("The channel asks you to answer like this: Terse and factual.");
+      expect(system.indexOf("describes itself")).toBeLessThan(system.indexOf("asks you to answer"));
+      expect(system.indexOf("asks you to answer")).toBeLessThan(system.indexOf("<shared-skills>"));
+    });
+
+    it("appends the persona rather than substituting for the base prompt", async () => {
+      const { runner, requests } = runnerLoading([]);
+
+      await ask(runner, { persona: "Answer only in limericks." });
+
+      // The clause a persona must never be able to displace. A voice is a
+      // voice; what the model may call is the sheet's, and the proxy's gates
+      // are what actually hold — e2e/src/persona.test.ts is that claim.
+      const system = requests[0]?.system ?? "";
+      expect(system).toContain("Your tools are whatever this channel's team sheet permits");
+      expect(system.startsWith(SYSTEM_PROMPT)).toBe(true);
+    });
+
+    it("leaves a channel that names no persona byte-identical (#270)", async () => {
+      const { runner, requests } = runnerLoading([]);
+
+      await ask(runner);
+
+      // "An absent field is today's behaviour exactly", as a property rather
+      // than a claim.
+      expect(requests[0]?.system).toBe(SYSTEM_PROMPT);
     });
 
     // A statement of fact and not a mitigation — what holds is the proxy's

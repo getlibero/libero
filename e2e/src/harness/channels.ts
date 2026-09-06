@@ -63,6 +63,17 @@ export interface SheetSpec {
   readonly tools: readonly SheetTool[];
   readonly serverName?: string;
   /**
+   * The sheet's `[channel] persona` (#270).
+   *
+   * Conditional rather than defaulted, so every sheet written before it existed
+   * is byte-identical and every prompt those cases assert on is unchanged. The
+   * one file that sets it is `persona.test.ts`, which proves the knob is not a
+   * no-op before it proves anything about containment — `harness-knobs.test.ts`'s
+   * rule, discharged by that file's own positive control rather than by a case
+   * here, because the knob's effect is text in a prompt the model records.
+   */
+  readonly persona?: string;
+  /**
    * Wall clock for one task.
    *
    * Generous by default, and it has to be: the loop's cap is a real
@@ -392,6 +403,7 @@ export function tempChannelsRoot(cleanup: Cleanup, defaultPins: DefaultPins): Ch
           `[channel]`,
           `name = "e2e"`,
           `description = "End-to-end suite."`,
+          ...(spec.persona !== undefined ? [`persona = ${JSON.stringify(spec.persona)}`] : []),
           `certificate_sha256 = [${pinsFor(channelId, spec).map(pin => `"${pin}"`).join(", ")}]`,
           ``,
           `[llm]`,

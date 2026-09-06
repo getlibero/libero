@@ -43,6 +43,27 @@ describe("the channel description", () => {
   });
 });
 
+describe("the channel persona", () => {
+  // Same instrument as the description above and twice the room, because a
+  // paragraph is not a sentence (#270). It reaches every turn that composes
+  // something rather than only the task reply, which is what makes the cap
+  // worth having: the text is charged against `max_tokens_per_task` on each.
+  it("accepts up to 1000 characters and rejects past it", () => {
+    const at = TeamSheet.safeParse({ channel: minimalChannel({ persona: "x".repeat(1000) }) });
+    expect(at.success).toBe(true);
+
+    const past = TeamSheet.safeParse({ channel: minimalChannel({ persona: "x".repeat(1001) }) });
+    expect(past.success).toBe(false);
+  });
+
+  // Absent is today's behaviour exactly, and `""` is the shape the agent side
+  // branches on to compose a byte-identical prompt.
+  it("defaults to empty when the sheet says nothing", () => {
+    const sheet = TeamSheet.parse({ channel: minimalChannel() });
+    expect(sheet.channel.persona).toBe("");
+  });
+});
+
 describe("the example team sheet", () => {
   const source = readFileSync(examplePath, "utf8");
   const sheet = TeamSheet.parse(parse(source));
@@ -76,8 +97,11 @@ describe("the example team sheet", () => {
    *
    * **Three shapes get no call at all**, for the same reason from three
    * directions: a key whose written value is not the schema's default is already
-   * held by the parse. `[channel]`'s keys are required, and a required key cannot
-   * be inherited. `[[mcp_server]]`, `[[builtin]]` and `[[shared_skill]]` are
+   * held by the parse. `[channel]` is held that way rather than by being
+   * required — `name` and `certificate_sha256` are, but `description` and
+   * `persona` both default to `""`, so what holds them is that the starter
+   * writes non-empty text and the case below asserts it. `[[mcp_server]]`,
+   * `[[builtin]]` and `[[shared_skill]]` are
    * entries rather than figures — an absent array parses to `[]`, and the
    * optional fields the starter writes on them (`approval = "required"`) are
    * written *against* their defaults. `[egress]` is the one block below that is
@@ -89,6 +113,10 @@ describe("the example team sheet", () => {
 
   it("validates against the schema", () => {
     expect(sheet.channel.name).toBe("engineering");
+    // Both default to `""`, so these are what hold them: a starter that stopped
+    // documenting either would parse identically and say nothing.
+    expect(sheet.channel.description).toBe("Deploys, code review, incident response.");
+    expect(sheet.channel.persona).toContain("Terse and factual.");
     // The starter has to carry a pin, because the field is required — and the
     // one it carries has to be a placeholder no certificate could match, since
     // a real fingerprint copied out of a starter sheet would be a channel

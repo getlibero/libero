@@ -385,6 +385,7 @@ export function createSkillCuratePass(options: SkillCuratePassOptions): SkillCur
         system: systemPromptFor(
           {
             description: settings.standing.description,
+            persona: settings.standing.persona,
             sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
           },
           SKILL_MERGE_SYSTEM_PROMPT

@@ -94,6 +94,7 @@ describe("settingsFrom", () => {
     expect(settingsFrom(sheetOf(VALID), MODEL)).toEqual({
       model: "sheet-model",
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: {
         maxToolCalls: 7,
@@ -149,6 +150,7 @@ describe("settingsFrom", () => {
     expect(settingsFrom(sheetOf(NO_LLM_BLOCK), MODEL)).toEqual({
       model: MODEL,
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
@@ -214,6 +216,17 @@ describe("settingsFrom", () => {
     );
 
     expect(settings.description).toBe("Deploys and incident response.");
+  });
+
+  it("carries the channel's persona for the standing region (#270)", () => {
+    const settings = settingsFrom(
+      sheetOf(`[channel]\nname = "ops"\npersona = "Terse and factual."\n${PIN}\n`),
+      MODEL
+    );
+
+    // The mapping and nothing more. What it is *appended to*, and where in the
+    // region it lands, is ./task.ts's — this file is the one that touches disk.
+    expect(settings.persona).toBe("Terse and factual.");
   });
 
   // Names and load modes, in the order the sheet named them, both modes unsplit:
@@ -301,6 +314,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: "sheet-model",
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: {
         maxToolCalls: 7,
@@ -367,6 +381,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
@@ -384,6 +399,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
@@ -405,6 +421,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
@@ -445,6 +462,7 @@ describe("createSheetResolver", () => {
     await expect(resolve(CHANNEL)).resolves.toEqual({
       model: MODEL,
       description: "",
+      persona: "",
       sharedSkills: [],
       caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,
@@ -474,6 +492,7 @@ describe("createSheetResolver", () => {
       await expect(resolve(channel)).resolves.toEqual({
         model: MODEL,
         description: "",
+        persona: "",
         sharedSkills: [],
         caps: DEFAULT_AGENT_LOOP_CAPS,
       history: DEFAULT_HISTORY_BOUNDS,

@@ -84,6 +84,7 @@ export { createWebApiSurface } from "./slack/web-api.js";
 export type { WebApiOptions, WebApiSurface, WebClientLike } from "./slack/web-api.js";
 
 export {
+  STUB_APP_NAME,
   STUB_APP_USER_ID,
   STUB_WORKSPACE_ID,
   appMentionEnvelope,

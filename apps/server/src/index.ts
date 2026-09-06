@@ -370,6 +370,7 @@ const curateSkills = createSkillCuratePass({
       // (#450). The reader below is what turns it into a region.
       standing: {
         description: settings.description,
+        persona: settings.persona,
         sharedSkills: settings.sharedSkills,
         maxAlwaysSkills: settings.skills.maxAlwaysSkills,
         maxAlwaysChars: settings.skills.maxAlwaysChars
@@ -413,6 +414,7 @@ const heartbeat = (post: ProactivePoster): AmbientHeartbeat =>
       // (#450). The reader below is what turns it into a region.
       standing: {
         description: settings.description,
+        persona: settings.persona,
         sharedSkills: settings.sharedSkills,
         maxAlwaysSkills: settings.skills.maxAlwaysSkills,
         maxAlwaysChars: settings.skills.maxAlwaysChars
@@ -484,6 +486,7 @@ const fireTask = (post: ProactivePoster): AmbientTaskFire =>
       // (#450). The reader below is what turns it into a region.
       standing: {
         description: settings.description,
+        persona: settings.persona,
         sharedSkills: settings.sharedSkills,
         maxAlwaysSkills: settings.skills.maxAlwaysSkills,
         maxAlwaysChars: settings.skills.maxAlwaysChars
@@ -525,6 +528,7 @@ const fireRule = (post: ProactivePoster): AmbientRuleFire =>
         // (#450). The reader below is what turns it into a region.
         standing: {
           description: settings.description,
+          persona: settings.persona,
           sharedSkills: settings.sharedSkills,
           maxAlwaysSkills: settings.skills.maxAlwaysSkills,
           maxAlwaysChars: settings.skills.maxAlwaysChars

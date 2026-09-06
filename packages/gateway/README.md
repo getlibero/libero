@@ -93,7 +93,7 @@ to colour, and `postToChannel` deliberately returns no handle to edit it with.
 ### Who this app is, and where it is installed
 
 One `auth.test`, asked inside the connect ladder before the socket opens, and it
-answers two things. The user id is what tells a mention arriving on its second
+answers three things. The user id is what tells a mention arriving on its second
 subscription from an ordinary message (`SlackMessage.mentionsApp`). The workspace
 — Slack's `team_id`, under the name the agent side already uses for it — is read
 off `gateway.workspace` afterwards, and is `undefined` before `start()` has asked
@@ -107,6 +107,50 @@ holding something the process can ask for, and a wrong one fails in a way that
 reads as a model problem rather than a configuration one. An `auth.test` that
 succeeds without either field is `auth_rejected` — the call worked and this is
 the shape it returned, so asking again gets the same answer.
+
+The third is **what the workspace calls this app** (#270), read off
+`gateway.appName` with the same lifecycle. It exists so the agent can introduce
+itself as its installation calls it: an operator who renames the app in their
+Slack app config has renamed the agent, and until #270 the system prompt said
+"Libero" regardless of what the avatar beside it said.
+
+It is on a ladder rather than a single read. `users.info` on the app's own id
+gives the display name the operator actually set — reusing the same lookup this
+package already does for everyone in a transcript, so it needs no scope beyond
+the `users:read` already granted. Failing that, `auth.test`'s own `user` field,
+which is that name slugged: an installation without `users:read` still gets
+"ada" rather than this repository's "Libero", which is the feature degrading
+rather than disappearing. Failing both, nothing, and the consumer defaults.
+
+**A missing name is not `auth_rejected`, and the asymmetry is deliberate.** An
+unknown user id costs every channel its follow-ups and an unknown workspace
+leaves the ambient scheduler silent, and neither has an honest default — so both
+stop the process loudly. An unknown name costs one word in a system prompt.
+Taking a deployment dark over a cosmetic string would be the wrong trade.
+
+### The name is per-installation, and there is no per-message override
+
+Worth stating because the obvious next ask is a name and an icon **per channel**,
+and this package deliberately offers neither (#270).
+
+Slack's `chat.postMessage` does take `username` and `icon_emoji` under
+`chat:write.customize`. `chat.update` takes neither — and every card and every
+checklist repaint in this system is a `chat.update`. So an override here would
+apply to replies and not to cards, or would flip a live checklist's identity
+halfway through a task. `web-api.test.ts` asserts the exact arguments each post
+sends, which is what keeps that decision from eroding: adding either field breaks
+those cases rather than passing quietly.
+
+**And the @-handle is workspace-wide regardless.** The app's name in the Slack
+app config decides what people type to mention it and what the mention event
+carries. A per-channel display name would be cosmetic and could not give a
+channel its own handle, so the feature an operator would expect from it is not
+one Slack's surface can deliver. `chat:write.customize` is therefore not
+requested — `deploy/slack-app-manifest.yml` grants only scopes the code calls.
+
+Name and icon are set once, for the whole workspace, in the app config. What is
+per-channel is the sheet's `[channel] persona`, which is prose for the model
+rather than anything Slack renders; `apps/server/README.md` has that half.
 
 ### Stopping, and how long it waits
 

@@ -138,6 +138,7 @@ function rig(options: RigOptions = {}) {
       Promise.resolve({
         model: "test-model",
         description: "",
+        persona: "",
         sharedSkills: [],
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS },
@@ -403,6 +404,7 @@ describe("what the curation turn is metered as", () => {
         Promise.resolve({
           model: "test-model",
           description: "",
+          persona: "",
           sharedSkills: [],
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
           history: { ...DEFAULT_HISTORY_BOUNDS },

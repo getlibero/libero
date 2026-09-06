@@ -65,15 +65,23 @@ oauth_config:
       # The same, for private channels. Delete this line, and message.groups
       # below, if the agent serves only public channels.
       - groups:history
-      # users.info, for display names. Without it every author in the
-      # transcript is a raw U... id and the agent logs user_lookup_failed with
-      # missing_scope.
+      # users.info, for display names — everyone in a transcript, and since
+      # #270 the app's own, so the agent introduces itself as this workspace
+      # calls it rather than by a name compiled in. Without it every author in
+      # the transcript is a raw U... id, the agent logs user_lookup_failed with
+      # missing_scope, and the name falls back to what auth.test carries.
+      #
+      # Note what is NOT granted: chat:write.customize, which would let a post
+      # carry a per-message username and icon. chat.update takes neither, and
+      # every card and checklist here is a chat.update, so the override cannot
+      # be applied consistently — see packages/gateway/README.md. This app's
+      # name and icon are the two fields above, for the whole workspace.
       - users:read
       #
       # auth.test needs no scope. The gateway calls it once before opening the
-      # socket, to learn its own user id: a message that mentions the app
-      # arrives on both subscriptions below, and only an id tells the two copies
-      # apart.
+      # socket, to learn its own user id, its workspace, and its own name: a
+      # message that mentions the app arrives on both subscriptions below, and
+      # only an id tells the two copies apart.
 
 settings:
   event_subscriptions:
