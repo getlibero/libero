@@ -616,6 +616,14 @@ export function createServer(deps: ServerDeps): Server {
       completion: deps.completion,
       transport: deps.transport,
       logger,
+      // What this installation calls itself (#270), read per task off the
+      // gateway rather than captured here — `auth.test` has not answered yet
+      // when this closure is built, which is exactly `names` above and the
+      // ambient scheduler's `workspace` below. Unconditional where its
+      // neighbours are spread, because the thunk always exists even when the
+      // answer does not: a gateway composed with no `AppIdentity` returns
+      // `undefined` and the prompt falls back to the default name.
+      agentName: () => surface.gateway.appName,
       ...(deps.sharedSkills !== undefined ? { sharedSkills: deps.sharedSkills } : {}),
       ...(deps.signal !== undefined ? { signal: deps.signal } : {})
     }),

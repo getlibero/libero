@@ -633,6 +633,27 @@ export const TeamSheet = z.object({
     // file — an operator should hear "too long" at edit time, not have the
     // model quietly briefed on half a sentence.
     description: z.string().max(500).default(""),
+    // How this channel wants the agent to sound (#270). One operator-authored
+    // paragraph, appended to the system prompt of every turn that *composes*
+    // something — see `systemPromptFor` in apps/server for which five those are.
+    //
+    // **Appended, never substituted.** The base prompt's clauses stand whatever
+    // voice is asked for: that the sheet's tool list is the whole of what the
+    // model can do, that a refusal is relayed rather than retried, and that not
+    // knowing is said plainly. A persona is a voice, not a second system prompt,
+    // and a sheet carrying one of those is a sheet nobody reviewed.
+    //
+    // Bounded for `description`'s reason, doubled because a paragraph is not a
+    // sentence: this text is in the input of every turn for the rest of the
+    // task, charged against `max_tokens_per_task` before the model has done
+    // anything. A parse failure rather than a truncation, again for
+    // `description`'s reason and more sharply — half a persona reads as
+    // complete, and the sentence that went may be the one that mattered.
+    //
+    // It is text for the model and reaches no gate. What a channel may call is
+    // `[[mcp_server]]` and `[[builtin]]`, decided in the proxy from this same
+    // file; nothing here can widen that, and #270's e2e case is what says so.
+    persona: z.string().max(1000).default(""),
     // Which client certificates may speak for this channel (#79).
     //
     // The certificate says *which channel* is calling; this says *which key* is

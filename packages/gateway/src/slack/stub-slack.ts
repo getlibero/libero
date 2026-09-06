@@ -47,6 +47,17 @@ export const STUB_APP_USER_ID = "U0BOTBOTB";
  */
 export const STUB_WORKSPACE_ID = "T00000000";
 
+/**
+ * What a stubbed workspace calls the app (#270).
+ *
+ * Deliberately the default name rather than a distinctive one, so every system
+ * prompt a stubbed rig composes is byte-identical to the prompt it composed
+ * before an installation had a name at all. A case that is *about* a renamed
+ * installation says so by overriding this, and then the difference in the
+ * prompt is the case's own doing rather than the harness's.
+ */
+export const STUB_APP_NAME = "Libero";
+
 export interface StubMentionFields {
   teamId: string;
   channelId: string;
@@ -517,7 +528,11 @@ export function createStubSlack(options: StubSlackOptions = {}): StubSlack {
       if (options.identityFailure !== undefined) {
         return Promise.reject(options.identityFailure);
       }
-      return Promise.resolve({ userId: STUB_APP_USER_ID, workspace: STUB_WORKSPACE_ID });
+      return Promise.resolve({
+        userId: STUB_APP_USER_ID,
+        workspace: STUB_WORKSPACE_ID,
+        name: STUB_APP_NAME
+      });
     }
   };
 

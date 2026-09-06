@@ -115,6 +115,7 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
             // something (#450). `sharedSkills` below is what reads it.
             standing: {
               description: settings.description,
+              persona: settings.persona,
               sharedSkills: settings.sharedSkills,
               maxAlwaysSkills: settings.skills.maxAlwaysSkills,
               maxAlwaysChars: settings.skills.maxAlwaysChars
@@ -161,6 +162,7 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
             // something (#450). `sharedSkills` below is what reads it.
             standing: {
               description: settings.description,
+              persona: settings.persona,
               sharedSkills: settings.sharedSkills,
               maxAlwaysSkills: settings.skills.maxAlwaysSkills,
               maxAlwaysChars: settings.skills.maxAlwaysChars
@@ -204,6 +206,7 @@ export function ambientDeps(options: AmbientOptions): AmbientDeps {
             // something (#450). `sharedSkills` below is what reads it.
             standing: {
               description: settings.description,
+              persona: settings.persona,
               sharedSkills: settings.sharedSkills,
               maxAlwaysSkills: settings.skills.maxAlwaysSkills,
               maxAlwaysChars: settings.skills.maxAlwaysChars

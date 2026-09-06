@@ -157,6 +157,11 @@ export function createGateway(options: GatewayOptions): SlackGateway {
    * needs to key a session it built from a directory listing.
    */
   let appWorkspace: string | undefined;
+  /**
+   * And what the workspace calls this app (#270), kept across reconnects with
+   * the other two because it came out of the same answer.
+   */
+  let appName: string | undefined;
   /** True while a connect ladder is running, so only ever one is. */
   let connecting = false;
   let cancelPending: (() => void) | undefined;
@@ -296,13 +301,22 @@ export function createGateway(options: GatewayOptions): SlackGateway {
           const self = await identity.identify();
           appUserId = self.userId;
           appWorkspace = self.workspace;
+          appName = self.name;
           // The id, once, at startup. It is what decides whether a message is a
           // mention arriving on its second subscription, and an operator
           // debugging "the agent answered twice" needs to see which id it
           // matched on. The workspace rides the same line because it came out of
           // the same call and an operator staring at a silent ambient scheduler
-          // wants to see that this process knows where it is installed.
-          logger.log("info", { event: "identified", user: appUserId, team: appWorkspace });
+          // wants to see that this process knows where it is installed. And
+          // the name, because it is what the agent will call itself: an
+          // operator reading a reply that opens "You are Ada" and expecting
+          // otherwise has exactly one line to check.
+          logger.log("info", {
+            event: "identified",
+            user: appUserId,
+            team: appWorkspace,
+            ...(appName !== undefined ? { name: appName } : {})
+          });
         }
         await source.connect();
         connectedAt = now();
@@ -681,6 +695,10 @@ export function createGateway(options: GatewayOptions): SlackGateway {
   return {
     get workspace(): string | undefined {
       return appWorkspace;
+    },
+
+    get appName(): string | undefined {
+      return appName;
     },
 
     async start(): Promise<void> {

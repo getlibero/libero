@@ -230,6 +230,7 @@ export async function runFiredTurn(
       system: systemPromptFor(
         {
           description: request.settings.standing.description,
+          persona: request.settings.standing.persona,
           sharedSkills: standingSkillsFor(
             deps.sharedSkills,
             request.channel,
@@ -309,6 +310,7 @@ async function runToolTurn(
       system: systemPromptFor(
         {
           description: request.settings.standing.description,
+          persona: request.settings.standing.persona,
           sharedSkills: standingSkillsFor(
             deps.sharedSkills,
             request.channel,

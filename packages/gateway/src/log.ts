@@ -145,6 +145,19 @@ export interface LogFields {
    * chose to be called.
    */
   user?: string;
+  /**
+   * What the workspace calls this app — its own display name, resolved once at
+   * startup (#270).
+   *
+   * **The one display name in this vocabulary, and it is not a person's.** The
+   * rule on `user` above holds exactly as written: a workspace member's name is
+   * something they chose to be called, and it is content. This is a field an
+   * operator typed into their own Slack app config, about their own app, and it
+   * is the only thing an operator has to check when a reply introduces the agent
+   * by a name they did not expect. An id would not answer that question, which
+   * is the test the `user` rule is really applying.
+   */
+  name?: string;
   /** Slack's `event_id`. Stable across delivery retries, so a duplicate is greppable. */
   eventId?: string;
   /**

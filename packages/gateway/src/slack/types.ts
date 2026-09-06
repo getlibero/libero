@@ -493,6 +493,29 @@ export interface AppSelf {
    * variable holding a value the process can ask for.
    */
   readonly workspace: string;
+  /**
+   * What the workspace calls this app — its display name, or `undefined` when
+   * Slack would not say (#270).
+   *
+   * Read so the agent can call itself what its installation calls it. The name
+   * is the Slack app config's, per workspace and not per channel, and an
+   * operator who renames the app there has renamed the agent; a model still
+   * introducing itself as Libero under a different avatar is the half-delivered
+   * version of that. Discovered rather than configured, for this interface's
+   * own reason and more sharply — a variable holding the name would be a second
+   * place to change it, and the two would drift the first time only one was.
+   *
+   * **`undefined` is not an error, unlike the two fields above**, and the
+   * asymmetry is the point. An unknown id costs every channel its follow-ups
+   * and an unknown workspace leaves the scheduler silent, so both fail startup
+   * loudly; an unknown name costs one word in a system prompt and has an honest
+   * default. Taking a deployment dark over a cosmetic string would be the
+   * inversion `apps/server/src/session/sheet.ts` argues against for the sheet.
+   *
+   * Non-empty when present, checked where it is read, so a consumer's fallback
+   * needs no `=== ""` guard of its own.
+   */
+  readonly name?: string;
 }
 
 /**
@@ -557,6 +580,19 @@ export interface SlackGateway {
    * other owner.
    */
   readonly workspace: string | undefined;
+  /**
+   * What the workspace calls this app, once it has asked (#270).
+   *
+   * The same shape and the same lifecycle as `workspace` above, and `undefined`
+   * for the same two reasons plus a third: Slack may simply not have said. The
+   * reader — the task runner's system prompt — falls back to a default name, so
+   * unlike the scheduler it loses nothing by asking early.
+   *
+   * Spelled `appName` rather than `name` because on this interface a bare
+   * `name` would read as the gateway's own, where on `AppSelf` the subject is
+   * already which app this is.
+   */
+  readonly appName: string | undefined;
   /**
    * Connects and begins dispatching. Resolves once connected; rejects if Slack
    * refused the credentials, which no amount of retrying changes.

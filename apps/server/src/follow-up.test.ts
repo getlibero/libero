@@ -109,6 +109,7 @@ function rig(followUpWindowMs = WINDOW_MS): {
       Promise.resolve({
         model: "test-model",
         description: "",
+        persona: "",
         sharedSkills: [],
         caps: { ...DEFAULT_AGENT_LOOP_CAPS },
         history: { ...DEFAULT_HISTORY_BOUNDS },
@@ -423,6 +424,7 @@ describe("a follow-up arriving mid-task", () => {
         Promise.resolve({
           model: "test-model",
           description: "",
+          persona: "",
           sharedSkills: [],
           caps: { ...DEFAULT_AGENT_LOOP_CAPS },
           history: { ...DEFAULT_HISTORY_BOUNDS },

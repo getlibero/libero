@@ -230,8 +230,10 @@ export interface SkillSettings {
    * more `load = "always"` entries than this. So a sheet that parsed is already
    * within it, and `session/shared-skills.ts` applies it a second time anyway —
    * one `slice`, and what it buys is a region that bounds itself whatever it is
-   * one day assembled from. #270's persona is the case that makes that not
-   * hypothetical.
+   * one day assembled from. #270's persona was named as the case that would
+   * make that concrete and turned out not to be one: it is inline sheet text,
+   * bounded at parse, so it never reaches the slice. `session/shared-skills.ts`
+   * carries the rule that replaced the prediction.
    */
   readonly maxAlwaysSkills: number;
   /**
@@ -368,11 +370,27 @@ export interface ChannelSettings {
   /**
    * The sheet's `[channel] description`, `""` when the sheet has none.
    * Appended to the system prompt when non-empty (#369) — it is
-   * operator-authored, the standing #270's persona will share, and that is
-   * what allows it that placement at all: channel history never gets it (see
-   * `context.ts`). Bounded by the schema's cap rather than truncated here.
+   * operator-authored, which is what allows it that placement at all: channel
+   * history never gets it (see `context.ts`). Bounded by the schema's cap
+   * rather than truncated here.
    */
   readonly description: string;
+  /**
+   * The sheet's `[channel] persona`, `""` when the sheet has none (#270).
+   *
+   * The other half of the standing region the sheet supplies, and it earns the
+   * system prompt for `description`'s reason rather than a second one: it
+   * arrives through a file in the operator's own git repository. Where the
+   * description says what the channel is, this says how the agent should sound
+   * in it — appended to the base prompt, never substituted for it, so the
+   * clauses about the tool list, about relaying refusals and about saying
+   * plainly when the answer is not known stand whatever voice is asked for.
+   *
+   * Bounded by the schema's cap, and that is the whole of its bound: unlike a
+   * shared skill, whose weight is in a file the schema cannot see, this is a
+   * string in the sheet, so a parse failure can say "too long" at edit time.
+   */
+  readonly persona: string;
   /** The four per-task caps, out of the sheet's `[llm]` block. */
   readonly caps: AgentLoopCaps;
   /** The two context bounds, out of the same block. */

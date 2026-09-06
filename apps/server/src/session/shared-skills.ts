@@ -16,7 +16,8 @@
 // clock that would read one. What answers "what is this channel loading" is the
 // log line per skill below, which is what the operator wanted the counter for.
 //
-// ## Two bounds, and only one of them is enforced here
+// ## Two bounds, and only one of them is enforced here (three since #270 —
+// the persona is a third, and the schema holds it; see the note below)
 //
 // `max_always_skills` is the schema's: its root `.check()` refuses a sheet that
 // names more `always` entries than the cap, so a sheet that parsed is already

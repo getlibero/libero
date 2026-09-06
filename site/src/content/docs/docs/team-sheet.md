@@ -545,11 +545,36 @@ question = "Is anything still open that we said would ship this week?"
 
 ### `[channel]`
 
-Identity and a description. The description reaches the model: when it is non-empty it is appended
-to the system prompt of every task the channel runs, so it is how the model knows what kind of
-channel it is in, and it is worth writing. At most 500 characters — a longer one is a parse failure,
-not a truncation — because it is charged against `max_tokens_per_task` on every task: a sentence or
-two about what the channel is for, not a wiki page.
+Identity, a description, and a persona. Both of the last two reach the model.
+
+The description is appended to the system prompt of every task the channel runs, so it is how the
+model knows what kind of channel it is in, and it is worth writing. At most 500 characters — a
+longer one is a parse failure, not a truncation — because it is charged against
+`max_tokens_per_task` on every task: a sentence or two about what the channel is for, not a wiki
+page.
+
+`persona` is the same instrument for how the agent should *sound* in this channel rather than what
+the channel is: a paragraph of house voice and house rules. At most 1000 characters, on the same
+terms and for the same reason, and it is charged not only on task replies but on every turn that
+composes something — a proactive post, a scheduled check, a playbook the agent writes. Where the
+description says where the agent is, the persona says who it is there.
+
+**A persona is appended to the system prompt, never substituted for it.** The rules that survive
+whatever voice you ask for: the tools this channel's sheet permits are the whole of what the agent
+can do, a refused or held call is relayed rather than retried, and not knowing is said plainly. A
+persona instructing otherwise changes nothing — every tool call is checked in the tool proxy from
+this same file, and the sheet's prose half cannot reach its authorization half. That is asserted
+end to end rather than claimed: the attack suite runs a channel whose persona declares the agent a
+fully trusted administrator and checks it is refused exactly what the same channel without one is
+refused, in the same words.
+
+**It is not a name and not an icon.** Those are the Slack app's, set once for the whole workspace in
+your app config, and there is no per-channel or per-message override. Slack's `chat.update` accepts
+neither, and every approval card and live checklist the agent paints is a `chat.update` — so an
+override would apply to replies and not to cards, or would rename a checklist halfway through a
+task. The @-handle people type is workspace-wide in any case, so a per-channel display name could
+not give a channel its own handle. What the agent calls *itself* does follow the app config: it
+reads its own display name at startup, so renaming the app in Slack renames the agent.
 
 `certificate_sha256` is required, and it is the one field here that is about *authentication* rather
 than about what the channel may do. It lists the SHA-256 fingerprints of the client certificates

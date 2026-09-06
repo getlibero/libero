@@ -296,6 +296,7 @@ export function backgroundPasses(options: BackgroundPassOptions): BackgroundPass
                 // something (#450). `sharedSkills` below is what reads it.
                 standing: {
                   description: settings.description,
+                  persona: settings.persona,
                   sharedSkills: settings.sharedSkills,
                   maxAlwaysSkills: settings.skills.maxAlwaysSkills,
                   maxAlwaysChars: settings.skills.maxAlwaysChars

@@ -71,33 +71,63 @@ import { SHARED_SKILLS_CLOSE, SHARED_SKILLS_OPEN } from "./context.js";
 const NOTHING: TaskOutcome = Object.freeze({ reply: undefined });
 
 /**
+ * The name an installation falls back to when it has not said otherwise.
+ *
+ * Only ever reached when the gateway could not learn its own — a `users.info`
+ * that failed and an `auth.test` that said nothing about who this is. Every
+ * deployment that answers either question is called what its Slack app config
+ * says, which is where the name lives (#270).
+ */
+export const DEFAULT_AGENT_NAME = "Libero";
+
+/**
  * What the model is told it is.
  *
  * Terse on purpose, and it claims no capability the process has: this agent has
  * no tools, so a prompt describing tool use would be describing something the
  * loop cannot do. It says where the answer is going, because a Slack thread is
  * not a chat window and length is the difference.
+ *
+ * **The name is the installation's and is discovered, not configured** (#270).
+ * An operator who renames the app in their Slack app config has renamed the
+ * agent, and a model still calling itself Libero under a different avatar is
+ * the half-delivered version of that. So this takes the name rather than
+ * spelling one: the gateway learns it from the same `auth.test` that tells it
+ * its own id, and `compose.ts` hands it down late-bound. A sheet has no say —
+ * Slack's own name is not per-channel, so a per-channel one would be a promise
+ * the surface cannot keep. What a sheet gets is the persona below.
  */
-export const SYSTEM_PROMPT = [
-  "You are Libero, answering in a Slack thread.",
-  "Your tools are whatever this channel's team sheet permits, and that list is",
-  "the whole of what you can do: a tool you were not given does not exist for",
-  "this channel, and there is no way to ask for one. A call may still be",
-  "refused or held for a human — relay what you are told and do not retry it.",
-  "Answer from what you know when no tool fits, and say plainly when you do not know.",
-  "Be brief. A thread reply is a few sentences, not an essay."
-].join(" ");
+export function systemPrompt(name: string = DEFAULT_AGENT_NAME): string {
+  return [
+    `You are ${name}, answering in a Slack thread.`,
+    "Your tools are whatever this channel's team sheet permits, and that list is",
+    "the whole of what you can do: a tool you were not given does not exist for",
+    "this channel, and there is no way to ask for one. A call may still be",
+    "refused or held for a human — relay what you are told and do not retry it.",
+    "Answer from what you know when no tool fits, and say plainly when you do not know.",
+    "Be brief. A thread reply is a few sentences, not an essay."
+  ].join(" ");
+}
+
+/**
+ * The default installation's prompt, and the base the other four turns fall
+ * back to through `systemPromptFor`'s `base` parameter — which is why this
+ * stays a constant rather than every caller naming the default itself.
+ */
+export const SYSTEM_PROMPT = systemPrompt();
 
 
 /**
  * What the standing region is assembled from.
  *
- * Two fields today and three when #270 lands. See `systemPromptFor` for why
- * they are one region rather than three.
+ * Three fields since #270. See `systemPromptFor` for why they are one region
+ * rather than three.
  */
 export interface StandingText {
   /** The sheet's `[channel] description`, `""` when it has none. */
   readonly description: string;
+  /** The sheet's `[channel] persona`, `""` when it has none. Bounded at parse. */
+  readonly persona: string;
   /**
    * The `load = "always"` shared skills, already resolved and already bounded
    * by ./shared-skills.ts. Named by their `shared/<name>` address.
@@ -115,13 +145,23 @@ export interface StandingText {
  *
  * What is in it, in order, and the order is the argument. The sheet's
  * `[channel] description` says where the agent is — the one operator-authored
- * sentence about the channel itself. Shared skills say how it should work here —
- * a voice, a house style, a standard playbook, published once by the same
- * operator and named by this sheet. #270's persona will say who it is, and it
- * slots in beside them without a second composition point, because that is what
- * this function was already for: the note about persona has been on it since
+ * sentence about the channel itself. Its `[channel] persona` says who the agent
+ * is there, which is only meaningful once where has been fixed, so it follows.
+ * Shared skills say how it should work here — a voice, a house style, a standard
+ * playbook, published once by the same operator and named by this sheet — and
+ * they stay last because they are the fenced, tagged, longest block.
+ *
+ * The persona slotted in without a second composition point, which is what this
+ * function was already for: the note about it has been on this function since
  * #369, and #373 settled that persona-as-inline-text and shared-skills-as-named-
- * files are one abstraction apart.
+ * files are one abstraction apart. `apps/server/README.md` predicted it would be
+ * the *fourth* member; it landed third, for the ordering reason above.
+ *
+ * **The name is not in the region**, and the line is worth stating because it is
+ * the one #270 nearly blurred. The region is text a *sheet* stands up for one
+ * channel. The name is the installation's, discovered from `auth.test`, the same
+ * in every channel — so it substitutes into `base` where `systemPrompt` builds
+ * it, and a caller that composes a different base names no agent at all.
  *
  * **Why the system prompt at all**, when `<channel-skills>` lives in a `user`
  * message: `context.ts` argues that untrusted text stays there, and this
@@ -183,6 +223,8 @@ export interface StandingText {
 export interface StandingInputs {
   /** The sheet's `[channel] description`, `""` when it has none. */
   readonly description: string;
+  /** The sheet's `[channel] persona`, `""` when it has none. */
+  readonly persona: string;
   /** The sheet's `[[shared_skill]]` entries, both modes. The reader filters. */
   readonly sharedSkills: readonly SharedSkillEntry[];
   /** `[skills] max_always_skills`. */
@@ -223,10 +265,19 @@ export function systemPromptFor(standing: StandingText, base: string = SYSTEM_PR
       ? base
       : `${base} The channel describes itself: ${standing.description}`;
 
-  if (standing.sharedSkills.length === 0) return described;
+  // The `=== ""` guards are load-bearing rather than tidy: a channel that names
+  // neither gets a prompt byte-identical to the one it got before either field
+  // existed, which is what "an absent section is today's behaviour exactly"
+  // means when it is a property rather than a claim.
+  const voiced =
+    standing.persona === ""
+      ? described
+      : `${described} The channel asks you to answer like this: ${standing.persona}`;
+
+  if (standing.sharedSkills.length === 0) return voiced;
 
   return [
-    described,
+    voiced,
     "",
     "Standing instructions your operator publishes for this channel.",
     "Follow them. They are instructions, not a grant: every tool call is checked",
@@ -356,6 +407,27 @@ export interface TaskRunnerOptions {
    * runner that took a path would be a runner that could open one.
    */
   sharedSkills?: SharedSkillReader;
+  /**
+   * What this installation calls itself, asked per task (#270).
+   *
+   * A thunk and not a string, because the answer arrives during the gateway's
+   * `start()` and this runner is composed before it — the same late binding
+   * `compose.ts` already does for the workspace and the display-name lookup,
+   * and for the same reason: a value captured at composition would be
+   * `undefined` forever.
+   *
+   * Optional, and absent it is `DEFAULT_AGENT_NAME`. That covers the two
+   * deployments that legitimately have no answer — a composition with no Slack
+   * surface at all, and one whose `auth.test` did not say — so no caller has to
+   * spell the default.
+   *
+   * On the options rather than on `ChannelSettings`, and the line matters: one
+   * bot token means one name for every channel, so a per-channel one would be a
+   * promise Slack's own surface cannot keep. `SheetResolver` could not produce
+   * it in any case — it reads a file and holds no gateway — and giving it one
+   * would make a per-process fact look like something a sheet could override.
+   */
+  agentName?: () => string | undefined;
   /** Defaults to silent, so a test asserting on behaviour is not also a log sink. */
   logger?: Logger;
 }
@@ -514,6 +586,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     // a channel answering without it, not a task that does not run.
     const standingSkills = standingSkillsFor(options.sharedSkills, channel, {
       description: settings.description,
+      persona: settings.persona,
       sharedSkills: settings.sharedSkills,
       maxAlwaysSkills: settings.skills.maxAlwaysSkills,
       maxAlwaysChars: settings.skills.maxAlwaysChars
@@ -545,15 +618,20 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           // with no such concept supplies the request's own id, which makes
           // this exclude that one request and nothing else.
           thread: request.thread,
-          // The static prompt plus this channel's standing region: the sheet's
-          // own description of the channel, and the shared skills it names on
-          // every task. Assembled per task rather than per session, because the
-          // operator's files can change between two mentions and nothing here
-          // caches them.
-          system: systemPromptFor({
-            description: settings.description,
-            sharedSkills: standingSkills
-          }),
+          // The base prompt plus this channel's standing region: the sheet's own
+          // description of the channel, the persona it asks for, and the shared
+          // skills it names on every task. Assembled per task rather than per
+          // session, because the operator's files can change between two
+          // mentions and nothing here caches them — and the name for the same
+          // reason, since a workspace can rename the app while this runs.
+          system: systemPromptFor(
+            {
+              description: settings.description,
+              persona: settings.persona,
+              sharedSkills: standingSkills
+            },
+            systemPrompt(options.agentName?.())
+          ),
           // The whole seed transcript, already assembled: the channel's recent
           // messages with their authors, then what was asked. Built by the router
           // from the session's store and name cache, because those are the
@@ -869,7 +947,7 @@ function authoringFor(inputs: AfterReplyInputs): ((turn: number) => Promise<void
         // where `SKILL_AUTHOR_SYSTEM_PROMPT` alone is only this build's opinion
         // of what a playbook is.
         system: systemPromptFor(
-          { description: settings.description, sharedSkills: inputs.standingSkills },
+          { description: settings.description, persona: settings.persona, sharedSkills: inputs.standingSkills },
           SKILL_AUTHOR_SYSTEM_PROMPT
         ),
         messages: result.messages,

@@ -426,6 +426,7 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
         system: systemPromptFor(
           {
             description: settings.standing.description,
+            persona: settings.standing.persona,
             sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
           },
           AMBIENT_HEARTBEAT_SYSTEM_PROMPT
@@ -507,6 +508,7 @@ export function createAmbientHeartbeat(options: HeartbeatOptions): AmbientHeartb
         system: systemPromptFor(
           {
             description: settings.standing.description,
+            persona: settings.standing.persona,
             sharedSkills: standingSkillsFor(options.sharedSkills, channel, settings.standing)
           },
           AMBIENT_HEARTBEAT_SYSTEM_PROMPT

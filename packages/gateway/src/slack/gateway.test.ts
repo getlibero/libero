@@ -14,6 +14,7 @@ import { renderApprovalCard } from "./approval-card.js";
 import { createGateway } from "./gateway.js";
 import type { Scheduler } from "./gateway.js";
 import {
+  STUB_APP_NAME,
   STUB_APP_USER_ID,
   STUB_WORKSPACE_ID,
   appMentionEnvelope,
@@ -1277,7 +1278,11 @@ describe("createGateway", () => {
 
       expect(lines.find(line => line.event === "identified")).toMatchObject({
         user: STUB_APP_USER_ID,
-        team: STUB_WORKSPACE_ID
+        team: STUB_WORKSPACE_ID,
+        // The one display name in this vocabulary, and it is the app's own
+        // (#270). An operator reading a reply introduced by a name they did not
+        // expect has exactly this line to check.
+        name: STUB_APP_NAME
       });
     });
 
@@ -1371,6 +1376,40 @@ describe("createGateway", () => {
       expect(gateway.workspace).toBeUndefined();
       await gateway.start();
       expect(gateway.workspace).toBe(STUB_WORKSPACE_ID);
+    });
+
+    it("answers what the workspace calls this app, once it has asked (#270)", async () => {
+      // The task runner's one input from this side: the name the system prompt
+      // introduces the agent by. Same call, same lifecycle and same getter shape
+      // as the workspace above, because it came out of the same answer.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined),
+        identity: slack.identity
+      });
+
+      expect(gateway.appName).toBeUndefined();
+      await gateway.start();
+      expect(gateway.appName).toBe(STUB_APP_NAME);
+    });
+
+    it("answers no name when nothing was ever asked, and that is not a failure", async () => {
+      // Unlike the workspace, whose reader loses a scan, this one has an honest
+      // default: `systemPrompt` falls back to `DEFAULT_AGENT_NAME`. So a
+      // composition with no identity is a working deployment with a default
+      // name rather than a degraded one.
+      const slack = createStubSlack();
+      const gateway = createGateway({
+        source: slack.source,
+        poster: forbiddenPoster(),
+        handler: () => Promise.resolve(undefined)
+      });
+
+      await gateway.start();
+
+      expect(gateway.appName).toBeUndefined();
     });
 
     it("answers no workspace when nothing was ever asked", async () => {

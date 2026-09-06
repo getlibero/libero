@@ -203,6 +203,7 @@ export function settingsFrom(sheet: TeamSheet, fallbackModel: string): ChannelSe
   return {
     model: sheet.llm.model ?? fallbackModel,
     description: sheet.channel.description,
+    persona: sheet.channel.persona,
     // Names and load modes, in the order the sheet named them. The content is in
     // a third root and resolving a name to a file is ./shared-skills.ts's.
     sharedSkills: sheet.shared_skill,
@@ -293,8 +294,10 @@ export function createSheetResolver(options: SheetResolverOptions): SheetResolve
 
   const defaults = (): ChannelSettings => ({
     model: options.model,
-    // No sheet parsed, so no description: the model gets the static prompt.
+    // No sheet parsed, so no description and no persona: the model gets the
+    // static prompt, which is what both `""`s mean everywhere else too.
     description: "",
+    persona: "",
     // And no shared skills, for the sharper version of the same reason: naming
     // one is something a sheet does, so a channel with no sheet has named none.
     sharedSkills: [],

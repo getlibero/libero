@@ -140,6 +140,22 @@ function readUserId(response: unknown): string | undefined {
   return typeof userId === "string" && userId.length > 0 ? userId : undefined;
 }
 
+/**
+ * The bot user's own name from an `auth.test` response, if it said (#270).
+ *
+ * The second rung of the name ladder, and free — the response is already in
+ * hand. Slack's `user` here is the bot's username, which is the display name
+ * slugged, so it reads "ada" where `users.info` would say "Ada". That is worse
+ * than the first rung and much better than the default: an installation without
+ * `users:read` still gets the name its operator chose rather than this
+ * repository's.
+ */
+function readAppUsername(response: unknown): string | undefined {
+  if (typeof response !== "object" || response === null) return undefined;
+  const user = (response as { user?: unknown }).user;
+  return typeof user === "string" && user.length > 0 ? user : undefined;
+}
+
 /** The workspace from the same `auth.test` response, if it said (#317). */
 function readTeamId(response: unknown): string | undefined {
   if (typeof response !== "object" || response === null) return undefined;
@@ -393,7 +409,15 @@ export function createWebApiSurface(options: WebApiOptions): WebApiSurface {
         // with nothing to say why.
         throw new GatewayError("auth_rejected", false, { slackError: "no_team_id" });
       }
-      return { userId, workspace };
+      // The name, on a ladder rather than a single read, and never fatal —
+      // `AppSelf.name` argues why. `users.displayName` is reused rather than a
+      // second lookup written here: it already swallows every failure, already
+      // logs `user_lookup_failed` with `missing_scope`, and already prefers the
+      // name a workspace chose over the legacy handle. Asking it about *this*
+      // app is the same question it answers about everyone in a transcript.
+      const name = (await users.displayName(userId)) ?? readAppUsername(response);
+
+      return { userId, workspace, ...(name !== undefined ? { name } : {}) };
     }
   };
 

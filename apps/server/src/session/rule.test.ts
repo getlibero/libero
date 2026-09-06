@@ -33,7 +33,7 @@ const NOW = 1_749_998_700_000;
 const DUE_AT = 1_749_998_400_000;
 
 const SETTINGS: RuleSettings = {
-  standing: { description: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
+  standing: { description: "", persona: "", sharedSkills: [], maxAlwaysSkills: 2, maxAlwaysChars: 8_192 },
   enabled: true,
   // Off, which is every sheet that has not opted in (#348) — so every case in
   // this file is about the single-call shape unless it says otherwise.
