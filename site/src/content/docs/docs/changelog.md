@@ -21,8 +21,10 @@ repository names this page as the changelog step:
   2. **Upgrading** — breaking changes and the operator actions they require:
      sheet format, environment, volumes, image and CLI pairing — or the
      explicit sentence that there are none. Team-sheet changes are called out
-     loudest, because the sheet is the compatibility surface 1.0 will
-     eventually freeze. Security fixes are flagged as such.
+     loudest, because the sheet is the first of the surfaces
+     [1.0 freezes](/docs/compatibility/) — that page is the list of the rest,
+     and an entry touching any of them owes the same call-out. Security fixes
+     are flagged as such.
   3. **The suite statement** — that the e2e security suite passes against
      this tag. Saying it per release is what makes the roadmap's "against
      every release" a checkable claim rather than an aspiration.

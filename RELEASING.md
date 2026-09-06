@@ -33,6 +33,24 @@ The tag's number and `packages/cli/package.json`'s `version` move together —
 the bump is a step below. No other package version matters: everything else is
 private and ships inside the images.
 
+## What a version number promises
+
+`MAJOR.MINOR.PATCH`, and what each part means is stated on the site rather than
+here: [What 1.0 freezes](https://getlibero.com/docs/compatibility) lists the
+seven surfaces a self-hoster may build on and marks each frozen or explicitly
+not. This paragraph is the policy; that page is the list, and the split is
+deliberate — an operator deciding whether to upgrade should not have to read a
+maintainer's runbook to find out what a minor may change.
+
+**Before 1.0** a minor may break any of them, and the changelog's Upgrading
+section is what says so. **From 1.0** a frozen surface changes only in a major:
+nothing is removed, no default moves, no bound tightens. Additions — an optional
+field, a variable with a default, a new subcommand or exit code — are minors.
+Loosening a bound is an addition; tightening one is not.
+
+The surfaces the page marks **not** frozen are exempt from all of that, on
+purpose, and it says which and why.
+
 ## The gates a tag meets
 
 A tag alone does not release. Each publish workflow runs behind a reviewed
