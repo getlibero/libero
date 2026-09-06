@@ -327,6 +327,25 @@ the native adapters pilot demand actually named, from
 and a disposition pass over whatever remains, so each surviving parked issue carries an explicit
 post-1.0 reason. "Done" here means no open issue is undecided, not that all of them were built.
 
+**Planned 2026-09-06, and narrower than the paragraph above.** The milestone was opened against
+what the pilot window had actually produced, which was none of the three inputs the lane assumed.
+No cloud accounts exist, so #496 stays parked with the `deploy/README.md` warnings standing and the
+1.0 validation release inheriting them as a stated limit. The one live deployment is a test one, so
+#283 and #284 stay parked too — a cutoff tuned against a test corpus is a guess with a number on
+it, which is exactly what #283 refused to be, and the collection path #427 built means the
+validation pilots produce the distribution with nothing further to build. And no pilot named an
+adapter, so #56–58 stay parked under #211. What the milestone builds is the two things that gate on
+nothing external: the limits pass, with #465 promoted to its tracker
+([#538](https://github.com/getlibero/libero/issues/538) the inventory and per-limit decision,
+[#539](https://github.com/getlibero/libero/issues/539) the deployment-level surface) and beside it
+the compatibility surface 1.0 freezes, stated on one page
+([#540](https://github.com/getlibero/libero/issues/540)), so that "1.0 hardens the one-way doors"
+is a list rather than a sentence; and `libero skill vendor` (#439), with the Agent Skills
+`SKILL.md` convention as the format it normalizes from. The disposition pass is an issue of its own
+([#541](https://github.com/getlibero/libero/issues/541)), blocked on the rest so it runs last, and
+every issue it leaves open carries a `post-1.0` label beside `parked` — the label is what a filter
+finds, the comment is what a reader finds.
+
 Some things stay demand-driven, decided rather than drifted: Windows support for the CLI
 ([#249](https://github.com/getlibero/libero/issues/249)), the adapters no pilot asked for, and
 event-driven ambient — MCP subscriptions
