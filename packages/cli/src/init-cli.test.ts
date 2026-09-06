@@ -15,6 +15,7 @@ import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { assignedNames } from "./env-file.js";
+import { IMAGE_TAG } from "./version.js";
 import { runCli } from "./cli.js";
 
 /**
@@ -29,7 +30,16 @@ import { runCli } from "./cli.js";
  */
 
 /** Written whatever the flags say, and in this order. */
-const ALWAYS_BEFORE_KEYS = ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "AGENT_PROVIDER", "AGENT_MODEL"];
+const ALWAYS_BEFORE_KEYS = [
+  // Which release this deployment runs (#519). First because it is the one
+  // variable that is about the deployment rather than about a service in it,
+  // and the only one `init` writes a real value into besides the master key.
+  "LIBERO_VERSION",
+  "SLACK_APP_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "AGENT_PROVIDER",
+  "AGENT_MODEL"
+];
 
 const ANTHROPIC = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"];
 
@@ -190,6 +200,33 @@ describe("what it writes", () => {
     const text = readFileSync(join(dir, "deploy", ".env"), "utf8");
 
     expect([...assignedNames(text).keys()]).toEqual(VARIABLES);
+  });
+
+  // #519. The compose file interpolates this into all three `image:` lines, so
+  // a deployment scaffolded by one release does not silently start running
+  // another one the next time its daemon pulls.
+  it("pins the three images to the release that wrote the file", async () => {
+    await run(["init"]);
+
+    const text = readFileSync(join(dir, "deploy", ".env"), "utf8");
+
+    expect(valueOf(text, "LIBERO_VERSION")).toBe(IMAGE_TAG);
+  });
+
+  // The rule the whole file is written to, applied to the one line an upgrade
+  // moves: a re-run with a newer CLI must not decide on its own that this
+  // deployment now runs a different release.
+  it("does not move a pin that is already there", async () => {
+    await run(["init"]);
+    const before = readFileSync(join(dir, "deploy", ".env"), "utf8").replace(
+      `LIBERO_VERSION=${IMAGE_TAG}`,
+      "LIBERO_VERSION=v0.1.0"
+    );
+    writeFileSync(join(dir, "deploy", ".env"), before);
+
+    await run(["init"]);
+
+    expect(valueOf(readFileSync(join(dir, "deploy", ".env"), "utf8"), "LIBERO_VERSION")).toBe("v0.1.0");
   });
 
   it("leaves the file readable only by its owner", async () => {

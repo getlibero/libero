@@ -13,7 +13,26 @@
 
 services:
   server:
-    image: ghcr.io/getlibero/server:latest
+    # The image, and with it the release this whole deployment runs (#519).
+    #
+    # ONE VARIABLE FOR ALL THREE SERVICES, because one `v*` tag releases all
+    # three, and its value is that tag verbatim — the `v` included, because that
+    # is what release-images.yml publishes under. `libero init` writes it from
+    # its own version, the CLI being the lockstep partner that knows the number
+    # and RELEASING.md what keeps the two the same, and `libero doctor` says so
+    # when the file and the CLI running against it have drifted apart. Upgrading
+    # is editing that one line and pulling.
+    #
+    # `:-latest` is for the checkout, not for a deployment. This file carries
+    # `build:` as well, so a checkout with no .env builds all three locally and
+    # tags what it built `latest`. What it must not be is where an operator
+    # following the quick start ends up: `docker compose pull`
+    # against `latest` is a silent upgrade on the daemon's schedule, across a
+    # team-sheet-format change the changelog's Upgrading notes exist to make
+    # anything but silent. Everything else here insists on pinning — the runner
+    # refuses a sandbox image that is not digest-pinned — and this is the same
+    # rule applied to the images this project publishes itself.
+    image: ghcr.io/getlibero/server:${LIBERO_VERSION:-latest}
     build:
       context: ..
       dockerfile: apps/server/Dockerfile
@@ -139,7 +158,8 @@ services:
     stop_grace_period: 20s
 
   proxy:
-    image: ghcr.io/getlibero/proxy:latest
+    # Pinned by LIBERO_VERSION with the other two — the argument is on `server`.
+    image: ghcr.io/getlibero/proxy:${LIBERO_VERSION:-latest}
     build:
       context: ..
       dockerfile: apps/proxy-server/Dockerfile
@@ -421,7 +441,10 @@ services:
   # have no usable defaults and the process refuses to start without them, which
   # is the intended failure: each names a thing only the operator knows.
   runner:
-    image: ghcr.io/getlibero/runner:latest
+    # Pinned by LIBERO_VERSION with the other two — the argument is on `server`.
+    # Published on the same tag even though it starts only under a profile, so
+    # turning the sandbox on does not also change which release is running.
+    image: ghcr.io/getlibero/runner:${LIBERO_VERSION:-latest}
     build:
       context: ..
       dockerfile: apps/runner/Dockerfile
@@ -500,8 +523,11 @@ services:
       # (node dist/hop.js). There is no second image to pin because the hop *is*
       # this image — if it were substituted, the runner would already be. A
       # container cannot reliably learn its own image from inside itself, so it
-      # is named here beside the image line above and the two must agree.
-      RUNNER_IMAGE: ghcr.io/getlibero/runner:latest
+      # is named here beside the image line above and the two must agree —
+      # LIBERO_VERSION included, or a pinned deployment would run its hop out of
+      # whatever `latest` had become. version.test.ts in packages/cli holds the
+      # four lines together.
+      RUNNER_IMAGE: ghcr.io/getlibero/runner:${LIBERO_VERSION:-latest}
     volumes:
       # The one privilege, and the only mount that is not a certificate.
       # Read-write because starting a container is a write; there is no

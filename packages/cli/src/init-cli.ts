@@ -60,6 +60,17 @@
 // `PROXY_VAULT_KEY` out entirely. A re-run with a profile appends its block,
 // which is how an operator opts in later without hand-writing the names.
 //
+// **It pins the deployment to a release rather than to `latest`** (#519). The
+// compose file interpolates one `LIBERO_VERSION` into all three `image:` lines,
+// and this command writes it from its own version, because the CLI is the
+// lockstep partner that knows the number — one `v*` tag releases the CLI and
+// the three images together. Without the line compose falls back to `latest`,
+// which is right for a checkout that builds its own images and wrong for a
+// deployment that pulls: `docker compose pull` would then move all three
+// services on the registry's schedule rather than the operator's. Like every
+// other value here it is never rewritten by a re-run — which release runs is a
+// decision, and `libero doctor` is what says when it and the CLI have drifted.
+//
 // **What it prints names the compose file it found, not this repository's**
 // (#516). `findCompose` accepts `deploy/` or the working directory and any of
 // four filenames; the closing hint and the file's own header said
@@ -80,6 +91,7 @@ import type { CliIo } from "./io.js";
 import { assignedValues, mergeEnvFile, renderEnvFile } from "./env-file.js";
 import type { EnvBlock } from "./env-file.js";
 import { DEFAULT_KEY_FILE, generateVaultKey } from "./vault-key.js";
+import { IMAGE_TAG, IMAGE_TAG_VAR } from "./version.js";
 
 /** The two providers `AGENT_PROVIDER` takes, as apps/server/src/env.ts parses it. */
 const PROVIDERS = ["anthropic", "openai-compatible"] as const;
@@ -136,6 +148,15 @@ export const USAGE = [
   "leaving one out: compose gives every one of those variables a default, so",
   "absent and empty mean the same thing to it. Re-run with a --profile to add",
   "its block later; nothing already in the file is touched.",
+  "",
+  "It also pins which release this deployment runs. LIBERO_VERSION is the tag",
+  "all three service images are pulled at, written from this command's own",
+  "version because one v* tag releases the CLI and the images together. Without",
+  "it compose falls back to :latest, which is what a checkout building its own",
+  "images wants and what a deployment that pulls does not: docker compose pull",
+  "would then move all three services on the registry's schedule. Upgrading is",
+  "editing that line and pulling, and libero doctor says when it has drifted",
+  "from the CLI you are running.",
   "",
   "The file goes beside the compose file because that is where Docker Compose",
   "looks: with no --project-directory the project directory is the directory",
@@ -493,6 +514,23 @@ function header(cwd: string, found: ComposeLocation | null): readonly string[] {
 function template(options: InitOptions, vaultKey: string | undefined): readonly EnvBlock[] {
   const litellm = options.profiles.includes("litellm");
   return [
+    {
+      comment: [
+        "Which release this deployment runs: the tag all three service images",
+        "were published under, written from the version of the `libero` that",
+        "wrote this file. One `v*` tag releases the CLI and the images together,",
+        "so those are the same release.",
+        "",
+        "Leave it out and compose falls back to `latest`, which is the right",
+        "answer for a checkout building its own images and the wrong one for a",
+        "deployment that pulls — `docker compose pull` would move all three",
+        "services whenever the registry last moved, across a team-sheet-format",
+        "change. Upgrading is editing this line and pulling. `libero init` never",
+        "rewrites it and `libero doctor` says when it has drifted from the CLI",
+        "you are running."
+      ],
+      vars: [{ name: IMAGE_TAG_VAR, value: IMAGE_TAG }]
+    },
     {
       comment: [
         "Socket Mode app-level token (xapp-) and bot token (xoxb-), both from the",

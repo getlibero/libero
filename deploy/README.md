@@ -92,14 +92,31 @@ the push, the release workflow pulls each image back by its published digest,
 per platform, and runs `scripts/image-checks.sh` against it — the same four
 assertions every PR passes, this time against the bytes an operator will pull.
 
-**The compose file keeps its `build:` block.** `docker compose up` from a clean
-checkout still builds locally, with no registry access — the quick start's
-promise — because compose builds rather than pulls when a service carries
-`build:` and the image is absent. An operator who wants the published bytes,
-provenance and all, runs `docker compose pull` first, and pins the version tag
-in a compose override rather than tracking `latest`, as the VM guide says. The
-two paths run the same Dockerfiles; what `pull` adds is that the bytes are
-provably the ones the tag built.
+**Which release runs is one variable, and it is not `latest`** (#519).
+`LIBERO_VERSION` is interpolated into all three `image:` lines and into the
+runner's `RUNNER_IMAGE` — the egress hop is that same image with another
+entrypoint, so a pinned deployment whose hop tracked `latest` would have put the
+drift one layer down. `libero init` writes it from its own version, because the
+CLI is the lockstep partner that knows the number: one `v*` tag releases the CLI
+and the three images together, so `v` plus the CLI's version is the tag its own
+release published. `libero doctor` reports the file's pin against the release of
+the `libero` asking, as a warning rather than a failure — running one release
+behind is a choice, and `npx` resolves the newest CLI whether or not you meant to
+upgrade. Upgrading is editing that line and pulling; nothing rewrites it for you,
+because which release a deployment runs is not a decision a re-run of `init`
+should make.
+
+**The compose file keeps its `build:` block, and `:-latest` is what that shape
+gets.** `docker compose up` from a clean checkout still builds locally, with no
+registry access — the quick start's promise — because compose builds rather than
+pulls when a service carries `build:` and the image is absent, and it tags what
+it built with whatever `image:` resolved to. So the fallback is the checkout's
+answer and not a deployment's: `docker compose pull` against `latest` is a silent
+upgrade on the daemon's schedule, across a team-sheet-format change the
+changelog's Upgrading section exists to make anything but silent. An operator who
+wants the published bytes, provenance and all, sets `LIBERO_VERSION` and runs
+`docker compose pull`. The two paths run the same Dockerfiles; what `pull` adds
+is that the bytes are provably the ones the tag built.
 
 ## The mounts
 
