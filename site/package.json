@@ -17,6 +17,7 @@
     "preview": "astro preview",
     "check": "astro check",
     "check:html": "node scripts/check-html.mjs",
+    "check:nav": "node scripts/check-nav.mjs",
     "astro": "astro"
   },
   "dependencies": {
