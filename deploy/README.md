@@ -242,8 +242,10 @@ group id — which differs between Debian on GCP and AL2023 on AWS. That makes i
 operator variable (`DOCKER_GID`) rather than a number this file can hardcode. Its
 default is `0` — the root group, which every host has and which opens the socket
 on none of them — so a deployment that forgot the variable fails rather than
-quietly working on whichever distribution somebody guessed. `libero init`
-scaffolds it blank with the command that prints it.
+quietly working on whichever distribution somebody guessed. `libero init
+--profile runner` scaffolds it blank with the command that prints it — under the
+profile, because the variable configures a service the same word is what starts
+(#518).
 
 **The sandbox image is the runner's, and the runner never pulls.** The run request
 has no image field — that is most of what makes it narrow — so the image is named

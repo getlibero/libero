@@ -15,6 +15,8 @@
 // the services — and the services' own entrypoints own what lives in their
 // volumes.
 
+import { composeCommand, findCompose } from "./compose.js";
+import type { ComposeLocation } from "./compose.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import type { CliIo } from "./io.js";
 import { nodeTooOld } from "./node-version.js";
@@ -33,32 +35,42 @@ import { runDoctorCommand, USAGE as DOCTOR_USAGE } from "./doctor-cli.js";
 declare const __LIBERO_VERSION__: string;
 export const VERSION = typeof __LIBERO_VERSION__ === "string" ? __LIBERO_VERSION__ : "0.0.0-dev";
 
-const USAGE = [
-  "usage: libero <command>",
-  "",
-  "  init         write the deployment's environment file and generate the vault master key",
-  "  channel add  create a channel's team sheet and the certificate that speaks for it",
-  "  doctor       read a deployment's wiring back and report what is wrong with it",
-  "",
-  "Libero's two services run in containers and own what is inside their own",
-  "volumes. This command owns the other half: what an operator authors on the",
-  "host — the environment file, the channels directory, the team sheets, the",
-  "certificates — all of which are bind-mounted read-only into the services.",
-  "",
-  "The vault, the budget meter and the audit log are deliberately not commands",
-  "here. Their files live in named volumes the host cannot open, and the",
-  "vault's master key lives in the proxy's environment rather than in this",
-  "process. They are reached where the key already is:",
-  "",
-  "  docker compose -f deploy/docker-compose.yml run --rm proxy \\",
-  "    node dist/vault.js set github_service_account < token.txt",
-  "  docker compose -f deploy/docker-compose.yml run --rm proxy \\",
-  "    node dist/budget.js reset C024BE91L",
-  "  docker compose -f deploy/docker-compose.yml run --rm proxy \\",
-  "    node dist/audit.js list --channel C024BE91L",
-  "",
-  "Reads no environment. Every path is resolved from the working directory."
-].join("\n");
+/**
+ * Usage, worded for the compose file this directory actually has (#516).
+ *
+ * A function rather than a constant because the three commands it names as
+ * living elsewhere are named as command lines, and a command line that says
+ * `-f deploy/docker-compose.yml` to an operator whose file is `./compose.yaml`
+ * is one they cannot run. Where there is no compose file to find — `libero
+ * --help` outside a deployment — it says `docker compose` and names nothing.
+ */
+function usage(found: ComposeLocation | null, cwd: string): string {
+  const run = (entrypoint: string): string =>
+    `  ${composeCommand(cwd, found, "run --rm proxy \\")}\n    ${entrypoint}`;
+  return [
+    "usage: libero <command>",
+    "",
+    "  init         write the deployment's environment file and generate the vault master key",
+    "  channel add  create a channel's team sheet and the certificate that speaks for it",
+    "  doctor       read a deployment's wiring back and report what is wrong with it",
+    "",
+    "Libero's two services run in containers and own what is inside their own",
+    "volumes. This command owns the other half: what an operator authors on the",
+    "host — the environment file, the channels directory, the team sheets, the",
+    "certificates — all of which are bind-mounted read-only into the services.",
+    "",
+    "The vault, the budget meter and the audit log are deliberately not commands",
+    "here. Their files live in named volumes the host cannot open, and the",
+    "vault's master key lives in the proxy's environment rather than in this",
+    "process. They are reached where the key already is:",
+    "",
+    run("node dist/vault.js set github_service_account < token.txt"),
+    run("node dist/budget.js reset C024BE91L"),
+    run("node dist/audit.js list --channel C024BE91L"),
+    "",
+    "Reads no environment. Every path is resolved from the working directory."
+  ].join("\n");
+}
 
 const COMMANDS = ["init", "channel", "doctor"] as const;
 type Command = (typeof COMMANDS)[number];
@@ -97,9 +109,10 @@ export async function runCli(io: CliIo): Promise<number> {
   }
 
   const [command, ...rest] = io.argv;
+  const found = findCompose(io.cwd);
 
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
-    io.out(USAGE);
+    io.out(usage(found, io.cwd));
     return command === undefined ? EXIT_USAGE : EXIT_OK;
   }
   if (command === "--version") {
@@ -114,9 +127,9 @@ export async function runCli(io: CliIo): Promise<number> {
         `libero: ${command} is the proxy's own entrypoint, because its files are ` +
           "in a container volume this host cannot open:"
       );
-      io.err(`libero:   docker compose -f deploy/docker-compose.yml run --rm proxy ${entrypoint}`);
+      io.err(`libero:   ${composeCommand(io.cwd, found, `run --rm proxy ${entrypoint}`)}`);
     }
-    io.err(USAGE);
+    io.err(usage(found, io.cwd));
     return EXIT_USAGE;
   }
 

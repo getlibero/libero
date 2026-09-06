@@ -18,34 +18,42 @@ import { assignedNames } from "./env-file.js";
 import { runCli } from "./cli.js";
 
 /**
- * Every variable `init` writes, in the order it writes them.
+ * Every variable `init` writes, grouped by what has to be asked for to get it.
  *
- * The list is here rather than imported so that adding one to ./init-cli.ts is
+ * The lists are here rather than imported so that adding one to ./init-cli.ts is
  * a test that has to be edited, and the edit is where someone is asked whether
- * a new variable belongs in a file an operator's Slack tokens live in.
+ * a new variable belongs in a file an operator's Slack tokens live in. Since
+ * #518 the edit asks a second question — which group — and getting that wrong
+ * is what "the compose contract" below catches: the union is still exactly the
+ * compose file's set, so a variable in no group fails a test.
  */
-const VARIABLES = [
-  "SLACK_APP_TOKEN",
-  "SLACK_BOT_TOKEN",
-  "AGENT_PROVIDER",
-  "AGENT_MODEL",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_BASE_URL",
-  "OPENAI_API_KEY",
-  "OPENAI_BASE_URL",
-  // The LiteLLM sidecar (#428, #479). Blank for the runner's first reason: the
-  // sidecar shape needs a provider key and nobody can guess which. In that
-  // shape OPENAI_API_KEY above stops being a provider key and becomes the
-  // sidecar's, so these two are where the provider keys go — on a service the
-  // agent's own variables never reach.
-  "LITELLM_ANTHROPIC_API_KEY",
-  "LITELLM_OPENAI_API_KEY",
+
+/** Written whatever the flags say, and in this order. */
+const ALWAYS_BEFORE_KEYS = ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "AGENT_PROVIDER", "AGENT_MODEL"];
+
+const ANTHROPIC = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"];
+
+/** Also written under --profile litellm, which is keyed by OPENAI_API_KEY. */
+const OPENAI = ["OPENAI_API_KEY", "OPENAI_BASE_URL"];
+
+// The LiteLLM sidecar (#428, #479). Blank for the runner's first reason: the
+// sidecar shape needs a provider key and nobody can guess which. In that shape
+// OPENAI_API_KEY above stops being a provider key and becomes the sidecar's, so
+// these two are where the provider keys go — on a service the agent's own
+// variables never reach.
+const LITELLM = ["LITELLM_ANTHROPIC_API_KEY", "LITELLM_OPENAI_API_KEY"];
+
+/** Written whatever the flags say, and after the completion keys. */
+const ALWAYS_AFTER_KEYS = [
   "AGENT_EMBEDDING_PROVIDER",
   "AGENT_EMBEDDING_MODEL",
   "AGENT_EMBEDDING_API_KEY",
   "AGENT_EMBEDDING_BASE_URL",
   "PROXY_VAULT_KEY",
-  "PROXY_PRICE_TABLE",
+  "PROXY_PRICE_TABLE"
+];
+
+const RUNNER = [
   // The sandbox (#395). Three, and they arrive together: an image nobody chose,
   // a pin nobody can guess, and a group id that differs between hosts. Each is
   // blank in the scaffold on purpose — the runner refuses to start without them,
@@ -57,12 +65,16 @@ const VARIABLES = [
   // Blank for a different reason from the three above: those have no usable
   // default and the runner refuses to start, and these have one — compose
   // interpolates `:-`, so an empty line is the shipped number rather than no
-  // ceiling. Scaffolded anyway, because an operator who never opens the compose
-  // file should still find the bound on their host in the file they do edit.
+  // ceiling. Scaffolded anyway once the profile is asked for, because an
+  // operator who never opens the compose file should still find the bound on
+  // their host in the file they do edit.
   "RUNNER_MAX_CPUS",
   "RUNNER_MAX_MEMORY_MB",
   "RUNNER_MAX_TIMEOUT_SECONDS"
 ];
+
+/** What the default run writes: anthropic, and neither optional service. */
+const VARIABLES = [...ALWAYS_BEFORE_KEYS, ...ANTHROPIC, ...ALWAYS_AFTER_KEYS];
 
 let dir: string;
 
@@ -172,7 +184,7 @@ describe("what it writes", () => {
     ]);
   });
 
-  it("assigns exactly the variables compose interpolates, and no others", async () => {
+  it("assigns exactly the variables this shape reads, and no others", async () => {
     await run(["init"]);
 
     const text = readFileSync(join(dir, "deploy", ".env"), "utf8");
@@ -243,6 +255,134 @@ describe("what it writes", () => {
   });
 });
 
+describe("what the shape asked for decides", () => {
+  beforeEach(() => {
+    compose("deploy");
+  });
+
+  it("writes one provider's pair and not the other's", async () => {
+    await run(["init", "--provider", "openai-compatible"]);
+
+    const written = [...assignedNames(readFileSync(join(dir, "deploy", ".env"), "utf8")).keys()];
+
+    expect(written).toEqual([...ALWAYS_BEFORE_KEYS, ...OPENAI, ...ALWAYS_AFTER_KEYS]);
+  });
+
+  it("leaves both optional services out unless they are asked for", async () => {
+    // The complaint in #518: about fifteen assignments an operator has to learn
+    // not to fill, for two services they are not running.
+    await run(["init"]);
+
+    const written = new Set(assignedNames(readFileSync(join(dir, "deploy", ".env"), "utf8")).keys());
+
+    for (const name of [...LITELLM, ...RUNNER]) expect(written.has(name)).toBe(false);
+  });
+
+  each([
+    ["litellm", LITELLM, RUNNER],
+    ["runner", RUNNER, LITELLM]
+  ])("writes %s's block under its own --profile and not the other's", async (profile, wanted, other) => {
+    await run(["init", "--profile", profile as string]);
+
+    const written = new Set(assignedNames(readFileSync(join(dir, "deploy", ".env"), "utf8")).keys());
+
+    for (const name of wanted as string[]) expect(written.has(name)).toBe(true);
+    for (const name of other as string[]) expect(written.has(name)).toBe(false);
+  });
+
+  it("writes the OPENAI pair for the sidecar under either provider", async () => {
+    // The sidecar is reached over OPENAI_BASE_URL and keyed by OPENAI_API_KEY,
+    // so scaffolding it without them would stand a gateway up with no way to
+    // point the agent at it.
+    await run(["init", "--provider", "anthropic", "--profile", "litellm"]);
+
+    const written = new Set(assignedNames(readFileSync(join(dir, "deploy", ".env"), "utf8")).keys());
+
+    for (const name of OPENAI) expect(written.has(name)).toBe(true);
+  });
+
+  it("writes a profile's block on a re-run that asks for it, and touches nothing else", async () => {
+    await run(["init"]);
+    const before = readFileSync(join(dir, "deploy", ".env"), "utf8");
+
+    const result = await run(["init", "--profile", "runner"]);
+    const after = readFileSync(join(dir, "deploy", ".env"), "utf8");
+
+    expect(after.startsWith(before.trimEnd())).toBe(true);
+    for (const name of RUNNER) expect(result.out.join("\n")).toContain(`added ${name}`);
+  });
+
+  it("renders a repeated or reordered profile once, in one order", async () => {
+    await run(["init", "--profile", "runner", "--profile", "litellm", "--profile", "runner"]);
+    const both = readFileSync(join(dir, "deploy", ".env"), "utf8");
+
+    rmSync(join(dir, "deploy", ".env"));
+    await run(["init", "--profile", "litellm", "--profile", "runner"]);
+    const once = readFileSync(join(dir, "deploy", ".env"), "utf8");
+
+    const names = (text: string): string[] => [...assignedNames(text).keys()];
+    expect(names(both)).toEqual(names(once));
+    expect(names(both)).toHaveLength(new Set(names(both)).size);
+  });
+
+  it("puts every profile it scaffolded on the compose line it prints", async () => {
+    const result = await run(["init", "--profile", "litellm", "--profile", "runner"]);
+
+    expect(result.out.at(-1)).toBe(
+      "  docker compose -f deploy/docker-compose.yml --profile litellm --profile runner up"
+    );
+  });
+
+  it("refuses a profile it does not have, writing nothing", async () => {
+    const result = await run(["init", "--profile", "temporal"]);
+
+    expect(result.code).toBe(EXIT_USAGE);
+    expect(result.err.join("\n")).toContain("libero: not a profile: temporal");
+    expect(existsSync(join(dir, "deploy", ".env"))).toBe(false);
+  });
+});
+
+describe("the compose file it names", () => {
+  // #516: `findCompose` accepts deploy/ or this directory and four filenames,
+  // and everything init printed said deploy/docker-compose.yml regardless — so
+  // the operator with their own compose.yaml was told to run a file that is
+  // not there.
+  it("drops the -f when the compose file is this directory's own", async () => {
+    writeFileSync(join(dir, "compose.yaml"), "services: {}\n");
+
+    const result = await run(["init"]);
+
+    expect(result.out.at(-1)).toBe("  docker compose up");
+    expect(result.text).not.toContain("deploy/docker-compose.yml");
+  });
+
+  it("names the file it found in the header it writes", async () => {
+    writeFileSync(join(dir, "compose.yaml"), "services: {}\n");
+
+    await run(["init"]);
+    const text = readFileSync(join(dir, ".env"), "utf8");
+
+    expect(text).toContain("the environment compose.yaml reads");
+    expect(text).not.toContain("deploy/docker-compose.yml");
+  });
+
+  it("names it in the --key-file step too", async () => {
+    writeFileSync(join(dir, "compose.yaml"), "services: {}\n");
+
+    const result = await run(["init", "--key-file", "secrets/vault.key"]);
+
+    expect(result.text).toContain("In compose.yaml,");
+  });
+
+  it("names no file at all when --file was given and there is none to find", async () => {
+    const result = await run(["init", "--file", "custom.env"]);
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out.at(-1)).toBe("  docker compose up");
+    expect(readFileSync(join(dir, "custom.env"), "utf8")).toContain("the environment the compose file reads");
+  });
+});
+
 describe("re-running", () => {
   beforeEach(() => {
     compose("deploy");
@@ -257,7 +397,7 @@ describe("re-running", () => {
     expect(result.code).toBe(EXIT_OK);
     expect(readFileSync(join(dir, "deploy", ".env"), "utf8")).toBe(before);
     expect(result.out).toEqual([
-      "libero: deploy/.env already assigns every variable compose reads",
+      "libero: deploy/.env already assigns every variable this deployment reads",
       "libero: nothing written"
     ]);
   });
@@ -307,12 +447,12 @@ describe("re-running", () => {
     const key = valueOf(readFileSync(file, "utf8"), "PROXY_VAULT_KEY") as string;
     writeFileSync(
       file,
-      readFileSync(file, "utf8").split("\n").filter(line => !line.startsWith("OPENAI_API_KEY=")).join("\n")
+      readFileSync(file, "utf8").split("\n").filter(line => !line.startsWith("ANTHROPIC_API_KEY=")).join("\n")
     );
 
     const result = await run(["init"]);
 
-    expect(result.out).toContain("libero:   added OPENAI_API_KEY");
+    expect(result.out).toContain("libero:   added ANTHROPIC_API_KEY");
     expect(result.out).not.toContain("libero: generated PROXY_VAULT_KEY");
     expect(valueOf(readFileSync(file, "utf8"), "PROXY_VAULT_KEY")).toBe(key);
   });
@@ -468,13 +608,32 @@ describe("bad arguments", () => {
 });
 
 describe("the compose contract", () => {
-  it("scaffolds every variable deploy/docker-compose.yml interpolates", async () => {
+  it("can scaffold every variable deploy/docker-compose.yml interpolates, and no other", async () => {
     // Reaching out of the package is fine: tests never ship, and this is the
-    // assertion that catches the compose file growing an eleventh variable
-    // that `init` then silently does not write.
+    // assertion that catches the compose file growing a variable that `init`
+    // then silently does not write. Since #518 what it holds is the UNION over
+    // the flags rather than what any one run produces — a variable put in no
+    // group is one no combination of flags can scaffold, which fails here.
     const text = readFileSync(new URL("../../../deploy/docker-compose.yml", import.meta.url), "utf8");
     const referenced = new Set([...text.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map(match => match[1] as string));
+    const union = [...ALWAYS_BEFORE_KEYS, ...ANTHROPIC, ...OPENAI, ...LITELLM, ...ALWAYS_AFTER_KEYS, ...RUNNER];
 
-    expect([...referenced].sort()).toEqual([...VARIABLES].sort());
+    expect([...referenced].sort()).toEqual([...union].sort());
+  });
+
+  it("scaffolds them all when every flag is given", async () => {
+    // The union is a claim about the flags, not only about the lists above, so
+    // it is also run through the command.
+    compose("deploy");
+    await run(["init", "--provider", "openai-compatible", "--profile", "litellm", "--profile", "runner"]);
+
+    const text = readFileSync(join(dir, "deploy", ".env"), "utf8");
+    const written = new Set(assignedNames(text).keys());
+    const composeText = readFileSync(new URL("../../../deploy/docker-compose.yml", import.meta.url), "utf8");
+    const referenced = [...composeText.matchAll(/\$\{([A-Z_][A-Z0-9_]*)/g)].map(match => match[1] as string);
+
+    // Every one but the Anthropic pair, which no openai-compatible deployment
+    // reads and which --provider anthropic is how you ask for.
+    expect([...referenced].filter(name => !written.has(name)).sort()).toEqual(ANTHROPIC);
   });
 });
