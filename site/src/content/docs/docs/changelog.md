@@ -31,6 +31,142 @@ repository names this page as the changelog step:
   after the fact would duplicate it while numbering things that never had
   numbers.
 
+## v0.8.0 — 2026-09-06
+
+**Read this first if you install from npm.** `@getlibero/cli` 0.6.0 and 0.7.0 cannot start —
+`npx @getlibero/cli@0.7.0` fails on every install with `ERR_MODULE_NOT_FOUND`
+([#514](https://github.com/getlibero/libero/issues/514)). Two writers of one filename: `build.mjs`
+bundled to `dist/index.js`, then the `test` script's `tsc` overwrote it with the 458-byte entry stub
+that imports `./cli.js`, and the release workflow published what `tsc` left. Two gates were blind to
+it — CI's tarball check ran *before* the tests that clobbered the file, and its one grep could never
+fail, because POSIX ignores `set -e` for a pipeline beginning with `!`. The bundle is now
+`dist/libero.js`, a name `tsc` never emits, and `scripts/cli-tarball-check.sh` **executes** what is
+packed, after the tests in CI and immediately before `npm publish`
+([#513](https://github.com/getlibero/libero/pull/513)). This release is the first to carry the fix
+to the registry. Reported by a self-hoster standing Libero up on a homelab from the published
+artifacts.
+
+**Tool results carry content blocks** ([#160](https://github.com/getlibero/libero/issues/160) is the
+tracker). `ToolResult.content` was a string, so a tool whose whole answer is a screenshot was
+rendered as a sentence naming the type and the size. It is now an array of blocks — text, image,
+audio and embedded resource ([#500](https://github.com/getlibero/libero/issues/500)) — with the
+proxy emitting real ones and **vouching for each against the schema the agent will parse it with**,
+because a block that failed over there would lose the call rather than degrade it
+([#501](https://github.com/getlibero/libero/issues/501)). What cannot be vouched for — a payload
+that is not base64, a `resource_link`, a block from a newer protocol revision — becomes the
+placeholder it always was. The completion adapter decides again at the far end: Anthropic relays
+text and image natively and degrades the rest, and the OpenAI-compatible adapter flattens the whole
+result, which is where "degrades to the placeholder rather than to base64 in a string" is actually
+enforced ([#502](https://github.com/getlibero/libero/issues/502)). One bound is spent over the whole
+result — `[llm] max_result_chars`, where text pays its characters and a binary part pays its decoded
+bytes. A credential found inside a *decoded* payload fails the whole result closed rather than being
+edited out, because a replacement inside a PNG is a corrupt image. The end-to-end suite asserts the
+payload crossing byte for byte before it asserts anything about what did not cross
+([#503](https://github.com/getlibero/libero/issues/503)).
+
+**OAuth tokens are sender-constrained** ([#260](https://github.com/getlibero/libero/issues/260) is
+the tracker). RFC 9449 DPoP binds a token to a key, so the proxy holds one — in a **third store on
+the custody seam**, beside the vault and the token store
+([#504](https://github.com/getlibero/libero/issues/504)). Not the token store, which would make the
+promise vacuous: whoever stole the tokens stole the key that presents them. Not the vault either,
+whose whole design is that the serving process cannot write to it. Proofs go on the token-endpoint
+exchange ([#505](https://github.com/getlibero/libero/issues/505)) and on every upstream call, with a
+fresh proof per request carrying that request's method, URL and a digest of the token itself
+([#506](https://github.com/getlibero/libero/issues/506)). The sheet decides per upstream in
+`[mcp_server.auth] dpop`: `prefer` (the default) sends proofs where the authorization server
+advertises support and stays on bearer where it does not, `require` refuses rather than falling back
+— an unannounced downgrade is what sender-constraining exists to prevent — and `off` is for an
+issuer that advertises and gets it wrong. What this buys is written down per backend rather than
+claimed once: on the encrypted files, theft of `tokens.enc` plus the master key no longer yields
+presentable credentials, and theft of the whole volume plus the master key still does. The verifier
+both fakes run was written from the specification and imports nothing from the maker, so it can
+disagree rather than agree by construction — and the attack case is the real one: a thief holding a
+stolen token can mint a key and sign a perfectly valid proof, and the only thing that refuses them
+is that it is not the key the token was issued to.
+
+**A channel gets a persona** ([#270](https://github.com/getlibero/libero/issues/270)).
+`[channel] persona` sits beside `[channel] description` — one field does not earn a section — capped
+at 1000 characters, a parse failure rather than a truncation. It is **appended to the system prompt
+and never substituted for it**, so the clauses about the sheet's tool list, about relaying refusals
+and about saying plainly when the answer is not known survive whatever voice is asked for; the
+attack suite runs a channel whose persona declares the agent an administrator and asserts it is
+refused exactly what it was refused before. The issue asked for a name and an icon too, and those
+are **declined rather than deferred**: `chat.update` accepts neither, and every approval card and
+live checklist this system paints is a `chat.update`, so a per-message override would apply to
+replies and not to cards. What landed instead was not in the issue at all — the agent now learns its
+own name from its installation, so an operator who renames the app in Slack renames the agent.
+
+**Two bugs found on a live deployment, in a thread.** Inside a thread the prompt is thread-scoped,
+so `search_channel_history` is the only path to the rest of the channel — and it was answering the
+model its own words: the asking message is in the index by the time the tool runs and shares every
+word with the query written out of it, so under an implicit AND the rows matching *what did I do
+this weekend* were exactly the other questions and the answer was excluded outright
+([#522](https://github.com/getlibero/libero/issues/522)). The search now excludes the calling
+thread, inside the statement rather than over its rows, and a conjunction that finds nothing widens
+to OR. Beside it, **the agent's own replies are now stored**
+([#523](https://github.com/getlibero/libero/issues/523)) — in `agent_message`, a second table rather
+than a `kind` column, which is the whole of the safety: there is no full-text index over it and no
+trigger that would build one, nothing joins it to the embeddings, and every existing read names
+`message` alone. A reply is derived from tool results, and a searchable one would give an injection
+that surfaced in its prose a second life in the channel's durable state.
+
+**A signing key could be destroyed under its holder** ([#529](https://github.com/getlibero/libero/issues/529)).
+On the GCP custody backend, minting the DPoP signing key was four non-atomic calls that discarded
+the boolean the create already returns, so two handles that both found no version could each write
+one — and because that backend is replace-not-stack, the second write destroyed the first, leaving a
+process signing with a key the store no longer held. The create is the arbiter now, as the AWS
+backend already had it. Caught by the conformance suite intermittently on `main`, which is what that
+suite is for.
+
+**Smaller, and each its own fix.** One surrogate-pair guard at all three places a bound cuts a
+string, rather than at the one that had it
+([#509](https://github.com/getlibero/libero/issues/509)). The e2e harness's `AuditRow` is checked
+against the table it is cast from, after a column was added and the interface silently went without
+it ([#511](https://github.com/getlibero/libero/issues/511)). `libero init` scaffolds the shape that
+was asked for rather than every shape there is, and names the compose file the deployment actually
+has ([#518](https://github.com/getlibero/libero/issues/518),
+[#516](https://github.com/getlibero/libero/issues/516),
+[#517](https://github.com/getlibero/libero/issues/517)). And the compose file stopped shipping
+`:latest` ([#519](https://github.com/getlibero/libero/issues/519)), which is the next section.
+
+**Upgrading.**
+
+*The CLI works again.* If you installed 0.6.0 or 0.7.0 from npm and it would not start, that is
+#514 and this release fixes it. Upgrade to 0.8.0.
+
+*A new variable, and it is the one action this release asks for.* `LIBERO_VERSION` in `deploy/.env`
+is the tag all three service images are pulled at; `deploy/docker-compose.yml` interpolates it into
+every `image:` line and into the runner's `RUNNER_IMAGE`. An existing deployment's environment file
+has no such line, so it keeps resolving `latest` until you add one — `libero init` appends it on a
+re-run, or write `LIBERO_VERSION=v0.8.0` by hand. `libero doctor` reports it against the release of
+the `libero` asking, as a warning rather than a failure. Nothing rewrites it for you: upgrading from
+here is moving that line and pulling.
+
+*No breaking team-sheet changes.* `[channel] persona` and `[mcp_server.auth] dpop` are both new and
+both optional, and an absent section is exactly the previous behaviour. `dpop` defaults to `prefer`,
+which sends proofs only where the authorization server advertises support — so no sheet that worked
+before stops working. Two things to know if you use OAuth upstreams: **grants made before this
+release are bearer grants** and stay that way until `grant add` is re-run, and changing `dpop` on a
+sheet whose grant already exists is refused rather than reconciled. A persona longer than 1000
+characters is a parse failure, not a truncation.
+
+*Two additive schema changes, and neither needs anything from you.* The audit log goes to version 7
+with `result_bytes_by_type`, a widening of the kind version 6 already made — NULL columns are
+omitted from the preimage, so every row already on disk hashes to exactly what it did and
+`audit verify` still walks a pre-upgrade chain. `result_bytes` itself now counts decoded bytes for a
+binary part where it counted string length before: the meaning changed, not the type or the
+position. The message store gains the `agent_message` table without moving its schema version,
+because every prior statement names `message` alone.
+
+*One thing worth deciding about rather than noticing.* From this release the per-channel store holds
+the agent's replies as well as the channel's messages, beginning at the upgrade — it is not
+backfilled. That is a change in what the file is, and therefore in what a backup of it contains.
+Nothing searches or summarizes those rows, and `MEMORY.md` curation does not see them.
+
+*And as always, the images and the CLI pair at 0.8.0.* One `v*` tag releases all four together.
+
+The e2e security suite passes against this tag.
+
 ## v0.7.0 — 2026-08-29
 
 **What shipped.** Deployment shapes — the release pilot deployments run from
