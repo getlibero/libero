@@ -56,6 +56,22 @@ operator's first `docker compose up`. And because a re-run appends what is absen
 nothing else, opting into a profile later is `libero init --profile runner` rather than
 hand-writing three names.
 
+**It pins the deployment to a release** (#519). `LIBERO_VERSION` is the tag all three service
+images are pulled at — `deploy/docker-compose.yml` interpolates it into every `image:` line and
+into the runner's `RUNNER_IMAGE`, which is the same image with the egress hop's entrypoint — and
+`init` writes it from its own version. The CLI is the lockstep partner and knows the number: one
+`v*` tag releases the CLI and the three images together, so `v` plus this package's version is
+the tag its own release published. Without the line compose falls back to `latest`, which is
+right for a checkout building its own images and wrong for anything that pulls, because
+`docker compose pull` then moves all three services on the registry's schedule rather than the
+operator's — across a team-sheet-format change the changelog's Upgrading notes exist to make
+anything but silent.
+
+A build that is not a release writes `latest` rather than `v0.0.0-dev`, which would pin bytes no
+registry has. Upgrading is editing that one line and pulling: `init` will not move it, for the
+same reason it moves nothing else that is already there, and `doctor` is what says the file and
+the CLI running against it have drifted apart.
+
 **What it prints names the compose file it found** (#516). `findCompose` accepts `deploy/` or
 the working directory and any of four compose filenames; until #516 the closing hint and the
 file's own header said `deploy/docker-compose.yml` regardless, so a deployment with its own
@@ -152,7 +168,8 @@ Reads the deployment's host-side configuration back and reports what is wrong wi
 per check, no colour. Exits 1 if anything failed; a warning is not a failure.
 
 ```
-ok    env file         deploy/.env, 10 assignments
+ok    env file         deploy/.env, 11 assignments
+warn  LIBERO_VERSION   v0.7.0, and this libero is v0.8.0. One tag releases the CLI and the images together, so they are meant to match
 ok    AGENT_MODEL      claude-sonnet-4-6
 fail  provider key     ANTHROPIC_API_KEY is empty, and AGENT_PROVIDER is anthropic
 ok    vault key        32 bytes, base64
@@ -177,6 +194,16 @@ For a key file the check is presence, mode and shape — and a mode readable bey
 and a deployment in that state is worse off than one that left the key in the environment because it
 believes otherwise. It reads the file, which is the one credential this command opens; what it
 prints of it is a byte count.
+
+**Which release the deployment runs is a `warn` and not a `fail`** (#519). `LIBERO_VERSION` is the
+tag the three images are pulled at; this compares it against the release of the `libero` asking, and
+says so when they differ. A failure would be wrong in both of the ordinary cases: running one
+release behind is a choice, and the quick start's `npx @getlibero/cli doctor` resolves whatever was
+published last whether or not the operator meant to upgrade. No pin at all is a warning too, with
+its own sentence — compose then resolves `latest` for all three services, so the next
+`docker compose pull` moves the deployment on the registry's schedule. A `libero` built from a
+checkout published no images, so against a pin it can only `skip`: it prints what the file says and
+declines to judge it.
 
 **A check that cannot run says `skip`, and `skip` is not a pass.** On a compose deployment the two
 channels roots, the store root and the three database paths are set in the compose file to paths

@@ -20,20 +20,10 @@ import type { ComposeLocation } from "./compose.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import type { CliIo } from "./io.js";
 import { nodeTooOld } from "./node-version.js";
+import { VERSION } from "./version.js";
 import { runInitCommand, USAGE as INIT_USAGE } from "./init-cli.js";
 import { runChannelCommand, USAGE as CHANNEL_USAGE } from "./channel-cli.js";
 import { runDoctorCommand, USAGE as DOCTOR_USAGE } from "./doctor-cli.js";
-
-/**
- * Substituted by ./build.mjs at bundle time.
- *
- * The published artifact is a single file, so it cannot read its own
- * package.json off disk to find out what it is. The fallback keeps the source
- * runnable under plain `tsc` output, which is what the tests run against and
- * where nothing defines it.
- */
-declare const __LIBERO_VERSION__: string;
-export const VERSION = typeof __LIBERO_VERSION__ === "string" ? __LIBERO_VERSION__ : "0.0.0-dev";
 
 /**
  * Usage, worded for the compose file this directory actually has (#516).

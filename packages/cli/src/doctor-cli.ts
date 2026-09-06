@@ -40,6 +40,7 @@ import { assignedValues } from "./env-file.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
 import { DEFAULT_KEY_FILE, VAULT_KEY_BYTES } from "./vault-key.js";
+import { IMAGE_TAG, IMAGE_TAG_VAR, RELEASED } from "./version.js";
 
 const DEFAULT_CHANNELS_ROOT = "channels";
 const DEFAULT_SHARED_SKILLS_ROOT = "shared-skills";
@@ -81,6 +82,13 @@ export const USAGE = [
   "names has actually been published into the shared root, which is quiet when",
   "it is wrong: the sheet parses and the channel gets nothing.",
   "",
+  "It also reports which release the deployment is pinned to — LIBERO_VERSION,",
+  "the tag all three images are pulled at — against the release of the libero",
+  "asking. A mismatch is a warning rather than a failure: running one release",
+  "behind is a choice, and npx resolves the newest CLI whether or not you meant",
+  "to upgrade. Unset is a warning too, because compose then pulls :latest for",
+  "all three services.",
+  "",
   "A check that cannot run says skip and why, and skip is not a pass. On a",
   "compose deployment the channels roots, the store root and the database",
   "paths are set in the compose file to paths inside a container, and the",
@@ -96,7 +104,7 @@ export const USAGE = [
 
 type Status = "ok" | "warn" | "fail" | "skip";
 
-interface Check {
+export interface Check {
   readonly status: Status;
   /** Two words at most; this column is scanned, not read. */
   readonly name: string;
@@ -204,6 +212,10 @@ async function inspect(cwd: string, options: DoctorOptions): Promise<Check[]> {
   if (envFile === undefined) throw new Error(NO_COMPOSE_FILE);
 
   const env = readEnv(envFile, checks, cwd);
+  // `null` rather than IMAGE_TAG when this build is not a release: a checkout
+  // published no images, so it has no release of its own to hold a deployment
+  // to. ./version.ts has the rest of that.
+  checks.push(versionCheck(env.get(IMAGE_TAG_VAR) ?? "", RELEASED ? IMAGE_TAG : null));
   checkModel(env, checks);
   checkProvider(env, checks);
   checkSlack(env, checks);
@@ -232,6 +244,59 @@ function readEnv(file: string, checks: Check[], cwd: string): Map<string, string
   const values = assignedValues(readFileSync(file, "utf8"));
   checks.push({ status: "ok", name: "env file", detail: `${shown}, ${values.size} assignments` });
   return values;
+}
+
+/**
+ * Which release a deployment is pinned to, against the CLI asking (#519).
+ *
+ * Takes both strings rather than reading either, because one of them is folded
+ * into the bundle at build time and can only be observed one way per build —
+ * the same reason `nodeTooOld` takes its floor.
+ *
+ * **A mismatch is `warn` and not `fail`, and the reason is `npx`.** The quick
+ * start's `npx @getlibero/cli doctor` resolves whatever was published last, so
+ * an operator deliberately running one release behind would get a non-zero exit
+ * for a deployment working exactly as they intend. What is worth saying is that
+ * the images and the command that wrote their configuration came from different
+ * releases — the drift one tag for the whole deployment exists to prevent — not
+ * that anything is broken. Moving the pin is an edit to the file; `init` will
+ * not do it, because it never writes over a value that is there.
+ *
+ * **Unset is its own sentence**, and the only one of the three that does not
+ * depend on knowing this CLI's release: no line at all means compose falls back
+ * to `latest` and all three services move on whatever schedule the daemon last
+ * pulled on.
+ *
+ * `skip` is what a build that is not a release reports against a pin it cannot
+ * judge — never a pass, per this file's rule, and the pin is still printed so
+ * the operator can read it.
+ */
+export function versionCheck(pinned: string, tag: string | null): Check {
+  const name = IMAGE_TAG_VAR;
+  if (pinned === "") {
+    return {
+      status: "warn",
+      name,
+      detail:
+        "unset, so all three images resolve to :latest and docker compose pull moves them together. " +
+        "Pin the release this deployment runs"
+    };
+  }
+  if (tag === null) {
+    return {
+      status: "skip",
+      name,
+      detail: `${pinned}, and this libero was built from a checkout, so there is no release to compare it against`
+    };
+  }
+  if (pinned !== tag) {
+    return {
+      status: "warn",
+      name,
+      detail: `${pinned}, and this libero is ${tag}. One tag releases the CLI and the images together, so they are meant to match`
+    };
+  }
+  return { status: "ok", name, detail: pinned };
 }
 
 function checkModel(env: Map<string, string>, checks: Check[]): void {

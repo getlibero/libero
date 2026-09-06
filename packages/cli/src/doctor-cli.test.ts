@@ -17,7 +17,7 @@ import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
 import { runChannelCommand } from "./channel-cli.js";
-import { runDoctorCommand } from "./doctor-cli.js";
+import { runDoctorCommand, versionCheck } from "./doctor-cli.js";
 
 const SCRIPT = fileURLToPath(new URL("../../../scripts/dev-certs.sh", import.meta.url));
 const CHANNEL = "C0DOCTOR";
@@ -687,6 +687,49 @@ describe("arguments", () => {
     const result = await doctor();
 
     expect(result.out.at(-1)).toMatch(/^libero: \d+ checked, nothing failed(, \d+ skipped)?$/);
+  });
+});
+
+/**
+ * Which release the deployment is pinned to (#519).
+ *
+ * Against the function rather than through the command, because the tag this
+ * CLI reports is folded in at bundle time — the tests run against plain tsc
+ * output, where there is no release, so a run of `doctor` can only ever
+ * exercise the one branch. `versionCheck` takes both strings for that reason.
+ */
+describe("the release a deployment is pinned to", () => {
+  it("passes when the file names the release of the libero asking", () => {
+    expect(versionCheck("v0.8.0", "v0.8.0")).toMatchObject({ status: "ok", detail: "v0.8.0" });
+  });
+
+  // A warning and not a failure: `npx @getlibero/cli doctor` resolves whatever
+  // was published last, so a deployment deliberately one release behind must
+  // not exit non-zero for it.
+  it("warns, naming both, when they are different releases", () => {
+    const check = versionCheck("v0.7.0", "v0.8.0");
+
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("v0.7.0");
+    expect(check.detail).toContain("v0.8.0");
+  });
+
+  it("warns that an unset pin is three services tracking latest", () => {
+    expect(versionCheck("", "v0.8.0")).toMatchObject({ status: "warn" });
+    expect(versionCheck("", "v0.8.0").detail).toContain(":latest");
+  });
+
+  // The unset case is the one sentence that does not need to know what this
+  // build is, so a checkout still says it.
+  it("warns about an unset pin even from a build that is not a release", () => {
+    expect(versionCheck("", null)).toMatchObject({ status: "warn" });
+  });
+
+  it("skips rather than judging a pin from a build that is not a release", () => {
+    const check = versionCheck("v0.8.0", null);
+
+    expect(check.status).toBe("skip");
+    expect(check.detail).toContain("v0.8.0");
   });
 });
 

@@ -568,7 +568,9 @@ block to `channels/C024BE91L/channel.toml`. See the [team sheet reference](/docs
 v0.3.0, the optional sandbox runner since v0.4.0 — multi-arch
 (`amd64`/`arm64`) and carrying build provenance attestations — `deploy/README.md` has the verify
 command. Without this step the first `up` builds them from the checkout instead; that works, but the
-pull is what makes the instance run the exact bytes a release published:
+pull is what makes the instance run the exact bytes a release published. Which release that is
+comes from `LIBERO_VERSION` in `deploy/.env`, which `libero init` wrote from its own version, so the
+CLI you ran above and the images you are about to pull are one release:
 
 ```bash
 libero-compose pull
@@ -657,15 +659,23 @@ unused.
 
 ## Upgrading
 
-Pin image tags in a compose override rather than tracking `latest`, and move them deliberately — the
-proxy is a security boundary and you should know when it changes. The upgrade itself is the restart
-this page opened with:
+The release this deployment runs is one line in `deploy/.env`. `libero init` wrote it from its own
+version — `LIBERO_VERSION` is the tag all three images are pulled at, and one `v*` tag releases the
+CLI and the images together — so upgrading is moving that line and pulling. Move it deliberately:
+the proxy is a security boundary and you should know when it changes, and the changelog's Upgrading
+section is what to read between two versions. Nothing moves it for you; `libero doctor` warns when
+the file and the `libero` you are running name different releases.
 
 ```bash
 cd /opt/libero/libero && git pull
+$EDITOR deploy/.env                # LIBERO_VERSION=<the release you are moving to>
 libero-compose pull
 sudo systemctl restart libero
 ```
+
+Leaving `LIBERO_VERSION` unset is what tracks `latest`, and `libero doctor` warns about that too: a
+`pull` would then move all three services to whatever was published most recently, at whatever
+moment the daemon happened to run.
 
 Pending approvals expire, in-flight tasks are cancelled and report their last turn's spend, and
 everything on disk comes back as it was.

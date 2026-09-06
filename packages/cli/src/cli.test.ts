@@ -5,7 +5,8 @@ import { after, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
-import { VERSION, runCli } from "./cli.js";
+import { runCli } from "./cli.js";
+import { VERSION } from "./version.js";
 
 interface Run {
   code: number;
