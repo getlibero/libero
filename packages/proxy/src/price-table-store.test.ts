@@ -338,6 +338,24 @@ describe("a table that does not start", () => {
  * that waits on the operating system, so its timeout should be long enough that
  * reaching it is news. `waitFor` polls, so an event that arrives in a
  * millisecond costs a millisecond.
+ *
+ * ## The edit is made inside the poll, and that is the fix for #549
+ *
+ * The case used to write once, on the line after `watchDirectory` returned, and
+ * failed about one run in three. **`fs.watch` is not armed when it returns** —
+ * on macOS it registers with FSEvents on another thread — so a synchronous
+ * write on the next line can complete before anything is listening, and then no
+ * event is emitted at all.
+ *
+ * That makes it a *lost-event* race rather than a slow-event one, which is why
+ * the ten seconds above never helped and why raising them would not: no timeout
+ * observes an event that was never sent. So the edit moves inside the polled
+ * function, and the property asserted becomes the honest one — **an edit made
+ * while a watcher is up produces an event** — which does not care which edit.
+ *
+ * #474 made this argument once already, about a different watch test: rebuild on
+ * a seam rather than reach for a longer timeout. This is the file that pass did
+ * not reach.
  */
 describe("the real watcher", () => {
   it("tells the caller which file in the directory changed", async () => {
@@ -346,9 +364,13 @@ describe("the real watcher", () => {
     const stop = watchDirectory(dir, name => seen.push(name));
 
     try {
-      writeFileSync(file, `${SONNET}\n# touched\n`);
+      let edits = 0;
       await waitFor(
         () => {
+          // Edited here rather than once before the wait: see the header. The
+          // content varies so that every pass is a real change rather than a
+          // rewrite a filesystem might coalesce away.
+          writeFileSync(file, `${SONNET}\n# touched ${(edits += 1)}\n`);
           // `null` is a platform that did not say, which the store treats as
           // possibly its own — so either answer is the watcher working.
           expect(seen.some(name => name === null || name === basename(file))).toBe(true);
