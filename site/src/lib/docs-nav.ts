@@ -43,6 +43,7 @@ export const docsNav: DocsNavGroup[] = [
     items: [
       { label: 'Roadmap', slug: 'docs/roadmap' },
       { label: 'Changelog', slug: 'docs/changelog' },
+      { label: 'What 1.0 freezes', slug: 'docs/compatibility' },
       { label: 'Contributing', slug: 'docs/contributing' },
     ],
   },

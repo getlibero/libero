@@ -4,8 +4,9 @@ description: The target deployment — two containers, one team sheet per channe
 ---
 
 :::caution[Pre-1.0]
-The team-sheet format is the compatibility surface 1.0 will freeze, and until then a release may
-change it — the [changelog](/docs/changelog/)'s Upgrading section says when and what to edit.
+The team-sheet format is one of the seven surfaces [1.0 freezes](/docs/compatibility/), and until
+then a release may change any of them — the [changelog](/docs/changelog/)'s Upgrading section says
+when and what to edit.
 Certificate rotation and revocation are manual: possible without downtime, driven by a shell
 script and an edit to a sheet rather than by anything automated. Nobody outside the project has
 run this against a workspace they depend on yet; the section on
