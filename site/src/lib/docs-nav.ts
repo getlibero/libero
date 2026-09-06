@@ -34,6 +34,7 @@ export const docsNav: DocsNavGroup[] = [
       { label: 'Architecture', slug: 'docs/architecture' },
       { label: 'Team sheets', slug: 'docs/team-sheet' },
       { label: 'The price table', slug: 'docs/price-table' },
+      { label: 'Limits', slug: 'docs/limits' },
       { label: 'Security model', slug: 'docs/security' },
     ],
   },
