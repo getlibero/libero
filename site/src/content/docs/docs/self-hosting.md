@@ -12,7 +12,7 @@ run this against a workspace they depend on yet; the section on
 [using a scratch workspace first](#use-a-scratch-workspace-first) is the practical consequence.
 :::
 
-Everything on this page runs as of `v0.7.0`. The proxy speaks mutual TLS, binds every request to
+Everything on this page runs in the current release — no version is written down here, so there is nothing on this page to go stale; the [changelog](/docs/changelog/) says which release added what. The proxy speaks mutual TLS, binds every request to
 a channel, enforces team sheets, holds credentials in an encrypted vault, injects them into
 outbound calls, scrubs them back out of results, meters each channel's daily budget in calls and
 in dollars, and appends a hash-chained audit row for every decided call. The gateway and the
@@ -877,6 +877,14 @@ version stays active, so a bad edit degrades to "no change" rather than "no enfo
 ## Upgrading
 
 `@getlibero/cli` is the only npm-published package, released with provenance attestations.
-Everything else ships as Docker images built from `deploy/docker-compose.yml`. Pin image tags in
-your compose file and move them deliberately — the proxy is a security boundary, and you should
-know when it changes.
+Everything else ships as Docker images built from `deploy/docker-compose.yml`. One `v*` tag
+releases all four together, so the CLI and the images are meant to be the same release.
+
+Which release you run is one line in `deploy/.env`. `LIBERO_VERSION` is the tag all three images
+are pulled at, and `libero init` wrote it from its own version, so upgrading is moving that line
+and pulling. Move it deliberately — the proxy is a security boundary, and you should know when it
+changes — and read the [changelog](/docs/changelog/)'s Upgrading section between two versions.
+Nothing moves it for you: `libero init` will not overwrite a value that is there, and
+`libero doctor` warns when the file and the `libero` you are running name different releases.
+Leaving it unset is what tracks `latest`, which `doctor` warns about too — a `pull` would then move
+all three services to whatever was published most recently, whenever the daemon happened to run.

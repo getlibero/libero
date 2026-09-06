@@ -16,8 +16,8 @@ proxy's vault — never in the sheet, the logs, an error message, or anything re
 
 ## A documented starter
 
-This is `channels/example/channel.toml` in the repository, kept in sync with the zod schema in
-`@getlibero/schema`.
+This is `channels/example/channel.toml` in the repository, verbatim — kept in sync with the zod
+schema in `@getlibero/schema`, and with this page by a test that fails when the two differ.
 
 ```toml
 # Example team sheet — copy to channels/<CHANNEL_ID>/channel.toml
@@ -32,7 +32,25 @@ This is `channels/example/channel.toml` in the repository, kept in sync with the
 
 [channel]
 name        = "engineering"
+# The description reaches the model: appended to the system prompt of every
+# task, so a sentence or two about what the channel is for. Capped at 500.
 description = "Deploys, code review, incident response."
+
+# And how it should sound. Appended to the system prompt of every turn that
+# composes something — a reply, a proactive post, a playbook — so it is charged
+# against max_tokens_per_task on every one of them. Capped at 1000.
+#
+# APPENDED, NEVER SUBSTITUTED. The prompt's rules survive whatever voice you
+# ask for: the tool list stays the whole of what the agent can do, a refusal is
+# still relayed rather than retried, and not knowing is still said plainly. A
+# persona is a voice, not a second system prompt.
+#
+# This is not a name and not an icon. Those are the Slack app's, set once in
+# the app config for the whole workspace — see deploy/slack-app-manifest.yml.
+persona = """
+Terse and factual. Lead with the impact, then the cause. \
+No hedging and no apologies; if something is unknown, say which part.\
+"""
 
 # Which client certificates may speak for this channel. The certificate says
 # which channel is calling; this says which key is allowed to say it, so a
@@ -63,8 +81,14 @@ max_tokens_per_task      = 60000
 max_tokens_per_turn      = 8192                  # ceiling on one turn's output
 max_history_messages     = 40                    # recent messages in the prompt; 0 for none
 max_history_chars        = 12000                 # and the character budget they share
-max_result_chars         = 32768                 # one tool answer's ceiling; past it the result
-                                                 # is truncated and says so. How many bytes the
+max_result_chars         = 32768                 # one tool answer's ceiling, spent once over the
+                                                 # whole result: text pays its characters, an image
+                                                 # or an audio clip pays its decoded bytes. Past it
+                                                 # text is truncated and says so, while a binary
+                                                 # part is replaced by a line naming its type and
+                                                 # size — half a payload is a corrupt file, not a
+                                                 # short one. 32768 does not fit a screenshot, so
+                                                 # raise it to relay images. How many bytes the
                                                  # proxy will read off an upstream at all is
                                                  # PROXY_MAX_RESPONSE_BYTES, a deployment
                                                  # setting: that heap is shared by every channel.
@@ -229,7 +253,12 @@ summarize_after_idle_minutes = 60
 # max_always_skills and max_always_chars bound something none of the above does:
 # the shared skills your operator publishes with load = "always", which are in
 # front of the model on EVERY TURN OF EVERY TASK whether or not they had anything
-# to do with the request. Naming more than the count permits is a parse error.
+# to do with the request. top_k bounds a pool assembled against a request; these
+# two bound standing text, which is the [memory] file's kind of cost rather than
+# retrieval's. Naming more standing skills than the count permits is a parse
+# error — you hear it here, with the file open. Overrunning the characters is not,
+# because the text is in another root: a skill that would breach the budget is
+# dropped whole, with a log line naming it, rather than cut off mid-sentence.
 [skills]
 enabled                 = true              # the author turn, and loading at task start
 curate                  = true              # propose merges of overlapping playbooks
@@ -244,19 +273,39 @@ archive_after_days      = 90                # unloaded this long and it leaves r
 
 # Skills your operator published, named here by reference. The files live in a
 # third root — not this channels directory, and not the agent's state root where
-# your own skills are written — mounted read-only. Nothing here is a path and
-# nothing here is a digest: whoever edits this sheet edits those files, so an
-# update is one edit in one place. They are addressed as shared/<name>, so a
-# shared skill and one of your own with the same name never collide.
+# your own skills are written — mounted read-only, so a compromised agent process
+# can poison one channel's playbooks and not every channel's.
+#
+# Nothing here is a path and nothing here is a digest. Whoever edits this sheet is
+# whoever edits those files, one git repository and one trust domain, so a hash
+# would buy re-review on every update at the cost of the single-point update that
+# is the whole point. Marketplace content gets in by being vendored into that root
+# — a reviewed diff in your repo — not fetched at runtime, and the model has no
+# verb for installing one.
+#
+# They are addressed as shared/<name> everywhere they are loaded, indexed or
+# logged, which is why a shared skill and one of your own with the same name never
+# collide: a slash cannot appear in a skill name at all, so the namespace is
+# reserved by the alphabet rather than by a precedence rule somebody has to
+# remember.
 #
 # THE TWO MODES ARE NOT TWO STRENGTHS OF ONE SETTING, and load has no default
-# because of it. "always" is in every task and charged against every turn, whether
-# or not the request had anything to do with it — what a house voice needs, since
-# retrieval will never surface brand-voice for a database migration. "retrieved"
-# joins the same pool your own playbooks are matched against.
+# because of it. "always" is injected into every task in this channel and charged
+# against every turn of it, whether or not the request had anything to do with it
+# — which is what a house voice needs, because retrieval will never surface
+# brand-voice for a question about a database migration. "retrieved" joins the
+# same pool your own playbooks are matched against, so it arrives when the request
+# looks like it and costs nothing when it does not. [skills] max_always_skills and
+# max_always_chars above bound the first mode; top_k and max_skill_chars bound the
+# second, exactly as they bound your own.
 #
 # [skills] enabled = false does NOT switch these off. That switch governs the
-# playbooks this channel grows for itself; these were decreed rather than grown.
+# playbooks this channel grows for itself; these were decreed rather than grown,
+# and "use the house playbooks, write none of your own" is a sheet with both.
+#
+# A name whose file is not in the root is not a sheet error — the file is in
+# another root and can move without this file changing — so it is dropped at load
+# time with a log line naming it.
 [[shared_skill]]
 name = "brand-voice"
 load = "always"                             # every task, charged against every turn
@@ -337,6 +386,14 @@ credential = "notion_grant"                 # name only; keys the stored grant
   scheme = "oauth"
   issuer = "https://auth.notion.example"    # compared byte-for-byte, never normalized
   scopes = ["mcp.read"]
+  dpop   = "prefer"                         # "prefer" (default) sends RFC 9449
+                                            # proofs where the issuer advertises
+                                            # them and stays on bearer where it
+                                            # does not; "require" refuses the
+                                            # exchange rather than fall back,
+                                            # which is what a deployment that
+                                            # has confirmed its issuer wants;
+                                            # "off" never sends one.
 
   [[mcp_server.tool]]
   name     = "search_pages"
@@ -398,13 +455,62 @@ max_result_chars = 8000                       # whole messages come back; a chan
 [[builtin]]
 name = "schedule_task"
 
+# Model-written code, run in a throwaway container the proxy starts (#368).
+#
+# COMMENTED OUT, AND NOT ONLY BECAUSE IT IS OPT-IN. There is no runner in this
+# deployment yet: uncomment this and a call is answered `not_implemented`, which
+# says the sheet is right and the process is unfinished. The runner is #395.
+#
+# THE APPROVAL LINE IS MISSING HERE FOR THE SAME REASON IT IS MISSING FROM
+# schedule_task, and it matters more. A built-in's default is declared rather
+# than guessed, and this one's is "required" — so no line is the hold. If it
+# were guessed, the destructive-verb heuristic would look at "run", find no
+# destructive verb, and answer "none" for the one tool here that executes
+# arbitrary code. Loosening it is writing approval = "none", which is this
+# channel deciding that code needs no click before it runs.
+#
+# THE CAPS ARE THE SMALL BOX BY DEFAULT. Omit them and a run gets one cpu, 512 MB
+# and 30 seconds. They are the only fields here, and what is deliberately absent
+# is the image: which language the sandbox has is this deployment's choice, made
+# in the runner's environment and pinned by digest, so a sheet cannot ask for a
+# container the operator did not build. That is also why the tool is not called
+# "run_python".
+#
+# THE NETWORK IS THE [egress] BLOCK BELOW, AND NOTHING ELSE. With no [egress]
+# block a run has no network at all — not a filtered one. With one, reaching a
+# host outside it does not fail the connection and carry on: it ends the run,
+# and the refusal names the host. That is fail-closed on purpose and it is worth
+# knowing before you write a program that expects a package index to be there.
+#
+# [[builtin]]
+# name            = "run_code"
+# cpus            = 1        # fractional is allowed, e.g. 0.5
+# memory_mb       = 512
+# timeout_seconds = 30       # a run past this is killed, and the answer says so
+
 # Where traffic may go when this sheet does not already say.
 #
-# ENFORCED, for run_code — the one surface that reaches a destination this sheet
-# has not already pinned. No block at all means no network at all, not an
-# unfiltered one, and a host outside the list ends the run rather than failing
-# one call. HTTP and HTTPS only: git://, postgres and ssh have no route however
-# this list reads.
+# ENFORCED SINCE #219, and only for run_code — the one surface that reaches a
+# destination this sheet has not already pinned. A sandbox run sits on a network
+# with no route out whose only exit is a filter that checks this list per host.
+# Code that ignores its proxy settings, or dials a raw address, reaches nothing:
+# there is nowhere for the packet to go.
+#
+# NO BLOCK MEANS NO NETWORK AT ALL, not an unfiltered one. Deleting these two
+# lines is how a channel says its code may reach nothing.
+#
+# A HOST OUTSIDE THE LIST ENDS THE RUN. It is not a failed connection the program
+# can catch and carry on from: the run is killed, the call is refused with
+# egress_denied naming the host, and the refusal reaches the channel and the
+# audit log. That is fail-closed on purpose and it has a real cost — a program
+# that does useful work and then touches one unlisted telemetry host loses all of
+# it, and the refused call still counted against the budget. The list is given to
+# the model in the tool description so it is not discovering it by losing runs.
+#
+# HTTP AND HTTPS ONLY. git://, postgres, ssh and bare TCP have no route whatever
+# this list says, and plain http:// does not work either — the filter speaks
+# CONNECT, which is what lets it read the host and never the payload.
+# `git clone https://...` works; `git clone git://...` does not.
 #
 # The MCP servers above are NOT listed here: declaring a url in [[mcp_server]]
 # is what authorizes it. This list is for the destinations nothing pinned.
@@ -467,6 +573,10 @@ heartbeat               = true              # false runs your rules and skips th
                                             # heartbeat evaluation entirely. Off
                                             # here means one source, not silence;
                                             # enabled = false is silence.
+tools                   = false             # whether a fired check or rule may
+                                            # call this channel's tools. Off by
+                                            # default; see the note below before
+                                            # turning it on.
 heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 
 # How long a question must sit before the heartbeat may answer it — the sibling
@@ -481,6 +591,27 @@ heartbeat_every_minutes = 15                # how often anyone looks; 1 to 1440
 # proactive answer is their SUM: 75 minutes as written here.
 answer_after_idle_minutes = 60              # five minutes to a week
 
+# UNATTENDED TOOL USE IS OFF UNTIL YOU TURN IT ON, and it is worth a minute
+# before you do. With tools = false a fired check or rule is one model call over
+# this channel's recent messages: it can answer "has anyone replied to Priya" and
+# cannot answer "is the release branch still red". With tools = true it runs the
+# same loop a mention runs, over the SAME tool list your team already has — this
+# switch decides who may use that list, not what is on it. It cannot reach
+# anything your members cannot already ask for by hand.
+#
+# Two things follow, and neither is a setting.
+#
+# A call that needs a human is REFUSED, not held. An approval card needs somebody
+# to click it, and nobody asked for this turn — so there is no thread to put a
+# card in and no one waiting. In practice that means read yes, write no: tools
+# with destructive-sounding names are held by default, so they simply fail here.
+# If you want an unattended turn to call one, say approval = "none" on that tool
+# above, where the decision is visible in your diff.
+#
+# What bounds the spend is [budget] daily_tool_calls, counted by the proxy from
+# calls it actually served. That is the number to look at before turning this on:
+# a rule firing every morning is a task every morning.
+#
 # How often the agent may post unbidden is NOT a field. At most one
 # heartbeat-initiated post per channel per rate window, stated in time rather
 # than in ticks, fixed in the architecture and enforced where the post is made —
@@ -512,10 +643,18 @@ answer_after_idle_minutes = 60              # five minutes to a week
 # makes it approved: the edit adding it was reviewed the way your code is. Asked
 # in-channel for a standing weekly reminder, the agent points you here.
 #
-# Times are UTC and 24-hour, zero-padded — "09:00", not "9:00" or "9am". One
-# honest limit: UTC does not observe your summer time, so a rule written by a
-# team in a DST zone drifts by an hour twice a year. A timezone field is planned
-# and will read absent as UTC, so nothing you write today changes meaning.
+# Times are 24-hour, zero-padded — "09:00", not "9:00" or "9am" — and read in
+# the rule's own timezone. Leave timezone out and they are UTC, which is what
+# every rule written before that field existed still means.
+#
+# Write a canonical IANA name: "Europe/London", not "GMT", "BST" or "+01:00". A
+# fixed offset is refused on purpose — it is exactly the thing that does NOT
+# follow your summer time, which is what the field is for.
+#
+# Two days a year need a rule, and here they are. A time your clocks SKIP does
+# not fire that day: on a spring forward 01:30 never happens, and firing it at
+# 02:30 instead would post under a label saying 01:30. A time your clocks REPEAT
+# fires once, not twice.
 #
 # The caps are what makes a flood impossible rather than merely discouraged: at
 # most 4 times per rule, at most 8 rules, so at most 32 posts a day however you
@@ -535,9 +674,10 @@ What moved yesterday, what is blocked, and who is waiting on whom? \
 Two or three sentences. Say nothing if the channel was quiet."""
 
 [[ambient.rule]]
-name     = "friday-release-check"           # 0 16 * * 5
+name     = "friday-release-check"           # 0 16 * * 5, London time
 at       = ["16:00"]
 days     = ["fri"]
+timezone = "Europe/London"                  # omit for UTC
 question = "Is anything still open that we said would ship this week?"
 ```
 
@@ -1018,6 +1158,30 @@ credential in the token store, and neither ever falls through to the other.
 | `scheme` | yes | `"oauth"`, the only member today. |
 | `issuer` | yes | The authorization server's issuer identifier: a URL with no query and no fragment, compared byte-for-byte — against the server's own discovery metadata and against the stored grant — so write it exactly as the server publishes it. |
 | `scopes` | no | The scopes the channel's calls are made under. Words, not secrets; defaults to none. |
+| `dpop` | no | Whether tokens for this upstream are sender-constrained: `"prefer"` (the default), `"require"`, or `"off"`. |
+
+**`dpop` binds a token to a key the token store does not hold** (RFC 9449). Where it applies, the
+proxy signs each token request and each upstream call with a key of its own — kept in a third
+store beside the vault and the token store, so theft of the token store plus the master key yields
+credentials a thief cannot present. The signing key never leaves the proxy and there is no way to
+export it.
+
+The default of `"prefer"` changes nothing about a sheet that already worked: proofs where the
+authorization server's discovery metadata advertises `dpop_signing_alg_values_supported`, bearer
+where it does not, because most authorization servers have not shipped DPoP. `"require"` refuses
+the exchange rather than falling back — a server that quietly stopped advertising would quietly
+stop binding, and an unannounced downgrade is the thing sender-constraining exists to prevent — so
+it is what a deployment that has confirmed its issuer writes. `"off"` is for an issuer that
+advertises DPoP and gets it wrong.
+
+`"require"` is a promise about the token in hand rather than the request sent: an issuer that
+accepts the proof and answers with a bearer token is refused under it, and accepted as bearer under
+`"prefer"`. The reverse is refused under all three — a token the server bound to a key, answered to
+a request that proved nothing, is dead on arrival.
+
+Changing `dpop` on a sheet whose grant already exists is refused by `grant add` rather than
+reconciled, because there is no union of `"require"` and `"off"` that is either of them. Grants
+made before v0.8.0 are bearer grants and stay that way until the flow is re-run.
 
 Nothing in the block is a secret, and nothing in it can express one: there is no field for a
 token, a lifetime, or an endpoint. The token endpoint is discovered from the issuer at mint time

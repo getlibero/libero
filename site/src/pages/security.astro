@@ -113,11 +113,13 @@ const attempts = [
           compromised host, and Slack itself are out of scope for v1.
         </p>
         <p>
-          Libero is pre-1.0 — v0.7.0 is current — with the governed core shipped: mutual TLS, per-channel identity
+          Libero is pre-1.0 &mdash; <a href="/docs/changelog">the changelog</a> says which release is
+          current &mdash; with the governed core shipped: mutual TLS, per-channel identity
           from the client certificate, team-sheet enforcement on both gates, an encrypted vault,
           credential injection, a redaction pass on results, OAuth against upstreams that require
-          it, the budget meter in calls and in dollars, the append-only audit log, and the approval
-          broker with its Slack card — and the layers built on it since: curated memory, skills,
+          it &mdash; with tokens sender-constrained to a key the token store does not hold, where the
+          authorization server speaks DPoP &mdash; the budget meter in calls and in dollars, the
+          append-only audit log, and the approval broker with its Slack card — and the layers built on it since: curated memory, skills,
           and ambient mode, each attacked by the same suite. The end-to-end suite runs against
           every change, including the sandbox: real containers, a real runner, and a real egress
           filter. Code execution is off unless an operator starts the runner, its allowlist grants
