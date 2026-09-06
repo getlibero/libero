@@ -90,12 +90,14 @@ it runs.
 ## Current state
 
 **Every phase is shipped and every phase milestone is closed.** Phase 5 was the
-last one, so delivery is no longer phase-gated, and five releases have shipped
+last one, so delivery is no longer phase-gated, and six releases have shipped
 since: `v0.3.0`, the release that made releases real (#313, #377, #378);
 `v0.4.0`, code execution governed — the sandbox built-in (#368 is the tracker),
 `[egress]`'s first live caller (#219), and a third service holding the Docker
 socket and no credential at all (#393); `v0.5.0`, shared skills; `v0.6.0`,
-scheduling; and `v0.7.0`, deployment shapes (all three below). All five were
+scheduling; `v0.7.0`, deployment shapes (all three below); and `v0.8.0`,
+richer tools and wider adoption, shipped 2026-09-06 (#160, #270, #260 — the
+roadmap has its record, including what #270 declined). The first five were
 August 2026. There is no
 phase 6, and inventing one to hold ordinary work would be the wrong move; the
 roadmap's phase list is complete rather than paused.
@@ -139,9 +141,14 @@ milestone closed, with the changelog entry carrying the upgrade notes. It is the
 first release of the pre-1.0 arc, and
 the roadmap's "The road to 1.0" section is the argued record of that plan (0.6
 scheduling, 0.7 deployment shapes, 0.8 richer tools and adoption, 0.9 close-out,
-1.0 a validation release). Do not re-derive the sequencing here. **There is no
-open milestone**: `v0.8.0`, richer tools and wider adoption, is next per the arc
-(#160, #270, #260), and its milestone is created when work on it starts.
+1.0 a validation release). Do not re-derive the sequencing here. **The open
+milestone is `v0.9.0`, the close-out**, planned 2026-09-06 against what the
+pilot window actually produced: #465 promoted to a tracker (#538 the inventory,
+#539 the surface), #540 the compatibility surface 1.0 freezes, #439 the skill
+vendor verb, and #541 the disposition pass that runs last. #496, #283, #284 and
+the three adapters stay parked with `post-1.0` reasons, because the accounts,
+the corpus and the demand they gate on did not appear; the roadmap's 0.9
+paragraph records that against its own planning wording.
 
 An operator declares `[[ambient.rule]]` in a team sheet — at these times, on
 these days, ask this question — and the ambient clock fires it as a third
