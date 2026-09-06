@@ -61,6 +61,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm check
+      - name: Check the sidebar covers every docs page
+        # Before the build rather than after it, unlike check:html next door:
+        # this is a fact about two source files, so a page missing from the
+        # sidebar should not cost a build first. The reverse direction — a
+        # sidebar entry naming a page that is not there — Starlight already
+        # fails the build for, so nothing here restates it.
+        run: pnpm check:nav
       - name: Build
         # `prebuild` regenerates the favicon and social card from design/,
         # which is why a change under design/ triggers this workflow.

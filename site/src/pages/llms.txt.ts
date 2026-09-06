@@ -36,9 +36,26 @@ export const GET: APIRoute = async () => {
   const sections = docsNav.map((group) => [
     `## ${group.label}`,
     '',
-    ...group.items.map((item) =>
-      link(item.label, `/${item.slug}/`, docs.get(item.slug)?.data.description ?? '')
-    ),
+    ...group.items.map((item) => {
+      const entry = docs.get(item.slug);
+      // Refused rather than described as nothing (#546). The `?? ''` this
+      // replaces emitted a link with an empty annotation for a slug that
+      // resolved to no page — a broken link in a file whose whole purpose is
+      // being the index somebody follows without crawling.
+      //
+      // Starlight already fails the build on that slug, so this throws on no
+      // build that was passing. That is the point: the two consumers of
+      // `docsNav` disagreed about strictness and only one of them enforced, so
+      // this file's correctness was borrowed from a sibling rather than its
+      // own. `scripts/check-nav.mjs` covers the other direction, a page in no
+      // group, which neither consumer can see.
+      if (entry === undefined) {
+        throw new Error(
+          `llms.txt: docs-nav.ts lists '${item.slug}', which is not a page in the docs collection`
+        );
+      }
+      return link(item.label, `/${item.slug}/`, entry.data.description ?? '');
+    }),
     '',
   ]);
 

@@ -15,6 +15,7 @@ pnpm dev          # http://localhost:4321
 pnpm build        # -> site/dist
 pnpm check        # astro check (types)
 pnpm check:html   # fused word boundaries in the built HTML
+pnpm check:nav    # every docs page is in the sidebar
 pnpm preview
 ```
 
@@ -43,6 +44,7 @@ src/components/       brand mark, header, footer, theme toggle
 src/styles/           the bridge between the design system and both surfaces
 src/lib/              design-token parser, code theme, theme bootstrap, docs nav, markdown siblings
 scripts/              build-assets.mjs — favicon and social card
+                      check-html.mjs, check-nav.mjs — the two CI gates
 public/               served verbatim, incl. vendored count.js (see vendor.json)
 ```
 
@@ -91,6 +93,32 @@ the choice carries between the docs and the marketing pages.
 Overrides live in `src/components/overrides/` and each one carries a comment saying why it exists.
 
 ## Generated assets
+
+### The sidebar is checked, in one direction (#546)
+
+`src/lib/docs-nav.ts` is the reading order and two things read it: the Starlight
+sidebar and `/llms.txt`. `pnpm check:nav` fails the build when a page under
+`src/content/docs/docs/` is in no group — such a page is still built, shipped
+and indexed by the site search, and appears in neither navigation, so it is
+reachable by URL and by nothing else. That is the worst shape the mistake takes,
+because it looks right to whoever made it: they wrote the page, built the site,
+clicked the link.
+
+**The other direction needs no check.** A group naming a page that does not
+exist already fails the build — Starlight validates its own sidebar and says
+which slug — and `site-build` is a required status, so restating it here would
+be a second opinion to keep in step with the first.
+
+What did change on that side is `llms.txt.ts`, which used to fall back to an
+empty description for a slug it could not resolve and so emitted a link to
+nothing. It now throws. That fails no build Starlight was letting through; the
+point is that this file's correctness was borrowed from a sibling consumer
+rather than being its own.
+
+The script runs **before** the build, unlike `check:html` beside it: this is a
+fact about two source files, so a page missing from the sidebar should not cost
+a build first. Its parser is deliberately small and fails on a `docs-nav.ts` it
+cannot read at all, rather than reporting a coverage it never checked.
 
 `public/favicon.svg` and `public/og.png` are produced by `scripts/build-assets.mjs` from
 `design/brand/app-icon.svg` and the design tokens. They run on `predev` and `prebuild` and are
