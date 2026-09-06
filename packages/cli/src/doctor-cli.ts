@@ -221,6 +221,7 @@ async function inspect(cwd: string, options: DoctorOptions): Promise<Check[]> {
   checkSlack(env, checks);
   checkVaultKey(env, resolve(cwd, options.keyFile), checks);
   checkRoots(env, checks, cwd);
+  checkTunables(env, checks);
 
   const certs = resolve(cwd, options.out);
   checkCertMaterial(certs, checks);
@@ -298,6 +299,70 @@ export function versionCheck(pinned: string, tag: string | null): Check {
   }
   return { status: "ok", name, detail: pinned };
 }
+
+/**
+ * The deployment's numeric knobs (#539): set, and a positive whole number.
+ *
+ * **Shape and nothing else, deliberately.** There is no range to check because
+ * #539 gave these no ceilings — the operator owns the heap, the bill and the
+ * context window, and a cap this repository invented would be advice wearing a
+ * boundary's clothes. So the whole rule is "a positive whole number", which is
+ * one line and therefore the same line the services run rather than a second
+ * copy of a validator kept in step by hand.
+ *
+ * That matters, because a shared parser is not available here and should not be
+ * built for this. `packages/cli` cannot import an app's `env.ts`, and
+ * `apps/runner/src/env.ts` refuses cross-service env sharing in its own header
+ * — "sharing would mean one of these services importing the other's package".
+ * A `packages/*` module holding two five-line functions would launder exactly
+ * the coupling that file declines, to save duplicating a predicate that has no
+ * policy in it.
+ *
+ * Unset is `ok`, not `skip`: absent means the figure the code already argues
+ * for, which is a working deployment rather than an unchecked one. A `skip`
+ * here would read as "this could not be checked", and it was.
+ */
+function checkTunables(env: Map<string, string>, checks: Check[]): void {
+  for (const name of TUNABLES) {
+    const raw = env.get(name) ?? "";
+    if (raw === "") {
+      checks.push({ status: "ok", name, detail: "unset, so the built-in figure applies" });
+      continue;
+    }
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0) {
+      // The service throws this at boot with the same words. Here it is one
+      // restart earlier, which is the whole of what `doctor` is for.
+      checks.push({
+        status: "fail",
+        name,
+        detail: `not a positive whole number: ${raw}`
+      });
+      continue;
+    }
+    checks.push({ status: "ok", name, detail: raw });
+  }
+}
+
+/**
+ * The variables `checkTunables` reads, in the order an operator meets them.
+ *
+ * The four that predate #539 are here too. They were settable and unchecked,
+ * which is the gap this closes rather than a new one it opens.
+ */
+const TUNABLES = [
+  "AGENT_RECALL_LIMIT",
+  "AGENT_RECALL_MAX_CHARS",
+  "AGENT_SKILLS_MAX_CHARS",
+  "AGENT_MAX_OPEN_PROPOSALS",
+  "AGENT_SKILL_LIFECYCLE_INTERVAL_MS",
+  "AGENT_HEARTBEAT_POST_WINDOW_MS",
+  "PROXY_MAX_PENDING_SCHEDULED_TASKS",
+  "PROXY_MAX_RESPONSE_BYTES",
+  "PROXY_MAX_UPSTREAM_CONCURRENCY",
+  "PROXY_MAX_SANDBOX_CONCURRENCY",
+  "PROXY_UPSTREAM_TIMEOUT_MS"
+] as const;
 
 function checkModel(env: Map<string, string>, checks: Check[]): void {
   const model = env.get("AGENT_MODEL") ?? "";

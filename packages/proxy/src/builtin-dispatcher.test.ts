@@ -11,6 +11,7 @@ import {
   SCHEDULED_TASK_MAX_HORIZON_MINUTES,
   SCHEDULED_TASK_MAX_PENDING,
   SCHEDULED_TASK_MIN_LEAD_MINUTES,
+  ScheduleTaskArguments,
   parseScheduledTask,
   resultText
 } from "@getlibero/schema";
@@ -439,6 +440,59 @@ describe("schedule_task", () => {
     expect(
       create({ prompt: "check", due_in_minutes: SCHEDULED_TASK_MAX_HORIZON_MINUTES }).outcome
     ).toBe("ran");
+  });
+
+  // #539: the cap an operator may raise, and the two ways they may not.
+  describe("the pending cap an operator may set", () => {
+    it("takes the configured cap in place of the schema's", () => {
+      // Built here rather than in the describe body: `root` is a fresh
+      // directory per case, and a dispatcher closed over the previous one is a
+      // test that passes for the wrong reason.
+      const raised = createBuiltinDispatcher({
+        storeRoot: root,
+        logger: createSilentLogger(),
+        maxPendingScheduledTasks: SCHEDULED_TASK_MAX_PENDING + 2,
+        now: () => NOW
+      });
+      for (let i = 0; i < SCHEDULED_TASK_MAX_PENDING + 1; i++) schedule(`t${i}`);
+      // The schema's own cap would already have refused at this count.
+      expect(create({ prompt: "check", due_in_minutes: 60 })).toEqual({
+        outcome: "refused",
+        refusal: { reason: "schedule_full" }
+      });
+      expect(
+        raised.run(
+          { ...callWith({ prompt: "check", due_in_minutes: 60 }, CHANNEL), tool: "schedule_task" },
+          "schedule_task",
+          LIMITS
+        ).outcome
+      ).toBe("ran");
+    });
+
+    // The half of #539 that is a boundary rather than a knob, and it holds one
+    // step earlier than the cap: `ScheduleTaskArguments` is `.strict()`, so a
+    // key named after the setting is an **unrecognized argument** and never
+    // reaches the count at all. A model that has read this file still has no
+    // sentence it can write that raises its own bound.
+    it("is not something a call's arguments can name", () => {
+      for (let i = 0; i < SCHEDULED_TASK_MAX_PENDING; i++) schedule(`t${i}`);
+      const dispatch = create({
+        prompt: "check",
+        due_in_minutes: 60,
+        maxPendingScheduledTasks: 500
+      });
+      expect(dispatch.outcome).toBe("ran");
+      expect(textOf(dispatch)).toContain("unrecognized key");
+      expect(textOf(dispatch)).toContain("maxPendingScheduledTasks");
+      // And the parse says so on its own, without a store or a dispatcher.
+      expect(
+        ScheduleTaskArguments.safeParse({
+          prompt: "check",
+          due_in_minutes: 60,
+          maxPendingScheduledTasks: 500
+        }).success
+      ).toBe(false);
+    });
   });
 
   // The flood bound, counted through the read-only reader the proxy is allowed.

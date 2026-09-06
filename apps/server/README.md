@@ -132,6 +132,51 @@ the far end of a thread.
 | `AGENT_EMBEDDING_API_KEY` | The embedding vendor's key. Falls back to `OPENAI_API_KEY`. |
 | `AGENT_EMBEDDING_BASE_URL` | Optional. Reaches Voyage, Together, Ollama, or a LiteLLM sidecar. |
 
+| `AGENT_RECALL_LIMIT` | Optional. Summaries a task opens with; unset is 5. Clamped by the store at 200, said at boot. |
+| `AGENT_RECALL_MAX_CHARS` | Optional. Characters the recall block may reach; unset is 6000. |
+| `AGENT_SKILLS_MAX_CHARS` | Optional. Characters retrieved skills may reach; unset is 12000. |
+| `AGENT_MAX_OPEN_PROPOSALS` | Optional. Merge proposals that may wait at once; unset is 3. |
+| `AGENT_SKILL_LIFECYCLE_INTERVAL_MS` | Optional. How often a channel's lifecycle job may run; unset is 6 hours. |
+| `AGENT_HEARTBEAT_POST_WINDOW_MS` | Optional. Between unbidden posts in one channel; unset is 4 hours. |
+
+### The six numbers a deployment may move (#539)
+
+They are the first numbers this process has ever read from its environment, and
+`session/registry.ts` states the rule they appear to bend: "this process's
+environment contract is that everything in it is required and load-bearing; an
+optional knob for a number nobody has yet had a reason to change cuts against
+it." Read exactly, that is a bar rather than a ban — it refuses a knob for a
+number *nobody has had a reason to change*. #465 is the reason, and the
+inventory at [Limits](https://getlibero.com/docs/limits/) is where each figure's
+own argument now lives.
+
+**Absent is the whole default.** Every one keeps the constant its module
+already argues for, so a deployment that sets none of them behaves exactly as
+it did before they existed, and `""` is a setting removed rather than a setting
+of zero. What is refused is a value that is not a positive whole number at all,
+because `AGENT_RECALL_LIMIT=0` and `AGENT_RECALL_LIMIT=none` are both an
+operator trying to say something and neither means what silently continuing
+would do.
+
+**None of them has a ceiling**, which is `PROXY_MAX_RESPONSE_BYTES`' argument
+one process over: capping the principal who owns the heap, the bill and the
+context window would be advice wearing a boundary's clothes. The one figure
+with a real bound is `AGENT_RECALL_LIMIT`, and the bound is the message store's
+rather than this file's — `nearest` returns at most `READ_MAX_LIMIT` rows for
+any one read, so a larger number is not refused and does not do what it says
+either. The process logs `recall_limit_clamped` at boot and uses 200. Refusing
+it would be deciding an operator may not ask; saying nothing would be the
+surprise `[llm] max_history_messages`' own ceiling exists to prevent.
+
+**None of them is a team sheet field, and that split is the decision.** What a
+channel may spend on its own task is `[llm]`'s business. How many rows this
+process pulls out of a store on every task, how often a background job runs, and
+how often the agent may speak unbidden are the operator's. `AGENT_HEARTBEAT_POST_WINDOW_MS`
+is the one worth stating twice: `[ambient]`'s own comment refuses a
+`posts_per_hour` *field* so that a channel tightening its cadence cannot loosen
+its own throttle, and that refusal stands. The throttle is still enforced in the
+posting surface and still reachable from no sheet. An operator is not a channel.
+
 `AGENT_PROVIDER` is required and never inferred from whichever key happens to
 be set: `deploy/docker-compose.yml` declares both keys on this service, so
 inference would resolve on the order the arms are written in and bill an

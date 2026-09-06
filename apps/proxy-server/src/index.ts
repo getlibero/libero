@@ -36,6 +36,7 @@ import {
   requiredEnv,
   runnerTlsFromEnv,
   runnerUrlFromEnv,
+  maxPendingScheduledTasksFromEnv,
   storeRootFromEnv,
   custodyFromEnv,
   upstreamTimeoutMsFromEnv
@@ -177,7 +178,11 @@ const mcp = createHttpDispatcher({
 // this service as well. Every file is opened `readOnly` and per call — see
 // `storeRootFromEnv` and `openMessageReader` — so there is nothing here for
 // shutdown to close.
-const builtin = createBuiltinDispatcher({ storeRoot: storeRootFromEnv(process.env), logger });
+const builtin = createBuiltinDispatcher({
+  storeRoot: storeRootFromEnv(process.env),
+  maxPendingScheduledTasks: maxPendingScheduledTasksFromEnv(process.env),
+  logger
+});
 
 // The sandbox arm (#395), and the one arm this composition may legitimately not
 // have. A deployment whose channels never grant `run_code` runs no runner, and

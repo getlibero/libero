@@ -307,6 +307,26 @@ describe("the environment file", () => {
     expect(check(result, "env file").detail).toContain("libero init");
   });
 
+  // The tunables' happy paths (#539). Unset is `ok` and not `skip`: absent means
+  // the figure the code argues for, which is a working deployment rather than an
+  // unchecked one, and `doctor`'s own rule is that a skip is never a pass.
+  it("passes a tunable that is unset, set, or set very large", async () => {
+    writeEnv({
+      ...HEALTHY,
+      AGENT_RECALL_LIMIT: "",
+      AGENT_MAX_OPEN_PROPOSALS: "12",
+      // No ceiling, and asserted: #539 asked for one and it was declined.
+      AGENT_SKILL_LIFECYCLE_INTERVAL_MS: "999999999"
+    });
+
+    const result = await doctor();
+
+    expect(check(result, "AGENT_RECALL_LIMIT").status).toBe("ok");
+    expect(check(result, "AGENT_RECALL_LIMIT").detail).toContain("unset");
+    expect(check(result, "AGENT_MAX_OPEN_PROPOSALS")).toEqual({ status: "ok", detail: "12" });
+    expect(check(result, "AGENT_SKILL_LIFECYCLE_INTERVAL_MS").status).toBe("ok");
+  });
+
   each([
     [{ AGENT_MODEL: "" }, "AGENT_MODEL", "empty"],
     [{ AGENT_MODEL: "(unreported)" }, "AGENT_MODEL", "not a model id"],
@@ -315,7 +335,19 @@ describe("the environment file", () => {
     [{ SLACK_APP_TOKEN: "" }, "SLACK_APP_TOKEN", "empty"],
     [{ PROXY_VAULT_KEY: "" }, "vault key", "empty"],
     [{ PROXY_VAULT_KEY: "not base64!!" }, "vault key", "not base64"],
-    [{ PROXY_VAULT_KEY: Buffer.alloc(16).toString("base64") }, "vault key", "decodes to 16 bytes"]
+    [{ PROXY_VAULT_KEY: Buffer.alloc(16).toString("base64") }, "vault key", "decodes to 16 bytes"],
+    // #539's tunables. One per shape of wrong rather than one per variable:
+    // eleven variables share one predicate, and a case each would assert the
+    // loop eleven times without asserting the rule once more.
+    [{ AGENT_RECALL_LIMIT: "0" }, "AGENT_RECALL_LIMIT", "not a positive whole number: 0"],
+    [{ AGENT_RECALL_LIMIT: "-4" }, "AGENT_RECALL_LIMIT", "not a positive whole number: -4"],
+    [{ AGENT_RECALL_MAX_CHARS: "6_000" }, "AGENT_RECALL_MAX_CHARS", "not a positive whole number"],
+    [{ AGENT_SKILLS_MAX_CHARS: "lots" }, "AGENT_SKILLS_MAX_CHARS", "not a positive whole number"],
+    [
+      { PROXY_MAX_PENDING_SCHEDULED_TASKS: "2.5" },
+      "PROXY_MAX_PENDING_SCHEDULED_TASKS",
+      "not a positive whole number"
+    ]
   ])("fails on %o", async (override, name, expected) => {
     writeEnv({ ...HEALTHY, ...(override as Record<string, string>) });
 

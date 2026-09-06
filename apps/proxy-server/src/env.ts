@@ -10,6 +10,7 @@ import {
   parseVaultKey
 } from "@getlibero/proxy";
 import type { CustodyConfig, VaultKey } from "@getlibero/proxy";
+import { SCHEDULED_TASK_MAX_PENDING } from "@getlibero/schema";
 
 /**
  * Localhost by default.
@@ -608,4 +609,42 @@ export function runnerTlsFromEnv(env: Env): { cert: string; key: string; ca: str
     key: requiredEnv(env, "RUNNER_CLIENT_KEY"),
     ca: requiredEnv(env, "RUNNER_CLIENT_CA")
   };
+}
+
+/**
+ * How many unfired scheduled checks one channel may hold:
+ * `PROXY_MAX_PENDING_SCHEDULED_TASKS`, defaulting to ten.
+ *
+ * #465's named example, and the one it names because the figure is so plainly
+ * sized against a guess about one workspace: ten "because a channel with ten
+ * checks outstanding has a scheduling problem rather than a tooling one, and
+ * because every one of them was clicked through by a human — the cap is the
+ * backstop behind that click, not the primary control". A larger or busier
+ * workspace has a different answer and had no way to give it.
+ *
+ * **A deployment setting and not a sheet field**, which is this file's usual
+ * split read from the machine-grown side. `schedule-task.ts` argues that a
+ * scheduled ticket is machine-grown — the model creates every one — so how many
+ * may be pending is a bound on a process rather than a policy a team holds an
+ * opinion about, and "nothing named `max_scheduled_tasks` goes on that block"
+ * stands. What that argument settles is that a *channel* may not raise it. It
+ * says nothing about the operator, who runs the process the bound is on.
+ *
+ * No ceiling, per `maxResponseBytesFromEnv` above: the cap is a backstop behind
+ * a human click, and capping the principal who owns both the clicks and the
+ * store would be advice rather than a boundary.
+ */
+export function maxPendingScheduledTasksFromEnv(env: Env): number {
+  const raw = env.PROXY_MAX_PENDING_SCHEDULED_TASKS;
+  // "" alongside undefined, per `maxResponseBytesFromEnv`: a blanked-out line
+  // is a setting removed, not a setting of zero — which here would refuse every
+  // scheduled check a channel asked for.
+  if (raw === undefined || raw === "") return SCHEDULED_TASK_MAX_PENDING;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `proxy: PROXY_MAX_PENDING_SCHEDULED_TASKS is not a positive count: ${raw}`
+    );
+  }
+  return parsed;
 }

@@ -50,6 +50,24 @@ Both database directories have to exist first — nothing here creates one:
 | `PROXY_MAX_RESPONSE_BYTES` | `4194304` | how much of an upstream's answer to hold before abandoning it |
 | `PROXY_MAX_UPSTREAM_CONCURRENCY` | `8` | how many calls to run against one upstream at once |
 | `PROXY_UPSTREAM_TIMEOUT_MS` | `30000` | how long to wait on any one outbound request |
+| `PROXY_MAX_PENDING_SCHEDULED_TASKS` | `10` | how many unfired checks one channel may hold |
+
+`PROXY_MAX_PENDING_SCHEDULED_TASKS` (#539) is the newest of these and the one
+#465 named when it asked the question. Ten was chosen because "a channel with
+ten checks outstanding has a scheduling problem rather than a tooling one, and
+because every one of them was clicked through by a human — the cap is the
+backstop behind that click, not the primary control". That argument sizes a
+backstop against one workspace's rhythm, and a busier one had no way to say so.
+
+It stays out of the team sheet for the reason `schedule-task.ts` gives: a
+scheduled ticket is machine-grown, the model creates every one, so how many may
+be pending is a bound on a process rather than a policy a team holds an opinion
+about, and "nothing named `max_scheduled_tasks` goes on that block" still holds.
+What that settles is that a **channel** may not raise it. It says nothing about
+the operator, who runs the process the bound is on. No ceiling, per the three
+above. `packages/schema` is untouched by it and still reads no environment at
+all: the cap counts rows in a store rather than checking a shape, so the schema
+states the figure and the dispatcher reads it.
 
 `PROXY_MAX_RESPONSE_BYTES`, `PROXY_MAX_UPSTREAM_CONCURRENCY` and
 `PROXY_UPSTREAM_TIMEOUT_MS` are the knobs here that are capacity decisions

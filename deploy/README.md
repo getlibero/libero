@@ -284,6 +284,51 @@ networks rests on Docker's default iptables rules. A deployment running the daem
 with `--iptables=false` has removed a wall this design leans on, and nothing here
 would report it.
 
+## The figures a deployment may move (#539)
+
+Eleven environment variables set numbers that were previously a code change to
+alter. They came out of #465, which asked which of the bounds on a deployment
+belong to the operator, and out of the inventory that answered it — the page at
+getlibero.com/docs/limits, which is where each figure's own argument lives.
+
+Seven are new. `PROXY_MAX_PENDING_SCHEDULED_TASKS` caps unfired scheduled checks
+per channel. The other six are the agent's — `AGENT_RECALL_LIMIT`,
+`AGENT_RECALL_MAX_CHARS` and `AGENT_SKILLS_MAX_CHARS` bound what a task
+assembles; `AGENT_MAX_OPEN_PROPOSALS`, `AGENT_SKILL_LIFECYCLE_INTERVAL_MS` and
+`AGENT_HEARTBEAT_POST_WINDOW_MS` bound how often background work asks something
+of a team. The other four are `PROXY_MAX_RESPONSE_BYTES`,
+`PROXY_MAX_UPSTREAM_CONCURRENCY`, `PROXY_MAX_SANDBOX_CONCURRENCY` and
+`PROXY_UPSTREAM_TIMEOUT_MS`, which were settable already but were **literals in
+this file** — retuning one meant editing a file this repository ships, and
+therefore a merge conflict on every upgrade. They now read from `.env` and fall
+back to what this file ships, so the figures are unchanged and a deployment that
+sets nothing is byte-for-byte the deployment it was.
+
+Three things are worth knowing before you set any of them.
+
+- **Blank means the built-in, not zero.** Every one is optional and `libero init`
+  scaffolds all eleven empty. An operator who reads the block and changes
+  nothing has changed nothing, which is the property that made it safe to add
+  them to an existing deployment.
+- **None has a ceiling.** That is deliberate and it is this repository declining
+  to have an opinion: you own the heap, the bill and the context window, and a
+  cap invented here would be advice wearing a boundary's clothes. What is
+  refused is a value that is not a positive whole number, because `0` and `none`
+  are both you trying to say something. `libero doctor` reports a bad one before
+  a restart does.
+- **None is a team sheet field, and that is the boundary rather than a filing
+  choice.** A limit you set is one a channel still cannot. The clearest case is
+  `AGENT_HEARTBEAT_POST_WINDOW_MS`: `[ambient]` deliberately has no
+  `posts_per_hour`, so that a channel tightening its own cadence cannot loosen
+  its own throttle, and that stays true — the throttle is enforced in the
+  posting surface and no sheet reaches it. What changed is who may size it.
+
+The one figure with a bound that is not ours to set is `AGENT_RECALL_LIMIT`: the
+message store returns at most 200 rows for any one read, so a larger number is
+logged at boot as `recall_limit_clamped` and 200 is used. That is the runner's
+`sandbox_ceiling` line applied to a different number — say what is in force,
+rather than refusing to be asked or going quiet.
+
 ## Three ways to reach a model (#428)
 
 **Three supported deployment shapes, and none of them is a default the other two

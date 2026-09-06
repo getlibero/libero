@@ -399,6 +399,17 @@ export interface ServerDeps {
    * eviction.
    */
   readonly proactiveClock?: () => number;
+  /**
+   * How long between unbidden posts, from `AGENT_HEARTBEAT_POST_WINDOW_MS`
+   * (#539). Absent keeps `HEARTBEAT_POST_WINDOW_MS`.
+   *
+   * Here rather than resolved in `index.ts` alongside the other five limits
+   * because the poster is built *inside* this function — it needs
+   * `surface.channel`, which does not exist until the Slack surface does. That
+   * is `proactiveClock`'s own reason for being on this interface, and this
+   * field rides the same seam rather than opening a second one.
+   */
+  readonly heartbeatPostWindowMs?: number;
   /** Injected for tests: the approval deadline's timer. Omitted in production. */
   readonly scheduler?: Scheduler;
 }
@@ -731,7 +742,10 @@ export function createServer(deps: ServerDeps): Server {
       : createProactivePoster({
           poster: surface.channel,
           logger,
-          ...(deps.proactiveClock !== undefined ? { now: deps.proactiveClock } : {})
+          ...(deps.proactiveClock !== undefined ? { now: deps.proactiveClock } : {}),
+          ...(deps.heartbeatPostWindowMs !== undefined
+            ? { windowMs: deps.heartbeatPostWindowMs }
+            : {})
         });
 
   // No poster, no heartbeat. Everything a heartbeat produces is a post, so a

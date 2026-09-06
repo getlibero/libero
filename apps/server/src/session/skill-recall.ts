@@ -216,6 +216,15 @@ export interface LoadedSkill {
 
 export interface SkillRecallOptions {
   logger?: Logger;
+  /**
+   * How many characters retrieved skills may reach, defaulting to
+   * `SKILLS_MAX_CHARS`. `AGENT_SKILLS_MAX_CHARS` (#539).
+   *
+   * The per-channel caps beside it — `topK`, `maxSkillChars`, `maxSkills` —
+   * stay on the request, because those are `[skills]` fields a team sets. This
+   * one bounds what the process assembles, so it is the deployment's.
+   */
+  maxChars?: number;
   /** The clock. Stamps a new skill's `first_seen_at` and every use recorded here. */
   now?: () => number;
 }
@@ -312,6 +321,7 @@ export type SkillRecall = (request: SkillRecallRequest) => Promise<RetrievedSkil
 export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall {
   const logger = options.logger ?? createSilentLogger();
   const now = options.now ?? Date.now;
+  const maxChars = options.maxChars ?? SKILLS_MAX_CHARS;
 
   return async request => {
     const { channel, store, files, shared, query, topK, maxSkillChars, maxSkills } = request;
@@ -426,7 +436,7 @@ export function createSkillRecall(options: SkillRecallOptions = {}): SkillRecall
         // what a bound sheds should be the weakest match. Description and body
         // both count, because both are rendered.
         const cost = skill.frontmatter.description.length + skill.body.length;
-        if (chars + cost > SKILLS_MAX_CHARS) {
+        if (chars + cost > maxChars) {
           full = true;
           decided.set(name, "dropped_chars");
           continue;
