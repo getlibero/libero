@@ -32,11 +32,11 @@
 // partition that is not there. A new flag in ci.yml fails this test, which is a
 // one-line fix and a reviewable one; a wrong green is neither.
 
-import { readFileSync, readdirSync, type Dirent } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { expect } from "expect";
-import { ROOT, workspacePackages, type WorkspacePackage } from "./workspace.js";
+import { ROOT, sources, workspacePackages, type WorkspacePackage } from "./workspace.js";
 
 const WORKFLOW = join(ROOT, ".github/workflows/ci.yml");
 
@@ -223,18 +223,3 @@ function gatesOnDocker({ directory }: WorkspacePackage): boolean {
  * instrument than teaching the search to skip a path.
  */
 const DAEMON_GATE = "must not be" + " skipped in CI";
-
-/** Every `.ts` file below a directory, or none if it is not there. */
-function sources(directory: string): string[] {
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(directory, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries.flatMap(entry => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return sources(path);
-    return entry.isFile() && path.endsWith(".ts") ? [path] : [];
-  });
-}

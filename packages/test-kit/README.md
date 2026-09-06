@@ -86,12 +86,14 @@ The decision and the printing are separate functions — `problems` and
 otherwise be tested from inside a test run without failing it.
 `src/reporter.test.ts` exercises every guard in both directions.
 
-## The two checks that are not helpers
+## The three checks that are not helpers
 
-`each`, `waitFor` and the reporter are what other packages import. Two test
-files here import nothing and are checks on the repository, and they live in
-this package because it is the one about how the suite runs and because it
-depends on nothing else in the tree.
+`each`, `waitFor` and the reporter are what other packages import. Three test
+files here import nothing and are checks on the repository. Two of them are
+about how the suite runs; the third is about what the tree claims of itself.
+What sends all three here is the second half of that sentence — this package
+depends on nothing else in the tree, so a check that has to read every package
+can live in it without any package having to depend on a checker.
 
 - **`test-scripts.test.ts`** — every package's `test` script is the same string,
   and its `build` and `typecheck` are the invocations that string assumes. The
@@ -107,9 +109,29 @@ depends on nothing else in the tree.
   their gates throw rather than listed, so a third one is covered the day it is
   written.
 
-Both read the workspace off disk through `workspace.ts`, which is not exported:
-the list neither can hardcode is the same list, and the thing they exist to
-catch is a package nobody remembered.
+- **`limits-inventory.test.ts`** — every hard-coded figure in the nine shipping
+  packages has a row on `site/src/content/docs/docs/limits.md`, stating the same
+  figure. #465 asked which of the numbers bounding a deployment an operator may
+  move, #538 answered it with a page, and this is what keeps the page true: the
+  figures are one-way doors, so the hazard is one moving with nothing to notice.
+  It fails in both directions — an undocumented limit and a row whose limit has
+  been deleted — because a page naming a constant the reader cannot find is a
+  worse answer than no page. The sweep is `limits.ts` beside it, and the
+  symbols it excludes as numeric-but-not-limits are a named list with a reason
+  each, on `ALLOWED_SKIPS`' argument: an exclusion should be a line somebody
+  wrote rather than a regex quietly not matching.
+
+All three read the workspace off disk through `workspace.ts`, which is not
+exported: the list none of them can hardcode is the same list, and the thing the
+first two exist to catch is a package nobody remembered. `sources()` lives there
+for the same reason — two of the three walk a package's files, and neither owns
+the recipe.
+
+Reaching out of the package is fine, and the limits check reaches furthest:
+`site/` is outside the workspace and has no test runner of its own, so an
+assertion about a page has to live where a runner already goes. That is
+`parse-team-sheet.test.ts`'s argument for asserting the site's copy of the
+starter sheet, applied to a second page.
 
 ## Running the suite
 

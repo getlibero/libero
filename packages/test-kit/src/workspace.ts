@@ -10,7 +10,7 @@
 // thing `@getlibero/test-kit` offers. It reads the filesystem, which is what
 // `each` and `waitFor` deliberately do not.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +39,29 @@ export function workspacePackages(): WorkspacePackage[] {
   }
   found.push(read(join(ROOT, "e2e")));
   return found;
+}
+
+/**
+ * Every `.ts` file below a directory, or none if it is not there.
+ *
+ * Here rather than in either caller because two checks read package sources and
+ * neither owns the recipe — `ci-partition.test.ts` greps them for the daemon
+ * gate, `limits-inventory.test.ts` greps them for hard-coded figures. That is
+ * `workspacePackages`' own argument one level down: the walk neither can
+ * hardcode is the same walk.
+ */
+export function sources(directory: string): string[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap(entry => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sources(path);
+    return entry.isFile() && path.endsWith(".ts") ? [path] : [];
+  });
 }
 
 function read(directory: string): WorkspacePackage {
