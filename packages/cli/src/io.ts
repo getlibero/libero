@@ -10,6 +10,8 @@
 // resolves paths relative to where it was run, and a test that had to
 // `process.chdir` to cover that would be a test that cannot run beside another.
 
+import { isAbsolute, relative } from "node:path";
+
 export interface CliIo {
   readonly argv: readonly string[];
   /** Where paths resolve from. `process.cwd()` in the real thing. */
@@ -39,4 +41,18 @@ export class UsageError extends Error {}
 
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "failed";
+}
+
+/**
+ * A path as the operator would type it: relative to where they ran the command,
+ * and left absolute when it is not under that directory.
+ *
+ * Here rather than in whichever command printed it first, because it is half of
+ * what makes a printed path one an operator can act on. The other half is that
+ * the path was found rather than assumed, which is `composeCommand` in
+ * ./compose.ts.
+ */
+export function displayPath(cwd: string, file: string): string {
+  const shown = relative(cwd, file);
+  return shown === "" || shown.startsWith("..") || isAbsolute(shown) ? file : shown;
 }

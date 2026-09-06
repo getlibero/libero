@@ -1,4 +1,7 @@
-import { describe, it } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, it } from "node:test";
 import { each } from "@getlibero/test-kit";
 import { expect } from "expect";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./io.js";
@@ -11,12 +14,12 @@ interface Run {
   text: string;
 }
 
-async function run(argv: string[], nodeVersion = "24.13.3"): Promise<Run> {
+async function run(argv: string[], nodeVersion = "24.13.3", cwd = "/nowhere"): Promise<Run> {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runCli({
     argv,
-    cwd: "/nowhere",
+    cwd,
     nodeVersion,
     out: line => void out.push(line),
     err: line => void err.push(line)
@@ -96,5 +99,52 @@ describe("the boundary #98 settled", () => {
     const result = await run(["--help"]);
 
     expect(result.text).toContain("deliberately not commands");
+  });
+});
+
+describe("the compose file it names", () => {
+  // #516: the three command lines above used to say deploy/docker-compose.yml
+  // whatever the operator's file was, and `findCompose` accepts four filenames
+  // in two directories — so the advice named a file half of them do not have.
+  const dirs: string[] = [];
+
+  function withCompose(at: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "libero-cli-usage-"));
+    dirs.push(dir);
+    mkdirSync(join(dir, at), { recursive: true });
+    writeFileSync(join(dir, at, at === "." ? "compose.yaml" : "docker-compose.yml"), "services: {}\n");
+    return dir;
+  }
+
+  after(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("names deploy/docker-compose.yml in a checkout of this repository", async () => {
+    const result = await run(["--help"], "24.13.3", withCompose("deploy"));
+
+    expect(result.text).toContain("docker compose -f deploy/docker-compose.yml run --rm proxy");
+  });
+
+  it("drops the -f when the compose file is the working directory's own", async () => {
+    const result = await run(["--help"], "24.13.3", withCompose("."));
+
+    expect(result.text).toContain("docker compose run --rm proxy");
+    expect(result.text).not.toContain("deploy/docker-compose.yml");
+  });
+
+  it("names no file at all when there is none to find", async () => {
+    // `libero --help` outside a deployment. A bare `docker compose` is right
+    // wherever it is run from; a guessed path is right nowhere.
+    const result = await run(["--help"]);
+
+    expect(result.text).toContain("docker compose run --rm proxy");
+    expect(result.text).not.toContain("-f ");
+  });
+
+  it("says it on the unknown-command hint too", async () => {
+    const result = await run(["vault"], "24.13.3", withCompose("."));
+
+    expect(result.err.join("\n")).toContain("docker compose run --rm proxy node dist/vault.js");
   });
 });

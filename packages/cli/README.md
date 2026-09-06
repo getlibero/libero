@@ -35,12 +35,43 @@ provider and model, the completion key, the optional price table — and generat
 two services read is set in the compose file, because those are paths inside a container and
 a value on the host cannot make them true.
 
+**It scaffolds the shape that was asked for, not every shape there is** (#518). The file used
+to carry every variable the compose file interpolates, which is a defensible contract and was
+the wrong one to hold an operator to: `--provider openai-compatible` still wrote the
+`ANTHROPIC_*` pair, and the sidecar and sandbox blocks arrived whether or not their profiles
+would ever be started, each under a comment block describing a service the deployment is not
+running and none of it distinguishable, in the file, from what it is. So `--provider` decides
+which completion pair is written, and `--profile litellm` / `--profile runner` decide whether
+those blocks are; both are repeatable and both are off unless asked for, because compose does
+not start those services without the same word either. For "a LiteLLM you already run" — what
+`deploy/README.md` calls the likeliest production shape — what is left is the two Slack tokens,
+the provider and model, the key and the base URL, the vault key, and the optional embedding and
+price-table lines. Nothing about a sidecar, and nothing about a sandbox.
+
+Nothing is lost by omission: compose interpolates every gated variable with a `:-` default, so
+an absent block and an empty one are the same file as far as it is concerned. The union over
+the flags is still exactly the compose file's set, asserted against the compose file in
+`init-cli.test.ts`, so a variable added there and to no block still fails a test rather than an
+operator's first `docker compose up`. And because a re-run appends what is absent and touches
+nothing else, opting into a profile later is `libero init --profile runner` rather than
+hand-writing three names.
+
+**What it prints names the compose file it found** (#516). `findCompose` accepts `deploy/` or
+the working directory and any of four compose filenames; until #516 the closing hint and the
+file's own header said `deploy/docker-compose.yml` regardless, so a deployment with its own
+`compose.yaml` — the shape that search exists to support — was told to run a file it does not
+have. The `-f` is dropped when the compose file is the working directory's own, and dropped
+again when there is none to name, on the rule that a bare `docker compose` is right wherever
+it is run from and a guessed path is right nowhere. `libero --help` and `doctor`'s
+proxy-probe hint go through the same function.
+
 **The file goes beside the compose file**, because that is where Docker Compose looks: with no
 `--project-directory` the project directory is the directory holding the compose file, and the
 `.env` loaded automatically is the one there. In a checkout of this repository that is
 `deploy/.env`; an `.env` at the repository root is read by nothing. The `.env.example` at the
-root is a different document and a superset — the contract for running the two processes
-directly, with host-relative paths.
+root is a different document, and the two overlap rather than nest — it is the contract for
+running the two processes directly, with host-relative paths, so it carries every path compose
+sets for itself and none of what configures the services compose can start.
 
 **No value is ever written over a non-empty one, and there is no `--force`.** A re-run fills
 assignments that are empty, appends variables that are absent, and leaves every other byte

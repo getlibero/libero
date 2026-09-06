@@ -13,10 +13,10 @@
 // compose file, and the `.env` it loads automatically is the one there. This
 // repository's compose file is `deploy/docker-compose.yml`, so the file is
 // `deploy/.env` and an `.env` at the repository root is read by nothing. The
-// `.env.example` beside that root is a different document and a superset: it is
-// the contract for running the two processes directly, with host-relative
-// paths, and copying it here would produce a file that looks right and is wrong
-// in eleven variables.
+// `.env.example` beside that root is a different document, and the two overlap
+// rather than nest: it is the contract for running the two processes directly,
+// with host-relative paths, and copying it here would produce a file that looks
+// right and is wrong in every path it sets.
 //
 // **No value is ever written over a non-empty one, and there is no --force.**
 // The asymmetry is one line: every value in this file can be retyped from where
@@ -42,14 +42,40 @@
 // Service credentials go into the vault from inside the proxy container, over
 // stdin, so the master key and the secrets it encrypts never sit on this host
 // together.
+//
+// **It scaffolds the shape that was asked for, not every shape there is**
+// (#518). The file used to carry every variable the compose file interpolates,
+// which is a defensible contract and was the wrong one to hold an operator to:
+// `--provider openai-compatible` still wrote the `ANTHROPIC_*` pair, and the
+// sidecar and sandbox blocks arrived whether or not their profiles would ever be
+// started, each under a comment block describing a service the deployment is not
+// running and none of it distinguishable, in the file, from what it is. So the
+// provider decides which completion pair is written, `--profile litellm` and
+// `--profile runner` decide whether those blocks are, and what is left is what
+// every shape reads. The union over the flags is still exactly the compose set,
+// asserted in ./init-cli.test.ts, so a variable added there and to no block here
+// still fails a test. Nothing is lost by omission: every gated variable is
+// interpolated with a `:-` default, so absent and empty mean the same thing to
+// Compose — which is the argument the --key-file path already makes for leaving
+// `PROXY_VAULT_KEY` out entirely. A re-run with a profile appends its block,
+// which is how an operator opts in later without hand-writing the names.
+//
+// **What it prints names the compose file it found, not this repository's**
+// (#516). `findCompose` accepts `deploy/` or the working directory and any of
+// four filenames; the closing hint and the file's own header said
+// `deploy/docker-compose.yml` regardless, so a deployment with its own
+// `compose.yaml` — the shape that search exists to support — was told to run a
+// file it does not have. `composeCommand` words it now, and drops the `-f`
+// where Compose does not need one.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ModelId } from "@getlibero/schema";
 import { createFileExclusively, replaceFileAtomically } from "@getlibero/atomic-write";
-import { NO_COMPOSE_FILE, findCompose } from "./compose.js";
-import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
+import { NO_COMPOSE_FILE, composeCommand, composeShown, findCompose } from "./compose.js";
+import type { ComposeLocation } from "./compose.js";
+import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, displayPath, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
 import { assignedValues, mergeEnvFile, renderEnvFile } from "./env-file.js";
 import type { EnvBlock } from "./env-file.js";
@@ -62,20 +88,35 @@ type Provider = (typeof PROVIDERS)[number];
 const DEFAULT_PROVIDER: Provider = "anthropic";
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
+/**
+ * The compose profiles whose variables are scaffolded on request (#518).
+ *
+ * Named for the profiles themselves — these are the words that already go after
+ * `docker compose --profile`, so the flag that scaffolds a block and the flag
+ * that starts the service it configures are the same word.
+ */
+const PROFILES = ["litellm", "runner"] as const;
+type Profile = (typeof PROFILES)[number];
+
 /** Named because three places have to agree about it, one of them a warning. */
 const VAULT_KEY = "PROXY_VAULT_KEY";
 
 
 export const USAGE = [
   "usage: libero init [--file PATH] [--provider NAME] [--model ID]",
-  "                   [--key-file PATH]",
+  "                   [--profile NAME]... [--key-file PATH]",
   "",
   "  --file PATH      the environment file to write. Defaults to the .env",
   "                   beside the compose file: deploy/.env when this directory",
   "                   holds deploy/docker-compose.yml, ./.env when the compose",
   "                   file is this directory's own",
-  "  --provider NAME  anthropic (the default) or openai-compatible",
+  "  --provider NAME  anthropic (the default) or openai-compatible. Only that",
+  "                   provider's key and base URL are scaffolded",
   "  --model ID       the model the agent completes against",
+  `  --profile NAME   also scaffold this profile's variables: ${PROFILES.join(" or ")}.`,
+  "                   Repeatable. Both are off unless asked for, because they",
+  "                   configure services compose does not start without the",
+  "                   matching --profile either",
   "  --key-file PATH  write PROXY_VAULT_KEY to this file instead of into the",
   `                   environment file. ${DEFAULT_KEY_FILE} is the path`,
   "                   the compose file's secrets: block names, and the one",
@@ -88,12 +129,21 @@ export const USAGE = [
   "set in the compose file, because those are paths inside a container and a",
   "value on the host cannot make them true.",
   "",
+  "What it writes is the shape you asked for. The provider decides which",
+  "completion key and base URL are scaffolded, and the LiteLLM sidecar and the",
+  "sandbox runner are written only under their own --profile, because they",
+  "configure services that do not start without it either. Nothing is lost by",
+  "leaving one out: compose gives every one of those variables a default, so",
+  "absent and empty mean the same thing to it. Re-run with a --profile to add",
+  "its block later; nothing already in the file is touched.",
+  "",
   "The file goes beside the compose file because that is where Docker Compose",
   "looks: with no --project-directory the project directory is the directory",
   "holding the compose file, and the .env loaded automatically is the one",
   "there. An .env at the root of this repository is read by nothing. The",
-  ".env.example there is a different document, and a superset — the contract",
-  "for running the two processes directly, with host-relative paths.",
+  ".env.example there is a different document, and the two overlap rather than",
+  "nest — it is the contract for running the two processes directly, with",
+  "host-relative paths.",
   "",
   "No value is written over a non-empty one. A re-run fills assignments that",
   "are empty, appends variables that are absent, and leaves every other byte",
@@ -129,16 +179,23 @@ export function runInitCommand(io: CliIo, argv: readonly string[]): number {
     throw error;
   }
 
+  // Found once, and used for two different things: where the environment file
+  // goes when --file did not say, and how to name the compose file in everything
+  // this command prints. `--file` skips the first and not the second — an
+  // operator who named their own env file still gets told about the compose file
+  // that is there, and nothing at all about one that is not.
+  const found = findCompose(io.cwd);
+
   let file: string;
   try {
-    file = options.file === undefined ? beside(io.cwd) : resolve(io.cwd, options.file);
+    file = options.file === undefined ? beside(found) : resolve(io.cwd, options.file);
   } catch (error) {
     io.err(messageOf(error));
     return EXIT_ERROR;
   }
 
   try {
-    return write(io, file, options);
+    return write(io, file, options, found);
   } catch (error) {
     io.err(`libero: ${messageOf(error)}`);
     return EXIT_ERROR;
@@ -149,12 +206,14 @@ interface InitOptions {
   readonly file?: string;
   readonly provider: Provider;
   readonly model: string;
+  /** Empty is the deployment that starts neither optional service. */
+  readonly profiles: readonly Profile[];
   /** Absent is the key in the env file, which is the default deployment. */
   readonly keyFile?: string;
 }
 
 function parseInit(argv: readonly string[]): InitOptions {
-  let values: Record<string, string | undefined>;
+  let values: Record<string, string | string[] | undefined>;
   let positionals: string[];
   try {
     const parsed = parseArgs({
@@ -165,6 +224,10 @@ function parseInit(argv: readonly string[]): InitOptions {
         file: { type: "string" },
         provider: { type: "string" },
         model: { type: "string" },
+        // Repeatable rather than comma-separated: a deployment that runs both
+        // optional services says so twice, and `--profile litellm,runner` never
+        // silently becomes one profile nobody has.
+        profile: { type: "string", multiple: true },
         "key-file": { type: "string" }
       }
     });
@@ -181,12 +244,23 @@ function parseInit(argv: readonly string[]): InitOptions {
     throw new UsageError(`libero: init takes no arguments, and got: ${positionals[0] as string}`);
   }
 
-  const provider = values["provider"] ?? DEFAULT_PROVIDER;
+  const provider = (values["provider"] as string | undefined) ?? DEFAULT_PROVIDER;
   if (!(PROVIDERS as readonly string[]).includes(provider)) {
     throw new UsageError(`libero: not a provider: ${provider}. One of ${PROVIDERS.join(", ")}.`);
   }
 
-  const model = values["model"] ?? DEFAULT_MODEL;
+  const asked = (values["profile"] as string[] | undefined) ?? [];
+  for (const profile of asked) {
+    if (!(PROFILES as readonly string[]).includes(profile)) {
+      throw new UsageError(`libero: not a profile: ${profile}. One of ${PROFILES.join(", ")}.`);
+    }
+  }
+  // Deduplicated, in the profiles' own order, so that `--profile runner
+  // --profile litellm` writes the same file as the other way round and a
+  // repeated flag does not render a block twice.
+  const profiles = PROFILES.filter(profile => asked.includes(profile));
+
+  const model = (values["model"] as string | undefined) ?? DEFAULT_MODEL;
   // The same validator a team sheet's [llm] model passes through, so a model id
   // this command accepts is one the rest of the deployment will. It is narrow
   // for a reason the schema states: a leading parenthesis is reserved for the
@@ -196,22 +270,22 @@ function parseInit(argv: readonly string[]): InitOptions {
   }
 
   return {
-    ...(values["file"] !== undefined ? { file: values["file"] } : {}),
-    ...(values["key-file"] !== undefined ? { keyFile: values["key-file"] } : {}),
+    ...(values["file"] !== undefined ? { file: values["file"] as string } : {}),
+    ...(values["key-file"] !== undefined ? { keyFile: values["key-file"] as string } : {}),
     provider: provider as Provider,
+    profiles,
     model
   };
 }
 
 /** Compose's rule, applied by hand: the `.env` beside the compose file. */
-function beside(cwd: string): string {
-  const found = findCompose(cwd);
+function beside(found: ComposeLocation | null): string {
   if (found === null) throw new Error(`libero: ${NO_COMPOSE_FILE}`);
   return found.envFile;
 }
 
-function write(io: CliIo, file: string, options: InitOptions): number {
-  const shown = display(io.cwd, file);
+function write(io: CliIo, file: string, options: InitOptions, found: ComposeLocation | null): number {
+  const shown = displayPath(io.cwd, file);
   const keyFile = options.keyFile === undefined ? undefined : resolve(io.cwd, options.keyFile);
 
   // Refused before anything is written, and this is the check that keeps
@@ -251,7 +325,7 @@ function write(io: CliIo, file: string, options: InitOptions): number {
   };
 
   if (!existsSync(file)) {
-    const text = renderEnvFile(HEADER, blocks());
+    const text = renderEnvFile(header(io.cwd, found), blocks());
     // `wx` on the real path, which `createFileExclusively` keeps: two `init`s
     // racing on one path should end with one of them saying the file already
     // exists, not with a key written over a key — a temporary and a rename would
@@ -263,19 +337,19 @@ function write(io: CliIo, file: string, options: InitOptions): number {
     createFileExclusively(file, Buffer.from(text, "utf8"));
     io.out(`libero: wrote ${shown}`);
     if (keyFileWritten === undefined) io.out(`libero: generated ${VAULT_KEY}`);
-    report(io, shown, options, keyFileWritten);
+    report(io, shown, options, found, keyFileWritten);
     return EXIT_OK;
   }
 
   const existing = readFileSync(file, "utf8");
   const merged = mergeEnvFile(existing, blocks());
   if (merged.appended.length === 0 && merged.filled.length === 0) {
-    io.out(`libero: ${shown} already assigns every variable compose reads`);
+    io.out(`libero: ${shown} already assigns every variable this deployment reads`);
     if (keyFileWritten === undefined) {
       io.out("libero: nothing written");
       return EXIT_OK;
     }
-    report(io, shown, options, keyFileWritten);
+    report(io, shown, options, found, keyFileWritten);
     return EXIT_OK;
   }
 
@@ -297,7 +371,7 @@ function write(io: CliIo, file: string, options: InitOptions): number {
   if (merged.appended.includes(VAULT_KEY) || merged.filled.includes(VAULT_KEY)) {
     io.out(`libero: generated ${VAULT_KEY}`);
   }
-  report(io, shown, options, keyFileWritten);
+  report(io, shown, options, found, keyFileWritten);
   return EXIT_OK;
 }
 
@@ -320,7 +394,7 @@ function write(io: CliIo, file: string, options: InitOptions): number {
  * proxy and doctor read the same 32 bytes either way.
  */
 function writeKeyFile(io: CliIo, path: string): string {
-  const shown = display(io.cwd, path);
+  const shown = displayPath(io.cwd, path);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   try {
     createFileExclusively(path, Buffer.from(`${generateVaultKey()}\n`, "utf8"));
@@ -337,7 +411,13 @@ function writeKeyFile(io: CliIo, path: string): string {
 }
 
 /** What is left for the operator to do, in the order they have to do it. */
-function report(io: CliIo, shown: string, options: InitOptions, keyFile?: string): void {
+function report(
+  io: CliIo,
+  shown: string,
+  options: InitOptions,
+  found: ComposeLocation | null,
+  keyFile?: string
+): void {
   const key = options.provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
   io.out("");
   // Said before the fill, because it is the step nothing else will remind them
@@ -345,7 +425,7 @@ function report(io: CliIo, shown: string, options: InitOptions, keyFile?: string
   // file does not read is a container that will not start with a perfectly good
   // key on disk.
   if (keyFile !== undefined) {
-    io.out(`The key is in ${keyFile}, and nothing reads it yet. In deploy/docker-compose.yml,`);
+    io.out(`The key is in ${keyFile}, and nothing reads it yet. In ${composeShown(io.cwd, found)},`);
     io.out(`comment out PROXY_VAULT_KEY and uncomment PROXY_VAULT_KEY_FILE, the proxy's`);
     io.out("secrets: entry, and the secrets: block at the foot of the file. Setting both the");
     io.out("variable and the file is a startup failure rather than a precedence rule.");
@@ -353,46 +433,56 @@ function report(io: CliIo, shown: string, options: InitOptions, keyFile?: string
   }
   io.out(`Fill SLACK_APP_TOKEN, SLACK_BOT_TOKEN and ${key} in ${shown}, then:`);
   io.out("  libero channel add <CHANNEL_ID>");
-  io.out("  docker compose -f deploy/docker-compose.yml up");
+  // Every profile that was asked for, on the one line, because they are one
+  // `up`: an operator who scaffolded the sandbox and then started compose
+  // without --profile runner gets three filled variables and no runner.
+  const profiles = options.profiles.map(profile => `--profile ${profile} `).join("");
+  io.out(`  ${composeCommand(io.cwd, found, `${profiles}up`)}`);
 }
 
-function display(cwd: string, file: string): string {
-  const shown = relative(cwd, file);
-  return shown === "" || shown.startsWith("..") || isAbsolute(shown) ? file : shown;
+/** The file's own preamble, naming the compose file this deployment has (#516). */
+function header(cwd: string, found: ComposeLocation | null): readonly string[] {
+  return [
+    `Libero — the environment ${composeShown(cwd, found)} reads.`,
+    "",
+    "Written by `libero init`. It lives beside the compose file because that is",
+    "where Docker Compose looks: with no --project-directory, the project",
+    "directory is the directory holding the compose file, and the .env loaded",
+    "automatically is the one there. An .env at the repository root is read by",
+    "nothing, and .env.example there is a different document, overlapping this",
+    "one rather than containing it — the contract for running the two processes",
+    "directly, with host-relative paths.",
+    "",
+    "This is the operator's half. Everything else the services need — the",
+    "channels root, the three database paths, the store root, the TLS material,",
+    "the host and the port — is set in the compose file and is deliberately not",
+    "here: those are paths inside a container, and a value on the host cannot",
+    "make them true.",
+    "",
+    "NO TOOL CREDENTIAL BELONGS IN THIS FILE. The keys below are the model",
+    "provider's: they buy completions and reach no tool. A GitHub token, a Stripe",
+    "key, anything a team sheet names by credential — those go into the vault",
+    "from inside the proxy container, over stdin, so that the master key below",
+    "and the secrets it encrypts never sit on this host together:",
+    "",
+    `  ${composeCommand(cwd, found, "run --rm proxy \\")}`,
+    "    node dist/vault.js set github_service_account < token.txt"
+  ];
 }
-
-const HEADER = [
-  "Libero — the environment deploy/docker-compose.yml reads.",
-  "",
-  "Written by `libero init`. It lives beside the compose file because that is",
-  "where Docker Compose looks: with no --project-directory, the project",
-  "directory is the directory holding the compose file, and the .env loaded",
-  "automatically is the one there. An .env at the repository root is read by",
-  "nothing, and .env.example there is a different document — the superset",
-  "contract for running the two processes directly, with host-relative paths.",
-  "",
-  "This is the operator's half. Everything else the services need — the",
-  "channels root, the three database paths, the store root, the TLS material,",
-  "the host and the port — is set in the compose file and is deliberately not",
-  "here: those are paths inside a container, and a value on the host cannot",
-  "make them true.",
-  "",
-  "NO TOOL CREDENTIAL BELONGS IN THIS FILE. The keys below are the model",
-  "provider's: they buy completions and reach no tool. A GitHub token, a Stripe",
-  "key, anything a team sheet names by credential — those go into the vault",
-  "from inside the proxy container, over stdin, so that the master key below",
-  "and the secrets it encrypts never sit on this host together:",
-  "",
-  "  docker compose -f deploy/docker-compose.yml run --rm proxy \\",
-  "    node dist/vault.js set github_service_account < token.txt"
-];
 
 /**
- * Every variable `deploy/docker-compose.yml` interpolates, and no other.
+ * The variables this deployment's shape reads, and no other.
  *
- * The set is asserted against the compose file in ./init-cli.test.ts, so a
- * variable added there and not here fails a test rather than an operator's
- * first `docker compose up`.
+ * The **union** over every provider and profile is every variable
+ * `deploy/docker-compose.yml` interpolates and nothing else, asserted against
+ * the compose file in ./init-cli.test.ts — so a variable added there and to no
+ * block here fails a test rather than an operator's first `docker compose up`.
+ * What any one run writes is narrower (#518): the provider decides which
+ * completion pair is scaffolded, and the sidecar and sandbox blocks are written
+ * only under their own `--profile`. Compose interpolates every one of those
+ * with a `:-` default, so a block that is absent and a block that is empty are
+ * the same file as far as it is concerned — and one of them does not ask an
+ * operator to read past the configuration of services they are not running.
  *
  * `vaultKey` is `undefined` on the --key-file path, and the block is then
  * **absent** rather than empty. An empty `PROXY_VAULT_KEY=` line would be a
@@ -401,6 +491,7 @@ const HEADER = [
  * deployment whose key is in a file is a file that does not mention it.
  */
 function template(options: InitOptions, vaultKey: string | undefined): readonly EnvBlock[] {
+  const litellm = options.profiles.includes("litellm");
   return [
     {
       comment: [
@@ -425,37 +516,52 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
         { name: "AGENT_MODEL", value: options.model }
       ]
     },
-    {
+    ...only(options.provider === "anthropic", {
       comment: [
-        "Completion keys. Only the one matching AGENT_PROVIDER is read; the other",
-        "is ignored. The base URLs are optional and are what reach anything other",
-        "than the provider's own endpoint — Together, Fireworks, Groq, Ollama, or",
-        "Gemini's compatibility endpoint.",
-        "",
-        "OPENAI_BASE_URL is also how you reach a LiteLLM YOU ALREADY RUN, which is",
-        "one of the three supported deployment shapes and the likeliest one for a",
-        "deployment that already has a gateway (#428). Set it to that gateway,",
-        "AGENT_PROVIDER=openai-compatible, and OPENAI_API_KEY to a virtual key it",
-        "issued — the two below stay empty and the litellm profile stays down."
+        "The completion key. AGENT_PROVIDER is anthropic, so this is the pair that",
+        "is read, and the OPENAI_ one is not written at all — re-run with",
+        "--provider openai-compatible if that changes. The base URL is optional and",
+        "is what reaches anything other than Anthropic's own endpoint."
       ],
       vars: [
         { name: "ANTHROPIC_API_KEY", value: "" },
-        { name: "ANTHROPIC_BASE_URL", value: "" },
+        { name: "ANTHROPIC_BASE_URL", value: "" }
+      ]
+    }),
+    // Written for the litellm profile under either provider, because the sidecar
+    // is reached over OPENAI_BASE_URL and keyed by OPENAI_API_KEY: a scaffold
+    // that left them out would stand a gateway up with no way to point the agent
+    // at it.
+    ...only(options.provider === "openai-compatible" || litellm, {
+      comment: [
+        "The completion key, and the endpoint it is spent against — anything that",
+        "speaks the OpenAI API: Together, Fireworks, Groq, Ollama, or Gemini's",
+        "compatibility endpoint. The base URL is optional and is what reaches",
+        "something other than OpenAI itself.",
+        "",
+        "OPENAI_BASE_URL is also how you reach a LiteLLM YOU ALREADY RUN, which is",
+        "one of the three supported deployment shapes and the likeliest one for a",
+        "deployment that already has a gateway (#428). Set it to that gateway and",
+        "OPENAI_API_KEY to a virtual key it issued: no profile, no sidecar, and",
+        "nothing else in this file to fill."
+      ],
+      vars: [
         { name: "OPENAI_API_KEY", value: "" },
         { name: "OPENAI_BASE_URL", value: "" }
       ]
-    },
-    {
+    }),
+    ...only(litellm, {
       comment: [
-        "Optional: the LiteLLM sidecar (#428), off unless you start it —",
+        "The LiteLLM sidecar (#428), which you asked for and which still starts",
+        "only under its own profile —",
         "`docker compose --profile litellm up -d`. The third of three supported",
         "shapes, none of them a fallback for a provider the adapters do not cover:",
         "direct is one less process, one less hop and one less thing holding a",
         "provider key; a LiteLLM is one place for routing, fallbacks, rate limits",
         "and key rotation across several providers, plus a per-call cost figure the",
         "proxy can reconcile against. This one is for the deployment that wants",
-        "that without standing a gateway up first — if you already run one, use",
-        "OPENAI_BASE_URL above and leave this block empty.",
+        "that without standing a gateway up first — if you already run one, drop",
+        "the profile and point OPENAI_BASE_URL above at it instead.",
         "",
         "Choosing it means, above: AGENT_PROVIDER=openai-compatible,",
         "OPENAI_BASE_URL=http://litellm:4000/v1, and AGENT_MODEL set to a",
@@ -472,7 +578,7 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
         { name: "LITELLM_ANTHROPIC_API_KEY", value: "" },
         { name: "LITELLM_OPENAI_API_KEY", value: "" }
       ]
-    },
+    }),
     {
       comment: [
         "Embeddings: a second provider, and the only optional one here. Anthropic",
@@ -491,25 +597,21 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
         { name: "AGENT_EMBEDDING_BASE_URL", value: "" }
       ]
     },
-    ...(vaultKey === undefined
-      ? []
-      : [
-          {
-            comment: [
-              "The vault master key: 32 random bytes, base64, generated by `libero",
-              "init`. It encrypts every tool credential at rest. Lose it and the vault",
-              "is unreadable — there is no recovery path and no escrow — so this is the",
-              "one line in this file worth backing up, and the one line init will never",
-              "overwrite.",
-              "",
-              "`libero init --key-file PATH` puts it in a file of its own instead, which",
-              "is what keeps it out of `docker inspect`, crash dumps and observability",
-              "agents that scrape container environments. Exactly one of this variable",
-              "and PROXY_VAULT_KEY_FILE may be set; the proxy refuses to start on both."
-            ],
-            vars: [{ name: "PROXY_VAULT_KEY", value: vaultKey }]
-          }
-        ]),
+    ...only(vaultKey !== undefined, {
+      comment: [
+        "The vault master key: 32 random bytes, base64, generated by `libero init`.",
+        "It encrypts every tool credential at rest. Lose it and the vault is",
+        "unreadable — there is no recovery path and no escrow — so this is the one",
+        "line in this file worth backing up, and the one line init will never",
+        "overwrite.",
+        "",
+        "`libero init --key-file PATH` puts it in a file of its own instead, which",
+        "is what keeps it out of `docker inspect`, crash dumps and observability",
+        "agents that scrape container environments. Exactly one of this variable",
+        "and PROXY_VAULT_KEY_FILE may be set; the proxy refuses to start on both."
+      ],
+      vars: [{ name: "PROXY_VAULT_KEY", value: vaultKey as string }]
+    }),
     {
       comment: [
         "Optional: what a model's tokens cost, so a channel's [budget] daily_usd",
@@ -520,12 +622,12 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
       ],
       vars: [{ name: "PROXY_PRICE_TABLE", value: "" }]
     },
-    {
+    ...only(options.profiles.includes("runner"), {
       comment: [
-        "Optional: the code-execution sandbox (#368), which is off unless you",
-        "start it — `docker compose --profile runner up -d`. All three are needed",
-        "together and none has a usable default, because each names something",
-        "only you know.",
+        "The code-execution sandbox (#368), which you asked for and which still",
+        "starts only under its own profile — `docker compose --profile runner",
+        "up -d`. All three are needed together and none has a usable default,",
+        "because each names something only you know.",
         "",
         "RUNNER_SANDBOX_IMAGE must be pinned by digest and the runner refuses to",
         "start otherwise: which language the sandbox has is a property of this",
@@ -547,11 +649,11 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
         { name: "RUNNER_CLIENT_PIN", value: "" },
         { name: "DOCKER_GID", value: "" }
       ]
-    },
-    {
+    }),
+    ...only(options.profiles.includes("runner"), {
       comment: [
-        "Optional: the deployment's ceiling over what any team sheet may ask a",
-        "sandbox run to have (#405). Unlike the three above these do have",
+        "The deployment's ceiling over what any team sheet may ask a sandbox run",
+        "to have (#405). Unlike the three above these do have",
         "defaults — 2 cpus, 2048 MB and 300 seconds — so leaving them blank is a",
         "supported answer and gets those numbers.",
         "",
@@ -571,8 +673,20 @@ function template(options: InitOptions, vaultKey: string | undefined): readonly 
         { name: "RUNNER_MAX_MEMORY_MB", value: "" },
         { name: "RUNNER_MAX_TIMEOUT_SECONDS", value: "" }
       ]
-    }
+    })
   ];
+}
+
+/**
+ * One block or none, so that a gated block sits at the same indentation as an
+ * ungated one and the condition reads as the sentence it is.
+ *
+ * The array literal is the document's table of contents — the order these
+ * appear in is the order an operator meets them — so the thing worth protecting
+ * is that a reader can still see the whole file's shape in one screen.
+ */
+function only(asked: boolean, block: EnvBlock): readonly EnvBlock[] {
+  return asked ? [block] : [];
 }
 
 export { DEFAULT_MODEL, DEFAULT_PROVIDER };

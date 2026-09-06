@@ -11,9 +11,16 @@
 // One implementation because the two disagreeing would be the worst outcome
 // available: a doctor that pronounces a deployment healthy by reading a
 // different file from the one that configures it.
+//
+// Since #516 it also says how to *name* that file on a command line an operator
+// is told to run. Same reason, one step further on: a search that accepts four
+// filenames in two directories, paired with printed advice that always said
+// `deploy/docker-compose.yml`, told the operator with their own `compose.yaml`
+// to run a file that is not there.
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { displayPath } from "./io.js";
 
 /** `deploy/` first, because that is this repository's shape. */
 const DIRS = ["deploy", "."] as const;
@@ -37,6 +44,36 @@ export function findCompose(cwd: string): ComposeLocation | null {
     }
   }
   return null;
+}
+
+/**
+ * The compose file as prose names it, or a phrase when there is none to name.
+ *
+ * Every caller here used to write the literal `deploy/docker-compose.yml`,
+ * which is this repository's shape and not the operator's (#516): `findCompose`
+ * accepts `deploy/` or the working directory and any of four filenames, so a
+ * homelab deployment with its own `compose.yaml` was told about a file it does
+ * not have. The fallback is deliberately not that literal — a sentence saying
+ * "the compose file" is true of every deployment, and a path that is not there
+ * is true of none.
+ */
+export function composeShown(cwd: string, found: ComposeLocation | null): string {
+  return found === null ? "the compose file" : displayPath(cwd, found.composeFile);
+}
+
+/**
+ * A `docker compose` command line naming the file that was actually found.
+ *
+ * The `-f` is dropped in the two cases where it would be noise or a guess: when
+ * the compose file is the working directory's own, because Compose finds it
+ * there without being told, and when none was found at all, because a bare
+ * `docker compose` is correct wherever the operator runs it from — which is
+ * more than can be said for naming a path on their behalf.
+ */
+export function composeCommand(cwd: string, found: ComposeLocation | null, tail: string): string {
+  if (found === null) return `docker compose ${tail}`;
+  const shown = displayPath(cwd, found.composeFile);
+  return dirname(shown) === "." ? `docker compose ${tail}` : `docker compose -f ${shown} ${tail}`;
 }
 
 export const NO_COMPOSE_FILE =

@@ -69,7 +69,10 @@ so an `.env` at the repository root is read by nothing. Everything else the serv
 in the compose file itself, because those are paths inside a container.
 
 `.env.example` at the repository root is the other one: the full contract for **running the two
-processes directly**, with host-relative paths, and a superset of what compose reads. Most of it
+processes directly**, with host-relative paths. The two overlap rather than nest: this one carries
+every path compose sets for itself, and `deploy/.env` carries what configures the services compose
+can start — the LiteLLM sidecar's provider keys, the sandbox runner's image, pin and group id, and
+the price table. Most of it
 is required with no default — the Slack tokens, the provider key, `AGENT_PROVIDER` and
 `AGENT_MODEL`, the channels roots for both services, the agent's `AGENT_STORE_ROOT`, the proxy's
 TLS material, and the vault, budget, and audit paths. A missing one is a startup failure that
@@ -214,7 +217,8 @@ requires — and a gateway on the same host is not `localhost` from inside a con
 Nothing under `deploy/litellm/` is read.
 
 **The bundled sidecar.** One extra service, behind a profile, configured in
-`deploy/litellm/config.yaml`:
+`deploy/litellm/config.yaml`. `libero init --profile litellm` scaffolds these blank; the profile
+is what starts the service, and it is what writes the lines that configure it:
 
 ```bash
 AGENT_PROVIDER=openai-compatible
@@ -540,8 +544,9 @@ docker buildx imagetools inspect python:3.13-slim   # prints the digest
 docker pull python:3.13-slim@sha256:...             # the runner never pulls
 ```
 
-**3. Fill in three values in `.env`.** `libero init` scaffolds them blank with the command that
-prints each:
+**3. Fill in three values in `.env`.** `libero init --profile runner` scaffolds them blank with
+the command that prints each — under the profile, because they configure a service the same word
+is what starts:
 
 ```bash
 RUNNER_SANDBOX_IMAGE=python:3.13-slim@sha256:...

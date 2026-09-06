@@ -35,7 +35,7 @@ import { connect } from "node:tls";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ModelId, normalizeCertificateSha256, parseTeamSheet } from "@getlibero/schema";
-import { NO_COMPOSE_FILE, findCompose } from "./compose.js";
+import { NO_COMPOSE_FILE, composeCommand, findCompose } from "./compose.js";
 import { assignedValues } from "./env-file.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
 import type { CliIo } from "./io.js";
@@ -771,7 +771,14 @@ async function probe(env: Map<string, string>, cwd: string, options: DoctorOptio
       name: "proxy",
       detail:
         "PROXY_URL is not in this file, and compose publishes no port to the host. Probe it from the network: " +
-        "docker compose -f deploy/docker-compose.yml run --rm --entrypoint curl proxy --cacert /etc/libero/certs/ca.pem --cert … https://proxy:8443/v1/whoami"
+        // The compose file this deployment has, not this repository's (#516):
+        // a skip whose remedy names a file the operator does not have is a skip
+        // they cannot act on, which is the one thing a skip has to be.
+        composeCommand(
+          cwd,
+          findCompose(cwd),
+          "run --rm --entrypoint curl proxy --cacert /etc/libero/certs/ca.pem --cert … https://proxy:8443/v1/whoami"
+        )
     };
   }
 
