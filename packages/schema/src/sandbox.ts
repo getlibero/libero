@@ -61,10 +61,32 @@ export const SANDBOX_CODE_MAX_CHARS = 65_536;
  * because it parses against the same numbers, and this parse exists for the case
  * where something other than a sheet reached the runner.
  */
+/**
+ * The ceilings on a sandbox's three caps, stated once (#545).
+ *
+ * These bound two shapes in two files — `SandboxCaps` below, which the runner
+ * parses a request against, and `[[builtin]]`'s `sandboxLimits` in
+ * ./team-sheet.ts, which a channel's sheet parses against. They were written
+ * out twice, and the comment under `SandboxCaps` explained that the numbers
+ * match without anything making them.
+ *
+ * The other three figures this repository keeps in step by hand have a reason
+ * to be duplicated: `packages/schema` is the base package and cannot import
+ * from `packages/agent`, `packages/memory` or `apps/server`, so a test is the
+ * only instrument available. **This pair never had that excuse** — both halves
+ * are in this package, and ./team-sheet.ts already imports figures from three
+ * siblings. So it is one figure now rather than a test over two.
+ *
+ * No number changes. What changes is that there is one place to change it.
+ */
+export const SANDBOX_MAX_CPUS = 64;
+export const SANDBOX_MAX_MEMORY_MB = 65_536;
+export const SANDBOX_MAX_TIMEOUT_SECONDS = 3_600;
+
 export const SandboxCaps = z.object({
-  cpus: z.number().positive().max(64),
-  memoryMb: z.number().int().positive().max(65_536),
-  timeoutSeconds: z.number().int().positive().max(3_600)
+  cpus: z.number().positive().max(SANDBOX_MAX_CPUS),
+  memoryMb: z.number().int().positive().max(SANDBOX_MAX_MEMORY_MB),
+  timeoutSeconds: z.number().int().positive().max(SANDBOX_MAX_TIMEOUT_SECONDS)
 });
 
 export type SandboxCaps = z.infer<typeof SandboxCaps>;

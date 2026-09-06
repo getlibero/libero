@@ -2,6 +2,11 @@ import { BUILTIN_SERVER, BuiltinToolName } from "./builtin.js";
 import { EgressPattern } from "./egress.js";
 import { MEMORY_OP_MAX_TEXT_CHARS } from "./memory-op.js";
 import { CertificateSha256, CredentialName, ResourceName } from "./names.js";
+import {
+  SANDBOX_MAX_CPUS,
+  SANDBOX_MAX_MEMORY_MB,
+  SANDBOX_MAX_TIMEOUT_SECONDS
+} from "./sandbox.js";
 import { SCHEDULED_TASK_MAX_PROMPT_CHARS } from "./schedule-task.js";
 import { SKILL_BODY_MAX_CHARS, SKILL_NAME_PATTERN, SkillName } from "./skill.js";
 import { z } from "zod";
@@ -93,9 +98,9 @@ const builtinEntryBase = {
  * for, and the deployment is where the answer lives.
  */
 const sandboxLimits = {
-  cpus: z.number().positive().max(64).default(1),
-  memory_mb: z.number().int().positive().max(65_536).default(512),
-  timeout_seconds: z.number().int().positive().max(3_600).default(30),
+  cpus: z.number().positive().max(SANDBOX_MAX_CPUS).default(1),
+  memory_mb: z.number().int().positive().max(SANDBOX_MAX_MEMORY_MB).default(512),
+  timeout_seconds: z.number().int().positive().max(SANDBOX_MAX_TIMEOUT_SECONDS).default(30),
 };
 
 /**

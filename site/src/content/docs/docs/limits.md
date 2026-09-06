@@ -232,9 +232,9 @@ may write, not what a channel may spend.
 | `packages/schema/src/tool-call.ts:MAX_RESULT_URI` | `200` | **Fixed.** `MAX_RESULT_MIME_TYPE`'s move, for its reason. |
 | `packages/schema/src/sandbox.ts:SANDBOX_CODE_MAX_CHARS` | `65_536` | **Fixed.** Restated here rather than imported from the proxy because this file is what the runner parses against, and a bound on only one side of a wire is a bound an attacker skips by speaking to the other side. |
 | `packages/schema/src/sandbox.ts:SANDBOX_MAX_OUTPUT_BYTES` | `1_048_576` | **Fixed.** The runner's own bound and not the channel's, so a program printing in a loop cannot make the runner buffer without limit before anybody gets a chance to truncate. |
-| `packages/schema/src/sandbox.ts:cpus` | `max 64` | **Fixed**, and coupled — the enforcement twin of the sheet's `[[builtin]]` cap. |
-| `packages/schema/src/sandbox.ts:memoryMb` | `max 65_536` | **Fixed**, and coupled. |
-| `packages/schema/src/sandbox.ts:timeoutSeconds` | `max 3_600` | **Fixed**, and coupled. |
+| `packages/schema/src/sandbox.ts:SANDBOX_MAX_CPUS` | `64` | **Fixed.** One figure serving two shapes since #545 — the runner's `SandboxCaps` and the sheet's `[[builtin]]` cap both read it, where they used to state it separately. |
+| `packages/schema/src/sandbox.ts:SANDBOX_MAX_MEMORY_MB` | `65_536` | **Fixed.** As above. |
+| `packages/schema/src/sandbox.ts:SANDBOX_MAX_TIMEOUT_SECONDS` | `3_600` | **Fixed.** As above. |
 | `packages/schema/src/spend-report.ts:TurnId` | `1..128` | **Fixed.** `ToolCall.id`'s bound: it lands in a SQLite key and in log lines. |
 | `packages/schema/src/spend-report.ts:MAX_REPORTED_TOKENS` | `10_000_000` | **Fixed.** Not a plausibility check — no provider bills a single turn near this — but a bound, so a wrong or hostile number cannot make the counter meaningless or overflow the arithmetic it feeds. |
 | `packages/schema/src/spend-report.ts:MAX_REPORTED_COST_NANO_USD` | `1_000_000_000_000` | **Fixed.** `MAX_REPORTED_TOKENS`' argument, except that this one fails open rather than closed. |
@@ -256,11 +256,14 @@ asks whether **10** is a deployment's to raise, not whether the field exists.
 The answer for almost all of them is no, and for one reason: a ceiling that a deployment could
 raise is a ceiling a channel could then reach, and several of these bound spend rather than taste.
 
+`[[builtin]]`'s three sandbox caps have no rows of their own here any more. Since #545 their
+ceilings are `SANDBOX_MAX_CPUS`, `SANDBOX_MAX_MEMORY_MB` and `SANDBOX_MAX_TIMEOUT_SECONDS` in the
+section above — one figure each, read by both the sheet and the runner's own parse rather than
+written out twice. What a channel may *ask for* is still the sheet's; what it will *get* is
+`RUNNER_MAX_CPUS` and its two siblings, which is the deployment's.
+
 | Limit | Figure | Decision and why |
 | --- | --- | --- |
-| `packages/schema/src/team-sheet.ts:cpus` | `max 64` | **Fixed ceiling.** The channel asks; `RUNNER_MAX_CPUS` decides what it gets. The operator ceiling is where a deployment already speaks. |
-| `packages/schema/src/team-sheet.ts:memory_mb` | `max 65_536` | **Fixed ceiling.** `RUNNER_MAX_MEMORY_MB` is the deployment's say. |
-| `packages/schema/src/team-sheet.ts:timeout_seconds` | `max 3_600` | **Fixed ceiling.** `RUNNER_MAX_TIMEOUT_SECONDS` is the deployment's say. |
 | `packages/schema/src/team-sheet.ts:top_k` | `1..10` | **Fixed ceiling.** Three rather than recall's five by default, because a skill is up to 4096 characters where a summary is 2048. Zero does not parse: that is `enabled = false` said a second way. |
 | `packages/schema/src/team-sheet.ts:max_always_skills` | `1..10` | **Fixed ceiling.** The count's roof is `top_k`'s, so no reading of this sheet lets the standing set be larger than the largest pool retrieval may load (#432). |
 | `packages/schema/src/team-sheet.ts:max_always_chars` | `max 32_768` | **Fixed ceiling.** `max_file_chars`' *default* rather than its roof: past 32k the standing set has stopped being a standing instruction and become a document. |
@@ -309,20 +312,32 @@ Read by a command an operator runs, not by a service.
 
 ## Figures that are two figures
 
-Four figures are written twice, in packages that cannot import from one another, and kept in step by
-hand. Each pair's comment says so and gives the same reason: `packages/schema` is the base package
-and cannot import the others. **Moving one of a pair means moving the other**, and nothing but a
-reviewer currently enforces that.
+Three figures are written twice, in packages that cannot import from one another. The reason is the
+same for all three and it is not going away: `packages/schema` is the base package and cannot import
+`packages/memory`, `packages/agent` or `apps/server`, so the number cannot be made one. **Moving one
+of a pair means moving the other**, and since #545 a test says so rather than a reviewer.
 
-| Pair | Figure | What breaks if they drift |
-| --- | --- | --- |
-| `READ_MAX_LIMIT` / `[llm] max_history_messages`' roof | 200 | A sheet could name a number the store silently clamps — the one place that clamp would surprise (#67). |
-| `DEFAULT_AGENT_LOOP_CAPS` / the four `[llm]` caps | 25, 300, 200_000, 8_192 | The loop's own defence-in-depth cap and the sheet's stated one stop meaning the same thing. |
-| `SESSION_IDLE_MS` / `follow_up_window_seconds`' roof | 1_800_000 ms / 1800 s | A follow-up window longer than eviction would be cut short rather than refused (#66). |
-| `SandboxCaps` / `[[builtin]]`'s `sandboxLimits` | 64, 65_536, 3_600 | A sheet parses a cap the runner's own schema would reject, on the far side of a wire. |
+| Pair | Figure | What breaks if they drift | What notices |
+| --- | --- | --- | --- |
+| `READ_MAX_LIMIT` / `[llm] max_history_messages`' roof | 200 | A sheet could name a number the store silently clamps — the one place that clamp would surprise (#67). | `packages/memory/src/coupled-figures.test.ts` |
+| `DEFAULT_AGENT_LOOP_CAPS` / the four `[llm]` caps | 25, 300 s / 300_000 ms, 200_000, 8_192 | The loop's own defence-in-depth cap and the sheet's stated one stop meaning the same thing. | `packages/agent/src/coupled-caps.test.ts` |
+| `SESSION_IDLE_MS` / `follow_up_window_seconds`' roof | 1_800_000 ms / 1800 s | A follow-up window longer than eviction would be cut short rather than refused (#66). | `apps/server/src/session/coupled-window.test.ts` |
 
-Binding these with a test changes no figure and is not this page's job; it is recorded here so that
-whoever moves one knows to move the other.
+Each test lives in the package that can see both halves, which is always the dependent one — the
+edge back to `packages/schema` is the one the leaf rule forbids. Each asserts through
+`parseTeamSheet` rather than by reading a bound off a zod object: what matters is which sheets
+parse, and a schema introspected for its `.max()` is a test of zod's internals.
+
+**Two of the three are unit-converted rather than equal**, which is why an equality assertion over
+all of them would have been wrong: `max_task_seconds` is seconds against `maxWallTimeMs`'
+milliseconds, and `follow_up_window_seconds` is seconds against `SESSION_IDLE_MS`. The tests state
+the conversion.
+
+**There was a fourth pair, and it is one figure now.** `SandboxCaps` and `[[builtin]]`'s
+`sandboxLimits` are both in `packages/schema`, so the import ban never applied to them — the
+duplication was habit rather than necessity. Since #545 both read `SANDBOX_MAX_CPUS` and its two
+siblings, which is the better answer wherever it is available: a test that two numbers agree is
+worth having only when they cannot be made one number.
 
 ## What this page does not cover
 
