@@ -207,3 +207,32 @@ describe("reporting why a sheet did not parse", () => {
     }
   });
 });
+
+/**
+ * The starter sheet has a second copy, on the site, and nothing related them.
+ *
+ * `site/src/content/docs/docs/team-sheet.md` embeds the whole file as one TOML
+ * block — the reference an operator actually reads, since most of them will
+ * never open this repository. It went 140 lines behind across three PRs that
+ * each correctly updated the file above: `[channel] persona`, the block-aware
+ * `max_result_chars` comment, the `[skills]` paragraph and
+ * `[mcp_server.auth] dpop` were all documented here and not there.
+ *
+ * The comparison is byte-for-byte and the page is expected to carry a *copy*,
+ * not a summary, which is the same bargain `scripts/dev-certs.sh` and the CLI's
+ * copy of it strike. Reaching outside the package is what the check is for —
+ * `site/` is outside the workspace and has no test runner of its own, so the
+ * assertion has to live where a runner already goes.
+ */
+describe("the starter sheet's copy on the site", () => {
+  it("is the file above, verbatim", () => {
+    const page = readFileSync(
+      new URL("../../../site/src/content/docs/docs/team-sheet.md", import.meta.url),
+      "utf8"
+    );
+    const embedded = /```toml\n([\s\S]*?)```/.exec(page);
+
+    expect(embedded).not.toBeNull();
+    expect(embedded?.[1]).toBe(readFileSync(examplePath, "utf8"));
+  });
+});
