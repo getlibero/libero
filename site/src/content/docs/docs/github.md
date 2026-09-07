@@ -275,4 +275,71 @@ url = "https://copilot-api.<subdomain>.ghe.com/mcp"
 
 **Enterprise Server** has no hosted MCP endpoint; it needs GitHub's local server, which speaks stdio
 rather than HTTP. `transport = "stdio"` is in the schema and is not implemented — a stdio upstream
-is a process the proxy would have to spawn and sandbox, which is tracked and not built.
+is a process the proxy would have to spawn and sandbox, which is
+[#154](https://github.com/getlibero/libero/issues/154), decided post-1.0.
+
+A bridge stands in for it. **Nothing in the rest of this section has been run.** No deployment here
+has an Enterprise Server to run it against, so what follows is how the pieces fit rather than a
+report of them fitting, and every claim in it is yours to verify before you rely on it.
+
+### The shape
+
+A bridge container beside the proxy, on the proxy's network, running GitHub's local server as its
+child over stdio and presenting HTTP on the other side. The bridge is the operator's to choose.
+What it has to do is narrow, and one requirement is not negotiable: the proxy's client is
+**streamable HTTP**, with no SSE fallback, so a bridge that publishes only an SSE endpoint will not
+serve a call.
+
+The child is `ghcr.io/github/github-mcp-server`, run as `github-mcp-server stdio`, and it takes the
+host and the token from its environment:
+
+```
+GITHUB_HOST=https://github.example.com
+GITHUB_PERSONAL_ACCESS_TOKEN=<the token>
+```
+
+`GITHUB_HOST` must carry the `https://` scheme — the local server refuses a cleartext host, so the
+token is never sent in the clear — and a PAT takes precedence over the server's OAuth flow, which
+is what you want for a container nobody is sitting in front of.
+
+The sheet then names the bridge as an ordinary HTTP upstream at its address on the proxy's network:
+
+```toml
+[[mcp_server]]
+name      = "github"
+transport = "http"
+url       = "http://github-bridge:8080/mcp"
+
+  [[mcp_server.tool]]
+  name     = "list_pull_requests"
+  approval = "none"
+```
+
+There is **no `credential`**: the token is in the bridge, and the proxy has nothing to attach. The
+rest of this page is unchanged, because the proxy cannot tell a bridge from a hosted server. The
+allowlist still decides which tools exist, `approval` still puts a human in front of the ones that
+matter, the budget meter still counts the calls, and every decided call still leaves an audit row.
+
+### What it costs, in plain terms
+
+**The bridge container holds that token outside the vault.** `vault set` does not manage it,
+rotation is yours, and nothing in Libero redacts it.
+
+The property that survives is the narrower one this page opened with: **tool credentials do not
+reach the agent process.** The agent reaches the bridge only through the proxy, so a prompt-injected
+or compromised agent gets served calls and refusals, never the token — exactly as with a hosted
+upstream. What that claim does not cover is the bridge itself, a process holding a credential the
+vault never sees. A compromised bridge is that token.
+
+Two consequences follow, and both are yours to enforce:
+
+- **Put the bridge on the proxy's network and nowhere else.** It answers without authentication, so
+  anything that can reach it can spend the token.
+- **Scope the token as narrowly as step 1 argues.** On this path it is the only boundary left on the
+  GitHub side.
+
+### Not a supported shape
+
+No compose profile starts a bridge, `doctor` does not check for one, and none of it is tested here.
+It is a way through for a team that would otherwise have none, written down with its cost stated.
+The supported answer is #154.
