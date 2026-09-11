@@ -525,9 +525,10 @@ describe("createSkillEmbedSweep", () => {
 describe("the shared half of the library", () => {
   /** The operator's act, from outside this process entirely. */
   function publish(name: string, description: string, body = "Say it plainly."): void {
+    mkdirSync(join(sharedRoot, name), { recursive: true });
     writeFileSync(
-      join(sharedRoot, `${name}.md`),
-      `---\nname: ${name}\ndescription: ${description}\ncreated: 2026-01-01\nstatus: active\n---\n\n${body}\n`
+      join(sharedRoot, name, "SKILL.md"),
+      `---\nname: ${name}\ndescription: ${description}\nstatus: active\n---\n\n${body}\n`
     );
   }
 

@@ -26,11 +26,12 @@ let channelFiles: SkillFiles;
 let lines: Array<{ level: LogLevel } & LogFields>;
 let logger: Logger;
 
-/** The operator's act: a file lands in the root, from outside this process. */
+/** The operator's act: a skill lands in the root, from outside this process. */
 function publish(name: string, description = "How this company writes."): void {
+  mkdirSync(join(root, name), { recursive: true });
   writeFileSync(
-    join(root, `${name}.md`),
-    `---\nname: ${name}\ndescription: ${description}\ncreated: 2026-01-01\nstatus: active\n---\n\nSay it plainly.\n`
+    join(root, name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${description}\nstatus: active\n---\n\nSay it plainly.\n`
   );
 }
 

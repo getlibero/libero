@@ -5,6 +5,7 @@ import {
   SKILL_BODY_MAX_CHARS,
   SKILL_DESCRIPTION_MAX_CHARS,
   SKILL_NAME_PATTERN,
+  ChannelSkillFrontmatter,
   SkillCreated,
   SkillFrontmatter,
   SHARED_SKILL_NAMESPACE,
@@ -159,10 +160,35 @@ describe("a skill's frontmatter", () => {
     expect(parsed.success && parsed.data.status).toBe("active");
   });
 
-  each([["name"], ["description"], ["created"]])("requires %s", field => {
+  each([["name"], ["description"]])("requires %s", field => {
     const without: Record<string, unknown> = skill();
     delete without[field];
     expect(codes(SkillFrontmatter.safeParse(without))).toEqual([`${field}: invalid_type`]);
+  });
+
+  // #567 split what used to be one shape. The spec does not define `created`, so
+  // a vendored shared skill has not got one and nothing decides anything by it;
+  // a channel's own skill is stamped on create, so a file without one there is
+  // damaged.
+  it("does not require created", () => {
+    const without: Record<string, unknown> = skill();
+    delete without["created"];
+    expect(SkillFrontmatter.safeParse(without).success).toBe(true);
+  });
+
+  it("requires created of a channel's own skill", () => {
+    const without: Record<string, unknown> = skill();
+    delete without["created"];
+    expect(codes(ChannelSkillFrontmatter.safeParse(without))).toEqual(["created: invalid_type"]);
+  });
+
+  it("still refuses a created that is not a date, on both", () => {
+    expect(codes(SkillFrontmatter.safeParse(skill({ created: "2026-02-30" })))).toEqual([
+      "created: custom"
+    ]);
+    expect(codes(ChannelSkillFrontmatter.safeParse(skill({ created: "2026-02-30" })))).toEqual([
+      "created: custom"
+    ]);
   });
 
   it("refuses an empty description", () => {
@@ -335,6 +361,155 @@ describe("parsing a skill file", () => {
   });
 });
 
+// What #567 widened the grammar for: a `SKILL.md` written against the Agent
+// Skills spec, read as it is. Each case below is a line from a real spec file
+// that the parser refused, or kept nothing of, before that.
+describe("reading a spec SKILL.md", () => {
+  const SPEC_FILE = file(
+    [
+      `name: ${FRONTMATTER.name}`,
+      `description: "Two pins live across the overlap."`,
+      "license: Apache-2.0",
+      "allowed-tools: Bash, Read",
+      "compatibility: >=1.0",
+      "metadata:",
+      "  author: example-org",
+      "  version: '2.1'"
+    ],
+    "Do the thing."
+  );
+
+  // The spec's designated place for client keys, and the one thing a parser
+  // anchored at column 0 could not read at all.
+  it("reads an indented map under a bare key", () => {
+    const parsed = parseSkillFile(SPEC_FILE, { shared: true });
+    expect(parsed.ok && parsed.skill.frontmatter.metadata).toEqual({
+      author: "example-org",
+      version: "2.1"
+    });
+  });
+
+  // Unstripped, the quotes reach the embedding, the full-text index and every
+  // line a person reads.
+  it("strips one matching pair of quotes from a scalar", () => {
+    const parsed = parseSkillFile(SPEC_FILE, { shared: true });
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(
+      "Two pins live across the overlap."
+    );
+  });
+
+  each([
+    ['"a: b"', "a: b"],
+    ["'single'", "single"],
+    ['"unbalanced', '"unbalanced'],
+    ['say "this"', 'say "this"'],
+    ['""', ""]
+  ])("reads %s as the value it means", (written, meant) => {
+    const parsed = parseSkillFile(
+      file([`name: n`, `description: ${written}`, "created: 2026-09-07"], "b")
+    );
+    // An empty description is refused by the shape, which is the right answer
+    // for `""` and is not what this case is about.
+    if (meant === "") {
+      expect(!parsed.ok && parsed.reason).toBe("schema_invalid");
+      return;
+    }
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(meant);
+  });
+
+  // The sheet is the allowlist. A second, inert statement of permission in the
+  // file is worse than none, because it looks exactly like the one that binds.
+  it("reads allowed-tools and keeps nothing of it", () => {
+    const parsed = parseSkillFile(SPEC_FILE, { shared: true });
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && serializeSkillFile(parsed.skill)).not.toContain("allowed-tools");
+  });
+
+  // A vendored file has no `created`, because the spec does not define one and
+  // nothing here decides anything by it.
+  it("accepts a missing created where the caller says the file is shared", () => {
+    expect(parseSkillFile(SPEC_FILE, { shared: true }).ok).toBe(true);
+  });
+
+  it("still requires one of a channel's own skill", () => {
+    const parsed = parseSkillFile(SPEC_FILE);
+    expect(!parsed.ok && parsed.reason).toBe("schema_invalid");
+    expect(!parsed.ok && parsed.reason === "schema_invalid" && [...parsed.issues]).toEqual([
+      { path: "created", code: "invalid_type" }
+    ]);
+  });
+
+  it("defaults to a channel skill, so every existing caller is unchanged", () => {
+    expect(parseSkillFile(SPEC_FILE).ok).toBe(false);
+    expect(parseSkillFile(SPEC_FILE, {}).ok).toBe(false);
+  });
+
+  // Writing `license:` back with its value dropped would be writing back
+  // something the file did not say.
+  it("drops a map under any other key, the bare key with it", () => {
+    const parsed = parseSkillFile(
+      file(
+        [
+          "name: n",
+          "description: d",
+          "created: 2026-09-07",
+          "compatibility:",
+          "  runtime: node"
+        ],
+        "b"
+      )
+    );
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && serializeSkillFile(parsed.skill)).not.toContain("compatibility");
+  });
+
+  it("refuses an indented line that hangs from nothing", () => {
+    const parsed = parseSkillFile(
+      file(["name: n", "description: d", "created: 2026-09-07", "  author: nobody"], "b")
+    );
+    expect(!parsed.ok && parsed.reason).toBe("malformed_line");
+    expect(!parsed.ok && parsed.reason === "malformed_line" && parsed.line).toBe(5);
+  });
+
+  it("refuses an indented line that is not a pair", () => {
+    const parsed = parseSkillFile(
+      file(["name: n", "description: d", "created: 2026-09-07", "metadata:", "  a b c"], "b")
+    );
+    expect(!parsed.ok && parsed.reason).toBe("malformed_line");
+    expect(!parsed.ok && parsed.reason === "malformed_line" && parsed.line).toBe(6);
+  });
+
+  it("refuses a map key given twice, for the same reason a scalar is", () => {
+    const parsed = parseSkillFile(
+      file(
+        ["name: n", "description: d", "created: 2026-09-07", "metadata:", "  a: 1", "  a: 2"],
+        "b"
+      )
+    );
+    expect(!parsed.ok && parsed.reason).toBe("duplicate_key");
+    expect(!parsed.ok && parsed.reason === "duplicate_key" && parsed.line).toBe(7);
+  });
+
+  it("reads a metadata block a blank line was left inside", () => {
+    const parsed = parseSkillFile(
+      file(
+        ["name: n", "description: d", "created: 2026-09-07", "metadata:", "", "  a: 1"],
+        "b"
+      )
+    );
+    expect(parsed.ok && parsed.skill.frontmatter.metadata).toEqual({ a: "1" });
+  });
+
+  // A key with nothing under it said nothing, rather than saying an empty map.
+  it("carries no metadata for a bare metadata key", () => {
+    const parsed = parseSkillFile(
+      file(["name: n", "description: d", "created: 2026-09-07", "metadata:"], "b")
+    );
+    expect(parsed.ok && parsed.skill.frontmatter.metadata).toBeUndefined();
+    expect(parsed.ok && serializeSkillFile(parsed.skill)).not.toContain("metadata");
+  });
+});
+
 describe("serializing a skill file", () => {
   const parsed = parseSkillFile(VALID_FILE);
   const value: SkillFile = parsed.ok
@@ -397,6 +572,109 @@ describe("serializing a skill file", () => {
     const text = serializeSkillFile(value);
     expect(text.endsWith("\n")).toBe(true);
     expect(text.endsWith("\n\n")).toBe(false);
+  });
+
+  // **A data-loss bug, fixed in #567 and pinned here.** `setStatus` rewrites a
+  // channel skill through this function, so before this a `license:` line a team
+  // hand-added was erased the first time the lifecycle clock moved the status.
+  // The input carries every kind of key the format does not define; the expected
+  // output is the whole file, so the order is the assertion too.
+  it("preserves every key the format does not define, in one order", () => {
+    const parsed = parseSkillFile(
+      file(
+        [
+          `name: ${FRONTMATTER.name}`,
+          `description: ${FRONTMATTER.description}`,
+          "license: Apache-2.0",
+          `created: ${FRONTMATTER.created}`,
+          "compatibility: >=1.0",
+          "uses: 14",
+          "metadata:",
+          "  author: example-org",
+          "  version: 2.1",
+          "status: active"
+        ],
+        "Do the thing."
+      )
+    );
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && serializeSkillFile(parsed.skill)).toBe(
+      [
+        "---",
+        `name: ${FRONTMATTER.name}`,
+        `description: ${FRONTMATTER.description}`,
+        `created: ${FRONTMATTER.created}`,
+        "status: active",
+        "license: Apache-2.0",
+        "compatibility: >=1.0",
+        "uses: 14",
+        "metadata:",
+        "  author: example-org",
+        "  version: 2.1",
+        "---",
+        "",
+        "Do the thing.",
+        ""
+      ].join("\n")
+    );
+  });
+
+  // The status change itself still has to be a one-line diff, which is the whole
+  // reason the unknown keys go after the four rather than where they were.
+  it("changes one line when the lifecycle job moves a status", () => {
+    const before = parseSkillFile(
+      file(
+        [
+          "name: n",
+          "description: d",
+          "created: 2026-09-07",
+          "license: Apache-2.0",
+          "metadata:",
+          "  author: example-org"
+        ],
+        "b"
+      )
+    );
+    if (!before.ok) throw new Error("did not parse");
+    const after = serializeSkillFile({
+      ...before.skill,
+      frontmatter: { ...before.skill.frontmatter, status: "archived" }
+    });
+    const was = serializeSkillFile(before.skill).split("\n");
+    expect(after.split("\n").filter((line, index) => line !== was[index])).toEqual([
+      "status: archived"
+    ]);
+  });
+
+  // A shared skill has no `created`, and nothing in this tree writes one back —
+  // so this is what keeps the round trip honest rather than a case that fires.
+  it("writes no created line when the file had none", () => {
+    const parsed = parseSkillFile(file(["name: n", "description: d"], "b"), { shared: true });
+    expect(parsed.ok && serializeSkillFile(parsed.skill)).not.toContain("created");
+    const again = parsed.ok ? parseSkillFile(serializeSkillFile(parsed.skill), { shared: true }) : null;
+    expect(again?.ok && again.skill).toEqual(parsed.ok && parsed.skill);
+  });
+
+  // The parser cannot produce one; a hand-built `SkillFile` can, and the file it
+  // would write has the key twice and does not parse.
+  it("drops a defined key somebody put in extra", () => {
+    const text = serializeSkillFile({
+      frontmatter: {
+        name: "n",
+        description: "d",
+        created: "2026-09-07",
+        status: "active",
+        extra: [
+          { key: "status", value: "archived" },
+          { key: "allowed-tools", value: "Bash" },
+          { key: "license", value: "Apache-2.0" }
+        ]
+      },
+      body: "b"
+    });
+    expect(text).toContain("license: Apache-2.0");
+    expect(text).not.toContain("allowed-tools");
+    expect(parseSkillFile(text).ok).toBe(true);
   });
 });
 

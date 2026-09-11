@@ -877,13 +877,15 @@ describe("the shared half of the index", () => {
   let sharedRoot: string;
   let shared: SharedSkillFiles;
 
-  /** The operator's act, from outside this package entirely. */
+  /** The operator's act, from outside this package entirely: `<name>/SKILL.md`. */
   const publish = (name: string, description = "How this company writes.", body = "Say it plainly."): void => {
-    writeFileSync(
-      join(sharedRoot, `${name}.md`),
-      skillText(name, { description }, body),
-      "utf8"
-    );
+    writeSharedFile(name, skillText(name, { description }, body));
+  };
+
+  /** The same path, written with whatever bytes a case wants in it. */
+  const writeSharedFile = (name: string, text: string): void => {
+    mkdirSync(join(sharedRoot, name), { recursive: true });
+    writeFileSync(join(sharedRoot, name, "SKILL.md"), text, "utf8");
   };
 
   /** One shared pass, over the names a channel's sheet asked for. */
@@ -946,7 +948,7 @@ describe("the shared half of the index", () => {
       publish("brand-voice");
       reconcileShared(["brand-voice"]);
 
-      unlinkSync(join(sharedRoot, "brand-voice.md"));
+      rmSync(join(sharedRoot, "brand-voice"), { recursive: true });
 
       expect(reconcileShared(["brand-voice"], NOW + DAY)).toMatchObject({ dropped: 1 });
       expect(store.listSkills("shared")).toEqual([]);
@@ -970,7 +972,7 @@ describe("the shared half of the index", () => {
       publish("brand-voice");
       reconcileShared(["brand-voice"]);
 
-      writeFileSync(join(sharedRoot, "brand-voice.md"), "half a deploy\n", "utf8");
+      writeSharedFile("brand-voice", "half a deploy\n");
       reconcileShared(["brand-voice"], NOW + DAY);
 
       expect(store.listSkills("shared").map(skill => skill.name)).toEqual(["shared/brand-voice"]);
@@ -1219,11 +1221,7 @@ describe("the shared half of the index", () => {
     it("never lists an archived skill of the half either", () => {
       publish("brand-voice");
       reconcileShared(["brand-voice"]);
-      writeFileSync(
-        join(sharedRoot, "brand-voice.md"),
-        skillText("brand-voice", { status: "archived" }),
-        "utf8"
-      );
+      writeSharedFile("brand-voice", skillText("brand-voice", { status: "archived" }));
       reconcileShared(["brand-voice"], NOW + DAY);
 
       expect(store.listSkills("shared")).toHaveLength(1);

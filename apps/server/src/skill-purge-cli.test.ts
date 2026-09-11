@@ -46,9 +46,10 @@ function skill(name: string, description = "When the thing breaks."): void {
 
 /** The operator's act, from outside every process this command runs in. */
 function publish(name: string): void {
+  mkdirSync(join(sharedRoot, name), { recursive: true });
   writeFileSync(
-    join(sharedRoot, `${name}.md`),
-    `---\nname: ${name}\ndescription: How this company writes.\ncreated: 2026-01-01\nstatus: active\n---\n\nSay it plainly.\n`,
+    join(sharedRoot, name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: How this company writes.\nstatus: active\n---\n\nSay it plainly.\n`,
     "utf8"
   );
 }

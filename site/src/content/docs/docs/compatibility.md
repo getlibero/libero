@@ -15,7 +15,7 @@ tells you what not to build on.
 | Surface | 1.0 |
 | --- | --- |
 | [The team sheet](#the-team-sheet--frozen) — `channel.toml`'s fields, bounds and defaults | **frozen** |
-| [The skill file grammar](#the-skill-file-grammar--frozen) — frontmatter, name alphabet, filename rule | **frozen** |
+| [The skill file grammar](#the-skill-file-grammar--frozen) — frontmatter, name alphabet, identity rule | **frozen** |
 | [The environment contract](#the-environment-contract--frozen) — every `AGENT_*`, `PROXY_*`, `RUNNER_*` | **frozen** |
 | [The audit record](#the-audit-record--frozen) — the CSV header, the row shape, the exit codes | **frozen** |
 | [The on-disk stores](#the-on-disk-stores--frozen-and-the-migration-rules-differ-per-store) — what an upgrade may migrate | **frozen**, per store |
@@ -76,38 +76,55 @@ name, its default and its meaning are frozen exactly as a sheet field is.
 
 ## The skill file grammar — **frozen**
 
-`skills/<name>.md` in a channel's state root, and `<name>.md` in the operator's
-shared root, are files your repository holds and your team edits. The grammar is
-therefore a compatibility surface rather than an implementation detail, and
-`libero skill vendor` writes into it.
+`skills/<name>.md` in a channel's state root, and `<name>/SKILL.md` in the
+operator's shared root, are files your repository holds and your team edits. The
+grammar is therefore a compatibility surface rather than an implementation
+detail, and `libero skill vendor` writes into it.
 
-Frozen: the fence, the four frontmatter fields, the name alphabet, and the
-filename rule.
+Frozen: the fence, the field vocabulary, the name alphabet, and the identity
+rule.
 
 - **`---`-fenced, `key: value`, one per line, then a markdown body.** Not YAML
   and deliberately so — YAML's implicit typing reads `description: no` as
-  `false`. A value is the rest of its line, trimmed. No quoting, no escaping, no
-  multi-line values, no comments, and no format imposed on the body.
-- **Four fields**: `name`, `description` (1–512 characters), `created`
-  (`YYYY-MM-DD`, a date that exists), and `status` — one of `active`, `stale`,
-  `archived`, defaulting to `active`.
+  `false` and `created: 2026-09-07` as a date in whatever zone the runtime
+  prefers. A value is the rest of its line, trimmed, with one matching pair of
+  surrounding quotes removed. No escaping, no folded or literal scalars, no
+  comments, and no format imposed on the body.
+- **The fields**: `name`, `description` (1–512 characters), `created`
+  (`YYYY-MM-DD`, a date that exists), `status` — one of `active`, `stale`,
+  `archived`, defaulting to `active` — and `metadata`, a block of indented
+  `key: value` lines read as a string→string map.
+- **`created` is required of a channel's own skill and optional on a shared
+  one.** The store stamps one on every skill a model creates, so a channel file
+  without one is damaged; the Agent Skills spec does not define the key, so a
+  skill you vendored simply has not got one. Nothing decides anything by it
+  either way — the index stamps its own `first_seen_at`.
 - **`name` is lowercase words joined by single dashes**, letters and digits
   only, 1–64 characters. That alphabet is load-bearing beyond tidiness: a name
   that parses is already canonical, so it is the filename stem on every
   filesystem with no slug function anywhere, and `/` being absent is what
   reserves `shared/<name>` as an address no file can collide with.
-- **The filename is the identity.** A `deploy.md` whose frontmatter says
+- **The filesystem name is the identity.** A `deploy.md` whose frontmatter says
   `name: rollback` is not re-keyed and not repaired; the stem wins and the file
-  is left exactly as your team wrote it.
+  is left exactly as your team wrote it. On the shared root the directory's name
+  is what has to agree, which is the spec's own rule.
 
-Two properties are worth relying on because they are what make an upgrade safe.
+Three properties are worth relying on because they are what make an upgrade
+safe.
 
-**An unknown frontmatter key is ignored, not rejected.** That is the deliberate
-departure from every other shape parsed out of text in this project, and it is
-what lets a newer Libero write a field an older one simply skips. Losing a
-channel's whole playbook over a stray line is a worse failure than ignoring the
-line. A key given *twice* is still refused — there is no answer to which one you
-meant, and silently taking the last is how a status a human set gets dropped.
+**An unknown frontmatter key is kept, not rejected and not dropped.** That is
+the deliberate departure from every other shape parsed out of text in this
+project. A `license:` or `compatibility:` line you add survives every rewrite:
+the lifecycle job changing a status, and a model revising a skill's body, both
+write the file back with your keys after the four it knows and your `metadata`
+block last. A key given *twice* is still refused — there is no answer to which
+one you meant, and silently taking the last is how a status a human set gets
+dropped.
+
+**`allowed-tools` is read and dropped.** The spec defines it; the team sheet is
+the allowlist here. A second statement of permission in a file the model can
+retrieve would look exactly like the one that binds, so it is not kept and not
+written back.
 
 **A file that does not parse is skipped and logged, never fatal.**
 `skill_file_unusable` for one that does not parse and `skill_file_misnamed` for
@@ -118,6 +135,21 @@ What is **not** frozen here is the body's length. The parser does not bound it
 at all: `[skills] max_skill_chars` does, and that is a sheet field you set. The
 4096-character figure is a bound on what the *model* may write in one operation,
 not on what your team may keep in a file.
+
+### The shared root's layout changed in v0.9.0
+
+A shared skill is `<name>/SKILL.md` with `scripts/`, `references/` and `assets/`
+beside it — the [Agent Skills](https://code.claude.com/docs/en/skills) layout —
+where v0.5.0 through v0.8.0 read a flat `<name>.md`. A flat file is passed over
+and logged; `libero doctor` reports one as unpublished and names the move.
+A channel's own `skills/` directory is unaffected and stays flat, because a
+model writes those one file at a time and has no operation that could produce a
+sidecar.
+
+This is the one part of this page that moved rather than widened, and it moved
+before 1.0 on purpose: adopting the spec's layout means a skill you vendored
+arrives whole instead of flattened into its body, and a wider grammar breaks no
+file that parses today where a narrower one later would.
 
 ## The environment contract — **frozen**
 

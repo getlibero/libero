@@ -21,11 +21,12 @@ let root: string;
 let lines: Array<{ level: LogLevel } & LogFields>;
 let logger: Logger;
 
-/** The operator's act: a file lands in the root, from outside this process. */
+/** The operator's act: a skill lands in the root, from outside this process. */
 function publish(name: string, body = "Say it plainly."): void {
+  mkdirSync(join(root, name), { recursive: true });
   writeFileSync(
-    join(root, `${name}.md`),
-    `---\nname: ${name}\ndescription: How this company writes.\ncreated: 2026-01-01\nstatus: active\n---\n\n${body}\n`
+    join(root, name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: How this company writes.\nstatus: active\n---\n\n${body}\n`
   );
 }
 
@@ -195,7 +196,8 @@ describe("three ways to load nothing, and all of them are log lines", () => {
   });
 
   it("drops a file that does not parse, for the same reason", () => {
-    writeFileSync(join(root, "brand-voice.md"), "half a deploy\n");
+    mkdirSync(join(root, "brand-voice"), { recursive: true });
+    writeFileSync(join(root, "brand-voice", "SKILL.md"), "half a deploy\n");
 
     expect(read(always("brand-voice"))).toEqual([]);
     expect(said("shared_skill_missing")).toHaveLength(1);
@@ -241,15 +243,27 @@ describe("three ways to load nothing, and all of them are log lines", () => {
 });
 
 describe("a root that is not a directory of skills", () => {
-  it("passes over a file whose stem is not a skill name", () => {
+  it("passes over a file whose name is not a skill name", () => {
     writeFileSync(join(root, "README.md"), "# Shared skills\n");
 
     expect(read(always("README"))).toEqual([]);
   });
 
-  it("passes over a subdirectory", () => {
+  // A directory is what a skill is now (#567), so the one that is not a skill is
+  // the one with no `SKILL.md` in it.
+  it("passes over a directory holding no SKILL.md", () => {
     mkdirSync(join(root, "marketing"));
 
     expect(read(always("marketing"))).toEqual([]);
+  });
+
+  // The layout before #567. One root does not hold two layouts.
+  it("passes over a flat file left from the old layout", () => {
+    writeFileSync(
+      join(root, "brand-voice.md"),
+      "---\nname: brand-voice\ndescription: d\ncreated: 2026-01-01\n---\n\nSay it plainly.\n"
+    );
+
+    expect(read(always("brand-voice"))).toEqual([]);
   });
 });

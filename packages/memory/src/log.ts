@@ -50,11 +50,14 @@ export interface LogFields {
    * these wants to know which file was opened and whether the process can write
    * to it, and this is the one that can never write.
    *
-   * Two more say a skill file in either of those directories was **skipped** —
+   * Four more say a skill in either of those directories was **skipped** —
    * "skill_file_unusable" for one that does not parse, "skill_file_misnamed" for
-   * one whose frontmatter names a different skill. Kept apart because the fix is
-   * different, and they exist at all because a skipped file is otherwise
-   * indistinguishable from a file nobody wrote.
+   * one whose frontmatter names a different skill, and, on the shared root only,
+   * "shared_skill_not_a_directory" for a flat `<name>.md` left over from the
+   * layout before #567 and "shared_skill_file_missing" for a directory with no
+   * `SKILL.md` in it. Kept apart because the fix is different in each, and they
+   * exist at all because a skipped skill is otherwise indistinguishable from one
+   * nobody published.
    *
    * **There is deliberately no per-operation event.** What a memory or skill
    * operation did is a result its caller already holds, and the only fields this
@@ -72,8 +75,8 @@ export interface LogFields {
    * `<root>/<channel>/proposals/<name>--<name>.md`.
    *
    * Since #434 it is also a path under the *shared* root —
-   * `<shared>/<name>.md` — which has no channel segment because it belongs to
-   * no channel. The admission is the same one, made once more: the only variable
+   * `<shared>/<name>/SKILL.md`, or the directory itself — which has no channel
+   * segment because it belongs to no channel. The admission is the same one, made once more: the only variable
    * segment is a `SkillName`, and the root itself is an operator's own
    * configuration rather than anybody's content.
    *

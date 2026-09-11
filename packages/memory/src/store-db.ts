@@ -624,6 +624,11 @@ END;
 -- **This column arrived after the table did, and it is the one thing in this
 -- module that repairs a file** — see \`migrateSkillOrigin\` below for what that
 -- cost and why the version did not move.
+--
+-- \`created\` is \`NOT NULL\` and holds \`''\` for a shared skill whose file did not
+-- say — the spec does not define the key. The sentinel is reserved by the
+-- alphabet, since a real value is a \`YYYY-MM-DD\`; \`SkillEntry.created\` is where
+-- that is argued and where it is converted back.
 CREATE TABLE IF NOT EXISTS skill (
   id               INTEGER PRIMARY KEY,
   name             TEXT NOT NULL UNIQUE,
@@ -1888,7 +1893,8 @@ export type SkillOrigin = "channel" | "shared";
  * different callers as soon as the row is put anywhere.
  */
 export interface StoredSkill extends SkillFingerprint {
-  readonly created: string;
+  /** What the file said, or `null` for a shared skill that did not say — see `SkillEntry`. */
+  readonly created: string | null;
   readonly status: SkillStatus;
   readonly origin: SkillOrigin;
 }
@@ -1949,7 +1955,22 @@ export interface SkillPairKey {
 export interface SkillEntry extends SkillFingerprint {
   readonly description: string;
   readonly body: string;
-  readonly created: string;
+  /**
+   * The day the file says it was written, or `null` where it does not say.
+   *
+   * **Nullable since #567, and only ever null on the shared half.** The Agent
+   * Skills spec does not define `created`, so a vendored skill has not got one;
+   * a channel's own is stamped by the store on create. Carried rather than
+   * invented, which is this table's standing rule about clock origins — see
+   * `SkillClock`, where `firstSeenAt` is what anything actually decides by.
+   *
+   * The column stays `NOT NULL` and holds `''` for this, because a valid value
+   * is a `YYYY-MM-DD` and no date is empty: the sentinel is reserved by the
+   * alphabet rather than by a convention somebody has to remember, and a
+   * migration that rebuilt the table to widen a column nothing reads would be a
+   * schema version moved for no reader's benefit.
+   */
+  readonly created: string | null;
   readonly status: SkillStatus;
 }
 
@@ -3711,7 +3732,8 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
       const rows = statements.listSkills.all(origin) as SkillRow[];
       return rows.map(row => ({
         name: row.name,
-        created: row.created,
+        // `''` back to the `null` it was written from — see `SkillEntry.created`.
+        created: row.created === "" ? null : row.created,
         status: row.status as SkillStatus,
         mtimeMs: Number(row.mtime_ms),
         size: Number(row.size),
@@ -3742,7 +3764,7 @@ export function openMessageStore(options: MessageStoreOptions): MessageStore {
             entry.name,
             entry.description,
             entry.body,
-            entry.created,
+            entry.created ?? "",
             entry.status,
             entry.mtimeMs,
             entry.size,
