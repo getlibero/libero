@@ -19,19 +19,23 @@
 // A shared skill arrives from **outside every process this suite runs**. It is
 // not authored by a model, not written through `SkillFiles.apply`, and not
 // reachable by any verb the agent side has. So the rig writes it the way an
-// operator's git checkout would — bytes into a directory — and the fact that
-// nothing else can is the claim `shared-skill-poisoning.test.ts` makes with
+// operator's git checkout would — a directory into a directory — and the fact
+// that nothing else can is the claim `shared-skill-poisoning.test.ts` makes with
 // `fingerprint`.
 //
 // **`fingerprint` hashes contents, not names.** The claim is that the agent side
 // never writes here, and a `readdir` would miss a rewrite in place: `setStatus`
 // rewrites the frontmatter of a file that already exists and changes no name.
 // Content is what has to be identical, so content is what is hashed.
+//
+// It walks the tree rather than one directory, and that is #567's doing: a skill
+// is `<name>/SKILL.md` with sidecars beside it, so a listing of the root's own
+// entries would hash three directory names and none of the bytes under them.
 
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 /** One skill an operator published, as its file's fields and its body. */
 export interface SharedSkillFile {
@@ -41,6 +45,14 @@ export interface SharedSkillFile {
   readonly body: string;
   /** The frontmatter's own status. `active` unless a case is about another. */
   readonly status?: "active" | "stale" | "archived";
+  /**
+   * Files beside `SKILL.md`, by path relative to the skill's own directory.
+   *
+   * What the Agent Skills layout is for (#567), and here it is only ever what a
+   * case needs to have *present*: nothing in this suite reads a sidecar yet, so
+   * a case that publishes one is asserting that the reader passes over it.
+   */
+  readonly sidecars?: Readonly<Record<string, string>>;
 }
 
 export interface SharedSkillRoot {
@@ -72,22 +84,42 @@ function fileFor(skill: SharedSkillFile): string {
   ].join("\n");
 }
 
+/** Every file under a directory, by path relative to it, sorted. */
+function filesUnder(directory: string, base = directory): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...filesUnder(full, base));
+    else found.push(relative(base, full));
+  }
+  return found.sort();
+}
+
 export function sharedSkillRoot(skills: readonly SharedSkillFile[]): SharedSkillRoot {
   const path = mkdtempSync(join(tmpdir(), "libero-e2e-shared-"));
 
   const root: SharedSkillRoot = {
     path,
     publish(skill) {
-      writeFileSync(join(path, `${skill.name}.md`), fileFor(skill), "utf8");
+      const directory = join(path, skill.name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "SKILL.md"), fileFor(skill), "utf8");
+      for (const [name, text] of Object.entries(skill.sidecars ?? {})) {
+        const file = join(directory, name);
+        // A sidecar names its own subdirectory — `scripts/publish.sh` — which is
+        // the layout's whole point, so the parent is made rather than assumed.
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, text, "utf8");
+      }
     },
     fingerprint() {
       const hash = createHash("sha256");
       // Sorted, so the digest is a fact about the contents rather than about the
       // order the filesystem happened to answer in.
-      for (const entry of readdirSync(path).sort()) {
-        hash.update(entry, "utf8");
+      for (const file of filesUnder(path)) {
+        hash.update(file, "utf8");
         hash.update(" ", "utf8");
-        hash.update(readFileSync(join(path, entry)));
+        hash.update(readFileSync(join(path, file)));
         hash.update(" ", "utf8");
       }
       return hash.digest("hex");

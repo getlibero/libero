@@ -2,13 +2,13 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { expect } from "expect";
 import { parseTeamSheet } from "./parse-team-sheet.js";
-import { parseSkillFile } from "./skill.js";
+import { SHARED_SKILL_FILE, parseSkillFile } from "./skill.js";
 
 const examplePath = new URL("../../../channels/example/channel.toml", import.meta.url);
 
 /** The shared root the starter sheet's `[[shared_skill]]` entries name into. */
 const sharedSkillPath = (name: string): URL =>
-  new URL(`../../../shared-skills/${name}.md`, import.meta.url);
+  new URL(`../../../shared-skills/${name}/${SHARED_SKILL_FILE}`, import.meta.url);
 
 /**
  * The smallest `[channel]` block that parses, as TOML text.
@@ -65,12 +65,15 @@ describe("parsing a team sheet", () => {
     if (!result.ok) return;
 
     for (const entry of result.sheet.shared_skill) {
-      const parsed = parseSkillFile(readFileSync(sharedSkillPath(entry.name), "utf8"));
+      const parsed = parseSkillFile(readFileSync(sharedSkillPath(entry.name), "utf8"), {
+        shared: true
+      });
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) continue;
-      // The filename is the identity and the frontmatter is not, so a file whose
+      // The directory is the identity and the frontmatter is not, so a file whose
       // frontmatter disagrees is one the runtime skips — which would make the
-      // published example unloadable while still parsing.
+      // published example unloadable while still parsing. The spec asks for the
+      // same agreement, which is why the examples are where it is checked.
       expect(parsed.skill.frontmatter.name).toBe(entry.name);
     }
   });

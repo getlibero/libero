@@ -102,12 +102,24 @@ function nameSharedSkill(name: string, load: "always" | "retrieved" = "retrieved
   );
 }
 
-/** Publishes one into the host-side shared root, as a vendoring step would. */
+/**
+ * Publishes one into the host-side shared root, as a vendoring step would:
+ * `<name>/SKILL.md`, the Agent Skills layout (#567).
+ */
 function publishSharedSkill(name: string, root = "shared-skills"): void {
+  mkdirSync(join(dir, root, name), { recursive: true });
+  writeFileSync(
+    join(dir, root, name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: How this company writes.\n---\n\nSay it plainly.\n`
+  );
+}
+
+/** The layout before #567, which the server does not read. */
+function publishFlatSharedSkill(name: string, root = "shared-skills"): void {
   mkdirSync(join(dir, root), { recursive: true });
   writeFileSync(
     join(dir, root, `${name}.md`),
-    `---\nname: ${name}\ndescription: How this company writes.\ncreated: 2026-01-01\nstatus: active\n---\n\nSay it plainly.\n`
+    `---\nname: ${name}\ndescription: How this company writes.\ncreated: 2026-01-01\n---\n\nSay it plainly.\n`
   );
 }
 
@@ -572,6 +584,29 @@ describe("shared skills a sheet names", () => {
 
     expect(check(result, "shared skills").status).toBe("ok");
     expect(result.out.filter(line => line.startsWith("fail"))).toEqual([]);
+  });
+
+  // The operator mid-migration is exactly who runs this command, and a flat file
+  // reads as "published" to them and as nothing at all to the server.
+  it("fails a skill left in the layout before v0.9.0, and says what to do", async () => {
+    nameSharedSkill("brand-voice");
+    publishFlatSharedSkill("brand-voice");
+
+    const result = await doctor();
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared skills").status).toBe("fail");
+    expect(check(result, "shared skills").detail).toContain("flat .md file");
+    expect(check(result, "shared skills").detail).toContain("brand-voice/SKILL.md");
+  });
+
+  it("says nothing about the layout when the skill is simply absent", async () => {
+    nameSharedSkill("brand-voice");
+    publishSharedSkill("code-review-standards");
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").detail).not.toContain("flat .md file");
   });
 
   it("takes the root as a flag, since the compose path is a container path", async () => {

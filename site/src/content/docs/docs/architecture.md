@@ -44,7 +44,9 @@ Slack (Socket Mode)
 
    shared skills root (read-only to the agent;
    the proxy does not mount it at all)
-   └─ *.md            (operator-published; sheets name which channels get which)
+   └─ <name>/         (operator-published; sheets name which channels get which)
+      ├─ SKILL.md
+      └─ scripts/ references/ assets/   (the Agent Skills layout)
 ```
 
 **Three roots, and each split is load-bearing.** The obvious layout puts a
@@ -69,6 +71,12 @@ writable file poisoning all of them at once is the cross-channel amplification t
 per-channel layout exists to prevent. The proxy does not mount it at all, because
 a shared skill is text for the model rather than authorization. An unset variable
 and an empty directory are both supported deployments.
+
+Since v0.9.0 a shared skill is a **directory** — `<name>/SKILL.md`, the Agent
+Skills layout — where a channel's own stays a flat `<name>.md`. The two roots
+differ in who writes them and now in shape: an operator vendors a skill at a
+pinned SHA and its sidecars come with it, where a model writes a channel's one
+file at a time and has no operation that could produce one.
 
 **The proxy reads `store.db`, and only that.** `search_channel_history` is
 served by the proxy, so the proxy mounts the agent's state root and opens each
@@ -178,7 +186,7 @@ Slack retention is respected, the agent's own replies included: a message delete
 
 After any task exceeding a tool-call threshold (default 5), a skill-author turn decides whether a reusable playbook emerged and, if so, writes a frontmatter-structured `skills/*.md` (name, description, created, status). Loading is by retrieval: at task start the agent embeds the incoming request and retrieves top-k matching skills (sqlite-vec + FTS hybrid), loading only those into context — never the whole library. Lifecycle: stale at 30 days unused and archived at 90 — `[skills] stale_after_days` and `archive_after_days`, tunable per channel — run by a maintenance job that makes no model call and spends nothing, plus a curator pass that proposes merges of overlapping skills for human review rather than silently rewriting institutional knowledge. Skills are text in the channel's directory under the agent state root, beside `MEMORY.md` — the root the agent writes, not the channels root the proxy reads its authorization from: reviewable, editable, deletable by the team that owns them.
 
-**Shared skills are the operator's half of the same library** (v0.5.0). An operator publishes a playbook once into the third root — through git, vendored into their own repository, so an update is a reviewed diff rather than text that changed under the model overnight — and each channel's team sheet names which of them it gets, with `[[shared_skill]]`. One canonical file; the sheet is the scope, so a file nobody names reaches nobody.
+**Shared skills are the operator's half of the same library** (v0.5.0). An operator publishes a playbook once into the third root — through git, vendored into their own repository, so an update is a reviewed diff rather than text that changed under the model overnight — and each channel's team sheet names which of them it gets, with `[[shared_skill]]`. One canonical file; the sheet is the scope, so a file nobody names reaches nobody. Since v0.9.0 the root takes the Agent Skills layout, `<name>/SKILL.md`, so a marketplace skill is copied in rather than flattened; `metadata:` and any key the format does not define are read and kept, and `allowed-tools` is read and dropped, because the team sheet is the allowlist.
 
 Two load modes, because retrieval cannot serve the consistency case. `load = "always"` puts a playbook in the system prompt of every task in that channel — what a house voice needs, since retrieval will never surface `brand-voice` for a database migration — bounded by `max_always_skills` and `max_always_chars`. `load = "retrieved"` joins the channel's own retrieval pool, bounded by `top_k` and `max_skill_chars` exactly as the channel's own are; `top_k` bounds the whole pool rather than either half. `[skills] enabled = false` does not switch either off: that switch governs what a channel grows for itself, and these were decreed rather than grown.
 

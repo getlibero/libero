@@ -1,5 +1,5 @@
-// The operator's shared skills on disk: `<root>/<name>.md`, read and never
-// written (#434).
+// The operator's shared skills on disk: `<root>/<name>/SKILL.md`, read and never
+// written (#434, #567).
 //
 // The file half of #373's shared-skill shape. An enterprise publishes a handful
 // of skills — brand voice, house style, a standard playbook — into one directory
@@ -40,14 +40,26 @@
 // a shared skill is which ones a sheet named and what a channel's index and
 // vectors hold, and both of those live on the channel's side of the seam.
 //
-// ## One flat directory, no nesting
+// ## One directory per skill, one level deep
 //
-// `<root>/brand-voice.md`, not `<root>/marketing/brand-voice.md`. `SkillName` has
-// no separator that could become a path segment, and the addressing form
-// `shared/<name>` is a namespace rather than a directory — `sharedSkillRef`'s
-// header in the schema package is explicit that the qualified form is an address
-// and never a filename. A subdirectory would be a second naming scheme with
-// nothing to parse it.
+// `<root>/brand-voice/SKILL.md`, with `scripts/`, `references/` and `assets/`
+// beside it — the Agent Skills layout, adopted in #567 so a skill an operator
+// vendored at a SHA arrives whole rather than flattened into its body. What did
+// not change is that the root is **one level**: `<root>/marketing/brand-voice/`
+// is not a thing, because `SkillName` has no separator that could become a second
+// path segment, and the addressing form `shared/<name>` is a namespace rather
+// than a directory — `sharedSkillRef`'s header in the schema package is explicit
+// that the qualified form is an address and never a filename.
+//
+// **The sidecars are not read here, and that is not an omission.** This module
+// answers with a `SkillFile`, which is frontmatter and a body; what reaches a
+// model from `scripts/` or `references/` is #568's question and has its own
+// gates. A shared root that holds them is a root a later read can reach into,
+// and nothing about the layout had to wait for that read to exist.
+//
+// The channel side stays flat. ./skill-dir.ts's header has the argument: a model
+// writes those one file at a time and has no operation that could produce a
+// sidecar.
 
 import { existsSync } from "node:fs";
 import { SkillName } from "@getlibero/schema";
@@ -58,7 +70,7 @@ import type { Logger } from "./log.js";
 
 export interface SharedSkillFilesOptions {
   /**
-   * The directory holding the operator's skill files, one `<name>.md` each.
+   * The directory holding the operator's skills, one `<name>/SKILL.md` each.
    *
    * `AGENT_SHARED_SKILLS_ROOT` (#433), and deliberately neither of the other two
    * roots: not `AGENT_CHANNELS_ROOT`, which is where the proxy reads
@@ -85,11 +97,14 @@ export interface SharedSkillFilesOptions {
  */
 export interface SharedSkillFiles {
   /**
-   * Every shared skill the root holds, by name, sorted. Bare names — the file's
-   * stem — never the `shared/<name>` address.
+   * Every shared skill the root holds, by name, sorted. Bare names — the
+   * directory's own — never the `shared/<name>` address.
    *
-   * `[]` for a root that holds no skill files, which is an operator who has
-   * scaffolded the directory and published nothing into it yet.
+   * `[]` for a root that holds no skills, which is an operator who has
+   * scaffolded the directory and published nothing into it yet. A directory with
+   * no `SKILL.md`, and a flat `<name>.md` left from the layout before #567, are
+   * both logged and left out: neither is a skill, and a listing that admitted
+   * one would hold an index row open against a file nothing can read.
    */
   list(): readonly string[];
   /** Every shared skill with what tells an index whether its file has moved. */
@@ -100,9 +115,11 @@ export interface SharedSkillFiles {
    * `SkillFiles.read`'s three nulls, for its reasons: no such file, a file that
    * does not parse, a file whose frontmatter names a different skill. A caller
    * does the same thing in all three, which is skip the skill; the second and
-   * third are logged so an operator can see their file being passed over.
+   * third are logged so an operator can see their file being passed over. The
+   * third is the spec's own rule here — a skill's `name` must equal the directory
+   * it sits in — which is why it is checked rather than repaired.
    *
-   * Takes the **bare** name, because that is the filename. A caller holding a
+   * Takes the **bare** name, because that is the directory. A caller holding a
    * `shared/<name>` address is holding the form the index keys on, and the two
    * are converted where the index is written and nowhere else.
    */
@@ -129,7 +146,11 @@ export function openSharedSkillFiles(options: SharedSkillFilesOptions): SharedSk
 
   if (!existsSync(root)) return null;
 
-  const reads = openSkillDirectory({ directory: root, ...(logger ? { logger } : {}) });
+  const reads = openSkillDirectory({
+    directory: root,
+    origin: "shared",
+    ...(logger ? { logger } : {})
+  });
 
   logger?.log("info", { event: "shared_skills_opened", file: root });
 

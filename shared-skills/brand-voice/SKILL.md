@@ -1,7 +1,6 @@
 ---
 name: brand-voice
 description: How this company writes — for any reply, summary, or document meant to be read outside the team.
-created: 2026-08-24
 status: active
 ---
 

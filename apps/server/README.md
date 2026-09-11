@@ -775,7 +775,10 @@ so publishing a skill or fixing a mount does not need a restart; it is an
 A named skill fails to load in three ways, and **all three are log lines and none
 reaches the channel**. The root is unset or absent (`shared_skills_unavailable`);
 the file is missing or does not parse (`shared_skill_missing`); the file would
-breach the region's ceiling (`shared_skill_oversize`). Three words because the
+breach the region's ceiling (`shared_skill_oversize`). Since #567 "missing" also
+covers a skill still in the flat `<name>.md` layout the root held before v0.9.0 —
+it is `<name>/SKILL.md` now, and the storage layer logs that case distinctly on
+its own side, where the fix is a move rather than a publish. Three words because the
 fixes are three different acts — mount the root, publish the file, raise the cap
 or shorten the skill.
 

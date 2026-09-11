@@ -127,11 +127,12 @@ function provision(channel: string): void {
   writeFileSync(join(channelsRoot, channel, "channel.toml"), '[channel]\nid = "x"\n');
 }
 
-/** The operator's act: a file lands in the third root, from outside this process. */
+/** The operator's act: a skill lands in the third root, from outside this process. */
 function publish(name: string, description: string, body: string): void {
+  mkdirSync(join(sharedRoot, name), { recursive: true });
   writeFileSync(
-    join(sharedRoot, `${name}.md`),
-    `---\nname: ${name}\ndescription: ${description}\ncreated: 2026-08-01\nstatus: active\n---\n\n${body}\n`
+    join(sharedRoot, name, "SKILL.md"),
+    `---\nname: ${name}\ndescription: ${description}\nstatus: active\n---\n\n${body}\n`
   );
 }
 

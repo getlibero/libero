@@ -148,10 +148,19 @@ An empty directory is a supported deployment, and so is an unset variable — th
 server logs `shared_skills_unconfigured` once and every channel's own skills work
 exactly as before.
 
-**Content gets in here by vendoring, not fetching.** Your CI copies a skill file
-into this directory in your own repository, pinned however you pin, so an update
-is a reviewed diff rather than text that changed under the model overnight. A
-`libero skill vendor` command that would do the copying is filed and parked as
+A skill is a **directory** here — `<name>/SKILL.md`, with `scripts/`,
+`references/` and `assets/` beside it, the Agent Skills layout adopted in
+[#567](https://github.com/getlibero/libero/issues/567). The directory name is the
+skill's name and `SKILL.md`'s own `name:` has to agree with it. A flat
+`<name>.md`, which is what this root held before v0.9.0, is passed over and
+logged; `libero doctor` reports one as unpublished and names the move. A
+channel's own `skills/` directory is unaffected and stays flat.
+
+**Content gets in here by vendoring, not fetching.** Your CI copies a skill
+directory into this directory in your own repository, pinned however you pin, so
+an update is a reviewed diff rather than text that changed under the model
+overnight — and since the layout is the spec's, a `git subtree` needs no verb at
+all. A `libero skill vendor` command that would do the copying at a pinned SHA is
 [#439](https://github.com/getlibero/libero/issues/439); `shared-skills/README.md`
 has the format and the sheet syntax.
 

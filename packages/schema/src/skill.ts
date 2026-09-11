@@ -50,10 +50,16 @@
 // `created` below is model-authored, hand-editable text. A model writing
 // `created: 2099-01-01`, or somebody correcting what they took for a typo, must
 // not be able to move an archival clock. So `created` is **documentation** — it
-// is here because the spec names it and because a human opening the directory
-// wants it, and nothing reads it to decide anything. The index stamps its own
-// `first_seen_at` when it first sees a file, in the shape `embedding_source.at`
-// already uses, and a never-used skill clocks from that.
+// is here because a human opening the directory wants it, and nothing reads it
+// to decide anything. That is also why it is **optional on a shared skill**
+// (#567): the Agent Skills spec does not define the key, so a vendored file
+// simply has not got one, and a field nothing decides by is a poor reason to
+// refuse the file. A channel's own skill still requires it, because the store
+// stamps one on every create and a file missing one there is a damaged file.
+//
+// The index stamps its own `first_seen_at` when it first sees a file, in the
+// shape `embedding_source.at` already uses, and a never-used skill clocks from
+// that.
 //
 // The corollary for whoever writes the index: a body edit re-embeds the skill,
 // because the vector is derived from its text, but it does **not** reset the use
@@ -203,6 +209,26 @@ export const SHARED_SKILL_NAMESPACE = "shared";
 export function sharedSkillRef(name: SkillName): string {
   return `${SHARED_SKILL_NAMESPACE}/${name}`;
 }
+
+/**
+ * What a shared skill's own file is called, inside the directory named for it
+ * (#567).
+ *
+ * `<root>/<name>/SKILL.md`, with `scripts/`, `references/` and `assets/` beside
+ * it — the Agent Skills layout, so a skill an operator vendored at a SHA arrives
+ * whole rather than flattened. The directory is the name, and the spec asks that
+ * the frontmatter's `name` agree with it.
+ *
+ * **Here rather than in the storage layer, because this one is not private to
+ * it.** `SkillName`'s header says the filename is the storage layer's business,
+ * and that stands for a channel's own `<name>.md`: nothing outside
+ * `packages/memory` ever names it. This is the opposite — `libero doctor` checks
+ * the layout on the host, `deploy/README.md` documents it, and the vendor verb
+ * writes it — so it is an operator-facing contract with three consumers, and a
+ * constant in the one package all of them already import is what keeps it one
+ * spelling.
+ */
+export const SHARED_SKILL_FILE = "SKILL.md";
 
 /**
  * The most text one skill's body may hold, in characters.
@@ -360,15 +386,46 @@ export const SkillCreated = z
 export type SkillCreated = z.infer<typeof SkillCreated>;
 
 /**
+ * The Agent Skills spec's designated place for client-defined keys (#567).
+ *
+ * A string→string map and nothing else. The spec puts `metadata` in the
+ * frontmatter for exactly the keys a particular client cares about, which is the
+ * one thing this format could not previously read at all — `FRONTMATTER_LINE` is
+ * anchored at column 0, so every indented line under it was a malformed line and
+ * a vendored skill that used the spec properly failed to parse.
+ *
+ * **Nothing here reads it**, and that is deliberate rather than provisional. It
+ * is carried so the file survives a rewrite and so an operator can see their own
+ * keys where they put them; the moment something in this tree decided anything
+ * by a key in here, that key would want a declared field with a bound on it, and
+ * this map would be the place a model got to name its own.
+ *
+ * Values are strings, because the grammar has no other scalar type — see
+ * `parseSkillFile`. A map of maps is not admitted: one level is what the spec's
+ * examples use and what a line-oriented parser can read without becoming YAML.
+ */
+export const SkillMetadata = z.record(z.string(), z.string());
+
+export type SkillMetadata = z.infer<typeof SkillMetadata>;
+
+/** One frontmatter key this format does not define, kept as the file wrote it. */
+export const SkillExtraField = z.object({
+  key: z.string().min(1),
+  value: z.string()
+});
+
+export type SkillExtraField = z.infer<typeof SkillExtraField>;
+
+/**
  * A skill file's frontmatter.
  *
  * **Not `.strict()`, and that is the deliberate departure from every other shape
  * in this package that is parsed out of text.** The rule those follow is that
  * wire and model-input shapes are strict, because a field nobody declared is a
  * field nobody bounded. This is neither: it is an operator-authored file, in the
- * class the team sheet's own blocks sit in, where an unknown key is stripped
- * rather than fatal because losing a channel's whole skill over a stray line is
- * a worse failure than ignoring the line.
+ * class the team sheet's own blocks sit in, where an unknown key is not fatal
+ * because losing a channel's whole skill over a stray line is a worse failure
+ * than ignoring the line.
  *
  * It is also concretely load-bearing rather than a matter of taste. The
  * architecture page documents `uses` as a frontmatter key; a team following it
@@ -380,19 +437,53 @@ export type SkillCreated = z.infer<typeof SkillCreated>;
  *
  * `status` is optional and defaults to `active`, so a skill somebody wrote by
  * hand — which the storage layer is required to accept — parses without them
- * having to know the vocabulary. `name`, `description` and `created` are
- * required: a skill with no name cannot be addressed, one with no description
- * cannot be retrieved, and one with no date has nothing for a clock to start
- * from.
+ * having to know the vocabulary. `name` and `description` are required: a skill
+ * with no name cannot be addressed and one with no description cannot be
+ * retrieved.
+ *
+ * **`created` is optional here and required by `ChannelSkillFrontmatter`**, and
+ * the split is the file header's: the spec does not define the key, so a
+ * vendored shared skill has not got one, and nothing decides anything by it. A
+ * channel's own skill is stamped by the store on create, so a file without one
+ * there is damaged rather than foreign.
  */
 export const SkillFrontmatter = z.object({
   name: SkillName,
   description: z.string().min(1).max(SKILL_DESCRIPTION_MAX_CHARS),
-  created: SkillCreated,
-  status: SkillStatus.default("active")
+  created: SkillCreated.optional(),
+  status: SkillStatus.default("active"),
+  metadata: SkillMetadata.optional(),
+  /**
+   * Frontmatter keys this format does not define, in the order the file wrote
+   * them.
+   *
+   * **A data-loss fix, not a feature** (#567). `serializeSkillFile` emits the
+   * fields it knows and `SkillFiles.setStatus` rewrites a channel skill through
+   * it, so before this a `license:` line somebody hand-added was erased the
+   * first time the lifecycle clock moved the status — silently, in a file the
+   * team owns.
+   *
+   * An array rather than a record, because the order is the team's and a record
+   * would make "stable order" a fact about how the runtime happens to iterate
+   * keys. Populated by `parseSkillFile` only; a caller building a `SkillFile`
+   * from scratch has nothing to put here.
+   */
+  extra: z.array(SkillExtraField).optional()
 });
 
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatter>;
+
+/**
+ * The same frontmatter with `created` required: a channel's own skill.
+ *
+ * A narrowing rather than a second shape, so there is one declaration of every
+ * other field and no chance of the two drifting. `parseSkillFile` picks which of
+ * the two it parses against from what the caller says the file is, and that is
+ * the only place either is chosen between.
+ */
+export const ChannelSkillFrontmatter = SkillFrontmatter.extend({
+  created: SkillCreated
+});
 
 /**
  * One skill file, as its two halves.
@@ -439,10 +530,84 @@ export type SkillFileParse =
   | { readonly ok: false; readonly reason: "empty_body" }
   | { readonly ok: false; readonly reason: "schema_invalid"; readonly issues: readonly SkillFileIssue[] };
 
+/**
+ * What the caller knows about the file that the bytes do not say.
+ *
+ * One field, and it exists because `created` is required of a channel's own
+ * skill and absent from a vendored one — see `SkillFrontmatter`. The caller is
+ * the opener that already knows which directory it is reading, so this is a fact
+ * it holds rather than one it has to infer; a parser that guessed from the
+ * content would be deciding whether a file is the operator's by whether it is
+ * missing a field, which is the wrong way round.
+ *
+ * Absent means a channel skill, so every existing caller is unchanged and the
+ * stricter reading is the default.
+ */
+export interface SkillFileParseOptions {
+  /** The file is a shared skill: `created` is optional. */
+  readonly shared?: boolean;
+}
+
 const FENCE = "---";
 
 /** `key: value`, splitting on the first colon so a description may contain one. */
 const FRONTMATTER_LINE = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
+
+/** The same line indented: one entry of the map a bare key may carry. */
+const INDENTED_LINE = /^[ \t]+([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
+
+/** The keys this format defines as a scalar on its own line. */
+const SCALAR_KEYS = new Set(["name", "description", "created", "status"]);
+
+/**
+ * Every key this format defines. Anything else that is a scalar is `extra`.
+ *
+ * A list rather than a walk of `SkillFrontmatter.shape`, because `extra` is in
+ * that shape and is not a frontmatter key — the two differ by exactly the field
+ * that holds the difference, which is the kind of thing a derivation gets subtly
+ * wrong and a list does not.
+ *
+ * `metadata` is here and not in `SCALAR_KEYS` because **it is a map or it is
+ * nothing**: it is read from the indented block below and never from the rest of
+ * its own line, so `metadata: something` says nothing this format can read and
+ * is dropped rather than refused.
+ */
+const DEFINED_KEYS = new Set([...SCALAR_KEYS, "metadata"]);
+
+/**
+ * Keys the format reads and deliberately keeps nothing of.
+ *
+ * `allowed-tools` is the Agent Skills spec's way of saying which tools a skill
+ * may use, and **the team sheet is the allowlist here** — the proxy resolves
+ * what a channel may call from the sheet, without the model's cooperation, and a
+ * line in a file the model can retrieve is not a thing that may narrow or widen
+ * that. Keeping it would put a second, inert statement of permission in front of
+ * whoever reads the file next, which is worse than dropping it: the one that is
+ * ignored looks exactly like the one that is not.
+ *
+ * Dropped rather than refused, because a spec-conformant skill that names its
+ * tools is an ordinary file and refusing it would make the whole skill
+ * unreadable over a line this format has an answer for.
+ */
+const DISCARDED_KEYS = new Set(["allowed-tools"]);
+
+/**
+ * A scalar as the file meant it: trimmed, with one matching pair of surrounding
+ * quotes removed.
+ *
+ * The spec's examples quote descriptions, and an unstripped pair is two
+ * characters that reach the embedding, the full-text index and every line a
+ * person reads. One pair only and no escaping — `"` inside a value is a `"`,
+ * because the alternative is an escape vocabulary nothing in this format needs.
+ */
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  const first = trimmed[0];
+  if (trimmed.length >= 2 && (first === '"' || first === "'") && trimmed.endsWith(first)) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
 
 /**
  * Text on disk to a skill, or a structured account of why not.
@@ -454,34 +619,54 @@ const FRONTMATTER_LINE = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
  *
  * ## The grammar is hand-written, and not YAML
  *
- * Three `---`-fenced scalar lines and a markdown body. Nothing in this workspace
+ * `---`-fenced `key: value` lines and a markdown body. Nothing in this workspace
  * depends on a YAML parser and this is not the reason to add one: the CLI
  * bundles this package with esbuild and publishes a manifest declaring no
  * dependencies at all, so a parser here grows that tarball and adds a surface to
- * the licence gate — to read four short lines.
+ * the licence gate — to read a short header.
  *
- * YAML would also be actively worse at this. Its implicit typing reads
- * `description: no` as `false` and `created: 2026-08-15` as a `Date` in whatever
- * zone the runtime feels like, both of which are exactly the fields below.
+ * YAML would also be actively worse at this, and the case got sharper rather
+ * than weaker when #567 widened the grammar to read a spec `SKILL.md`. Its
+ * implicit typing reads `description: no` as `false` and `created: 2026-09-07`
+ * as a `Date` in whatever zone the runtime feels like — and the second is
+ * exactly the roll-over hazard `SkillCreated` is parsed by rule to avoid, so
+ * reaching for a library here would reintroduce the bug this file was written to
+ * refuse.
  *
- * So: a value is the rest of its line, verbatim and trimmed. There is no
- * quoting, no escaping, no multi-line value, and no comment syntax — a
- * description that needs any of those is a description that should be shorter,
- * and the body underneath has no format imposed on it at all.
+ * So: a value is the rest of its line, trimmed, with one matching pair of
+ * surrounding quotes removed. There is no escaping, no folded or literal scalar,
+ * and no comment syntax — the spec's own examples are single-line, and a
+ * description that needs more is a description that should be shorter. The body
+ * underneath has no format imposed on it at all.
+ *
+ * ## The one nested shape: an indented map
+ *
+ * A key whose value is empty may be followed by indented `key: value` lines, and
+ * those are a string→string map. That is the whole of the nesting, and it exists
+ * for one key: `metadata` is where the Agent Skills spec puts client-defined
+ * keys, and `FRONTMATTER_LINE` being anchored at column 0 made the spec's own
+ * designated extension point a malformed line.
+ *
+ * A map under any **other** key is read and then dropped — neither the map nor
+ * the bare key it hung from survives. Reading it is what keeps a spec-conformant
+ * file from failing outright over a key this format has no place for; dropping
+ * the bare key too is the honest half, because emitting `license:` with its
+ * value discarded would be writing back something the file did not say.
  *
  * ## What it refuses, and what it lets through
  *
- * An unknown key is **ignored**, per `SkillFrontmatter`. A key given twice is
- * **refused**, because there is no answer to which one the team meant and
- * silently taking the last is how a status a human set gets dropped. A line
- * inside the fences that is not `key: value` is refused rather than skipped, for
- * the same reason. Blank lines are fine.
+ * An unknown scalar is **kept** — see `SkillFrontmatter.extra`. A key given
+ * twice is **refused**, because there is no answer to which one the team meant
+ * and silently taking the last is how a status a human set gets dropped. A line
+ * inside the fences that is neither `key: value` nor an indented line under a
+ * bare key is refused rather than skipped, for the same reason. Blank lines are
+ * fine.
  *
  * Never throws. A skill file failing to parse is an ordinary outcome — a model
  * wrote it, or a person edited it — on a path where an exception would be caught
  * somewhere that treats it as "no skills".
  */
-export function parseSkillFile(text: string): SkillFileParse {
+export function parseSkillFile(text: string, options?: SkillFileParseOptions): SkillFileParse {
   // Normalized so a file edited on Windows is not a file with four unparseable
   // lines. Nothing downstream can tell the difference, and `\r` on the end of a
   // value would otherwise reach a name, a date, and the index.
@@ -489,7 +674,14 @@ export function parseSkillFile(text: string): SkillFileParse {
 
   if (lines[0]?.trim() !== FENCE) return { ok: false, reason: "no_frontmatter" };
 
-  const fields: Record<string, string> = {};
+  // In file order, which is what `SkillFrontmatter.extra` preserves. The set is
+  // what refuses a repeat; the array is what remembers where it was.
+  const scalars: { key: string; value: string }[] = [];
+  const seen = new Set<string>();
+  const maps = new Map<string, Record<string, string>>();
+  // The bare key an indented line would belong to, or null when the last line at
+  // column 0 carried a value of its own.
+  let open: string | null = null;
   let close = -1;
 
   for (let index = 1; index < lines.length; index += 1) {
@@ -498,7 +690,26 @@ export function parseSkillFile(text: string): SkillFileParse {
       close = index;
       break;
     }
+    // A blank line neither closes a map nor ends the header: `metadata:` with a
+    // blank line before its first entry is a file somebody formatted, not a
+    // broken one.
     if (line.trim() === "") continue;
+
+    if (/^[ \t]/.test(line)) {
+      const indented = INDENTED_LINE.exec(line);
+      if (indented === null || open === null) {
+        return { ok: false, reason: "malformed_line", line: index + 1 };
+      }
+      const [, key, value] = indented;
+      if (key === undefined || value === undefined) {
+        return { ok: false, reason: "malformed_line", line: index + 1 };
+      }
+      const map = maps.get(open) ?? {};
+      if (Object.hasOwn(map, key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
+      map[key] = unquote(value);
+      maps.set(open, map);
+      continue;
+    }
 
     const match = FRONTMATTER_LINE.exec(line);
     if (match === null) return { ok: false, reason: "malformed_line", line: index + 1 };
@@ -509,13 +720,42 @@ export function parseSkillFile(text: string): SkillFileParse {
     if (key === undefined || value === undefined) {
       return { ok: false, reason: "malformed_line", line: index + 1 };
     }
-    if (Object.hasOwn(fields, key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
-    fields[key] = value.trim();
+    if (seen.has(key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
+    seen.add(key);
+    const scalar = unquote(value);
+    scalars.push({ key, value: scalar });
+    open = scalar === "" ? key : null;
   }
 
   if (close === -1) return { ok: false, reason: "no_frontmatter" };
 
-  const parsed = SkillFrontmatter.safeParse(fields);
+  const fields: Record<string, unknown> = {};
+  const extra: SkillExtraField[] = [];
+  for (const { key, value } of scalars) {
+    if (DISCARDED_KEYS.has(key)) continue;
+    // A bare key that turned out to carry a map. `metadata` becomes the field
+    // below; anything else goes entirely, key included — see the header, because
+    // writing the key back with its value dropped would be writing back
+    // something the file did not say.
+    if (maps.has(key)) continue;
+    // Not `DEFINED_KEYS`: a `metadata` that reached here carried no block, so it
+    // is a key that said nothing — see that constant.
+    if (SCALAR_KEYS.has(key)) {
+      fields[key] = value;
+      continue;
+    }
+    if (DEFINED_KEYS.has(key)) continue;
+    extra.push({ key, value });
+  }
+
+  const metadata = maps.get("metadata");
+  // An empty map is a `metadata:` with nothing under it, which is a key that
+  // said nothing rather than a map that is empty.
+  if (metadata !== undefined && Object.keys(metadata).length > 0) fields["metadata"] = metadata;
+  if (extra.length > 0) fields["extra"] = extra;
+
+  const shape = options?.shared === true ? SkillFrontmatter : ChannelSkillFrontmatter;
+  const parsed = shape.safeParse(fields);
   if (!parsed.success) {
     return {
       ok: false,
@@ -548,21 +788,40 @@ export function parseSkillFile(text: string): SkillFileParse {
  * of the format with nothing checking it against the first.
  *
  * The field order is fixed and is the order they are declared in: identity, then
- * what the skill is for, then when it appeared, then where it is in its life. A
- * stable order is what makes the lifecycle job's status change a one-line diff
- * in the team's git history rather than a reordering of the whole header.
+ * what the skill is for, then when it appeared, then where it is in its life,
+ * then every key this format does not define, then the map. A stable order is
+ * what makes the lifecycle job's status change a one-line diff in the team's git
+ * history rather than a reordering of the whole header.
+ *
+ * **The last two are what make a rewrite lossless** (#567). `setStatus` writes a
+ * channel skill back through here, so a key the format does not define had to
+ * either survive this function or be erased from a file the team owns; the
+ * unknown scalars go after the four so the diff of a status change stays one
+ * line, and the map goes last because it is the only shape that spans lines.
  */
 export function serializeSkillFile(skill: SkillFile): string {
-  const { name, description, created, status } = skill.frontmatter;
-  return [
-    FENCE,
-    `name: ${name}`,
-    `description: ${description}`,
-    `created: ${created}`,
-    `status: ${status}`,
-    FENCE,
-    "",
-    skill.body,
-    ""
-  ].join("\n");
+  const { name, description, created, status, metadata, extra } = skill.frontmatter;
+
+  const lines = [FENCE, `name: ${name}`, `description: ${description}`];
+  // Absent only on a shared skill, which nothing in this tree writes — so this
+  // branch is what keeps a round trip honest rather than a case that fires.
+  if (created !== undefined) lines.push(`created: ${created}`);
+  lines.push(`status: ${status}`);
+
+  for (const field of extra ?? []) {
+    // A caller that put a defined key in `extra` would otherwise get a file with
+    // that key twice, which is a `duplicate_key` on the way back in. The parser
+    // cannot produce one; a hand-built `SkillFile` can.
+    if (DEFINED_KEYS.has(field.key) || DISCARDED_KEYS.has(field.key)) continue;
+    lines.push(`${field.key}: ${field.value}`);
+  }
+
+  const entries = Object.entries(metadata ?? {});
+  if (entries.length > 0) {
+    lines.push("metadata:");
+    for (const [key, value] of entries) lines.push(`  ${key}: ${value}`);
+  }
+
+  lines.push(FENCE, "", skill.body, "");
+  return lines.join("\n");
 }

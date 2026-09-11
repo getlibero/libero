@@ -703,14 +703,16 @@ Keeping them separate is not tidiness — it is the property
 channels whose sheets name it, so *scoping is the sheet*, and a case can put a
 hostile playbook in the root and prove it reaches nothing.
 
-The root is written the way an operator's git checkout writes it: bytes into a
-directory, by the rig, because **nothing else in this deployment can**. There is
-no model verb for it, no `SkillFiles.apply` path to it, and in production it is
-bind-mounted `:ro`. `SharedSkillRoot.fingerprint` is how a case asserts that —
-a hash over file *contents* rather than a `readdir`, because the write paths
-differ in what they would disturb: `apply` creates a file where `setStatus`
-rewrites the frontmatter of one that already exists, and only a content hash
-catches both.
+The root is written the way an operator's git checkout writes it — a directory
+per skill, `<name>/SKILL.md` with whatever `SharedSkillFile.sidecars` names
+beside it (#567) — by the rig, because **nothing else in this deployment can**.
+There is no model verb for it, no `SkillFiles.apply` path to it, and in
+production it is bind-mounted `:ro`. `SharedSkillRoot.fingerprint` is how a case
+asserts that — a hash over file *contents* rather than a `readdir`, because the
+write paths differ in what they would disturb: `apply` creates a file where
+`setStatus` rewrites the frontmatter of one that already exists, and only a
+content hash catches both. It walks the tree rather than the root's own entries,
+since the root now holds directories.
 
 **No case may claim a shared skill was retrieved by the vector leg**, which is
 `harness/embedding.ts`'s standing rule applied to this surface rather than a new
@@ -870,7 +872,11 @@ outlive the run.
   curator's proposal — driven against a shared root that is byte-identical
   afterwards.
 - `src/harness/shared-skills.ts` — the operator's third root, its writer, and the
-  content hash that makes "the agent side wrote nothing here" assertable.
+  content hash that makes "the agent side wrote nothing here" assertable. Since
+  #567 it writes `<name>/SKILL.md` and whatever `sidecars` names beside it, and
+  the hash walks the tree: one case publishes a `scripts/` and a `references/`
+  and asserts that neither reaches a model, which is the narrow claim #568 will
+  be the thing to widen.
 - `src/audit.test.ts` — #98, the read path: three real lifecycles driven through
   the rig and then found again by the spawned `dist/audit.js`, which is the only
   place the *connection* can be shown — a second process opening the log

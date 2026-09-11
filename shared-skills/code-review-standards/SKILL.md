@@ -1,7 +1,6 @@
 ---
 name: code-review-standards
 description: What a review comment should say, and what to leave alone — reach for this when reviewing a diff or a pull request.
-created: 2026-08-24
 status: active
 ---
 

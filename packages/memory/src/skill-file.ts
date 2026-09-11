@@ -393,7 +393,12 @@ export function openSkillFiles(options: SkillFilesOptions): SkillFiles {
   // The three read-only acts, which ./shared-skill-file.ts performs over its own
   // directory. What stays here is everything that writes, and everything that
   // knows this directory belongs to a channel.
-  const reads = openSkillDirectory({ directory, channel, ...(logger ? { logger } : {}) });
+  const reads = openSkillDirectory({
+    directory,
+    origin: "channel",
+    channel,
+    ...(logger ? { logger } : {})
+  });
   const names = reads.names;
   const readFile = reads.read;
 
@@ -432,9 +437,22 @@ export function openSkillFiles(options: SkillFilesOptions): SkillFiles {
       const previous = op.op === "skill_revise" ? readFile(op.name) : null;
       const created = previous?.frontmatter.created ?? utcDate(now());
       const status: SkillStatus = previous?.frontmatter.status ?? "active";
+      // And so are the keys this format does not define (#567). A model revising
+      // a skill rewrites its description and its body; a `license:` line the team
+      // hand-added is neither, and the revision is not the moment to lose it.
+      // `setStatus` gets this for free by spreading the whole frontmatter; this
+      // path builds one, so it has to say so.
+      const kept = previous?.frontmatter;
 
       const text = serializeSkillFile({
-        frontmatter: { name: op.name, description: op.description, created, status },
+        frontmatter: {
+          name: op.name,
+          description: op.description,
+          created,
+          status,
+          ...(kept?.metadata === undefined ? {} : { metadata: kept.metadata }),
+          ...(kept?.extra === undefined ? {} : { extra: kept.extra })
+        },
         body: op.body
       });
 

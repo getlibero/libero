@@ -130,7 +130,7 @@ export function reconcileSkillIndex(options: SkillReconcileOptions): SkillReconc
       ino: file.ino,
       description: skill.frontmatter.description,
       body: skill.body,
-      created: skill.frontmatter.created,
+      created: skill.frontmatter.created ?? null,
       status: skill.frontmatter.status
     });
   }
@@ -263,7 +263,7 @@ export function reconcileSharedSkillIndex(
       ino: file.ino,
       description: skill.frontmatter.description,
       body: skill.body,
-      created: skill.frontmatter.created,
+      created: skill.frontmatter.created ?? null,
       status: skill.frontmatter.status
     });
   }

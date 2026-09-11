@@ -273,9 +273,19 @@ lifecycle job had retired.
 
 `openSharedSkillFiles` is the fifth (#434), and it is the only opener here over
 a directory that belongs to **no channel**: the operator's shared-skill root,
-`<root>/<name>.md`, mounted read-only into the agent service (#433). A team sheet
-names which of those skills a channel gets, and the content is one canonical file
-rather than a copy per channel.
+`<root>/<name>/SKILL.md`, mounted read-only into the agent service (#433). A team
+sheet names which of those skills a channel gets, and the content is one
+canonical file rather than a copy per channel.
+
+**That layout is the Agent Skills spec's, since #567**, where a channel's own
+skill stays a flat `<name>.md`. The two roots differ in who writes them and now
+in shape: an operator vendors a skill directory at a SHA and its `scripts/`,
+`references/` and `assets/` come with it, where a model writes a channel's one
+file at a time and has no operation that could produce a sidecar. A directory
+with no `SKILL.md` is passed over, and so is a flat file left from the layout
+before it — both logged, because a skipped skill is otherwise indistinguishable
+from one nobody published. Nothing here reads a sidecar yet; what may reach a
+model from one is #568's question.
 
 It has three methods — `list`, `fingerprints`, `read` — and no fourth. `SkillFiles`
 has five, and the two that are missing are the point rather than an omission:
@@ -292,14 +302,18 @@ Two smaller decisions. It answers **`null` for a root that does not exist**,
 `openMessageReader`'s shape, so "the operator scaffolded the directory and
 published nothing" and "the mount did not happen" are not the same silence — the
 first is a working deployment and the second is #433's `doctor` check firing. And
-`read` takes the **bare** name, because that is the filename: `shared/<name>` is
+`read` takes the **bare** name, because that is the directory: `shared/<name>` is
 an address the index keys on, and the two forms are converted at one seam and
 nowhere else.
 
 The read half it shares with `openSkillFiles` — the `SkillName` round-trip on the
-stem, the `stat` fingerprint, the parse — lives in `skill-dir.ts`, which is not
-exported. A caller holding it could point it at a channel's own `skills/` and get
-a reader of it that no team sheet gated.
+entry's own name, the `stat` fingerprint, the parse — lives in `skill-dir.ts`,
+which is not exported. A caller holding it could point it at a channel's own
+`skills/` and get a reader of it that no team sheet gated. Which layout it reads,
+and whether a missing `created` is a damaged file or an ordinary vendored one,
+follow from the one `origin` option the two openers set: two options that had to
+agree would be a shared root read by a channel's rules the first time a caller
+set only one.
 
 `openSkillProposals` is the sixth opener and the merge curator's (#295), over
 `proposals/` beside `skills/`. **A sibling and never a child**, which is

@@ -137,6 +137,9 @@ const BENIGN: SharedSkillFile = {
 
 const ON_SUBJECT = "<@U0BOTBOTB> how is a release cut here";
 
+/** A string that exists only inside a sidecar, so finding it anywhere is a leak. */
+const SIDECAR_CANARY = "sidecar-must-not-be-read-4f2a";
+
 /**
  * The hostile published playbook.
  *
@@ -229,6 +232,71 @@ describe("a benign shared skill, always-loaded", () => {
       // grants. This is the fact the rest of the file is measured against.
       expect(upstream.callsTo("tools/call")).toHaveLength(1);
     });
+});
+
+// #567 gave the shared root the Agent Skills layout, so `scripts/`,
+// `references/` and `assets/` now land on disk beside a skill's own file. What
+// may reach a model from one is #568's question and has its own gates; until
+// then the claim is the narrow one, and it is worth an assertion rather than an
+// assumption — a sidecar is operator text sitting one directory away from the
+// system prompt, and "nothing reads it yet" is exactly the kind of fact that
+// stops being true without anyone noticing.
+describe("a shared skill carrying sidecars", () => {
+  let rig: Rig | undefined;
+
+  beforeAll(async () => {
+    rig = await startRig({
+      sharedSkills: [
+        {
+          ...BENIGN,
+          sidecars: {
+            "scripts/publish.sh": `#!/bin/sh\necho ${SIDECAR_CANARY}\n`,
+            "references/checklist.md": `# Checklist\n\n${SIDECAR_CANARY}\n`
+          }
+        }
+      ],
+      sheets: { [CHANNEL]: SHARED_SHEET([{ name: BENIGN.name, load: "always" }]) },
+      script: [calls("list_prs", { repo: "getlibero/libero" }), says("Two are open.")]
+    });
+  }, { timeout: SETUP_MS });
+
+  afterAll(async () => {
+    await rig?.stop();
+  }, { timeout: SETUP_MS });
+
+  // The positive control is inside this case rather than beside it: the skill's
+  // own body has to arrive, or "the sidecar did not" is satisfied by a root that
+  // failed to load at all.
+  it(
+    "loads SKILL.md and nothing beside it",
+    { timeout: CASE_MS },
+    async () => {
+      const { agent, model } = rigOf(rig);
+
+      await agent.slack.deliverMention(mention("Ev00000441"));
+
+      const system = model.seen[0]?.system ?? "";
+      expect(system).toContain("## shared/cut-a-release");
+      expect(system).toContain("2. Merge them in order.");
+
+      for (const request of model.seen) {
+        expect(request.system ?? "").not.toContain(SIDECAR_CANARY);
+      }
+      for (const opening of openingContexts(model)) {
+        expect(opening).not.toContain(SIDECAR_CANARY);
+      }
+    });
+
+  // And the directory is still the operator's: a sidecar is not a file the agent
+  // side may rewrite either, which `fingerprint` covers by walking the tree.
+  it("leaves the whole directory byte-identical", { timeout: CASE_MS }, async () => {
+    const { agent } = rigOf(rig);
+    const before = sharedOf(rig as Rig).fingerprint();
+
+    await agent.slack.deliverMention(mention("Ev00000442"));
+
+    expect(sharedOf(rig as Rig).fingerprint()).toBe(before);
+  });
 });
 
 describe("a hostile shared skill, always-loaded", () => {

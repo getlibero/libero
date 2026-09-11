@@ -34,7 +34,12 @@ import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync 
 import { connect } from "node:tls";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { ModelId, normalizeCertificateSha256, parseTeamSheet } from "@getlibero/schema";
+import {
+  ModelId,
+  SHARED_SKILL_FILE,
+  normalizeCertificateSha256,
+  parseTeamSheet
+} from "@getlibero/schema";
 import { NO_COMPOSE_FILE, composeCommand, findCompose } from "./compose.js";
 import { assignedValues } from "./env-file.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
@@ -79,8 +84,9 @@ export const USAGE = [
   "that is actually on disk —",
   "in both directions, because a certificate no sheet pins is key material",
   "nothing else would ever mention. Also whether every shared skill a sheet",
-  "names has actually been published into the shared root, which is quiet when",
-  "it is wrong: the sheet parses and the channel gets nothing.",
+  "names has actually been published into the shared root, as <name>/SKILL.md,",
+  "which is quiet when it is wrong: the sheet parses and the channel gets",
+  "nothing.",
   "",
   "It also reports which release the deployment is pinned to — LIBERO_VERSION,",
   "the tag all three images are pulled at — against the release of the libero",
@@ -820,12 +826,22 @@ function checkSharedSkills(root: string, named: Set<string>, checks: Check[]): v
     return;
   }
 
-  const missing = wanted.filter(name => !existsSync(join(root, `${name}.md`)));
+  // `<name>/SKILL.md` since #567 — the Agent Skills layout. A flat `<name>.md`
+  // is the layout before it and the server does not read one, so it is reported
+  // here as missing rather than passed over: an operator mid-migration is
+  // exactly who runs this command, and "published" is the question they asked.
+  const missing = wanted.filter(name => !existsSync(join(root, name, SHARED_SKILL_FILE)));
   if (missing.length > 0) {
+    const flat = missing.filter(name => existsSync(join(root, `${name}.md`)));
+    const moves = flat.map(name => `${name}.md to ${name}/${SHARED_SKILL_FILE}`);
+    const layout =
+      flat.length === 0
+        ? ""
+        : ` — ${flat.length === 1 ? "it is" : "they are"} still a flat .md file, the layout before v0.9.0: move ${moves.join(", ")}`;
     checks.push({
       status: "fail",
       name: "shared skills",
-      detail: `${root} does not hold ${missing.join(", ")} — a sheet names ${missing.length === 1 ? "it" : "them"} and the channel gets nothing`
+      detail: `${root} does not hold ${missing.join(", ")} — a sheet names ${missing.length === 1 ? "it" : "them"} and the channel gets nothing${layout}`
     });
     return;
   }

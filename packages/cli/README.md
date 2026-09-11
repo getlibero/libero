@@ -218,10 +218,15 @@ key material nothing will accept — what a retired channel or a half-finished r
 behind — and nothing else in the system would ever mention it.
 
 **Shared skills are checked from the sheets inward** (#433). Every `[[shared_skill]]` entry in every
-sheet names a file the shared root has to hold, and a name with no file is the quiet failure: the
-sheet parses, the deployment starts, and the channel gets a prompt with nothing in it where its
-brand voice should have been. Nothing at runtime can do better than log it, because by then the file
-is simply not there.
+sheet names a skill the shared root has to hold — `<name>/SKILL.md` since #567 — and a name with no
+file is the quiet failure: the sheet parses, the deployment starts, and the channel gets a prompt
+with nothing in it where its brand voice should have been. Nothing at runtime can do better than log
+it, because by then the file is simply not there.
+
+A skill still in the **flat `<name>.md`** layout this root held before v0.9.0 fails the same check
+and the detail names the move, rather than being passed over: an operator mid-migration is exactly
+who runs this command, and a flat file reads as published to them and as nothing at all to the
+server.
 
 The root it reads is the **host** directory — `shared-skills` by default, `--shared-skills-root`
 otherwise — and not the container path `AGENT_SHARED_SKILLS_ROOT` names under compose. That is the
