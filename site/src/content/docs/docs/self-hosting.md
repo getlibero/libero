@@ -834,7 +834,10 @@ on the terms your Slack retention policy already sets.
 
 `AGENT_SHARED_SKILLS_ROOT` is the third root, optional, and mounted **read-only to the agent
 alone**. It holds the playbooks you publish to channels whose sheets name them with
-`[[shared_skill]]` — one flat directory of `<name>.md` files, no nesting. Unset is a supported
+`[[shared_skill]]` — one directory per skill, `<name>/SKILL.md`, with `scripts/`, `references/` and
+`assets/` beside it. That is the [Agent Skills](https://agentskills.io) layout, adopted in v0.9.0
+where v0.5.0 through v0.8.0 read a flat `<name>.md`; a flat file left from before is passed over and
+logged, and `libero doctor` reports one as unpublished and names the move. Unset is a supported
 deployment and so is an empty directory: the server says so once in its log and every channel's own
 skills work exactly as before.
 
@@ -849,8 +852,9 @@ it at all: a shared skill is text for the model, not authorization.
 repository, pinned however you pin, so an update is a reviewed diff rather than text that changed
 under the model overnight. There is no runtime marketplace client and no auto-update, which was
 declined rather than deferred — auto-updating text that enters a model's context is an injection
-subscription. A `libero skill vendor` command that would do the copying is filed and parked as
-[#439](https://github.com/getlibero/libero/issues/439).
+subscription. `libero skill vendor owner/repo/path@ref` does the copying for you — it resolves the
+ref to a commit, copies the directory whole, and records where it came from in the file — but the
+result is still a diff in your repository that you review and commit.
 
 `PROXY_STORE_ROOT` is the **same directory**, named again on the proxy side, because the proxy
 serves `search_channel_history` and has to read the store to answer it. Two variables for one path

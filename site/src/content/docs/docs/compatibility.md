@@ -259,8 +259,10 @@ store is not chained.
 Three surfaces, and they are frozen to different depths.
 
 **The published CLI.** `libero init`, `libero channel add|rotate|promote|pins`,
-and `libero doctor`, with the flags each documents. It requires Node 24 or
-newer, and enforces that rather than advising it.
+`libero skill vendor`, and `libero doctor`, with the flags each documents. It
+requires Node 24 or newer, and enforces that rather than advising it. `skill
+vendor` additionally needs `git` on the host, the way `channel` needs `sh` and
+`openssl`; the other commands need neither.
 
 **The entrypoints inside the images**, which the CLI deliberately does not wrap
 because their files live in volumes the host cannot open: `node dist/<name>.js`
@@ -284,9 +286,9 @@ improvement a breaking change. The exception is `audit csv`, whose **header row
 is the contract** and whose new columns are appended at the end, so positional
 indexing keeps working.
 
-A command or a subcommand may be added in a minor — `libero skill vendor` is
-one that is coming — and an exit code may be added the way `audit`'s fourth
-was. Neither removes anything you are already using.
+A command or a subcommand may be added in a minor — `libero skill vendor`
+arrived in v0.9.0 — and an exit code may be added the way `audit`'s fourth was.
+Neither removes anything you are already using.
 
 ## The wire between the two services — **not frozen, and not meant to be**
 

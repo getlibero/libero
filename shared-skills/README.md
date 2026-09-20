@@ -93,12 +93,30 @@ comments.
 
 **Vendoring, not fetching.** A skill enters this directory by a host-side act
 that puts it in your git repository, where an update is a reviewed diff — the
-`packages/proxy/src/vendor/` pattern, a copy and not a fork. Your CI copying a
-file in, pinned however you pin, is the whole of the supported path in v0.5.0;
-[#439](https://github.com/getlibero/libero/issues/439) is the parked issue for a
-`libero skill vendor` command that would do the copying at a pinned SHA. Since
-the layout is the spec's, a `git subtree` of a skill directory needs no verb at
-all.
+`packages/proxy/src/vendor/` pattern, a copy and not a fork.
+
+Since v0.9.0 that act has a command:
+
+```bash
+npx @getlibero/cli skill vendor anthropics/skills/skills/pdf@main
+```
+
+It resolves the ref to a 40-character commit, copies the directory whole —
+`SKILL.md` and every file beside it, with its mode bits — and adds three lines
+to the frontmatter saying where it came from. Copying it in by hand or with a
+`git subtree` still works and always will; the layout is the spec's, so nothing
+about the *copying* needs a verb.
+
+**What needs one is the checking.** Six of the nineteen skills in
+`anthropics/skills` cannot be published here as they stand: three have a
+description over 512 characters, and three write it as a YAML folded or literal
+block scalar, which the grammar above does not read. Copied in by hand, all six
+land looking fine — the server logs `skill_file_unusable` and carries on, and
+`libero doctor` does not parse a published file either, on purpose. `vendor` is
+the one place that check happens while somebody is still there to fix it, and it
+names the edit. It also puts the commit in the file rather than in a merge
+commit message, so the provenance survives a squash, a move, or a copy into
+another repository.
 
 A runtime marketplace client is declined rather than unbuilt, and
 [#373](https://github.com/getlibero/libero/issues/373) says why: auto-updating

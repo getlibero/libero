@@ -309,6 +309,7 @@ Read by a command an operator runs, not by a service.
 | `apps/server/src/rebuild-cli.ts:MAX_SUMMARIES_PER_REBUILD` | `1000` | **Fixed.** "Where a provider bill stops being something you would want to discover afterwards." |
 | `packages/cli/src/doctor-cli.ts:EXPIRY_WARN_MS` | `30 * 24 * 60 * 60 * 1000` | **Fixed.** How near an expiring certificate has to be before `doctor` says so. |
 | `packages/cli/src/doctor-cli.ts:PROBE_TIMEOUT_MS` | `5000` | **Fixed.** How long `doctor` waits on a probe before reporting it unreachable. |
+| `packages/cli/src/git.ts:VENDOR_FILE_MAX_BYTES` | `8 * 1024 * 1024` | **Fixed.** The largest single file `skill vendor` copies out of a repository, and the `maxBuffer` its `git cat-file` runs under. `spawnSync` defaults to one mebibyte and truncates past it with an error naming neither the file nor the reason, so a figure has to be chosen whatever it is, and `Infinity` would be a decision nobody made. A skill is text and its sidecars; a file past this is an artefact arriving in a directory mounted into every sandbox container. Refused by name, never truncated. |
 
 ## Figures that are two figures
 

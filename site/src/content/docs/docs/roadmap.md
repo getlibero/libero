@@ -341,7 +341,29 @@ nothing external: the limits pass, with #465 promoted to its tracker
 the compatibility surface 1.0 freezes, stated on one page
 ([#540](https://github.com/getlibero/libero/issues/540)), so that "1.0 hardens the one-way doors"
 is a list rather than a sentence; and `libero skill vendor` (#439), with the Agent Skills
-`SKILL.md` convention as the format it normalizes from. The disposition pass is an issue of its own
+`SKILL.md` convention as the format it normalizes from.
+
+**#439 landed differently from the milestone's own wording, twice, and both differences are the
+kind the next reader would otherwise re-derive.** The definition of done says the verb normalizes a
+marketplace `SKILL.md` "into the schema's grammar"; it landed as *into the spec's grammar, which
+the schema now reads*. Normalizing would have meant flattening a skill into one file and dropping
+the `scripts/`, `references/` and `assets/` most real ones carry — `anthropics/skills`' own `pdf`
+keeps `forms.md` and `reference.md` at its top level and its body points at both by name — so
+[#567](https://github.com/getlibero/libero/issues/567) widened the parser to read a spec `SKILL.md`
+as it is and the verb copies the directory whole, adding three `metadata:` lines and changing
+nothing else. And the verb's own acceptance criterion says "at a tag": `anthropics/skills` carries
+no tags at all, so the walkthrough is a branch resolved to a commit, with the tag path covered by
+the suite's fixture repository instead.
+
+What building it found is worth recording beside the release rather than in the issue alone:
+**six of the nineteen skills in that catalogue cannot be vendored as they stand** — three have a
+description over the 512-character cap and three write it as a YAML block scalar the grammar does
+not read — and three more vendor cleanly and are then dropped at runtime for a body over the
+`max_skill_chars` default. Refusing well is therefore most of what the verb does. The first of
+those is [#572](https://github.com/getlibero/libero/issues/572), which asks whether the cap should
+be the spec's 1024 and settable; the third is
+[#573](https://github.com/getlibero/libero/issues/573), a `doctor` check #569's own text assumed
+already existed. The disposition pass is an issue of its own
 ([#541](https://github.com/getlibero/libero/issues/541)), blocked on the rest so it runs last, and
 every issue it leaves open carries a `post-1.0` label beside `parked` — the label is what a filter
 finds, the comment is what a reader finds.

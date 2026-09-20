@@ -156,13 +156,14 @@ skill's name and `SKILL.md`'s own `name:` has to agree with it. A flat
 logged; `libero doctor` reports one as unpublished and names the move. A
 channel's own `skills/` directory is unaffected and stays flat.
 
-**Content gets in here by vendoring, not fetching.** Your CI copies a skill
-directory into this directory in your own repository, pinned however you pin, so
-an update is a reviewed diff rather than text that changed under the model
-overnight — and since the layout is the spec's, a `git subtree` needs no verb at
-all. A `libero skill vendor` command that would do the copying at a pinned SHA is
-[#439](https://github.com/getlibero/libero/issues/439); `shared-skills/README.md`
-has the format and the sheet syntax.
+**Content gets in here by vendoring, not fetching.** A skill directory is copied
+into this directory in your own repository, pinned to a commit, so an update is a
+reviewed diff rather than text that changed under the model overnight. Since
+v0.9.0 `libero skill vendor owner/repo/path@ref` does that copying and records
+the commit in the file; a `git subtree` or a hand copy still works, since the
+layout is the spec's. What the verb adds is that it refuses a skill the runtime
+would not read — `shared-skills/README.md` has the format, the sheet syntax, and
+why that matters more than it sounds.
 
 `../prices` is bind-mounted `:ro` into the proxy alone, beside the channels
 directory and for the same reason: both are host-authored, reviewed, and written
