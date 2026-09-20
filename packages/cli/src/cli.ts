@@ -24,6 +24,7 @@ import { VERSION } from "./version.js";
 import { runInitCommand, USAGE as INIT_USAGE } from "./init-cli.js";
 import { runChannelCommand, USAGE as CHANNEL_USAGE } from "./channel-cli.js";
 import { runDoctorCommand, USAGE as DOCTOR_USAGE } from "./doctor-cli.js";
+import { runSkillCommand, USAGE as SKILL_USAGE } from "./skill-cli.js";
 
 /**
  * Usage, worded for the compose file this directory actually has (#516).
@@ -42,6 +43,7 @@ function usage(found: ComposeLocation | null, cwd: string): string {
     "",
     "  init         write the deployment's environment file and generate the vault master key",
     "  channel add  create a channel's team sheet and the certificate that speaks for it",
+    "  skill vendor copy a shared skill out of a git repository at a pinned commit",
     "  doctor       read a deployment's wiring back and report what is wrong with it",
     "",
     "Libero's two services run in containers and own what is inside their own",
@@ -62,7 +64,7 @@ function usage(found: ComposeLocation | null, cwd: string): string {
   ].join("\n");
 }
 
-const COMMANDS = ["init", "channel", "doctor"] as const;
+const COMMANDS = ["init", "channel", "doctor", "skill"] as const;
 type Command = (typeof COMMANDS)[number];
 
 function isCommand(value: string): value is Command {
@@ -73,7 +75,8 @@ function isCommand(value: string): value is Command {
 const HELP: Readonly<Record<Command, string>> = {
   init: INIT_USAGE,
   channel: CHANNEL_USAGE,
-  doctor: DOCTOR_USAGE
+  doctor: DOCTOR_USAGE,
+  skill: SKILL_USAGE
 };
 
 /** The three the proxy's entrypoints own, named so the error can say where. */
@@ -135,5 +138,7 @@ export async function runCli(io: CliIo): Promise<number> {
       return runChannelCommand(io, rest);
     case "doctor":
       return runDoctorCommand(io, rest);
+    case "skill":
+      return runSkillCommand(io, rest);
   }
 }

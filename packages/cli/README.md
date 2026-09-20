@@ -21,6 +21,7 @@ So the vault, the budget and the audit log are deliberately not commands here.
 - `libero init` — write the deployment's environment file and generate the vault master key
 - `libero channel add` — register a channel: its team sheet, and the certificate that speaks for it
 - `libero channel rotate` / `promote` / `pins` — replace a channel's key without downtime
+- `libero skill vendor` — copy a shared skill out of a git repository at a pinned commit
 - `libero doctor` — read a deployment's wiring back and report what is wrong with it
 
 ### `init`
@@ -157,6 +158,82 @@ service restarts.
 Certificates are minted by `scripts/dev-certs.sh`, a copy of which ships in this package — Node
 cannot sign an X.509 certificate, so every path shells out to `openssl` in the end and the choice is
 between one implementation and two. It needs `sh` and `openssl` on the host.
+
+### `skill vendor`
+
+```bash
+npx @getlibero/cli skill vendor anthropics/skills/skills/pdf@main
+npx @getlibero/cli skill vendor git@git.example.com:team/skills.git/house-style@v1.2.0 --force
+```
+
+Copies a skill directory out of a git repository at a pinned commit, into the shared skills root
+your repository tracks. The ref is resolved to a 40-character commit, the directory is copied whole
+— `SKILL.md` and every file beside it, with its mode bits — and three lines are added to the
+frontmatter saying where it came from:
+
+```yaml
+metadata:
+  libero-source: anthropics/skills/skills/pdf
+  libero-ref: main
+  libero-sha: 34040c9c568585f6929bedeaad110ad08f079624
+```
+
+That is the whole edit to upstream's content, so `diff` against the source stays readable and an
+update is the same command at a new ref with `--force`. `--force` **replaces** the directory rather
+than merging into it, which is the only way a file upstream deleted between two refs does not sit
+in your tree forever.
+
+**Why the Agent Skills format, and not a marketplace.** [agentskills.io](https://agentskills.io)
+is what every catalogue in the wild actually is — `anthropics/skills`, `openai/skills`, the
+`vercel-labs/*-skills` repos, and what the skills.sh index points at: a directory holding
+`SKILL.md`, addressed `owner/repo[/path]` plus a name. Not `.claude-plugin/marketplace.json`,
+which bundles hooks and MCP servers that mean nothing here. Not skills.sh's API either — it is a
+discovery index, and fetching from the origin at a resolved commit is the trustworthy path. A git
+URL with a sub-path covers the private-repository case an index does not reach at all.
+
+**Why a commit in the file, and not a lockfile.** [#373](https://github.com/getlibero/libero/issues/373)
+decided vendoring over fetching, and the copy in your git *is* the lock. A `skills-lock.json`
+beside it would be a second record of one fact, and the two disagree the first time somebody edits
+the directory. The commit goes in the artefact, under the key the spec designates for exactly this
+and the runtime ignores.
+
+**Why a verb at all, when `git subtree` copies a directory.** It does, and through v0.8.0 the
+convention was the answer. What the verb adds is the part a subtree leaves to you.
+
+It **refuses** rather than publishing a skill the runtime will not read. Six of the nineteen skills
+in `anthropics/skills` cannot be vendored as they stand — three have a description over the
+512-character cap, and three write it as a YAML folded or literal block scalar, which this grammar
+does not read. A subtree copies all six in silently, and you find out when a channel's reply comes
+back without the playbook in it: the server logs `skill_file_unusable` and carries on, and `doctor`
+does not catch it either, because it deliberately does not parse a published file. This command is
+the one place the grammar can be checked while a human is still present to fix it, and every
+refusal names the one-line edit.
+
+It puts the pin **in the artefact**. A subtree records the commit in a merge commit message, which
+is repository history — squash it, move the directory, or copy it into another repository and the
+provenance is gone.
+
+And a subtree brings a second remote and a merge history into your repository for what is, in the
+case above, a copy of twelve files.
+
+**It runs your git, with your credentials.** Whatever `git ls-remote <url>` reaches, this reaches:
+your credential helper, your SSH agent, your `url.insteadOf`, your enterprise host. It holds no
+credential of its own and asks for none. `GIT_TERMINAL_PROMPT=0` is set, so an HTTPS credential
+prompt fails with a message instead of hanging on a pipe nobody is reading; an SSH key passphrase
+prompt is unaffected and still works.
+
+Two details worth knowing before you hit them. In a git URL the repository ends at the last segment
+spelled with `.git`, and without one the whole URL is the repository — `https://host/team/skills/skills/pdf`
+is ambiguous and nothing in the string resolves it, so spell the suffix when the skill is a
+directory inside the repository. And the fetch is `--depth 1` without a blob filter, so it pulls
+every file at that one commit: a few megabytes for a large catalogue. A filtered fetch would need a
+checkout to batch its reads, and a checkout is what `core.autocrlf`, a `.gitattributes` in
+upstream's tree, and `core.symlinks` all act through — so the bytes are read straight out of git's
+object store instead, and what lands in your tree is what upstream committed.
+
+Nothing is written until every check has passed. A skill holding a symlink or a submodule is
+refused whole rather than in part, because this directory is mounted into every sandbox container
+and a file silently dropped would make the diff a lie.
 
 ### `doctor`
 
