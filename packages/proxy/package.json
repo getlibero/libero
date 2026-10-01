@@ -29,7 +29,7 @@
     "@getlibero/atomic-write": "workspace:*",
     "@getlibero/memory": "workspace:*",
     "@getlibero/schema": "workspace:*",
-    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/client": "2.1.0",
     "zod": "^4.5.2"
   },
   "devDependencies": {
