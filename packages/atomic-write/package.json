@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@getlibero/test-kit": "workspace:*",
-    "@types/node": "^24.13.3",
-    "expect": "^30.5.0"
+    "@types/node": "^24.19.0",
+    "expect": "^30.5.2"
   }
 }

@@ -43,8 +43,8 @@
     "@getlibero/atomic-write": "workspace:*",
     "@getlibero/schema": "workspace:*",
     "@getlibero/test-kit": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^24.19.0",
     "esbuild": "^0.28.2",
-    "expect": "^30.5.0"
+    "expect": "^30.5.2"
   }
 }
