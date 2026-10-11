@@ -106,12 +106,30 @@ function nameSharedSkill(name: string, load: "always" | "retrieved" = "retrieved
  * Publishes one into the host-side shared root, as a vendoring step would:
  * `<name>/SKILL.md`, the Agent Skills layout (#567).
  */
-function publishSharedSkill(name: string, root = "shared-skills"): void {
+function publishSharedSkill(name: string, root = "shared-skills", body = "Say it plainly."): void {
   mkdirSync(join(dir, root, name), { recursive: true });
   writeFileSync(
     join(dir, root, name, "SKILL.md"),
-    `---\nname: ${name}\ndescription: How this company writes.\n---\n\nSay it plainly.\n`
+    `---\nname: ${name}\ndescription: How this company writes.\n---\n\n${body}\n`
   );
+}
+
+/** Sets `[skills]` figures on the fixture's sheet, or on a copy of it. */
+function setSkills(fields: Record<string, number>, sheet = sheetPath()): void {
+  const lines = Object.entries(fields).map(([key, value]) => `${key} = ${value}`);
+  writeFileSync(sheet, `${readFileSync(sheet, "utf8")}\n[skills]\n${lines.join("\n")}\n`);
+}
+
+/**
+ * A second channel whose sheet is a copy of the fixture's as it stands. Its own
+ * row fails — no certificate was minted for it — which is beside the point: the
+ * shared-skills check reads every sheet that parses.
+ */
+function copyChannel(id: string): string {
+  mkdirSync(join(dir, "channels", id), { recursive: true });
+  const sheet = join(dir, "channels", id, "channel.toml");
+  cpSync(sheetPath(), sheet);
+  return sheet;
 }
 
 /** The layout before #567, which the server does not read. */
@@ -607,6 +625,122 @@ describe("shared skills a sheet names", () => {
     const result = await doctor();
 
     expect(check(result, "shared skills").detail).not.toContain("flat .md file");
+  });
+
+  // #573. The default is 8192, and three of the nineteen skills in
+  // anthropics/skills were over it when this was written — two by under 1k.
+  it("fails a retrieved skill whose body is over the sheet's max_skill_chars", async () => {
+    nameSharedSkill("mcp-builder");
+    publishSharedSkill("mcp-builder", "shared-skills", "b".repeat(8_716));
+
+    const result = await doctor();
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared skills").status).toBe("fail");
+    expect(check(result, "shared skills").detail).toContain(
+      `mcp-builder is 8716 characters, over ${CHANNEL}'s [skills] max_skill_chars of 8192`
+    );
+  });
+
+  it("passes a body at exactly the cap", async () => {
+    nameSharedSkill("mcp-builder");
+    publishSharedSkill("mcp-builder", "shared-skills", "b".repeat(8_192));
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+  });
+
+  it("reads the cap off the sheet rather than assuming the default", async () => {
+    nameSharedSkill("mcp-builder");
+    setSkills({ max_skill_chars: 16_384 });
+    publishSharedSkill("mcp-builder", "shared-skills", "b".repeat(8_716));
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+  });
+
+  // The runtime never measures an always-loaded skill against max_skill_chars:
+  // it weighs the rendered heading and body against the standing region's
+  // ceiling. A check against the other figure would pass a skill that never
+  // loads, and fail one that does.
+  it("measures an always-loaded skill against max_always_chars, as rendered", async () => {
+    nameSharedSkill("brand-voice", "always");
+    setSkills({ max_skill_chars: 65_536, max_always_chars: 8_192 });
+    // `## shared/brand-voice\n` is 22 characters, so 8171 of body is one over.
+    publishSharedSkill("brand-voice", "shared-skills", "b".repeat(8_171));
+
+    const result = await doctor();
+
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(check(result, "shared skills").detail).toContain(
+      `brand-voice is 8193 characters, over ${CHANNEL}'s [skills] max_always_chars of 8192`
+    );
+  });
+
+  it("passes an always-loaded skill that fits as rendered, whatever max_skill_chars says", async () => {
+    nameSharedSkill("brand-voice", "always");
+    setSkills({ max_skill_chars: 4_096, max_always_chars: 8_192 });
+    publishSharedSkill("brand-voice", "shared-skills", "b".repeat(8_170));
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+  });
+
+  // The region is cumulative and walked in the sheet's order, so a skill that
+  // fits alone is still dropped when the ones before it have spent the room.
+  it("fails an always-loaded skill the ones before it leave no room for", async () => {
+    nameSharedSkill("brand-voice", "always");
+    nameSharedSkill("house-rules", "always");
+    publishSharedSkill("brand-voice", "shared-skills", "b".repeat(5_000));
+    publishSharedSkill("house-rules", "shared-skills", "h".repeat(5_000));
+
+    const result = await doctor();
+
+    expect(result.code).toBe(EXIT_ERROR);
+    const detail = check(result, "shared skills").detail;
+    expect(detail).toContain("house-rules is 5022 characters, which does not fit");
+    expect(detail).toContain("before it");
+    expect(detail).not.toContain("brand-voice is");
+  });
+
+  it("judges a skill two sheets name against the smaller cap, and names that channel", async () => {
+    nameSharedSkill("mcp-builder");
+    const roomy = copyChannel("C0ROOMY");
+    setSkills({ max_skill_chars: 16_384 }, roomy);
+    const tight = copyChannel("C0TIGHT");
+    setSkills({ max_skill_chars: 9_000 }, tight);
+    publishSharedSkill("mcp-builder", "shared-skills", "b".repeat(9_103));
+
+    const result = await doctor();
+
+    const detail = check(result, "shared skills").detail;
+    expect(detail).toContain("mcp-builder is 9103 characters, over C0DOCTOR's [skills] max_skill_chars of 8192");
+    expect(detail).toContain("(and 1 other sheet)");
+    expect(detail).not.toContain("C0ROOMY");
+  });
+
+  it("does not measure a published skill no sheet names", async () => {
+    publishSharedSkill("skill-creator", "shared-skills", "b".repeat(32_771));
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
+  });
+
+  // Whether a file is a skill is still not this command's to judge (README):
+  // it is measured with the schema's parser, and passed over when that parser
+  // refuses it.
+  it("passes over a published file that does not parse, rather than failing it", async () => {
+    nameSharedSkill("brand-voice");
+    mkdirSync(join(dir, "shared-skills", "brand-voice"), { recursive: true });
+    writeFileSync(join(dir, "shared-skills", "brand-voice", "SKILL.md"), "b".repeat(20_000));
+
+    const result = await doctor();
+
+    expect(check(result, "shared skills").status).toBe("ok");
   });
 
   it("takes the root as a flag, since the compose path is a container path", async () => {

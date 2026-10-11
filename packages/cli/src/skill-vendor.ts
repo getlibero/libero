@@ -72,10 +72,10 @@ import { explainSkillFailure, insertProvenance } from "./skill-frontmatter.js";
  *
  * It bounds nothing here and deliberately so. The cap is a sheet field, and a
  * host-side command cannot know which sheets will name this skill; what it can
- * do is say the number, because the failure it otherwise prevents nobody from
- * hitting is silent from every angle — the skill vendors, `doctor` passes, and
- * the runtime drops it whole with `shared_skill_oversize`. #573 is the check
- * that catches it properly.
+ * do is say the number, so the operator hears it while the copy is in front of
+ * them. The check against the sheets that do name it is `doctor`'s (#573),
+ * which is where a body meets a sheet — and an `always` entry is measured there
+ * against `max_always_chars` instead, which is the runtime's figure for it.
  */
 function sheetDefaultMaxSkillChars(): number {
   const minimal = parseTeamSheet(`[channel]\nname = "x"\ncertificate_sha256 = ["${"AB:".repeat(31)}AB"]\n`);
