@@ -43,8 +43,9 @@
 //
 // It is the operator's failure and it reaches the operator's log. `libero
 // doctor` (#433) is what catches it before a deploy — it fails when a sheet
-// names a skill the shared root does not hold — so what reaches here is a root
-// that changed after that ran. The channel is told nothing, because the channel
+// names a skill the shared root does not hold, and since #573 when one would
+// breach the ceiling below, weighed the way `weigh` weighs it — so what reaches
+// here is a root that changed after that ran. The channel is told nothing, because the channel
 // cannot fix it and the text would be charged against every turn of every task
 // for as long as the mistake stood.
 //

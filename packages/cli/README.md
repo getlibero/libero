@@ -305,6 +305,16 @@ and the detail names the move, rather than being passed over: an operator mid-mi
 who runs this command, and a flat file reads as published to them and as nothing at all to the
 server.
 
+A published skill is also **measured against every sheet that names it** (#573), because the server
+drops an over-cap skill whole and nothing an operator reads says so. Which figure applies depends on
+the mode, which is the runtime's rule rather than what the field names suggest: a `retrieved` entry's
+body is measured against `[skills] max_skill_chars`, and an `always` entry is weighed as the standing
+region renders it — heading and body — against `[skills] max_always_chars`, cumulatively and in the
+sheet's order, so a skill that fits alone still fails when the ones before it have spent the room. A
+skill several sheets name is reported against the smallest cap it breaches, naming that channel. The
+file is read with `packages/schema`'s own parser to find the body, and one that parser refuses is
+passed over rather than reported, so the paragraph below stays true.
+
 The root it reads is the **host** directory — `shared-skills` by default, `--shared-skills-root`
 otherwise — and not the container path `AGENT_SHARED_SKILLS_ROOT` names under compose. That is the
 same line the rest of this package keeps: the CLI owns what the operator authors on the host, and a

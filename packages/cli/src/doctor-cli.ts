@@ -38,8 +38,11 @@ import {
   ModelId,
   SHARED_SKILL_FILE,
   normalizeCertificateSha256,
-  parseTeamSheet
+  parseSkillFile,
+  parseTeamSheet,
+  sharedSkillRef
 } from "@getlibero/schema";
+import type { SharedSkillEntry } from "@getlibero/schema";
 import { NO_COMPOSE_FILE, composeCommand, findCompose } from "./compose.js";
 import { assignedValues } from "./env-file.js";
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UsageError, messageOf } from "./io.js";
@@ -231,8 +234,8 @@ async function inspect(cwd: string, options: DoctorOptions): Promise<Check[]> {
 
   const certs = resolve(cwd, options.out);
   checkCertMaterial(certs, checks);
-  const namedSkills = checkChannels(resolve(cwd, options.channelsRoot), certs, checks);
-  checkSharedSkills(resolve(cwd, options.sharedSkillsRoot), namedSkills, checks);
+  const demands = checkChannels(resolve(cwd, options.channelsRoot), certs, checks);
+  checkSharedSkills(resolve(cwd, options.sharedSkillsRoot), demands, checks);
 
   checks.push(await probe(env, cwd, options));
   return checks;
@@ -706,15 +709,27 @@ function checkCertMaterial(certs: string, checks: Check[]): void {
   });
 }
 
-function checkChannels(root: string, certs: string, checks: Check[]): Set<string> {
-  const named = new Set<string>();
+/**
+ * What one sheet asks of the shared root: the entries it names, and the three
+ * `[skills]` figures the runtime measures them against.
+ */
+interface SharedSkillDemand {
+  readonly channel: string;
+  readonly entries: readonly SharedSkillEntry[];
+  readonly maxSkillChars: number;
+  readonly maxAlwaysChars: number;
+  readonly maxAlwaysSkills: number;
+}
+
+function checkChannels(root: string, certs: string, checks: Check[]): SharedSkillDemand[] {
+  const demands: SharedSkillDemand[] = [];
   if (!existsSync(root)) {
     checks.push({
       status: "fail",
       name: "channels",
       detail: `${root} does not exist. Create one with: libero channel add <CHANNEL_ID>`
     });
-    return named;
+    return demands;
   }
 
   const ids = readdirSync(root, { withFileTypes: true })
@@ -724,7 +739,7 @@ function checkChannels(root: string, certs: string, checks: Check[]): Set<string
 
   if (ids.length === 0) {
     checks.push({ status: "fail", name: "channels", detail: `no channel under ${root}` });
-    return named;
+    return demands;
   }
 
   const pinned = new Set<string>();
@@ -749,10 +764,18 @@ function checkChannels(root: string, certs: string, checks: Check[]): Set<string
 
     const pins = parsed.sheet.channel.certificate_sha256.map(normalizeCertificateSha256);
     for (const pin of pins) pinned.add(pin);
-    // Every shared skill any sheet names, in one set: what the shared root has
-    // to hold is a property of the deployment rather than of one channel, and
-    // two channels naming the same skill need it published once.
-    for (const entry of parsed.sheet.shared_skill) named.add(entry.name);
+    // Per channel rather than one set of names, since #573: whether a skill is
+    // *published* is a property of the deployment, but whether it *fits* is a
+    // property of each sheet that names it, and two sheets can disagree.
+    if (parsed.sheet.shared_skill.length > 0) {
+      demands.push({
+        channel: id,
+        entries: parsed.sheet.shared_skill,
+        maxSkillChars: parsed.sheet.skills.max_skill_chars,
+        maxAlwaysChars: parsed.sheet.skills.max_always_chars,
+        maxAlwaysSkills: parsed.sheet.skills.max_always_skills
+      });
+    }
 
     const pem = join(certs, "agent", `client-${id}.pem`);
     if (!existsSync(pem)) {
@@ -782,7 +805,7 @@ function checkChannels(root: string, certs: string, checks: Check[]): Set<string
   }
 
   checkStrayCertificates(certs, pinned, checks);
-  return named;
+  return demands;
 }
 
 /**
@@ -805,8 +828,11 @@ function checkChannels(root: string, certs: string, checks: Check[]): Set<string
  * What this does **not** check is whether a published file parses as a skill.
  * That is `packages/schema`'s grammar and the runtime's to apply, and a second
  * opinion here would be a second parser to keep in step with the first.
+ * `measureSharedSkills` below reads the file with that same parser and passes
+ * over one it does not accept, which keeps that line where it was.
  */
-function checkSharedSkills(root: string, named: Set<string>, checks: Check[]): void {
+function checkSharedSkills(root: string, demands: readonly SharedSkillDemand[], checks: Check[]): void {
+  const named = new Set(demands.flatMap(demand => demand.entries.map(entry => entry.name)));
   if (named.size === 0) {
     checks.push({
       status: "ok",
@@ -846,10 +872,113 @@ function checkSharedSkills(root: string, named: Set<string>, checks: Check[]): v
     return;
   }
 
+  const oversize = measureSharedSkills(root, demands);
+  if (oversize.length > 0) {
+    checks.push({
+      status: "fail",
+      name: "shared skills",
+      detail: `${oversize.join("; ")} — the server drops an over-cap skill whole, so the channel gets nothing`
+    });
+    return;
+  }
+
   checks.push({
     status: "ok",
     name: "shared skills",
     detail: `${root}, ${wanted.length} named and published`
+  });
+}
+
+/** A published skill a sheet names and the runtime will not load, and why. */
+interface Breach {
+  readonly channel: string;
+  readonly size: number;
+  readonly cap: number;
+  readonly field: "max_skill_chars" | "max_always_chars";
+  /** An `always` skill that fits alone and not after the ones before it. */
+  readonly behind: boolean;
+}
+
+/**
+ * Every named skill measured against every sheet naming it, the way the server
+ * will measure it (#573). One sentence per skill that breaches, or `[]`.
+ *
+ * **Two modes, two figures**, because that is what the runtime does rather
+ * than what the field names suggest. A `retrieved` entry is dropped when its
+ * body exceeds `[skills] max_skill_chars` — `skill-recall.ts` in apps/server.
+ * An `always` entry never meets that figure: it is weighed as the standing
+ * region renders it, heading and trimmed body, against `[skills]
+ * max_always_chars`, in the sheet's order and cumulatively — `shared-skills.ts`
+ * there, which is where `shared_skill_oversize` is logged. Both are restated
+ * here rather than imported, because the CLI cannot import the server; the
+ * formula is one line and it names where it is copied from.
+ *
+ * **A file that does not parse is passed over, not judged.** Measuring a body
+ * needs the body, so the file goes through `parseSkillFile` — the schema's
+ * parser, the one the server uses, so this is not a second opinion. What it
+ * does not do is turn that parser's refusal into a finding: whether a file is
+ * a skill is still not this command's question.
+ *
+ * A skill several sheets name is reported once, against the smallest cap that
+ * breaches, naming that channel — it is the sheet an operator has to change,
+ * or the one that decides how short the file must get.
+ */
+function measureSharedSkills(root: string, demands: readonly SharedSkillDemand[]): string[] {
+  const bodies = new Map<string, string | null>();
+  const bodyOf = (name: string): string | null => {
+    if (!bodies.has(name)) {
+      const parsed = parseSkillFile(readFileSync(join(root, name, SHARED_SKILL_FILE), "utf8"), { shared: true });
+      bodies.set(name, parsed.ok ? parsed.skill.body : null);
+    }
+    return bodies.get(name) ?? null;
+  };
+
+  const breaches = new Map<string, Breach[]>();
+  const record = (name: string, breach: Breach): void => {
+    breaches.set(name, [...(breaches.get(name) ?? []), breach]);
+  };
+
+  for (const demand of demands) {
+    const { channel, entries, maxSkillChars, maxAlwaysChars, maxAlwaysSkills } = demand;
+
+    for (const entry of entries.filter(entry => entry.load === "retrieved")) {
+      const body = bodyOf(entry.name);
+      if (body !== null && body.length > maxSkillChars) {
+        record(entry.name, { channel, size: body.length, cap: maxSkillChars, field: "max_skill_chars", behind: false });
+      }
+    }
+
+    // The standing region's loop, step for step: the sheet's order, the count
+    // cap applied first, and a skill that does not fit skipped rather than
+    // ending the walk.
+    let chars = 0;
+    for (const entry of entries.filter(entry => entry.load === "always").slice(0, maxAlwaysSkills)) {
+      const body = bodyOf(entry.name);
+      if (body === null) continue;
+      const weight = `## ${sharedSkillRef(entry.name)}\n${body.trim()}`.length;
+      if (chars + weight > maxAlwaysChars) {
+        record(entry.name, {
+          channel,
+          size: weight,
+          cap: maxAlwaysChars,
+          field: "max_always_chars",
+          behind: weight <= maxAlwaysChars
+        });
+        continue;
+      }
+      chars += weight;
+    }
+  }
+
+  return [...breaches.keys()].sort().map(name => {
+    const all = breaches.get(name) ?? [];
+    const [first, ...rest] = [...all].sort((a, b) => a.cap - b.cap || a.channel.localeCompare(b.channel));
+    if (first === undefined) return name;
+    const why = first.behind
+      ? `${first.size} characters, which does not fit in what the always-loaded skills before it leave of ${first.channel}'s [skills] ${first.field} of ${first.cap}`
+      : `${first.size} characters, over ${first.channel}'s [skills] ${first.field} of ${first.cap}`;
+    const others = rest.length === 0 ? "" : ` (and ${rest.length} other sheet${rest.length === 1 ? "" : "s"})`;
+    return `${name} is ${why}${others}`;
   });
 }
 
