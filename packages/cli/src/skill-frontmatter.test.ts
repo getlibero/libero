@@ -97,14 +97,19 @@ describe("insertProvenance", () => {
 describe("explainSkillFailure", () => {
   each([
     [
-      "a folded description, which three of anthropics/skills use",
-      "---\nname: a\ndescription: >\n  one\n  two\n---\n\nbody\n",
+      "a folded description with keep chomping, which the grammar does not read",
+      "---\nname: a\ndescription: >+\n  one\n  two\n---\n\nbody\n",
       /YAML folded scalar continued on line 4/
     ],
     [
-      "a literal description",
-      "---\nname: a\ndescription: |-\n  one\n---\n\nbody\n",
+      "a literal description with an indentation digit",
+      "---\nname: a\ndescription: |2\n  one\n---\n\nbody\n",
       /YAML literal scalar continued on line 4/
+    ],
+    [
+      "an over-long description written as a block, measured as the parser reads it",
+      `---\nname: a\ndescription: >-\n  ${"x".repeat(600)}\n  ${"y".repeat(600)}\n---\n\nbody\n`,
+      /1201-character description, and the cap is 1024/
     ],
     ["a comment inside the fence", "---\n# who\nname: a\ndescription: d\n---\n\nbody\n", /# comment on line 2/],
     [
@@ -118,8 +123,8 @@ describe("explainSkillFailure", () => {
     ["frontmatter and no body", "---\nname: a\ndescription: d\n---\n", /no body/],
     [
       "an over-long description, with the count",
-      `---\nname: a\ndescription: ${"x".repeat(600)}\n---\n\nbody\n`,
-      /600-character description, and the cap is 512/
+      `---\nname: a\ndescription: ${"x".repeat(1100)}\n---\n\nbody\n`,
+      /1100-character description, and the cap is 1024/
     ]
   ])("names %s", (_name, text, pattern) => {
     const explained = explainSkillFailure(text as string, failureOf(text as string), "x/SKILL.md").join(" ");
@@ -128,7 +133,7 @@ describe("explainSkillFailure", () => {
   });
 
   it("says a truncated description would be a different skill", () => {
-    const text = `---\nname: a\ndescription: ${"x".repeat(600)}\n---\n\nbody\n`;
+    const text = `---\nname: a\ndescription: ${"x".repeat(1100)}\n---\n\nbody\n`;
 
     expect(explainSkillFailure(text, failureOf(text), "x").join(" ")).toMatch(/refuses rather than cutting/);
   });

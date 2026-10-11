@@ -5,6 +5,7 @@ import {
   SKILL_BODY_MAX_CHARS,
   SKILL_DESCRIPTION_MAX_CHARS,
   SKILL_NAME_PATTERN,
+  SHARED_SKILL_DESCRIPTION_MAX_CHARS,
   ChannelSkillFrontmatter,
   SkillCreated,
   SkillFrontmatter,
@@ -12,6 +13,7 @@ import {
   SkillName,
   SkillStatus,
   parseSkillFile,
+  readSkillScalar,
   serializeSkillFile,
   sharedSkillRef
 } from "./skill.js";
@@ -197,21 +199,46 @@ describe("a skill's frontmatter", () => {
     ]);
   });
 
-  it("accepts a description at the cap", () => {
+  // Two figures since #580: the spec's on a file an operator published, the
+  // model's on a channel's own skill.
+  it("accepts a shared skill's description at the spec's cap", () => {
     expect(
-      SkillFrontmatter.safeParse(skill({ description: "d".repeat(SKILL_DESCRIPTION_MAX_CHARS) }))
-        .success
+      SkillFrontmatter.safeParse(
+        skill({ description: "d".repeat(SHARED_SKILL_DESCRIPTION_MAX_CHARS) })
+      ).success
     ).toBe(true);
   });
 
-  it("refuses a description one past the cap", () => {
+  it("refuses a shared skill's description one past it", () => {
     expect(
       codes(
         SkillFrontmatter.safeParse(
+          skill({ description: "d".repeat(SHARED_SKILL_DESCRIPTION_MAX_CHARS + 1) })
+        )
+      )
+    ).toEqual(["description: too_big"]);
+  });
+
+  it("accepts a channel skill's description at the model's cap", () => {
+    expect(
+      ChannelSkillFrontmatter.safeParse(
+        skill({ description: "d".repeat(SKILL_DESCRIPTION_MAX_CHARS) })
+      ).success
+    ).toBe(true);
+  });
+
+  it("refuses a channel skill's description one past it", () => {
+    expect(
+      codes(
+        ChannelSkillFrontmatter.safeParse(
           skill({ description: "d".repeat(SKILL_DESCRIPTION_MAX_CHARS + 1) })
         )
       )
     ).toEqual(["description: too_big"]);
+  });
+
+  it("keeps the spec's figure above the model's", () => {
+    expect(SHARED_SKILL_DESCRIPTION_MAX_CHARS).toBeGreaterThan(SKILL_DESCRIPTION_MAX_CHARS);
   });
 
   // **Not `.strict()`, and this is the case that decides it.** The architecture
@@ -507,6 +534,190 @@ describe("reading a spec SKILL.md", () => {
     );
     expect(parsed.ok && parsed.skill.frontmatter.metadata).toBeUndefined();
     expect(parsed.ok && serializeSkillFile(parsed.skill)).not.toContain("metadata");
+  });
+});
+
+// #580. The six files in anthropics/skills (at dbd4588f9e1033efb41dad4bef2f7947c8993d44)
+// that this grammar refused, by the shape each was refused for. The text is this
+// file's own rather than copied — those files declare their own licence terms,
+// and what is being tested is the shape: the quoting, the length, the indicator
+// and the indent.
+describe("reading the spec SKILL.md files the grammar used to refuse", () => {
+  const prose = (length: number) => {
+    const words = "use this skill whenever the request names the format or a file of it ";
+    return words.repeat(Math.ceil(length / words.length)).slice(0, length).trim();
+  };
+
+  // Wrapped the way those files wrap a long description: one sentence per
+  // indented line, at about seventy-five columns.
+  const wrapped = (length: number, indent = "  ") => {
+    const lines: string[] = [];
+    let line = "";
+    for (const word of prose(length).split(" ")) {
+      if (line !== "" && line.length + word.length + 1 > 75) {
+        lines.push(indent + line);
+        line = word;
+      } else {
+        line = line === "" ? word : `${line} ${word}`;
+      }
+    }
+    lines.push(indent + line);
+    return lines;
+  };
+
+  const LICENSE = "license: Complete terms in LICENSE.txt";
+
+  each([
+    ["a quoted 837-character description, docx's shape", 837],
+    ["a plain 740-character one, pptx's shape", 740],
+    ["a quoted 950-character one, xlsx's shape", 950]
+  ])("reads %s", (_shape, length) => {
+    const description = prose(length as number);
+    const parsed = parseSkillFile(
+      file(["name: docx", `description: "${description}"`, LICENSE], "Body."),
+      { shared: true }
+    );
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(description);
+  });
+
+  it("reads a strip literal description, claude-api's shape, keeping its breaks", () => {
+    const parsed = parseSkillFile(
+      file(
+        [
+          "name: claude-api",
+          "description: |-",
+          "  Reference for one API and its SDKs.",
+          "  TRIGGER when the code imports it.",
+          "  SKIP when the code uses another provider.",
+          LICENSE
+        ],
+        "Body."
+      ),
+      { shared: true }
+    );
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(
+      "Reference for one API and its SDKs.\nTRIGGER when the code imports it.\nSKIP when the code uses another provider."
+    );
+    expect(parsed.ok && parsed.skill.frontmatter.extra).toEqual([
+      { key: "license", value: "Complete terms in LICENSE.txt" }
+    ]);
+  });
+
+  each([
+    ["a folded description, academy-guide's shape", "academy-guide", 960],
+    ["another, discernment-nudge's shape", "discernment-nudge", 890]
+  ])("reads %s, joined into one line", (_shape, name, length) => {
+    const parsed = parseSkillFile(
+      file([`name: ${name as string}`, "description: >", ...wrapped(length as number), LICENSE], "Body."),
+      { shared: true }
+    );
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(prose(length as number));
+  });
+
+  // The figure that did not move. A model-written file at the same length is
+  // still refused.
+  it("still refuses the same description on a channel's own skill", () => {
+    const parsed = parseSkillFile(
+      file(["name: xlsx", `description: "${prose(950)}"`, "created: 2026-10-11"], "Body.")
+    );
+    expect(!parsed.ok && parsed.reason === "schema_invalid" && [...parsed.issues]).toEqual([
+      { path: "description", code: "too_big" }
+    ]);
+  });
+});
+
+describe("a block scalar", () => {
+  const parse = (frontmatter: string[]) =>
+    parseSkillFile(file(["name: n", ...frontmatter, "created: 2026-10-11"], "b"));
+
+  each([
+    ["|", ["  one", "  two"], "one\ntwo"],
+    ["|-", ["  one", "  two"], "one\ntwo"],
+    [">", ["  one", "  two"], "one two"],
+    [">-", ["  one", "  two"], "one two"],
+    // A blank line inside a folded block is the one break folding keeps.
+    [">", ["  one", "", "  two"], "one\ntwo"],
+    // A more-indented line is kept on its own, its own indent with it.
+    [">", ["  one", "    two", "  three"], "one\n  two\nthree"],
+    ["|", ["    deeper", "    still"], "deeper\nstill"],
+    ["|", ["  one", "    two"], "one\n  two"]
+  ])("reads description: %s over %j as %j", (indicator, lines, meant) => {
+    const parsed = parse([`description: ${indicator as string}`, ...(lines as readonly string[])]);
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(meant);
+  });
+
+  // The reason this is not YAML, and it holds inside a block too.
+  it("types nothing and strips no quotes", () => {
+    expect(parse(["description: >", "  no"]).ok && parse(["description: >", "  no"])).toMatchObject({
+      skill: { frontmatter: { description: "no" } }
+    });
+    const quoted = parse(["description: |", '  "quoted"']);
+    expect(quoted.ok && quoted.skill.frontmatter.description).toBe('"quoted"');
+  });
+
+  it("reads one on a key the format does not define, and keeps it", () => {
+    const parsed = parse(["description: d", "compatibility: >", "  any runtime", "  at all"]);
+    expect(parsed.ok && parsed.skill.frontmatter.extra).toEqual([
+      { key: "compatibility", value: "any runtime at all" }
+    ]);
+  });
+
+  // Widening only: before #580 this was the one-character value, and a file
+  // that parsed then must parse the same now.
+  it("reads an indicator with nothing under it as it always did", () => {
+    const parsed = parse(["description: |"]);
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe("|");
+  });
+
+  it("refuses a line indented less than the block's first", () => {
+    const parsed = parse(["description: |", "    one", "  two"]);
+    expect(!parsed.ok && parsed.reason === "malformed_line" && parsed.line).toBe(5);
+  });
+
+  // Keep chomping contradicts the rule that a value is trimmed, so it is not
+  // read — and refused rather than misread, as before.
+  it("still refuses an indicator it does not read", () => {
+    const parsed = parse(["description: |+", "  one"]);
+    expect(!parsed.ok && parsed.reason).toBe("malformed_line");
+  });
+
+  it("ends at the fence, as every other reader of these files finds it", () => {
+    const parsed = parseSkillFile("---\nname: n\ndescription: |\n  one\n---\n\nbody\n", { shared: true });
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe("one");
+    expect(parsed.ok && parsed.skill.body).toBe("body");
+  });
+
+  it("is what readSkillScalar reads, so a caller measures the value the parser does", () => {
+    const text = file(["name: n", "description: >", "  one", "  two"], "b");
+    expect(readSkillScalar(text, "description")).toBe("one two");
+    expect(readSkillScalar(text, "status")).toBeNull();
+    expect(readSkillScalar("no header", "name")).toBeNull();
+  });
+
+  // #580's acceptance: the lifecycle job's rewrite keeps the text.
+  each([
+    ["folded", ">", ["  one", "  two"]],
+    ["literal", "|-", ["  one", "", "    two", "  three"]]
+  ])("survives a status rewrite of a %s description with its text unchanged", (_kind, indicator, lines) => {
+    const first = parse([`description: ${indicator as string}`, ...(lines as readonly string[])]);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const rewritten = serializeSkillFile({
+      ...first.skill,
+      frontmatter: { ...first.skill.frontmatter, status: "stale" }
+    });
+    const second = parseSkillFile(rewritten);
+
+    expect(second.ok && second.skill.frontmatter.description).toBe(first.skill.frontmatter.description);
+    expect(second.ok && second.skill.frontmatter.status).toBe("stale");
+    // And it is a fixed point from there on.
+    expect(second.ok && serializeSkillFile(second.skill)).toBe(rewritten);
+  });
+
+  it("writes a one-line value on one line", () => {
+    const parsed = parse(["description: >", "  one", "  two"]);
+    expect(parsed.ok && serializeSkillFile(parsed.skill)).toContain("description: one two\n");
   });
 });
 

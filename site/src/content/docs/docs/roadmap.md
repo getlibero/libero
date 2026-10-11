@@ -361,7 +361,10 @@ description over the 512-character cap and three write it as a YAML block scalar
 not read — and three more vendor cleanly and are then dropped at runtime for a body over the
 `max_skill_chars` default. Refusing well is therefore most of what the verb does. The first of
 those is [#572](https://github.com/getlibero/libero/issues/572), which asks whether the cap should
-be the spec's 1024 and settable; the third is
+be the spec's 1024 and settable. [#580](https://github.com/getlibero/libero/issues/580) answered it
+and the block-scalar half together: a shared skill takes the spec's 1024 as a fixed figure rather than a sheet field, the model's figure stays 512,
+the four common block markers are read, and one skill of the nineteen is still refused, for a
+description over the spec's own cap. The third is
 [#573](https://github.com/getlibero/libero/issues/573), a `doctor` check #569's own text assumed
 already existed. The disposition pass is an issue of its own
 ([#541](https://github.com/getlibero/libero/issues/541)), blocked on the rest so it runs last, and

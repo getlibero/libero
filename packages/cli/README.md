@@ -200,11 +200,11 @@ and the runtime ignores.
 **Why a verb at all, when `git subtree` copies a directory.** It does, and through v0.8.0 the
 convention was the answer. What the verb adds is the part a subtree leaves to you.
 
-It **refuses** rather than publishing a skill the runtime will not read. Six of the nineteen skills
-in `anthropics/skills` cannot be vendored as they stand — three have a description over the
-512-character cap, and three write it as a YAML folded or literal block scalar, which this grammar
-does not read. A subtree copies all six in silently, and you find out when a channel's reply comes
-back without the playbook in it: the server logs `skill_file_unusable` and carries on, and `doctor`
+It **refuses** rather than publishing a skill the runtime will not read. One of the nineteen
+skills in `anthropics/skills` cannot be vendored as it stands: `claude-api`'s description is 1068
+characters, over the 1024 the spec itself allows. Six could not before #580 widened the grammar to
+the spec's description cap and to its block scalars. A subtree copies a file like that in silently,
+and you find out when a channel's reply comes back without the playbook in it: the server logs `skill_file_unusable` and carries on, and `doctor`
 does not catch it either, because it deliberately does not parse a published file. This command is
 the one place the grammar can be checked while a human is still present to fix it, and every
 refusal names the one-line edit.
