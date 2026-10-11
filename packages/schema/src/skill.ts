@@ -267,8 +267,36 @@ export const SKILL_BODY_MAX_CHARS = 4_096;
  * 512 characters is one or two sentences. Longer and it stops being a statement
  * of when this skill applies and starts being a summary of the skill, which is
  * what the body is for and what makes a vector unselective.
+ *
+ * **It bounds what the model writes, and a channel's own file** — every skill
+ * operation, and `ChannelSkillFrontmatter`. A file an operator published to the
+ * shared root is bounded by `SHARED_SKILL_DESCRIPTION_MAX_CHARS` instead, which
+ * is the split `SKILL_BODY_MAX_CHARS` and `[skills] max_skill_chars` already
+ * make: one figure for what a model may produce, a larger one for what a human
+ * chose to publish.
  */
 export const SKILL_DESCRIPTION_MAX_CHARS = 512;
+
+/**
+ * The most text a shared skill's description may hold, in characters (#580).
+ *
+ * The Agent Skills spec's own figure, so that a spec-valid `SKILL.md` an
+ * operator vendors is not refused over a number the spec allows. Measured
+ * against `anthropics/skills`, descriptions cluster at 200–450 and again at
+ * 740–1080, and 512 sat in the gap between them (#572) — the long ones are
+ * enumerations of when the skill applies, which is what a description is for.
+ *
+ * The retrieval argument on `SKILL_DESCRIPTION_MAX_CHARS` still holds and is
+ * why the model's figure did not move with this one: a model left to write
+ * 1024 characters writes a summary. An operator who publishes a 950-character
+ * description has read it first and made that call, and the file is in their
+ * git where the call is reviewable.
+ *
+ * Not a sheet field. Which skills a channel loads is the sheet's; what a
+ * published file may be is a property of the file, and one root is read by
+ * every channel that names a skill in it.
+ */
+export const SHARED_SKILL_DESCRIPTION_MAX_CHARS = 1_024;
 
 /**
  * Where a skill is in its life.
@@ -446,10 +474,15 @@ export type SkillExtraField = z.infer<typeof SkillExtraField>;
  * vendored shared skill has not got one, and nothing decides anything by it. A
  * channel's own skill is stamped by the store on create, so a file without one
  * there is damaged rather than foreign.
+ *
+ * **The description is bounded at the shared figure here and narrowed back to
+ * the model's there** (#580). This shape is what a shared skill parses against;
+ * a channel's own skill is the model's writing, and a file in its directory
+ * longer than any operation could produce is not one this split licenses.
  */
 export const SkillFrontmatter = z.object({
   name: SkillName,
-  description: z.string().min(1).max(SKILL_DESCRIPTION_MAX_CHARS),
+  description: z.string().min(1).max(SHARED_SKILL_DESCRIPTION_MAX_CHARS),
   created: SkillCreated.optional(),
   status: SkillStatus.default("active"),
   metadata: SkillMetadata.optional(),
@@ -474,7 +507,8 @@ export const SkillFrontmatter = z.object({
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatter>;
 
 /**
- * The same frontmatter with `created` required: a channel's own skill.
+ * The same frontmatter with `created` required and the description held to the
+ * model's figure: a channel's own skill.
  *
  * A narrowing rather than a second shape, so there is one declaration of every
  * other field and no chance of the two drifting. `parseSkillFile` picks which of
@@ -482,6 +516,7 @@ export type SkillFrontmatter = z.infer<typeof SkillFrontmatter>;
  * the only place either is chosen between.
  */
 export const ChannelSkillFrontmatter = SkillFrontmatter.extend({
+  description: z.string().min(1).max(SKILL_DESCRIPTION_MAX_CHARS),
   created: SkillCreated
 });
 
@@ -550,6 +585,14 @@ export interface SkillFileParseOptions {
 
 const FENCE = "---";
 
+/**
+ * YAML's literal (`|`) and folded (`>`) block indicators, plain or with the strip
+ * chomping indicator — the four forms #580 admits. Keep chomping (`+`) and an
+ * explicit indentation digit are not read: the first contradicts the rule that a
+ * value is trimmed, and nothing in the wild uses the second.
+ */
+const BLOCK_INDICATOR = /^[|>]-?$/;
+
 /** `key: value`, splitting on the first colon so a description may contain one. */
 const FRONTMATTER_LINE = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
 
@@ -610,6 +653,53 @@ function unquote(value: string): string {
 }
 
 /**
+ * One block scalar's lines, block indent removed, to the value they mean.
+ *
+ * Literal keeps every line break. Folded joins two adjacent lines at the block's
+ * indent with a space, turns each blank line between them into one line break,
+ * and keeps the breaks around a more-indented line — YAML 1.2's folding, which
+ * is short enough to state rather than to need a library for. Chomping is not
+ * applied here because the caller trims, which is every value's rule.
+ */
+function blockValue(indicator: string, lines: readonly string[]): string {
+  if (indicator.startsWith("|")) return lines.join("\n");
+
+  const indented = (line: string) => /^[ \t]/.test(line);
+  let out = "";
+  let previous: string | null = null;
+  let blanks = 0;
+  for (const line of lines) {
+    if (line.trim() === "") {
+      blanks += 1;
+      continue;
+    }
+    if (previous !== null) {
+      out +=
+        indented(previous) || indented(line)
+          ? "\n".repeat(blanks + 1)
+          : blanks === 0
+            ? " "
+            : "\n".repeat(blanks);
+    }
+    out += line;
+    previous = line;
+    blanks = 0;
+  }
+  return out;
+}
+
+/** What `readHeader` makes of the lines between the fences. */
+type Header =
+  | {
+      readonly ok: true;
+      readonly scalars: readonly { key: string; value: string }[];
+      readonly maps: ReadonlyMap<string, Record<string, string>>;
+      /** The closing fence's index in `lines`. */
+      readonly close: number;
+    }
+  | Extract<SkillFileParse, { ok: false; reason: "no_frontmatter" | "malformed_line" | "duplicate_key" }>;
+
+/**
  * Text on disk to a skill, or a structured account of why not.
  *
  * The format lives with the schema rather than with the process that reads the
@@ -634,10 +724,25 @@ function unquote(value: string): string {
  * refuse.
  *
  * So: a value is the rest of its line, trimmed, with one matching pair of
- * surrounding quotes removed. There is no escaping, no folded or literal scalar,
- * and no comment syntax — the spec's own examples are single-line, and a
- * description that needs more is a description that should be shorter. The body
- * underneath has no format imposed on it at all.
+ * surrounding quotes removed. There is no escaping and no comment syntax. The
+ * body underneath has no format imposed on it at all.
+ *
+ * ## Block scalars, since #580
+ *
+ * A value of `|`, `|-`, `>` or `>-` opens a YAML literal or folded block: the
+ * indented lines under it, with the first one's indent removed from all of them,
+ * joined by YAML's rule for that indicator (see `blockValue`) and trimmed like
+ * any other value. That is the whole of it — no implicit typing, no escapes, no
+ * quotes stripped inside a block, so `description: >` over a line reading `no`
+ * is still the string `no`, which is the reason this is not YAML.
+ *
+ * It was refused until the spec's own catalogue made the case: three skills in
+ * `anthropics/skills` write their description this way, and the spec says its
+ * frontmatter is YAML. Widening only — a file that parsed before parses the same
+ * — and the one place that needed care is an indicator with nothing indented
+ * under it, which is read as before, as a one-character value, rather than as
+ * an empty block. The fence still closes the header wherever it appears, inside
+ * a block or not, because every other reader of these files finds it that way.
  *
  * ## The one nested shape: an indented map
  *
@@ -658,9 +763,10 @@ function unquote(value: string): string {
  * An unknown scalar is **kept** — see `SkillFrontmatter.extra`. A key given
  * twice is **refused**, because there is no answer to which one the team meant
  * and silently taking the last is how a status a human set gets dropped. A line
- * inside the fences that is neither `key: value` nor an indented line under a
- * bare key is refused rather than skipped, for the same reason. Blank lines are
- * fine.
+ * inside the fences that is neither `key: value`, an indented line under a bare
+ * key, nor a line of a block is refused rather than skipped, for the same
+ * reason — and so is a block line indented less than the block's first. Blank
+ * lines are fine.
  *
  * Never throws. A skill file failing to parse is an ordinary outcome — a model
  * wrote it, or a person edited it — on a path where an exception would be caught
@@ -672,62 +778,9 @@ export function parseSkillFile(text: string, options?: SkillFileParseOptions): S
   // value would otherwise reach a name, a date, and the index.
   const lines = text.replace(/\r\n/g, "\n").split("\n");
 
-  if (lines[0]?.trim() !== FENCE) return { ok: false, reason: "no_frontmatter" };
-
-  // In file order, which is what `SkillFrontmatter.extra` preserves. The set is
-  // what refuses a repeat; the array is what remembers where it was.
-  const scalars: { key: string; value: string }[] = [];
-  const seen = new Set<string>();
-  const maps = new Map<string, Record<string, string>>();
-  // The bare key an indented line would belong to, or null when the last line at
-  // column 0 carried a value of its own.
-  let open: string | null = null;
-  let close = -1;
-
-  for (let index = 1; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (line.trim() === FENCE) {
-      close = index;
-      break;
-    }
-    // A blank line neither closes a map nor ends the header: `metadata:` with a
-    // blank line before its first entry is a file somebody formatted, not a
-    // broken one.
-    if (line.trim() === "") continue;
-
-    if (/^[ \t]/.test(line)) {
-      const indented = INDENTED_LINE.exec(line);
-      if (indented === null || open === null) {
-        return { ok: false, reason: "malformed_line", line: index + 1 };
-      }
-      const [, key, value] = indented;
-      if (key === undefined || value === undefined) {
-        return { ok: false, reason: "malformed_line", line: index + 1 };
-      }
-      const map = maps.get(open) ?? {};
-      if (Object.hasOwn(map, key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
-      map[key] = unquote(value);
-      maps.set(open, map);
-      continue;
-    }
-
-    const match = FRONTMATTER_LINE.exec(line);
-    if (match === null) return { ok: false, reason: "malformed_line", line: index + 1 };
-
-    const [, key, value] = match;
-    // `key` and `value` are the regex's own capture groups and cannot be
-    // undefined here; the assertion is for `noUncheckedIndexedAccess`.
-    if (key === undefined || value === undefined) {
-      return { ok: false, reason: "malformed_line", line: index + 1 };
-    }
-    if (seen.has(key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
-    seen.add(key);
-    const scalar = unquote(value);
-    scalars.push({ key, value: scalar });
-    open = scalar === "" ? key : null;
-  }
-
-  if (close === -1) return { ok: false, reason: "no_frontmatter" };
+  const header = readHeader(lines);
+  if (!header.ok) return header;
+  const { scalars, maps, close } = header;
 
   const fields: Record<string, unknown> = {};
   const extra: SkillExtraField[] = [];
@@ -778,6 +831,129 @@ export function parseSkillFile(text: string, options?: SkillFileParseOptions): S
 }
 
 /**
+ * The frontmatter's lines to its scalars and maps, in file order — the grammar,
+ * without the shape.
+ *
+ * Split out of `parseSkillFile` so that `readSkillScalar` reads a value exactly
+ * as the parser does, rather than a caller writing a second reading of it.
+ */
+function readHeader(lines: readonly string[]): Header {
+  if (lines[0]?.trim() !== FENCE) return { ok: false, reason: "no_frontmatter" };
+
+  // In file order, which is what `SkillFrontmatter.extra` preserves. The set is
+  // what refuses a repeat; the array is what remembers where it was.
+  const scalars: { key: string; value: string }[] = [];
+  const seen = new Set<string>();
+  const maps = new Map<string, Record<string, string>>();
+  // The bare key an indented line would belong to, or null when the last line at
+  // column 0 carried a value of its own.
+  let open: string | null = null;
+
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.trim() === FENCE) return { ok: true, scalars, maps, close: index };
+    // A blank line neither closes a map nor ends the header: `metadata:` with a
+    // blank line before its first entry is a file somebody formatted, not a
+    // broken one.
+    if (line.trim() === "") continue;
+
+    if (/^[ \t]/.test(line)) {
+      const indented = INDENTED_LINE.exec(line);
+      if (indented === null || open === null) {
+        return { ok: false, reason: "malformed_line", line: index + 1 };
+      }
+      const [, key, value] = indented;
+      if (key === undefined || value === undefined) {
+        return { ok: false, reason: "malformed_line", line: index + 1 };
+      }
+      const map = maps.get(open) ?? {};
+      if (Object.hasOwn(map, key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
+      map[key] = unquote(value);
+      maps.set(open, map);
+      continue;
+    }
+
+    const match = FRONTMATTER_LINE.exec(line);
+    if (match === null) return { ok: false, reason: "malformed_line", line: index + 1 };
+
+    const [, key, value] = match;
+    // `key` and `value` are the regex's own capture groups and cannot be
+    // undefined here; the assertion is for `noUncheckedIndexedAccess`.
+    if (key === undefined || value === undefined) {
+      return { ok: false, reason: "malformed_line", line: index + 1 };
+    }
+    if (seen.has(key)) return { ok: false, reason: "duplicate_key", line: index + 1 };
+    seen.add(key);
+
+    const indicator = value.trim();
+    if (BLOCK_INDICATOR.test(indicator)) {
+      // Every following line that is blank or indented, up to the fence.
+      let end = index + 1;
+      while (end < lines.length) {
+        const next = lines[end] ?? "";
+        if (next.trim() === FENCE || (next.trim() !== "" && !/^[ \t]/.test(next))) break;
+        end += 1;
+      }
+      const block = lines.slice(index + 1, end);
+      const first = block.find(entry => entry.trim() !== "");
+      if (first !== undefined) {
+        const indent = /^[ \t]*/.exec(first)?.[0] ?? "";
+        const content: string[] = [];
+        for (const [offset, entry] of block.entries()) {
+          if (entry.startsWith(indent)) content.push(entry.slice(indent.length));
+          else if (entry.trim() === "") content.push("");
+          else return { ok: false, reason: "malformed_line", line: index + offset + 2 };
+        }
+        scalars.push({ key, value: blockValue(indicator, content).trim() });
+        open = null;
+        index = end - 1;
+        continue;
+      }
+      // Nothing indented under it: the reading this line had before #580, so
+      // a file that parsed then parses the same now.
+    }
+
+    const scalar = unquote(value);
+    scalars.push({ key, value: scalar });
+    open = scalar === "" ? key : null;
+  }
+
+  return { ok: false, reason: "no_frontmatter" };
+}
+
+/**
+ * One column-0 scalar's value, read exactly as `parseSkillFile` reads it, or
+ * `null` when the header does not parse or does not carry the key.
+ *
+ * For a caller that has to say *why* a file was refused — `libero skill vendor`,
+ * quoting the operator's own file back to them on their own terminal. The
+ * failure side of `SkillFileParse` deliberately carries no content, and that
+ * stays true; this is a separate read the caller chooses to make, and having it
+ * here is what keeps that caller from re-implementing the block rule to measure
+ * a description.
+ */
+export function readSkillScalar(text: string, key: string): string | null {
+  const header = readHeader(text.replace(/\r\n/g, "\n").split("\n"));
+  if (!header.ok) return null;
+  return header.scalars.find(scalar => scalar.key === key)?.value ?? null;
+}
+
+/**
+ * One scalar as a frontmatter line, or as a literal block when it spans lines.
+ *
+ * A single line wherever that is lossless, which is every value a model writes
+ * and every folded value (folding produces no break unless the file had a blank
+ * line). A value with a line break in it goes back out as `|-`, the strip
+ * literal, indented two spaces: the parser removes exactly the first line's
+ * indent, and a trimmed value's first line has none of its own, so every line
+ * comes back as it went.
+ */
+function scalarLines(key: string, value: string): string[] {
+  if (!value.includes("\n")) return [`${key}: ${value}`];
+  return [`${key}: |-`, ...value.split("\n").map(line => (line === "" ? "" : `  ${line}`))];
+}
+
+/**
  * A skill back to the text on disk.
  *
  * **Exported beside the parser, and round-tripped by a test rather than
@@ -802,7 +978,7 @@ export function parseSkillFile(text: string, options?: SkillFileParseOptions): S
 export function serializeSkillFile(skill: SkillFile): string {
   const { name, description, created, status, metadata, extra } = skill.frontmatter;
 
-  const lines = [FENCE, `name: ${name}`, `description: ${description}`];
+  const lines = [FENCE, `name: ${name}`, ...scalarLines("description", description)];
   // Absent only on a shared skill, which nothing in this tree writes — so this
   // branch is what keeps a round trip honest rather than a case that fires.
   if (created !== undefined) lines.push(`created: ${created}`);
@@ -813,7 +989,7 @@ export function serializeSkillFile(skill: SkillFile): string {
     // that key twice, which is a `duplicate_key` on the way back in. The parser
     // cannot produce one; a hand-built `SkillFile` can.
     if (DEFINED_KEYS.has(field.key) || DISCARDED_KEYS.has(field.key)) continue;
-    lines.push(`${field.key}: ${field.value}`);
+    lines.push(...scalarLines(field.key, field.value));
   }
 
   const entries = Object.entries(metadata ?? {});

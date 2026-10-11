@@ -1,6 +1,6 @@
 ---
 title: Limits
-description: Every figure that bounds a deployment, where it lives, which process reads it, and whether it is yours to move. One page, 164 rows, and a test that fails when a limit is added without one.
+description: Every figure that bounds a deployment, where it lives, which process reads it, and whether it is yours to move. One page, 165 rows, and a test that fails when a limit is added without one.
 ---
 
 Libero is bounded in a lot of places. Some of those bounds are yours to set — a team sheet's
@@ -221,7 +221,8 @@ may write, not what a channel may spend.
 | `packages/schema/src/schedule-task.ts:SCHEDULED_TASK_MAX_PROMPT_CHARS` | `500` | **Fixed.** Enough to say what to check and what would count as worth mentioning, and short enough that a human reading it on an approval card reads all of it. Under `AMBIENT_FINDING_MAX_CHARS`, deliberately. |
 | `packages/schema/src/skill.ts:SkillName` | `1..64` | **Fixed.** "A name is a subject, not a sentence: the sentence is `description`." |
 | `packages/schema/src/skill.ts:SKILL_BODY_MAX_CHARS` | `4_096` | **Fixed.** One memory operation, twice a thread summary. The upper bound is retrieval: a longer skill is a vector averaged over more procedures, and past a point it is retrieved by everything and answers nothing. |
-| `packages/schema/src/skill.ts:SKILL_DESCRIPTION_MAX_CHARS` | `512` | **Fixed.** This is the retrieval surface. Longer and it stops being a statement of when this skill applies and starts being a summary of the skill, which makes a vector unselective. |
+| `packages/schema/src/skill.ts:SKILL_DESCRIPTION_MAX_CHARS` | `512` | **Fixed.** This is the retrieval surface. Longer and it stops being a statement of when this skill applies and starts being a summary of the skill, which makes a vector unselective. Binds what the model writes and a channel's own skill file; a shared skill takes the figure below. |
+| `packages/schema/src/skill.ts:SHARED_SKILL_DESCRIPTION_MAX_CHARS` | `1_024` | **Fixed.** The Agent Skills spec's own figure, on a file an operator published to the shared root (#580). Real descriptions cluster at 200–450 and 740–1080 characters, and 512 fell between them. The model's figure stays at 512, because a model given 1024 characters writes a summary. |
 | `packages/schema/src/memory-op.ts:MEMORY_OP_MAX_TEXT_CHARS` | `4_096` | **Fixed.** Above the floor because compaction *is* replace-with-a-shorter-string; below the roof because one op must not be able to spend the file. One sixteenth of `max_file_chars`' default. |
 | `packages/schema/src/thread-summary.ts:SUMMARY_MAX_TEXT_CHARS` | `2048` | **Fixed.** Chosen against retrieval rather than storage: one vector stands for the whole summary. "A thread that cannot be said in 2048 characters is one that should have been segmented." |
 | `packages/schema/src/ambient-finding.ts:AMBIENT_FINDING_MAX_CHARS` | `700` | **Fixed.** Under the gateway's own post cap, deliberately. An unprompted message is rate-limited so the agent does not speak often, and bounded so it does not speak at length. |

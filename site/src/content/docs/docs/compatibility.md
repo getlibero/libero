@@ -88,9 +88,17 @@ rule.
   and deliberately so — YAML's implicit typing reads `description: no` as
   `false` and `created: 2026-09-07` as a date in whatever zone the runtime
   prefers. A value is the rest of its line, trimmed, with one matching pair of
-  surrounding quotes removed. No escaping, no folded or literal scalars, no
-  comments, and no format imposed on the body.
-- **The fields**: `name`, `description` (1–512 characters), `created`
+  surrounding quotes removed. No escaping, no comments, and no format imposed
+  on the body.
+- **Block scalars marked `|`, `|-`, `>` or `>-`** (since v0.9.0, #580). The
+  indented lines under the marker are the value, with the first line's indent
+  removed. A literal block keeps its line breaks, a folded block joins lines
+  the way YAML folds them, and either is trimmed like any other value. Nothing
+  inside a block is typed, unescaped or unquoted. Keep chomping (`+`) and an
+  indentation digit are not read. A rewrite writes a value with line breaks
+  back as a `|-` block, and any other value on one line.
+- **The fields**: `name`, `description` (1–1024 characters on a shared skill,
+  1–512 on a channel's own, the model's figure), `created`
   (`YYYY-MM-DD`, a date that exists), `status` — one of `active`, `stale`,
   `archived`, defaulting to `active` — and `metadata`, a block of indented
   `key: value` lines read as a string→string map.

@@ -63,7 +63,8 @@
 //   embeds it over several passes rather than in one burst.
 // - **The description.** Only the description is embedded — never the body —
 //   which is the same text `description_hash` stands for, and it is capped by
-//   `SKILL_DESCRIPTION_MAX_CHARS` in the schema package.
+//   `SKILL_DESCRIPTION_MAX_CHARS` in the schema package — or, for a shared
+//   skill, by `SHARED_SKILL_DESCRIPTION_MAX_CHARS` beside it (#580).
 // - **The meter.** The call reports through the same `SpendReport` path recall
 //   and the quiescence sweep use, so `daily_tokens` and `daily_usd` bound it the
 //   way they bound a task. The backstop, not the mechanism.

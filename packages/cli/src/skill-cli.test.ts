@@ -60,9 +60,9 @@ function withRunner(argv: string[], cwd: string, reply: (args: readonly string[]
 // The SKILL.md fixtures reproduce the *shapes* found in `anthropics/skills` at
 // 34040c9c568585f6929bedeaad110ad08f079624, written here rather than copied: a
 // plain scalar with an unknown `license:` key beside it, a quoted description
-// over the cap, a folded scalar this grammar has no reading of, a name that
-// disagrees with its directory, and a symlinked sidecar. The text is this
-// file's own — what is being tested is the shape.
+// between the model's cap and the spec's, a folded scalar, a strip literal over
+// the spec's cap, a name that disagrees with its directory, and a symlinked
+// sidecar. The text is this file's own — what is being tested is the shape.
 // ---------------------------------------------------------------------------
 
 let home = "";
@@ -110,6 +110,12 @@ beforeAll(() => {
 
   put("skills/xlsx/SKILL.md", `---\nname: xlsx\ndescription: "${"x".repeat(950)}"\n---\n\n# XLSX\n`);
   put("skills/academy-guide/SKILL.md", "---\nname: academy-guide\ndescription: >\n  Stop and check this skill\n  before finishing any reply.\n---\n\n# Academy\n");
+  // claude-api's shape at dbd4588f: a `|-` block whose three lines and two
+  // breaks come to 1068 characters, which is over the spec's own figure.
+  put(
+    "skills/claude-api/SKILL.md",
+    `---\nname: claude-api\ndescription: |-\n  ${"a".repeat(152)}\n  ${"b".repeat(600)}\n  ${"c".repeat(314)}\n---\n\n# API\n`
+  );
   put("skills/misnamed/SKILL.md", "---\nname: something-else\ndescription: A skill whose name disagrees with its directory.\n---\n\n# Misnamed\n");
   put("skills/linky/SKILL.md", "---\nname: linky\ndescription: A skill carrying a symlink beside it.\n---\n\n# Linky\n");
   symlinkSync("../pdf/forms.md", join(repo, "skills/linky/forms.md"));
@@ -326,9 +332,21 @@ describe("libero skill vendor, against a real repository", () => {
     expect(vendored("pdf")).toBe(before);
   });
 
+  // #580: two of the six this verb used to refuse, by the two rules that
+  // refused them.
   each([
-    ["skills/xlsx", /950-character description, and the cap is 512/, "xlsx"],
-    ["skills/academy-guide", /YAML folded scalar/, "academy-guide"],
+    ["skills/xlsx", "xlsx", "x".repeat(950)],
+    ["skills/academy-guide", "academy-guide", "Stop and check this skill before finishing any reply."]
+  ])("vendors %s, which the grammar now reads", (path, name, description) => {
+    const result = run(["vendor", address(path as string, "v1.0.0")], work);
+
+    expect(result.code).toBe(EXIT_OK);
+    const parsed = parseSkillFile(vendored(name as string), { shared: true });
+    expect(parsed.ok && parsed.skill.frontmatter.description).toBe(description);
+  });
+
+  each([
+    ["skills/claude-api", /1068-character description, and the cap is 1024/, "claude-api"],
     ["skills/linky", /is a symlink at [0-9a-f]{40}/, "linky"],
     ["skills/misnamed", /calls itself `something-else`/, "misnamed"],
     ["skills/nope", /has no skills\/nope/, "nope"]

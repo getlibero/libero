@@ -29,7 +29,7 @@
 // ok-or-not, and this reads the text again only to say *why* — which is why
 // `explainSkillFailure` takes the parse result rather than re-deciding it.
 
-import { SKILL_DESCRIPTION_MAX_CHARS } from "@getlibero/schema";
+import { SHARED_SKILL_DESCRIPTION_MAX_CHARS, readSkillScalar } from "@getlibero/schema";
 import type { SkillFileParse } from "@getlibero/schema";
 
 const FENCE = "---";
@@ -37,8 +37,17 @@ const FENCE = "---";
 /** The keys this command owns inside `metadata:`. Rewritten, never appended to. */
 const PROVENANCE_KEYS = ["libero-source", "libero-ref", "libero-sha"] as const;
 
-/** YAML's block scalar markers, which this grammar has no reading of. */
-const BLOCK_SCALAR = /^[>|][+-]?$/;
+/**
+ * YAML's block scalar markers, including the ones this grammar does not read.
+ *
+ * Since #580 the parser reads `|`, `|-`, `>` and `>-`, so a file that reaches
+ * `malformedLine` under one of those failed for some other reason. What is left
+ * for this to name is keep chomping and an explicit indentation digit.
+ */
+const BLOCK_SCALAR = /^[>|](?:[1-9]?[+-]?|[+-][1-9])$/;
+
+/** The four the parser reads. */
+const READ_BLOCK_SCALAR = /^[>|]-?$/;
 
 export interface Provenance {
   /** The address as given, without its `@ref`. */
@@ -146,8 +155,8 @@ function isProvenance(line: string): boolean {
  * Why a skill file did not parse, in sentences rather than a line number.
  *
  * The headline first, then continuations the caller indents. Six of the
- * nineteen skills in `anthropics/skills` land here, so this is the command's
- * ordinary output rather than its error path.
+ * nineteen skills in `anthropics/skills` landed here before #580 and one still
+ * does, so this is ordinary output rather than an error path.
  */
 export function explainSkillFailure(text: string, failure: SkillFileFailure, where: string): readonly string[] {
   const lines = text.split(/\r?\n/);
@@ -190,13 +199,13 @@ function malformedLine(lines: readonly string[], line: number, where: string): r
     if (/^[ \t]/.test(candidate) || candidate.trim() === "") continue;
     const match = /^([A-Za-z][A-Za-z0-9_-]*)[ \t]*:[ \t]*(.*)$/.exec(candidate);
     const value = (match?.[2] ?? "").trim();
-    if (match !== null && BLOCK_SCALAR.test(value)) {
+    if (match !== null && BLOCK_SCALAR.test(value) && !READ_BLOCK_SCALAR.test(value)) {
       const kind = value.startsWith(">") ? "folded" : "literal";
       return [
         `${where} writes \`${match[1] as string}: ${value}\`, a YAML ${kind} scalar continued on line ${line}`,
-        "A shared skill's frontmatter is one value per line: no folded (>) or literal (|) " +
-          "scalars, no escapes, no comments and no list values.",
-        "Vendor a fork with it on one line, or ask upstream for one."
+        "A shared skill's frontmatter reads a block scalar marked |, |-, > or >- and no other: " +
+          "no keep chomping (+), no indentation digit, no escapes, no comments and no list values.",
+        "Vendor a fork that marks it with one of the four, or ask upstream for one."
       ];
     }
     break;
@@ -229,10 +238,10 @@ function schemaInvalid(
 ): readonly string[] {
   const described = failure.issues.find(issue => issue.path === "description");
   if (described !== undefined) {
-    const value = scalarValue(lines, "description");
-    if (value !== null && value.length > SKILL_DESCRIPTION_MAX_CHARS) {
+    const value = readSkillScalar(lines.join("\n"), "description");
+    if (value !== null && value.length > SHARED_SKILL_DESCRIPTION_MAX_CHARS) {
       return [
-        `${where} has a ${value.length}-character description, and the cap is ${SKILL_DESCRIPTION_MAX_CHARS}`,
+        `${where} has a ${value.length}-character description, and the cap is ${SHARED_SKILL_DESCRIPTION_MAX_CHARS}`,
         "The description is what retrieval matches against, so a truncated one is a different " +
           "skill — this refuses rather than cutting it.",
         "Vendor a fork with a shorter description."
@@ -246,27 +255,11 @@ function schemaInvalid(
   const named = failure.issues.find(issue => issue.path === "name");
   if (named !== undefined) {
     return [
-      `${where} has a name its frontmatter cannot carry: ${scalarValue(lines, "name") ?? "(none)"}`,
+      `${where} has a name its frontmatter cannot carry: ${readSkillScalar(lines.join("\n"), "name") ?? "(none)"}`,
       "Lowercase words joined by single dashes, letters and digits only, up to 64 characters."
     ];
   }
 
   const where_ = failure.issues.map(issue => `${issue.path || "(root)"} (${issue.code})`).join(", ");
   return [`${where} has frontmatter the grammar rejects: ${where_}`];
-}
-
-/** One column-0 scalar's value, unquoted the way the grammar unquotes it. */
-function scalarValue(lines: readonly string[], key: string): string | null {
-  for (const line of lines.slice(1)) {
-    if (line.trim() === FENCE) break;
-    const match = new RegExp(`^${key}[ \\t]*:[ \\t]*(.*)$`).exec(line);
-    if (match === null) continue;
-    const trimmed = (match[1] ?? "").trim();
-    const first = trimmed[0];
-    if (trimmed.length >= 2 && (first === '"' || first === "'") && trimmed.endsWith(first)) {
-      return trimmed.slice(1, -1);
-    }
-    return trimmed;
-  }
-  return null;
 }

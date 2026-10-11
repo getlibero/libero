@@ -71,8 +71,8 @@ Plain, terse, technical.
 ```
 
 `name` and `description` are required. `description` is what retrieval matches
-against and is capped at 512 characters; the body holds the specific strings a
-lexical search is better at.
+against and is capped at 1024 characters, the Agent Skills spec's figure; the
+body holds the specific strings a lexical search is better at.
 
 `status` is yours — `active`, `stale` or `archived` — and nothing in the runtime
 writes one. `created` is optional here and absent from the two examples beside
@@ -86,8 +86,8 @@ the allowlist, and a second statement of permission in a file the model can
 retrieve would look exactly like the one that binds.
 
 There is no YAML parser behind this. A value is the rest of its line with one
-matching pair of quotes removed; there are no folded scalars, no escapes and no
-comments.
+matching pair of quotes removed, or the indented block under a `|`, `|-`, `>` or
+`>-` marker; there are no escapes, no comments and no implicit types.
 
 ## Getting content in here
 
@@ -107,11 +107,11 @@ to the frontmatter saying where it came from. Copying it in by hand or with a
 `git subtree` still works and always will; the layout is the spec's, so nothing
 about the *copying* needs a verb.
 
-**What needs one is the checking.** Six of the nineteen skills in
-`anthropics/skills` cannot be published here as they stand: three have a
-description over 512 characters, and three write it as a YAML folded or literal
-block scalar, which the grammar above does not read. Copied in by hand, all six
-land looking fine — the server logs `skill_file_unusable` and carries on, and
+**What needs one is the checking.** One of the nineteen skills in
+`anthropics/skills` cannot be published here as it stands: `claude-api`'s
+description is 1068 characters, over the spec's own 1024. Until v0.9.0 six could
+not, because the cap was 512 and block scalars were not read (#580). Copied in by
+hand, a skill like that lands looking fine — the server logs `skill_file_unusable` and carries on, and
 `libero doctor` does not parse a published file either, on purpose. `vendor` is
 the one place that check happens while somebody is still there to fix it, and it
 names the edit. It also puts the commit in the file rather than in a merge
