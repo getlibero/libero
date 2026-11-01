@@ -18,11 +18,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
     "@getlibero/schema": "workspace:*",
-    "openai": "^7.27.0"
+    "openai": "^7.45.1"
   },
   "devDependencies": {
     "@getlibero/test-kit": "workspace:*",
-    "@types/node": "^24.19.1",
+    "@types/node": "^24.19.2",
     "expect": "^30.5.2"
   }
 }
